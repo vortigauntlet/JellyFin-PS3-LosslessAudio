@@ -15,7 +15,7 @@
 
 // ---- CONFIGURATION ----
 #define JELLYFIN_SERVER  "http://192.168.1.2:8096"
-#define JELLYFIN_TOKEN   "[REVOKED_JELLYFIN_TOKEN]"
+#define JELLYFIN_TOKEN   ""  /* Configure locally; never commit the API key. */
 #define HTTP_USER_AGENT  "JellyfinPS3/0.1"
 #define BUFFER_SIZE      (128*1024)
 // -----------------------
