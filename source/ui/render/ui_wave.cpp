@@ -850,6 +850,19 @@ void wave_draw(void) {
     const u8 gblr=(s_bg.c[BG_BL]>>16)&0xFF, gblg=(s_bg.c[BG_BL]>>8)&0xFF, gblb=s_bg.c[BG_BL]&0xFF;
     const u8 gbrr=(s_bg.c[BG_BR]>>16)&0xFF, gbrg=(s_bg.c[BG_BR]>>8)&0xFF, gbrb=s_bg.c[BG_BR]&0xFF;
 
+    // Keep the opaque background independent from JellyWave's reusable
+    // vertex-array buffer.  JellyWave can deliberately reuse the same geometry
+    // for several frames without rewriting it; the background should never
+    // depend on that cadence.  Four immediate vertices are negligible compared
+    // with the wave geometry, and this guarantees every frame paints the
+    // background after clearScreen() and before any translucent wave layer.
+    rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_STRIP);
+    wave_vtx(-1.0f,  1.0f, gtlr, gtlg, gtlb);
+    wave_vtx(-1.0f, -1.0f, gblr, gblg, gblb);
+    wave_vtx( 1.0f,  1.0f, gtrr, gtrg, gtrb);
+    wave_vtx( 1.0f, -1.0f, gbrr, gbrg, gbrb);
+    rsxDrawVertexEnd(context);
+
     // Slice k spans the fraction [k/NS, (k+1)/NS] of the distance from this
     // column's crest down to the screen bottom.  One triangle strip per
     // (ribbon, slice), back-to-front, fully opaque.
@@ -1062,10 +1075,10 @@ void wave_draw(void) {
         rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_TEX0, 0,
             0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
 
-        // Gradient is opaque and must land before anything blends over it.
-        rsxInvalidateVertexCache(context);
-        rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, 0, 4);
-
+        // The background was already submitted above as an immediate
+        // opaque quad.  Do not draw the historical [0,4) array slot: keeping
+        // the background independent from JellyWave's reusable geometry buffer
+        // removes the clear-colour flash without changing any ribbon offsets.
         if (s_wave_blend) {
             // src*a + dst*(1-a), ribbons back to front -- algebraically the
             // same cumulative composite wave_bg() does on the CPU, and the
