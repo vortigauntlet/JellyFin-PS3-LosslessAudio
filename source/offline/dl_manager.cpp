@@ -8,10 +8,25 @@
 #include <stdio.h>
 #include <string.h>
 
-// One transfer buffer for the process.  128 KB: large enough that a 25 Mbps
-// link needs ~25 reads a second, small enough to be irrelevant next to the
-// player's reservations.  The file never passes through RAM beyond this.
-#define DL_XFER_BUF (128 * 1024)
+// One transfer buffer for the process, used two ways at once: sockets are
+// read straight into its free tail, and the payload is written to the HDD
+// only when it is nearly full (or at a checkpoint / the end).
+//
+// That write batching is the lesson from pkgi-ps3, the PS3's fastest package
+// downloader: it never writes per network read -- its bytes go through
+// newlib's buffered fwrite -- and it keeps its per-read bookkeeping near zero
+// (free space is queried once per 512 writes, progress redrawn every 500 ms).
+// On this console every lv2 fs write is a syscall into an encrypted HDD, so
+// issuing one per 1.4-64 KB network read costs far more than one per ~450 KB.
+//
+// 512 KB total.  Static, like stream.cpp's 256 KB socket buffer and
+// http.cpp's 388 KB body buffer, so it is carved out before the heap is and
+// can never be the allocation that fails when the player needs memory.
+#define DL_XFER_BUF (512 * 1024)
+// Never ask netRecv for less than this: the tail is flushed first.  256 KB is
+// what stream.cpp asks for per read (after Movian); this keeps every read
+// at 64 KB+ while leaving most of the buffer to batch the writes.
+#define DL_RECV_MIN (64 * 1024)
 
 enum { CTL_NONE = 0, CTL_PAUSE, CTL_CANCEL, CTL_REMOVE };
 
@@ -29,6 +44,10 @@ static bool     s_ready = false;
 static DlConfig s_cfg;
 static char     s_auth[512] = "";
 static volatile bool s_suspended = false;
+// Playback, from dl_playback_begin/end: a heavy stream blocks downloads
+// outright; a light one lets them run, paced to stream_share_bps.
+static volatile bool s_play_block = false;
+static volatile bool s_play_light = false;
 static uint32_t s_next_seq = 1;
 static uint8_t  s_buf[DL_XFER_BUF];
 
@@ -53,6 +72,15 @@ void dl_config_defaults(DlConfig *c) {
     c->checkpoint_ms     = 2000;
     c->checkpoint_bytes  = 8ull * 1024 * 1024;
     c->space_check_bytes = 64ull * 1024 * 1024;
+    // Progress is shown, not logged: four updates a second is smooth, and
+    // anything faster is lock traffic the UI cannot display anyway.
+    c->progress_ms       = 250;
+    // Beside a light (480p-or-below) stream, downloads may use 12 Mbps.  The
+    // console pulls ~25 Mbps over HTTP in total (vquality.h has the three
+    // measurements); the heaviest light stream asks for ~2.2 Mbps, and the
+    // rest is headroom the player's read-ahead ring needs to refill after a
+    // server hiccup -- that refill, not the average, is what stutters.
+    c->stream_share_bps  = 12000000;
 }
 
 bool dl_manager_ready(void) { return s_ready; }
@@ -64,6 +92,24 @@ void dl_set_auth_header(const char *line) {
 }
 
 void dl_set_suspended(bool suspended) { s_suspended = suspended; }
+
+void dl_playback_begin(const char *stream_url) {
+    const bool light = dl_stream_is_light(stream_url);
+    const bool was_block = s_play_block, was_light = s_play_light;
+    s_play_light = light;
+    s_play_block = !light;
+    if (was_block != s_play_block || was_light != s_play_light)
+        dl_plat_log(light ? "dl: light stream playing -- downloads paced"
+                          : "dl: stream playing -- downloads stopped");
+}
+
+void dl_playback_end(void) {
+    if (s_play_block || s_play_light) dl_plat_log("dl: playback ended");
+    s_play_block = false;
+    s_play_light = false;
+}
+
+bool dl_playback_blocking(void) { return s_play_block; }
 
 // -------------------------------------------------------------------------
 // Slot helpers (callers hold the lock)
@@ -440,8 +486,18 @@ static Outcome fail(DlError e, int status = 0) {
 // Posted control, or a suspension, that should stop the attempt now.
 static bool stop_requested(const Slot *s, Outcome *o) {
     if (s->ctl != CTL_NONE) { o->kind = OUT_CTL; return true; }
-    if (s_suspended)        { o->kind = OUT_SUSPENDED; return true; }
+    if (s_suspended || s_play_block) { o->kind = OUT_SUSPENDED; return true; }
     return false;
+}
+
+// Payload waiting in s_buf[0..*fill) goes to disk.
+static DlError flush_buf(int fh, int *fill, uint64_t *on_disk) {
+    if (*fill == 0) return DL_ERR_NONE;
+    if (dl_plat_file_write(fh, s_buf, *fill) != *fill)
+        return space_ok(1) ? DL_ERR_DISK : DL_ERR_NO_SPACE;
+    *on_disk += (uint64_t)*fill;
+    *fill = 0;
+    return DL_ERR_NONE;
 }
 
 // Publish progress to the table (always) and to disk (when asked).
@@ -590,20 +646,27 @@ static Outcome attempt(Slot *s, DlRecord *r) {
         DlChunked ch;
         dl_chunked_init(&ch);
         const int64_t cl = hd.content_length;   // -1 when chunked/unknown
-        uint64_t body_got = 0;
+        uint64_t body_got = 0;                  // payload of this response
+        uint64_t on_disk  = have;               // have, minus what is in s_buf
+        int      fill     = 0;                  // payload waiting in s_buf
         uint64_t last_ckpt_bytes = have, last_space_bytes = have;
-        uint64_t last_ckpt_ms = dl_plat_now_ms(), last_rx_ms = last_ckpt_ms;
-        bool finished = false;
+        const uint64_t t_start = dl_plat_now_ms();
+        uint64_t last_ckpt_ms = t_start, last_rx_ms = t_start, last_pub_ms = t_start;
+        uint32_t pace_bps = 0;                  // rate the pacing is anchored to
+        uint64_t pace_t0 = 0, pace_b0 = 0;
+        bool finished = false, stopped = false;
         DlError err = DL_ERR_NONE;
         publish(s, r, true);
 
-        uint8_t *data = s_buf + body_off;
+        // Body bytes that arrived with the head are the first data.
         int n = body_n;
+        if (n > 0) memmove(s_buf, s_buf + body_off, (size_t)n);
         for (;;) {
             if (n > 0) {
+                uint8_t *data = s_buf + fill;
                 last_rx_ms = dl_plat_now_ms();
                 if (hd.chunked) {
-                    n = dl_chunked_decode(&ch, data, n, data);
+                    n = dl_chunked_decode(&ch, data, n, data);   // in place
                     if (n < 0) { err = DL_ERR_BAD_RESPONSE; break; }
                 } else if (cl >= 0 && body_got + (uint64_t)n > (uint64_t)cl) {
                     n = (int)((uint64_t)cl - body_got);   // ignore trailing junk
@@ -612,39 +675,62 @@ static Outcome attempt(Slot *s, DlRecord *r) {
                     err = DL_ERR_BAD_RESPONSE;             // more than declared
                     break;
                 }
-                if (n > 0 && dl_plat_file_write(fh, data, n) != n) {
-                    err = space_ok(1) ? DL_ERR_DISK : DL_ERR_NO_SPACE;
-                    break;
-                }
+                fill     += n;
                 have     += (uint64_t)n;
                 body_got += (uint64_t)n;
                 r->bytes_done = have;
-
-                const uint64_t now = dl_plat_now_ms();
-                const bool ckpt = have - last_ckpt_bytes >= s_cfg.checkpoint_bytes ||
-                                  now - last_ckpt_ms >= s_cfg.checkpoint_ms;
-                if (ckpt) {
-                    dl_plat_file_sync(fh);
-                    last_ckpt_bytes = have;
-                    last_ckpt_ms = now;
-                }
+            }
+            const uint64_t now = dl_plat_now_ms();
+            const bool done_now = (hd.chunked && ch.done) ||
+                                  (cl >= 0 && body_got >= (uint64_t)cl);
+            const bool ckpt = have - last_ckpt_bytes >= s_cfg.checkpoint_bytes ||
+                              now - last_ckpt_ms >= s_cfg.checkpoint_ms;
+            // Write when the tail can no longer take a full read, at every
+            // checkpoint (the record must never claim bytes that are only in
+            // RAM), and at the end.
+            if (fill > 0 && (DL_XFER_BUF - fill < DL_RECV_MIN || ckpt || done_now)) {
+                err = flush_buf(fh, &fill, &on_disk);
+                if (err != DL_ERR_NONE) break;
+            }
+            if (ckpt) {
+                dl_plat_file_sync(fh);
+                last_ckpt_bytes = have;
+                last_ckpt_ms = now;
+            }
+            if (ckpt || now - last_pub_ms >= s_cfg.progress_ms) {
                 publish(s, r, ckpt);
-                if (have - last_space_bytes >= s_cfg.space_check_bytes) {
-                    last_space_bytes = have;
-                    if (!space_ok(r->bytes_total > have ? r->bytes_total - have : 0)) {
-                        err = DL_ERR_NO_SPACE;
-                        break;
-                    }
+                last_pub_ms = now;
+            }
+            if (have - last_space_bytes >= s_cfg.space_check_bytes) {
+                last_space_bytes = have;
+                if (!space_ok(r->bytes_total > have ? r->bytes_total - have : 0)) {
+                    err = DL_ERR_NO_SPACE;
+                    break;
                 }
             }
-            if ((hd.chunked && ch.done) || (cl >= 0 && body_got >= (uint64_t)cl)) {
-                finished = true;
-                break;
-            }
-            if (stop_requested(s, &o)) break;
+            if (done_now) { finished = true; break; }
+            if (stop_requested(s, &o)) { stopped = true; break; }
 
-            n = dl_plat_recv(h, s_buf, DL_XFER_BUF);
-            data = s_buf;
+            // Beside a light stream, hold the average to its share.  Sleeping
+            // here lets the socket buffer fill, and TCP flow control slows the
+            // server for us -- no data is dropped.
+            const uint32_t rate = s_play_light ? s_cfg.stream_share_bps : 0;
+            if (rate != pace_bps) { pace_bps = rate; pace_t0 = now; pace_b0 = have; }
+            if (pace_bps) {
+                for (;;) {
+                    const uint64_t t = dl_plat_now_ms();
+                    const uint64_t allowed = pace_b0 + (t - pace_t0) * pace_bps / 8000;
+                    if (have <= allowed) break;
+                    uint64_t wait = (have - allowed) * 8000 / pace_bps + 1;
+                    dl_plat_sleep_ms((unsigned)(wait > 100 ? 100 : wait));
+                    if (stop_requested(s, &o)) { stopped = true; break; }
+                    if ((s_play_light ? s_cfg.stream_share_bps : 0) != pace_bps) break;
+                }
+                if (stopped) break;
+                last_rx_ms = dl_plat_now_ms();   // waiting on ourselves is not idle
+            }
+
+            n = dl_plat_recv(h, s_buf + fill, DL_XFER_BUF - fill);
             if (n > 0) continue;
             if (n == DL_RECV_TIMEOUT) {
                 n = 0;
@@ -664,14 +750,22 @@ static Outcome attempt(Slot *s, DlRecord *r) {
             n = 0;
             break;
         }
+        // Keep whatever arrived, whatever ended the attempt: the partial on
+        // disk is what the next attempt resumes from.  (Not after a failed
+        // write -- the disk is what failed.)
+        if (fill > 0 && err != DL_ERR_DISK && err != DL_ERR_NO_SPACE) {
+            DlError werr = flush_buf(fh, &fill, &on_disk);
+            if (werr != DL_ERR_NONE && !stopped) { err = werr; finished = false; }
+        }
         dl_plat_file_sync(fh);
         dl_plat_file_close(fh);
         dl_plat_close(h);
+        have = on_disk;
         r->bytes_done = have;
         o.progressed = have > have_at_start;
         o.http_status = hd.status;
 
-        if (o.kind == OUT_CTL || o.kind == OUT_SUSPENDED) return o;
+        if (stopped) return o;
         if (!finished) {
             o.kind = OUT_FAIL;
             o.err = err;
@@ -756,7 +850,7 @@ static void finish(Slot *s, DlRecord *r, const Outcome *o) {
 }
 
 bool dl_manager_step(void) {
-    if (!s_ready || s_suspended) return false;
+    if (!s_ready || s_suspended || s_play_block) return false;
     const uint64_t now = dl_plat_now_ms();
     LOCK();
     Slot *pick = NULL;

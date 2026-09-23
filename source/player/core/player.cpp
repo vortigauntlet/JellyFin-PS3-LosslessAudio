@@ -35,6 +35,7 @@
 #include "thumbnail_cache.h"
 #include "meminfo.h"   // read-ahead ring sizing
 #include "slog.h"
+#include "dl_manager.h"   // offline downloads yield to playback
 
 extern void crash_log(const char *msg);
 
@@ -267,6 +268,14 @@ void show_player(const JFItem *item, u32 resume_secs,
     char url[768];
     build_stream_url(url, sizeof(url), &ps, (u64)resume_secs * 10000000ULL);
     plog_url("url", url);
+
+    // Offline downloads give this stream the network: they stop outright,
+    // or -- for a 480p-or-lighter stream -- continue at a paced share.  The
+    // decision is made from this exact URL (dl_stream_is_light).  The guard
+    // ends it on every one of show_player's many return paths.
+    dl_playback_begin(url);
+    struct DlPlaybackEnd { ~DlPlaybackEnd() { dl_playback_end(); } } dl_playback_guard;
+    (void)dl_playback_guard;
 
     player_status_screen(item->name, "Initializing decoder...");
 

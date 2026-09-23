@@ -4,7 +4,9 @@ Status: **Stages 1–2 implemented** (storage model, queue, state machine,
 persistence, resumable network transfer), host-tested, and compiled into the
 PS3 build. **Not yet user-visible**: nothing starts the service or enqueues
 anything until Stage 3 wires in the item page. With this build installed, the
-app behaves exactly as before and writes nothing new to the HDD.
+app behaves exactly as before and writes nothing new to the HDD. The player
+already reports its streams to the download manager (§5a), which only sets two
+flags while no service is running.
 
 ## 1. Goal
 
@@ -79,9 +81,10 @@ within about a second (the socket's receive timeout). Requests only escalate
 (pause < cancel < remove), so a pause pressed after a cancel cannot rescue the
 download. A resume pressed before a pending pause lands withdraws the pause.
 
-**Suspension** (`dl_set_suspended`) is for playback. It sends the active item
-back to QUEUED with its data, recorded as an interruption rather than an error
-or a pause, and nothing starts until suspension lifts.
+**Suspension** (`dl_set_suspended`) is for stopping the service. It sends the
+active item back to QUEUED with its data, recorded as an interruption rather
+than an error or a pause, and nothing starts until suspension lifts. Playback
+has its own gate (§5a), and ending playback never lifts a suspension.
 
 ## 4. Storage
 
@@ -135,7 +138,7 @@ The auth header lives only in memory and is rebuilt from the session
 
 ## 5. Transfer
 
-A plain HTTP/1.1 GET, streamed to `media.ts.part` through **one fixed 128 KB
+A plain HTTP/1.1 GET, streamed to `media.ts.part` through **one fixed 512 KB
 buffer**, so the file never passes through RAM. When bytes are already on disk
 the request carries `Range: bytes=N-`, where N is the partial's actual size on
 disk rather than the record's, because the record can lag by one checkpoint.
@@ -179,6 +182,68 @@ buffer.
 **Completion.** The partial is renamed to `media.ts` only once its length
 matches Content-Length/Content-Range, or the terminating chunk arrived. A
 close-delimited body with no length is the one case where a close means done.
+
+### Write batching (from pkgi-ps3)
+
+[pkgi-ps3](https://github.com/bucanero/pkgi-ps3) is the reference for moving
+large files onto this console quickly. Its download path is libcurl with a
+resume offset, writing through newlib's *buffered* `fwrite`. It keeps its
+per-read bookkeeping near zero: free space is queried once per 512 writes, and
+progress is redrawn every 500 ms. Its very fast mode is the XMB's own
+background downloader (`/dev_hdd0/vsh/task`). That mode only installs `.pkg`
+files and only runs from the XMB, so it cannot carry media for this app.
+
+What carries over:
+
+* **Batch the HDD writes.** Sockets are read straight into the free tail of
+  the one 512 KB buffer. The payload is written only when fewer than 64 KB
+  remain, at a checkpoint, and at the end. Every lv2 fs write is a syscall into
+  an encrypted HDD, and one per network read costs far more than one per
+  roughly 450 KB. Measured on the host: a 3 MB transfer takes 398 network reads
+  and 7 disk writes. Whatever arrived is still flushed when a transfer stops
+  for any reason other than a failing disk, so resume never loses bytes that
+  were received.
+* **Large reads.** Reads are always at least 64 KB, in the spirit of
+  stream.cpp's 256 KB request after Movian. This complements the 512 KB
+  `SO_RCVBUF` that stream.cpp measured as a win on this console. pkgi (curl)
+  sets neither.
+* **Cheap bookkeeping.** In-memory progress is published every 250 ms, free
+  space is checked every 64 MB, and the record is saved every 8 MB or 2 s.
+* **Not taken:** libcurl itself (this app has no curl portlib, and owning the
+  socket is what allows the receive buffer and pacing), and pkgi's separate
+  `HEAD` request for the size. The size is read from the GET's own response
+  head and checked against free space before any body byte is written, which
+  saves a round trip.
+
+## 5a. Playback gets the network
+
+The console pulls about 25 Mbps over HTTP in total (vquality.h has the
+measurements), so a download and a stream compete for the same pipe. The
+player tells the manager about every stream it opens:
+`dl_playback_begin(url)` on the initial open, on every seek and on every track
+change, and `dl_playback_end()` on every exit path through a scope guard.
+
+| Stream | Downloads |
+|---|---|
+| **Heavy:** above 480p, direct play (no bitrate ceiling), any HD audio stream copy | **stopped.** The active one goes back to QUEUED with its data, nothing starts until playback ends, then it resumes by Range. |
+| **Light:** 480p or 360p, a VideoBitrate ceiling of at most 1.5 Mbps, no HD audio copy, audio at most 640 kbps | continue, **paced to 12 Mbps** |
+
+The decision comes from the **exact URL the player built**
+(`dl_stream_is_light`), so it cannot disagree with what was requested, and
+there is no second capability engine. Anything missing or unparseable counts as
+heavy: when in doubt, the stream wins. A track change to a TrueHD copy
+re-decides and stops a paced download at once.
+
+Pacing sleeps between reads. The socket buffer fills and TCP flow control slows
+the server, so no data is dropped. Time spent pacing is not counted as the
+server being idle. The 12 Mbps share leaves the ~2.2 Mbps light stream plenty of
+headroom for its read-ahead ring to refill after a server hiccup, and that
+refill is what stutters, not the average.
+
+Thread priority already favours playback. The download worker runs at 1500 and
+the player's threads at 700–1100; on lv2 a lower number means higher priority.
+
+The music player is not gated: its streams are audio-only.
 
 ## 6. Restore (offline startup)
 
@@ -225,7 +290,7 @@ segments for transcodes.
 | Stage | Scope | Status |
 |---|---|---|
 | 1 | persistent storage model, states, queue, bookkeeping, tests | **done** |
-| 2 | network transfer, progress, retry, resume, cancellation | **done** (service built, not started) |
+| 2 | network transfer, progress, retry, resume, cancellation, yielding to playback, batched writes | **done** (service built, not started; player gate live) |
 | 3 | Jellyfin integration: shared request builder, metadata + artwork capture, start the service after login, suspend around playback | next |
 | 4 | offline library, offline startup path, playback of `media.ts` through the existing player (`stream_open` on a local file) | |
 | 5 | UI: item-page action, Downloads list with progress, Offline section | |
@@ -245,7 +310,11 @@ resume, reset, idle and head timeouts, Range ignored, inconsistent 206, 416,
 chunked transcode, close-delimited bodies, pause/resume, cancel (including
 racing a pause), retry/backoff/exhaustion, progress resetting retries,
 permanent HTTP errors, invalid responses, unreachable server, playback
-suspension, deletion (including the active item and unknown files), storage
+suspension, the light/heavy stream classifier across every quality step and
+audio mode, heavy streams stopping and resuming downloads, a track change to an
+HD copy, pacing (held to the share, lifted when playback ends, pause noticed
+mid-sleep, long pacing waits not mistaken for an idle server), write batching,
+deletion (including the active item and unknown files), storage
 limits (up front, from the server's size, disk full mid-write, space draining
 mid-transfer), crash/restart recovery, damaged state, and offline startup.
 The suite runs clean under ASan and UBSan.

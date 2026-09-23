@@ -19,7 +19,8 @@
 //  second -- the socket's receive timeout.
 //
 //  Transfers: a plain HTTP GET streamed to <item>/media.ts.part through one
-//  fixed 128 KB buffer -- never the file in RAM.  When bytes are already on
+//  fixed 512 KB buffer -- never the file in RAM -- written in large batches
+//  rather than per network read (the pkgi-ps3 lesson; see dl_manager.cpp).  When bytes are already on
 //  disk the request carries "Range: bytes=N-":
 //    206 from N       -> appended; this is a real resume
 //    200              -> the server ignored the range (a live transcode
@@ -55,6 +56,8 @@ typedef struct {
     uint32_t checkpoint_ms;      // persist progress at least this often
     uint64_t checkpoint_bytes;   // ...or at least every this many bytes
     uint64_t space_check_bytes;  // re-check free space this often
+    uint32_t progress_ms;        // in-memory progress published this often
+    uint32_t stream_share_bps;   // download cap beside a light stream, bit/s
 } DlConfig;
 
 void dl_config_defaults(DlConfig *c);
@@ -95,8 +98,21 @@ bool dl_media_path(const char *id, char *out, int cap);
 // ---- worker side ----------------------------------------------------------
 // While suspended nothing starts, and an active transfer stops at its next
 // read and goes back to QUEUED with its data (not PAUSED: the user did not
-// ask).  The player suspends downloads so they never compete with a stream.
+// ask).  Used when the service stops; playback uses dl_playback_begin().
 void dl_set_suspended(bool suspended);
+// Playback.  The player calls dl_playback_begin() with the URL of every
+// stream it opens (initial open, seeks, track changes) and dl_playback_end()
+// when it stops.  Bandwidth goes to the stream:
+//   heavy stream (anything above 480p, direct play, HD audio copy):
+//     downloads STOP -- the active one goes back to QUEUED with its data and
+//     nothing starts until playback ends;
+//   light stream (dl_stream_is_light, dl_http.h: 480p/360p, no HD copy):
+//     downloads continue, paced to DlConfig.stream_share_bps.
+// Independent of dl_set_suspended: ending playback never lifts a suspension.
+void dl_playback_begin(const char *stream_url);
+void dl_playback_end(void);
+bool dl_playback_blocking(void);   // "held while streaming", for the UI
+
 // Runs one transfer attempt on the next due item.  Blocks for the length of
 // the attempt.  Returns false when nothing was due.
 bool dl_manager_step(void);

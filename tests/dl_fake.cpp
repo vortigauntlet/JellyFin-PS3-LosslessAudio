@@ -21,6 +21,9 @@ int64_t                  g_fake_write_budget = -1;
 uint64_t                 g_fake_now_ms = 1000000;
 int                      g_fake_connects = 0;
 bool                     g_fake_verbose = false;
+int                      g_fake_data_recvs = 0;
+std::vector<int>         g_fake_write_sizes;
+void                   (*g_fake_on_sleep)(void) = nullptr;
 
 void fake_reset(void) {
     g_fake_queue.clear();
@@ -30,6 +33,9 @@ void fake_reset(void) {
     g_fake_free = DL_FREE_UNKNOWN;
     g_fake_write_budget = -1;
     g_fake_connects = 0;
+    g_fake_data_recvs = 0;
+    g_fake_write_sizes.clear();
+    g_fake_on_sleep = nullptr;
 }
 
 uint8_t fake_byte(uint64_t i) {
@@ -87,6 +93,7 @@ struct Conn {
     std::string out;          // full response bytes
     size_t      pos = 0;
     size_t      body_at = 0;  // offset of the body within out
+    int         reads = 0;
 };
 
 static Conn s_conns[8];
@@ -204,6 +211,10 @@ int dl_plat_recv(int h, void *buf, int cap) {
     if (limit_hit(r.stall_after)) { g_fake_now_ms += 1000; return DL_RECV_TIMEOUT; }
     if (limit_hit(r.reset_after)) return DL_RECV_ERROR;
     if (limit_hit(r.drop_after))  return DL_RECV_CLOSED;
+    if (r.timeout_every > 0 && c->pos < c->out.size()) {
+        // A slow segment: every Nth read first comes back empty-handed.
+        if (++c->reads % (r.timeout_every + 1) == 0) { g_fake_now_ms += 1000; return DL_RECV_TIMEOUT; }
+    }
     if (c->pos >= c->out.size()) return DL_RECV_CLOSED;
     size_t n = c->out.size() - c->pos;
     if (n > (size_t)r.recv_chunk) n = (size_t)r.recv_chunk;
@@ -228,6 +239,7 @@ int dl_plat_recv(int h, void *buf, int cap) {
     memcpy(buf, c->out.data() + c->pos, n);
     c->pos += n;
     g_fake_now_ms += 1;
+    g_fake_data_recvs++;
     return (int)n;
 }
 
@@ -293,6 +305,7 @@ int dl_plat_file_open_append(const char *path) {
 }
 
 int dl_plat_file_write(int fh, const void *buf, int len) {
+    g_fake_write_sizes.push_back(len);
     if (g_fake_write_budget >= 0) {
         if (g_fake_write_budget < len) {       // disk full part way
             if (g_fake_write_budget > 0) {
@@ -316,7 +329,10 @@ void dl_plat_file_close(int fh) { close(fh); }
 // -------------------------------------------------------------------------
 
 uint64_t dl_plat_now_ms(void) { return g_fake_now_ms; }
-void     dl_plat_sleep_ms(unsigned ms) { g_fake_now_ms += ms; }
+void     dl_plat_sleep_ms(unsigned ms) {
+    g_fake_now_ms += ms;
+    if (g_fake_on_sleep) g_fake_on_sleep();
+}
 void     dl_plat_lock(void) {}
 void     dl_plat_unlock(void) {}
 void     dl_plat_log(const char *line) { if (g_fake_verbose) printf("    [%s]\n", line); }

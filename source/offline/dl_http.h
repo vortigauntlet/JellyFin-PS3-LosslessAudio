@@ -84,3 +84,26 @@ int  dl_chunked_decode(DlChunked *c, const uint8_t *in, int len, uint8_t *out);
 // Content types a media download refuses outright: an HTML error page or a
 // JSON error body with a 200 status must not be saved as a film.
 bool dl_http_content_type_is_error_page(const char *ct);
+
+// Value of query parameter `key` in url (exact, case-sensitive name match on
+// '?'/'&' boundaries, so "Bitrate" never matches "VideoBitrate").  False if
+// absent or too long for out.
+bool dl_url_query_get(const char *url, const char *key, char *out, int cap);
+
+// -------------------------------------------------------------------------
+//  Is a playback stream light enough to share the network with downloads?
+// -------------------------------------------------------------------------
+//  Decided from the stream URL the player ACTUALLY built (build_stream_url in
+//  player/core/player_session.cpp), so the answer can never disagree with
+//  what was requested -- and there is no second capability engine to drift.
+//
+//  Light means the 480p step or below:
+//    MaxHeight <= 480, a VideoBitrate ceiling <= 1.5 Mbps (absent = direct
+//    copy at source bitrate = heavy), no HD audio stream copy (a copied
+//    TrueHD track alone can run past 10 Mbps), AudioBitrate <= 640 kbps.
+//  Anything missing or unparseable counts as heavy: when in doubt, the stream
+//  wins.
+#define DL_LIGHT_MAX_HEIGHT     480
+#define DL_LIGHT_MAX_VIDEO_BPS  1500000u
+#define DL_LIGHT_MAX_AUDIO_BPS  640000u
+bool dl_stream_is_light(const char *stream_url);

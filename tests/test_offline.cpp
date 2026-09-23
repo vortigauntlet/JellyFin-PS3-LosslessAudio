@@ -37,6 +37,7 @@ static void small_config(DlConfig *c) {
     c->checkpoint_ms     = 1000000;   // byte-driven in tests
     c->checkpoint_bytes  = 50000;
     c->space_check_bytes = 60000;
+    c->progress_ms       = 0;         // every read visible to the tests
 }
 
 static void begin(const char *name) {
@@ -48,6 +49,7 @@ static void begin(const char *name) {
     s_root = s_tmp + "/offline";
     small_config(&s_cfg);
     dl_set_suspended(false);
+    dl_playback_end();
     dl_set_auth_header("X-Emby-Authorization: MediaBrowser Token=\"t\"");
     CHECK(dl_manager_init(s_root.c_str(), &s_cfg));
 }
@@ -1349,6 +1351,252 @@ static void test_offline_startup(void) {
     CHECK(!dl_media_path("offc", path, sizeof(path)));
 }
 
+
+// =========================================================================
+// Playback: downloads yield to streaming
+// =========================================================================
+
+// Stream URLs in exactly the shape build_stream_url() produces
+// (player/core/player_session.cpp), one per quality step / audio mode.
+static std::string stream_url(int w, int h, long vbitrate, bool hd_copy,
+                              const char *acodec = "mp3", long abitrate = 192000) {
+    char v[96], a[128];
+    if (vbitrate > 0)
+        snprintf(v, sizeof(v), "&VideoBitrate=%ld&AllowVideoStreamCopy=true", vbitrate);
+    else
+        snprintf(v, sizeof(v), "&AllowVideoStreamCopy=true");
+    if (hd_copy)
+        snprintf(a, sizeof(a), "&AudioCodec=ac3,truehd,mp3&AudioSampleRate=48000"
+                               "&MaxAudioChannels=8");
+    else
+        snprintf(a, sizeof(a), "&AudioCodec=%s&AudioBitrate=%ld&AudioSampleRate=48000"
+                               "&MaxAudioChannels=%d", acodec, abitrate,
+                 strcmp(acodec, "ac3") == 0 ? 6 : 2);
+    char url[768];
+    snprintf(url, sizeof(url),
+             "http://192.168.1.2:8096/Videos/abc/stream.ts?VideoCodec=h264"
+             "&Profile=baseline&Level=31&MaxWidth=%d&MaxHeight=%d%s%s"
+             "&MaxFramerate=30&AllowAudioStreamCopy=%s&DeviceId=dev"
+             "&Static=false&MediaSourceId=abc&StartTimeTicks=0&PlaySessionId=ps1",
+             w, h, v, a, hd_copy ? "true" : "false");
+    return url;
+}
+
+static const std::string &url_480p(void)  { static std::string u = stream_url(854, 480, 1500000, false); return u; }
+static const std::string &url_1080p(void) { static std::string u = stream_url(1920, 1080, 10000000, false); return u; }
+
+static void test_stream_classifier(void) {
+    s_test = "light/heavy stream classifier"; printf("- %s\n", s_test);
+    CHECK(dl_stream_is_light(stream_url(854, 480, 1500000, false).c_str()));   // 480p
+    CHECK(dl_stream_is_light(stream_url(640, 360, 700000, false).c_str()));    // 360p
+    CHECK(dl_stream_is_light(stream_url(854, 480, 1500000, false, "ac3", 640000).c_str())); // 5.1
+    CHECK(!dl_stream_is_light(stream_url(1280, 720, 4000000, false).c_str()));   // 720p
+    CHECK(!dl_stream_is_light(stream_url(1920, 1080, 10000000, false).c_str())); // High
+    CHECK(!dl_stream_is_light(stream_url(1920, 1080, 25000000, false).c_str())); // Max
+    CHECK(!dl_stream_is_light(stream_url(1920, 1080, 0, false).c_str()));        // Original
+    CHECK(!dl_stream_is_light(stream_url(854, 480, 0, false).c_str()));   // copy, no ceiling
+    CHECK(!dl_stream_is_light(stream_url(854, 480, 1500000, true).c_str()));  // TrueHD copy
+    CHECK(!dl_stream_is_light(stream_url(854, 576, 1500000, false).c_str())); // 576 lines
+    CHECK(!dl_stream_is_light(stream_url(854, 480, 1500001, false).c_str()));
+    CHECK(!dl_stream_is_light(stream_url(854, 480, 1500000, false, "flac", 1411000).c_str()));
+    // Fail closed on anything odd.
+    CHECK(!dl_stream_is_light(NULL));
+    CHECK(!dl_stream_is_light(""));
+    CHECK(!dl_stream_is_light("http://h/stream.ts"));
+    CHECK(!dl_stream_is_light("http://h/s.ts?MaxHeight=480"));                   // no ceiling
+    CHECK(!dl_stream_is_light("http://h/s.ts?MaxHeight=abc&VideoBitrate=700000"));
+    CHECK(!dl_stream_is_light("http://h/s.ts?MaxHeight=480&VideoBitrate=0"));
+    CHECK(!dl_stream_is_light("http://h/s.ts?MaxHeight=480&VideoBitrate=700000"
+                              "&AllowAudioStreamCopy=yes"));
+    CHECK(dl_stream_is_light("http://h/s.ts?MaxHeight=480&VideoBitrate=700000"));
+    // Names match whole keys only.
+    CHECK(!dl_stream_is_light("http://h/s.ts?XMaxHeight=480&MaxVideoBitrate=700000"));
+    CHECK(!dl_stream_is_light("http://h/s.ts?MediaSourceId=a&MaxHeight=480"
+                              "&SourceVideoBitrate=700000"));
+    char v[16];
+    CHECK(dl_url_query_get("http://h/p?a=1&bb=22&b=3", "b", v, sizeof(v)) && !strcmp(v, "3"));
+    CHECK(dl_url_query_get("http://h/p?a=1&bb=22&b=3", "a", v, sizeof(v)) && !strcmp(v, "1"));
+    CHECK(!dl_url_query_get("http://h/p?a=1", "c", v, sizeof(v)));
+    CHECK(!dl_url_query_get("http://h/p?a=12345678901234567890", "a", v, sizeof(v)));
+    CHECK(!dl_url_query_get("http://h/p", "a", v, sizeof(v)));
+}
+
+static void test_playback_heavy_stops(void) {
+    begin("heavy stream stops downloads");
+    // Nothing starts while a heavy stream plays.
+    dl_playback_begin(url_1080p().c_str());
+    CHECK(dl_playback_blocking());
+    DlMeta m = meta_for("hv");
+    CHECK(dl_enqueue(&m, URL, 0) == DL_OK);        // queueing is still fine
+    CHECK(!dl_manager_step());
+    CHECK(g_fake_connects == 0);
+    dl_playback_end();
+    CHECK(!dl_playback_blocking());
+
+    // A running download stops the moment a heavy stream opens...
+    static const char *s_heavy;
+    s_heavy = url_1080p().c_str();
+    g_fake_default.on_body = [](int64_t sent) {
+        static bool done; if (sent == 0) done = false;
+        if (!done && sent >= 60000) { done = true; dl_playback_begin(s_heavy); }
+    };
+    CHECK(dl_manager_step());
+    DlStatus st = status_of("hv");
+    CHECK(st.rec.state == DL_QUEUED && st.rec.error == DL_ERR_NONE);  // not a failure
+    CHECK(st.rec.attempts == 0 && st.retry_in_ms == 0);
+    CHECK(st.rec.bytes_done >= 60000 && st.rec.bytes_done < (uint64_t)g_fake_total);
+    // ...keeps what it had on disk...
+    CHECK(dl_plat_file_size(item_file("hv", DL_FILE_PART).c_str()) == (int64_t)st.rec.bytes_done);
+    // ...waits for as long as playback lasts...
+    g_fake_now_ms += 3600000;
+    CHECK(!dl_manager_step());
+    // ...and resumes from where it stopped once playback ends.
+    g_fake_default.on_body = nullptr;
+    dl_playback_end();
+    CHECK(dl_manager_step());
+    CHECK(last_request_has_range(st.rec.bytes_done));
+    CHECK(status_of("hv").rec.state == DL_COMPLETED);
+    CHECK(fake_file_matches(item_file("hv", DL_FILE_MEDIA).c_str(), g_fake_total));
+
+    begin("track change to an HD copy stops a paced download");
+    static std::string keep;
+    keep = stream_url(854, 480, 1500000, true);    // same 480p, TrueHD copy
+    s_heavy = keep.c_str();
+    dl_playback_begin(url_480p().c_str());
+    CHECK(!dl_playback_blocking());
+    g_fake_default.on_body = [](int64_t sent) {
+        static bool done; if (sent == 0) done = false;
+        if (!done && sent >= 40000) { done = true; dl_playback_begin(s_heavy); }
+    };
+    DlMeta m2 = meta_for("tc");
+    CHECK(dl_enqueue(&m2, URL, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of("tc").rec.state == DL_QUEUED);
+    CHECK(dl_playback_blocking());
+    dl_playback_end();
+
+    begin("ending playback does not lift a service suspension");
+    dl_set_suspended(true);
+    dl_playback_begin(url_480p().c_str());
+    dl_playback_end();
+    DlMeta m3 = meta_for("ss");
+    CHECK(dl_enqueue(&m3, URL, 0) == DL_OK);
+    CHECK(!dl_manager_step());
+    dl_set_suspended(false);
+    CHECK(dl_manager_step());
+    CHECK(status_of("ss").rec.state == DL_COMPLETED);
+}
+
+static void test_playback_light_paced(void) {
+    begin("light stream: downloads continue, paced");
+    s_cfg.stream_share_bps = 800000;               // 100 KB/s, for a quick test
+    restart_app();
+    DlMeta m = meta_for("lt");
+    CHECK(dl_enqueue(&m, URL, 0) == DL_OK);
+
+    // Unpaced baseline: 300 KB in a few fake milliseconds.
+    uint64_t t0 = g_fake_now_ms;
+    CHECK(dl_manager_step());
+    const uint64_t unpaced = g_fake_now_ms - t0;
+    CHECK(status_of("lt").rec.state == DL_COMPLETED);
+    CHECK(unpaced < 500);
+
+    // Beside a 480p stream: same file, held to ~100 KB/s => ~3 s.
+    CHECK(dl_remove("lt") == DL_OK);
+    CHECK(dl_enqueue(&m, URL, 0) == DL_OK);
+    dl_playback_begin(url_480p().c_str());
+    CHECK(!dl_playback_blocking());
+    t0 = g_fake_now_ms;
+    CHECK(dl_manager_step());
+    const uint64_t paced = g_fake_now_ms - t0;
+    CHECK(status_of("lt").rec.state == DL_COMPLETED);
+    CHECK(fake_file_matches(item_file("lt", DL_FILE_MEDIA).c_str(), g_fake_total));
+    const uint64_t ideal = (uint64_t)g_fake_total * 8000 / 800000;   // 3000 ms
+    if (paced < ideal * 8 / 10 || paced > ideal * 15 / 10)
+        printf("    paced %llu ms, ideal %llu ms\n", (unsigned long long)paced,
+               (unsigned long long)ideal);
+    CHECK(paced >= ideal * 8 / 10);     // actually held back...
+    CHECK(paced <= ideal * 15 / 10);    // ...but not starved
+    // Pacing never counts as the server being idle (idle timeout is 5 s,
+    // the paced transfer takes 3 s of sleeps: no false timeout).
+    CHECK(status_of("lt").rec.error == DL_ERR_NONE);
+
+    begin("a long pacing wait is not an idle server");
+    // One 64 KB read at 10 KB/s means a 6.5 s wait -- longer than the 5 s
+    // idle timeout -- and the next read then waits on the network once.
+    s_cfg.stream_share_bps = 80000;
+    restart_app();
+    g_fake_default.recv_chunk = 65536;
+    g_fake_default.timeout_every = 1;
+    g_fake_total = 200000;
+    DlMeta mi = meta_for("idle");
+    CHECK(dl_enqueue(&mi, URL, 0) == DL_OK);
+    dl_playback_begin(url_480p().c_str());
+    CHECK(dl_manager_step());
+    CHECK(status_of("idle").rec.state == DL_COMPLETED);
+    CHECK(status_of("idle").rec.error == DL_ERR_NONE);
+    dl_playback_end();
+
+    begin("playback ends mid-transfer: pacing lifts");
+    s_cfg.stream_share_bps = 80000;                // 10 KB/s: 30 s if it stayed
+    restart_app();
+    DlMeta m2 = meta_for("lift");
+    CHECK(dl_enqueue(&m2, URL, 0) == DL_OK);
+    dl_playback_begin(url_480p().c_str());
+    g_fake_default.on_body = [](int64_t sent) { if (sent >= 30000) dl_playback_end(); };
+    t0 = g_fake_now_ms;
+    CHECK(dl_manager_step());
+    CHECK(status_of("lift").rec.state == DL_COMPLETED);
+    CHECK(g_fake_now_ms - t0 < 10000);
+
+    begin("pause lands during pacing");
+    s_cfg.stream_share_bps = 8000;                 // 1 KB/s: would take minutes
+    restart_app();
+    DlMeta m3 = meta_for("pp");
+    CHECK(dl_enqueue(&m3, URL, 0) == DL_OK);
+    dl_playback_begin(url_480p().c_str());
+    g_fake_default.recv_chunk = 65536;             // 64 s of pacing per read
+    // Pause from "the UI" while the worker is inside a pacing sleep.
+    g_fake_on_sleep = []() { dl_pause("pp"); };
+    t0 = g_fake_now_ms;
+    CHECK(dl_manager_step());
+    CHECK(status_of("pp").rec.state == DL_PAUSED);
+    CHECK(g_fake_now_ms - t0 < 2000);              // noticed within one slice
+    g_fake_on_sleep = nullptr;
+    dl_playback_end();
+}
+
+static void test_write_batching(void) {
+    begin("writes are batched, not one per read");
+    s_cfg.checkpoint_bytes = 64ull << 20;          // no checkpoint interference
+    restart_app();
+    g_fake_total = 3 * 1024 * 1024;
+    DlMeta m = meta_for("wb");
+    CHECK(dl_enqueue(&m, URL, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of("wb").rec.state == DL_COMPLETED);
+    CHECK(fake_file_matches(item_file("wb", DL_FILE_MEDIA).c_str(), g_fake_total));
+    const int writes = (int)g_fake_write_sizes.size();
+    printf("    %d reads -> %d writes\n", g_fake_data_recvs, writes);
+    CHECK(g_fake_data_recvs > 300);                // 7919-byte reads
+    CHECK(writes <= 8);                            // ~450 KB each
+    for (int i = 0; i + 1 < writes; i++) CHECK(g_fake_write_sizes[i] >= 448 * 1024);
+
+    begin("batched bytes still land on a drop");
+    s_cfg.checkpoint_bytes = 64ull << 20;
+    restart_app();
+    FakeResp d; d.drop_after = 200001;             // well inside one batch
+    g_fake_queue.push_back(d);
+    DlMeta m2 = meta_for("wd");
+    CHECK(dl_enqueue(&m2, URL, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of("wd").rec.bytes_done == 200001);
+    CHECK(dl_plat_file_size(item_file("wd", DL_FILE_PART).c_str()) == 200001);
+    CHECK(step_after_backoff());
+    CHECK(last_request_has_range(200001));
+    CHECK(fake_file_matches(item_file("wd", DL_FILE_MEDIA).c_str(), g_fake_total));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "-v") == 0) g_fake_verbose = true;
 
@@ -1387,6 +1635,10 @@ int main(int argc, char **argv) {
     test_restore_interrupted();
     test_restore_malformed();
     test_offline_startup();
+    test_stream_classifier();
+    test_playback_heavy_stops();
+    test_playback_light_paced();
+    test_write_batching();
 
     if (!s_tmp.empty()) fake_rmtree(s_tmp);
     printf("offline downloads: %d checks, %d failed\n", s_checks, s_failed);

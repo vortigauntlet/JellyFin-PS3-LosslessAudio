@@ -28,6 +28,7 @@
 #include "ui.h"
 #include "jellyfin_api.h"
 #include "slog.h"
+#include "dl_manager.h"   // offline downloads yield to playback
 
 extern void crash_log(const char *msg);
 
@@ -275,6 +276,9 @@ bool player_execute_seek(PlayerState *ps) {
     char surl[768];
     build_stream_url(surl, sizeof(surl), ps, start_ticks);
     plog_url("surl", surl);
+    // A track change can turn a light stream heavy (an HD audio copy):
+    // re-decide for offline downloads from the URL actually being opened.
+    dl_playback_begin(surl);
     int nsock = stream_open(surl);
     if (nsock < 0) {
         plog("seek: stream_open FAILED");

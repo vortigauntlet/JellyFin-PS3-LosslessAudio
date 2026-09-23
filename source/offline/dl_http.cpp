@@ -333,3 +333,48 @@ bool dl_http_content_type_is_error_page(const char *ct) {
            strncmp(ct, "application/json", 16) == 0 ||
            strncmp(ct, "application/problem+json", 24) == 0;
 }
+
+bool dl_url_query_get(const char *url, const char *key, char *out, int cap) {
+    const char *q = strchr(url, '?');
+    if (!q || cap <= 0) return false;
+    const size_t kl = strlen(key);
+    for (const char *p = q + 1; *p; ) {
+        const char *amp = strchr(p, '&');
+        const char *end = amp ? amp : p + strlen(p);
+        if ((size_t)(end - p) > kl && strncmp(p, key, kl) == 0 && p[kl] == '=') {
+            const char *v = p + kl + 1;
+            int vl = (int)(end - v);
+            if (vl >= cap) return false;
+            memcpy(out, v, (size_t)vl);
+            out[vl] = '\0';
+            return true;
+        }
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return false;
+}
+
+static bool query_u64(const char *url, const char *key, uint64_t *out) {
+    char v[24];
+    return dl_url_query_get(url, key, v, sizeof(v)) &&
+           dec_u64(v, (int)strlen(v), out);
+}
+
+bool dl_stream_is_light(const char *stream_url) {
+    if (!stream_url) return false;
+    uint64_t h, vb, ab;
+    if (!query_u64(stream_url, "MaxHeight", &h) || h == 0 ||
+        h > DL_LIGHT_MAX_HEIGHT)
+        return false;
+    if (!query_u64(stream_url, "VideoBitrate", &vb) || vb == 0 ||
+        vb > DL_LIGHT_MAX_VIDEO_BPS)
+        return false;   // no ceiling = direct play at the source's bitrate
+    char copy[8];
+    if (dl_url_query_get(stream_url, "AllowAudioStreamCopy", copy, sizeof(copy)) &&
+        strcmp(copy, "false") != 0)
+        return false;   // HD audio copied through untouched
+    if (query_u64(stream_url, "AudioBitrate", &ab) && ab > DL_LIGHT_MAX_AUDIO_BPS)
+        return false;
+    return true;
+}

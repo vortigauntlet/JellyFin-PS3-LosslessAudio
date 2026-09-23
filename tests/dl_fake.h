@@ -30,6 +30,7 @@ struct FakeResp {
     std::string raw;                     // send exactly this, then close
     bool        close_now      = false;  // close before sending anything
     int         recv_chunk     = 7919;   // bytes per recv (prime: odd splits)
+    int         timeout_every  = 0;      // >0: a timeout before every Nth data read
     // Called with the body offset reached, before each recv returns data.
     void      (*on_body)(int64_t body_sent) = nullptr;
 };
@@ -44,6 +45,9 @@ extern int64_t                  g_fake_write_budget; // -1 = unlimited
 extern uint64_t                 g_fake_now_ms;
 extern int                      g_fake_connects;
 extern bool                     g_fake_verbose;
+extern int                      g_fake_data_recvs;  // recvs that returned bytes
+extern std::vector<int>         g_fake_write_sizes; // every media write, in order
+extern void                   (*g_fake_on_sleep)(void); // called on every dl_plat_sleep_ms
 
 void    fake_reset(void);
 uint8_t fake_byte(uint64_t offset);
