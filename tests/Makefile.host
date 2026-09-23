@@ -463,7 +463,7 @@ test_wave_motion: test_wave_motion.c ../source/ui/render/wave_audio.h \
                   ../source/ui/render/wave_motion.h
 	$(CC) $(CFLAGS) -o $@ test_wave_motion.c -lm
 
-test_wave_layers: test_wave_layers.c $(AUDIO_HDRS) $(WAVE_HDRS)
+test_wave_layers: test_wave_layers.c $(AUDIO_HDRS) $(WAVE_HDRS) $(JW_HDRS)
 	$(CC) $(CFLAGS) -o $@ test_wave_layers.c -lm
 
 
