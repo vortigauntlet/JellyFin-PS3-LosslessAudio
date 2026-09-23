@@ -22,7 +22,10 @@
 
 #include <ppu-types.h>
 #include <sysmodule/sysmodule.h>
-#include <lv2/prx.h>
+// Types only.  PSL1GHT's sys/prx.h and lv2/prx.h share the include guard
+// __LV2_PRX_H__, so whichever is included first hides the other; the two
+// functions needed are declared below instead.
+#include <sys/prx.h>
 
 #include "avconf_capture.h"
 #include "plog.h"
@@ -45,9 +48,10 @@ extern u64 jf_avx_unresolved;
 // PSL1GHT's own slots for cellSysutil, used to locate libsysutil.
 extern const u32 videoConfigure_stub;
 extern const u32 videoGetResolutionAvailability_stub;
-// Exported by PSL1GHT's liblv2 (sysPrxForUser FNID 0x0341bb97) but not
-// declared in any of its headers.
+// Both exported by PSL1GHT's liblv2 (sysPrxForUser).  GetModuleIdByAddress
+// (FNID 0x0341bb97) is declared in none of its headers.
 sysPrxId sysPrxGetModuleIdByAddress(u32 addr);
+s32 sysPrxGetModuleInfo(sysPrxId id, sysPrxFlags flags, sysPrxModuleInfo *info);
 }
 
 static const char *const kAvxNames[4] = {
