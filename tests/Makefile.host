@@ -53,7 +53,7 @@ DTS_HD_DEPS = $(DTS_STREAM_SRC) $(DTS_MAP_SRC) $(DTS_EXSS_SRC) $(DCA_SRCS) \
 all: test_ac3_map test_ac3_decode test_media_sources \
      test_dts_map test_dts_decode test_dts_stream test_dts_exss test_track_codec \
      test_truehd_map test_truehd_decode \
-     test_dts_hd test_dts_xll_dump
+     test_dts_hd test_dts_xll_dump test_offline
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -87,6 +87,18 @@ test_truehd_decode: test_truehd_decode.c $(TRUEHD_SRCS)
 
 test_media_sources: test_media_sources.cpp ../source/api/media_sources.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Offline downloads: the SAME source/offline core the PS3 build compiles,
+# with dl_platform.h backed by dl_fake.cpp (a real temp directory and a
+# scripted fake HTTP server) instead of dl_ps3.cpp.  -Wextra because this
+# code is new and can afford to be held to it.
+OFFLINE_DIR  = ../source/offline
+OFFLINE_SRCS = $(OFFLINE_DIR)/dl_model.cpp $(OFFLINE_DIR)/dl_http.cpp \
+               $(OFFLINE_DIR)/dl_store.cpp $(OFFLINE_DIR)/dl_manager.cpp
+test_offline: test_offline.cpp dl_fake.cpp dl_fake.h $(OFFLINE_SRCS) \
+              $(wildcard $(OFFLINE_DIR)/*.h)
+	$(CXX) $(CXXFLAGS) -Wextra -I$(OFFLINE_DIR) -o $@ \
+	    test_offline.cpp dl_fake.cpp $(OFFLINE_SRCS)
 
 test_dts_hd: test_dts_hd.c $(DTS_HD_DEPS)
 	$(CC) $(DCAHD_CFLAGS) $(CFLAGS) -o $@ $^ -lm
@@ -163,11 +175,13 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_truehd_decode tones51.thd tones51.thd.ref
 	./test_dts_hd tones51.dts
 	./test_media_sources
+	./test_offline
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources \
 	      test_dts_map test_dts_decode test_dts_stream test_dts_exss test_track_codec \
 	      test_truehd_map test_truehd_decode test_dts_hd test_dts_xll_dump \
+	      test_offline \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
