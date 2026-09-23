@@ -35,5 +35,11 @@ void wave_audio_push(const float *lr, int n_pairs);
 // second code path and no branch.
 void wave_audio_frame(float *dt_scale, float *perturb, float *drive);
 
+// UI thread, straight after wave_audio_frame().  The rest of the same frame's
+// mapping: a height multiplier per solver layer and a colour multiplier, both
+// exactly 1.0 at rest -- see wave_render_map.h.  Reads the cached result and
+// advances nothing, so it costs a copy and needs no lock.
+void wave_audio_look(float amp[3], float *lum);
+
 // True when the analyser is running (gate on, initialised).  For logging only.
 bool wave_audio_active(void);

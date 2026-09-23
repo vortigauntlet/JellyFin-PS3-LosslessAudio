@@ -6,9 +6,11 @@
 // would make them untestable: a cross-thread tap, a clock, and a gate file.
 //
 // WHAT THIS FILE DOES NOT TOUCH.  No RSX state, no vertex arrays, no video
-// memory, no framebuffer.  The whole renderer-side change is two call sites in
+// memory, no framebuffer.  The renderer-side change is two call sites in
 // ui_wave.cpp swapping two literals for two variables, which is exactly the
-// seam wave_field.h's INTEGRATION note set up.
+// seam wave_field.h's INTEGRATION note set up, plus wave_audio_look()'s two
+// multipliers, which scale a layer's height and colour before any vertex is
+// computed.
 
 #include <stdio.h>
 #include <string.h>
@@ -173,13 +175,21 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
             if (s_dbg_n < 600 && (s_dbg_us == 0 || now - s_dbg_us >= 5000000ULL)) {
                 s_dbg_us = now;
                 s_dbg_n++;
-                char b[112];
+                // amp and lum added so a wave that moves but does not look
+                // different per band can be told from one whose bands never
+                // separated in the analyser.
+                char b[160];
                 snprintf(b, sizeof b,
-                         "wave: rms=%d.%02d b0=%d.%02d drive=%d.%02d ts=%d.%02d",
+                         "wave: rms=%d.%02d b0=%d.%02d drive=%d.%02d ts=%d.%02d"
+                         " amp=%d.%02d/%d.%02d/%d.%02d lum=%d.%02d",
                          (int)f.rms, (int)(f.rms * 100) % 100,
                          (int)f.band[0], (int)(f.band[0] * 100) % 100,
                          (int)s_out.drive, (int)(s_out.drive * 100) % 100,
-                         (int)s_out.dt_scale, (int)(s_out.dt_scale * 100) % 100);
+                         (int)s_out.dt_scale, (int)(s_out.dt_scale * 100) % 100,
+                         (int)s_out.amp[0], (int)(s_out.amp[0] * 100) % 100,
+                         (int)s_out.amp[1], (int)(s_out.amp[1] * 100) % 100,
+                         (int)s_out.amp[2], (int)(s_out.amp[2] * 100) % 100,
+                         (int)s_out.lum, (int)(s_out.lum * 100) % 100);
                 plog(b);
             }
         }
@@ -191,4 +201,16 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
     if (dt_scale) *dt_scale = s_out.dt_scale;
     if (perturb)  *perturb  = s_out.perturb;
     if (drive)    *drive    = s_out.drive;
+}
+
+// Before the first wave_audio_frame() s_out is still zero-filled, and a zero
+// height would flatten the wave -- so that case returns the rest values
+// rather than the cache.
+void wave_audio_look(float amp[3], float *lum)
+{
+    wrm_out idle;
+    const wrm_out *o = &s_out;
+    if (!s_started) { wrm_map(NULL, &idle); o = &idle; }
+    if (amp) { amp[0] = o->amp[0]; amp[1] = o->amp[1]; amp[2] = o->amp[2]; }
+    if (lum) *lum = o->lum;
 }

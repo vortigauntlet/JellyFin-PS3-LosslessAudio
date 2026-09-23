@@ -1,5 +1,13 @@
 // The calibration seam: stage B's unitless parameters -> the three arguments
-// ui_wave.cpp already passes wf_step().
+// ui_wave.cpp already passes wf_step(), plus a height multiplier per ribbon
+// and a colour multiplier, which are the two things the renderer can take
+// without a geometry or GPU-state change.
+//
+// STILL NOT CARRIED, and why: detail[] and phase[] have no input on the spring
+// chain (it makes its own fine detail from perturb and its own phase from
+// integration); pulse[] and lift move vertices individually or move the whole
+// band, which is geometry; hue would have to re-tint wave_gel.h's lit colour
+// per vertex.  wave_layers.h consumes all of them and is not wired in.
 //
 //   wave_audio.h       PCM -> features
 //   wave_motion.h      features -> slew-limited parameters
@@ -74,10 +82,65 @@
 // passes, so the idle texture is bit-identical to today's and only the audio
 // can raise it.  No mapping needed and none wanted.
 
+// --- per-ribbon amplitude ------------------------------------------------
+// drive moves all three chains together.  This is what makes them move
+// DIFFERENTLY: stage B's amp[] is already split by band through
+// WM_LAYER_MIX, and this carries it to the renderer as a multiplier on each
+// ribbon's authored height.
+//
+// Keyed by SOLVER layer, not by screen depth, because the two renderers
+// disagree about depth -- JellyWave draws solver layer 0 nearest, the legacy
+// ribbons draw it furthest back.  What both agree on is that layer 0 is the
+// widest, slowest chain and layer 2 the narrowest, fastest one (WF_DRIVE
+// 1.00 / 0.85 / 0.70, WF_RATE 1.00 / 0.78 / 1.34), so:
+//
+//   solver 0  <- Swell                 bass       the big slow swing
+//   solver 1  <- mean(Body, Filament)  low-mid / mid
+//   solver 2  <- Sheen                 high / air  the quick, fine one
+//
+// Centred on WM_IDLE_AMP so REST IS EXACTLY 1.0 and the no-music look does not
+// change: stage B idles every layer at 0.34, and dividing by that instead
+// (the obvious mapping) would have multiplied a full band by 2.9.
+//
+// WRM_AMP_MAX IS MEASURED.  The real solver at WRM_DRIVE_MAX, WM_MAX_PERTURB
+// and WRM_TS_MAX, lofted through wave_gel.h with disp_gain scaled up, first
+// breaks test_wave_gel.c's framing box at 1.75x -- the near layer's top edge
+// reaches the horizontal midline.  At 1.30x that edge peaks at -0.099 in clip
+// space, a tenth of the screen's half-height below the line; on the legacy
+// ribbons it is 30 px * 1.10 * 1.30 = 43 px against a crest at 78% of the
+// height.  test_wave_layers.c re-runs that measurement against this constant.
+#define WRM_AMP_MAX     1.30f
+#define WRM_AMP_GAIN    ((WRM_AMP_MAX - 1.0f) / (1.0f - WM_IDLE_AMP))
+// Derived: where amp = 0 lands, 0.845.  A band that is silent while the
+// others play makes its ribbon calmer than rest, which is the point.
+#define WRM_AMP_MIN     (1.0f - WRM_AMP_GAIN * WM_IDLE_AMP)
+
+// --- luminance ------------------------------------------------------------
+// One multiplier on the ribbon's colour: louder is brighter, and an onset adds
+// a short sheen on top.  Also centred so rest is exactly 1.0.
+//
+// KEPT SMALL ON PURPOSE.  wave_motion.h's own rule is that a beat which
+// brightens the screen is a strobe, and this client has had a real strobe on
+// this exact ribbon.  So glow is a garnish, not a flash:
+//
+//   bright  0.35 (quiet music) .. 1.00 (loud)  ->  0.94 .. 1.135
+//   glow    0 .. 1                             ->  +0 .. +0.08
+//
+// and the step between frames is bounded by stage B's slews rather than by
+// anything here: at 60 fps the worst case is WM_SLEW_BRIGHT * 0.30 +
+// WM_SLEW_GLOW_UP * 0.08 = 0.017 a frame, so the full rise takes a fifth of a
+// second.  test_wave_layers.c asserts that bound.
+#define WRM_LUM_BRIGHT  0.30f
+#define WRM_LUM_GLOW    0.08f
+#define WRM_LUM_MIN     0.85f
+#define WRM_LUM_MAX     1.20f
+
 typedef struct {
     float dt_scale;     // multiplies WAVE_FIELD_DT
     float perturb;      // straight to wf_step
     float drive;        // straight to wf_step
+    float amp[3];       // per solver layer, multiplies the ribbon's height
+    float lum;          // multiplies the ribbon's colour
 } wrm_out;
 
 static inline float wrm_clamp(float v, float lo, float hi)
@@ -98,6 +161,8 @@ static inline void wrm_map(const wm_params *p, wrm_out *out)
         out->dt_scale = WRM_TS_IDLE;
         out->perturb  = WM_IDLE_PERTURB;
         out->drive    = WRM_DRIVE_IDLE;
+        out->amp[0]   = out->amp[1] = out->amp[2] = 1.0f;
+        out->lum      = 1.0f;
         return;
     }
     out->dt_scale = wrm_clamp(
@@ -107,6 +172,23 @@ static inline void wrm_map(const wm_params *p, wrm_out *out)
     out->drive    = wrm_clamp(
         WRM_DRIVE_IDLE + (p->drive - WM_IDLE_DRIVE) * WRM_DRIVE_GAIN,
         WRM_DRIVE_IDLE, WRM_DRIVE_MAX);
+
+    // The clamp comes AFTER the sum so one NaN anywhere lands on the floor
+    // rather than escaping through an arithmetic that happens to absorb it.
+    {
+        const float a[3] = {
+            p->amp[0],
+            0.5f * (p->amp[1] + p->amp[2]),
+            p->amp[3]
+        };
+        int i;
+        for (i = 0; i < 3; i++)
+            out->amp[i] = wrm_clamp(1.0f + (a[i] - WM_IDLE_AMP) * WRM_AMP_GAIN,
+                                    WRM_AMP_MIN, WRM_AMP_MAX);
+    }
+    out->lum = wrm_clamp(1.0f + (p->bright - WM_IDLE_BRIGHT) * WRM_LUM_BRIGHT
+                              + p->glow * WRM_LUM_GLOW,
+                         WRM_LUM_MIN, WRM_LUM_MAX);
 }
 
 #endif // WAVE_RENDER_MAP_H

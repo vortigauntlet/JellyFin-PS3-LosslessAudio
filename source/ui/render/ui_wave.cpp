@@ -109,6 +109,13 @@ static const float WAVE_BASEY[3]  = { 0.78f, 0.85f, 0.91f };
 // submission paths and the gate file are all untouched.
 static wf_field s_field;
 
+// This frame's height multiplier per solver layer and colour multiplier,
+// from the audio mapping in wave_render_map.h.  Both are exactly 1.0 with no
+// music, so the resting look is unchanged.  Written once per wave_draw(),
+// next to wf_step, and only read after that.
+static float    s_amp[3] = { 1.0f, 1.0f, 1.0f };
+static float    s_lum    = 1.0f;
+
 // Two corrections turn a unitless displacement into the pixel excursion the
 // sine used to have.  Both are needed, and the second one is not obvious.
 //
@@ -135,7 +142,7 @@ static wf_field s_field;
 // which is a worse thing to have on this target than a microsecond.
 static inline float wave_field_px(int li, float fx, float W) {
     return wf_disp(&s_field, li, fx / W)
-         * WAVE_AMP[li] / (WF_NOMINAL_PEAK * WF_DRIVE[li]);
+         * WAVE_AMP[li] * s_amp[li] / (WF_NOMINAL_PEAK * WF_DRIVE[li]);
 }
 
 // Seconds are not the unit here: wk_step's dt is the spec's TIMESTEP.
@@ -899,6 +906,7 @@ static void wave_draw_cpu(void) {
     {
         float ts, pert, drv;
         wave_audio_frame(&ts, &pert, &drv);
+        wave_audio_look(s_amp, &s_lum);
         wf_step(&s_field, WAVE_FIELD_DT * ts, pert, drv);
     }
 
@@ -1053,6 +1061,7 @@ void wave_draw(void) {
     {
         float ts, pert, drv;
         wave_audio_frame(&ts, &pert, &drv);
+        wave_audio_look(s_amp, &s_lum);
         // JellyWave also takes less of the broadband perturbation (0.55x):
         // the fine ripple is what makes a slow wave look agitated rather
         // than floating.  Legacy modes are untouched.
