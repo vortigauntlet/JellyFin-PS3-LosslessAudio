@@ -10,6 +10,7 @@
 #include <io/pad.h>
 
 #include "rsxutil.h"
+#include "avconf_capture.h"
 #include "ui.h"
 #include "ui_visuals.h"
 #include "ui_wave.h"   // wave_init() -- called here, not from ui_init()
@@ -147,6 +148,7 @@ int main(int argc, const char *argv[]) {
     audio_volume_load();   // restore the saved master volume
     video_log_capabilities();   // what refresh rates does this panel offer?
     audio_out_log_capabilities();  // ...and will this chain take a bitstream?
+    avconf_capture_run();       // opt-in 24p research capture; see its header
 
     crash_log("7 splash drawHeader");
     drawHeader();

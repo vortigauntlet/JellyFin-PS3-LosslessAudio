@@ -59,7 +59,7 @@ all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
-     test_wave_cam test_wave_light test_wave_gel test_spine
+     test_wave_cam test_wave_light test_wave_gel test_spine test_display_mode
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -251,6 +251,7 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_wave_cam
 	./test_wave_light
 	./test_wave_gel
+	./test_display_mode
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -260,10 +261,15 @@ clean:
 	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
 	      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient \
-	      test_wave_cam test_wave_light test_wave_gel \
+	      test_wave_cam test_wave_light test_wave_gel test_display_mode \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
+
+# 24p output decision record (source/video/display_mode.c).  Pure C, no PS3
+# headers, fixtures taken from a real videoGetDeviceInfo dump.
+test_display_mode: test_display_mode.c ../source/video/display_mode.c ../source/video/display_mode.h
+	$(CC) $(CFLAGS) -I../source/video -o $@ test_display_mode.c ../source/video/display_mode.c
 
 # ---------------------------------------------------------------------------
 # GPU text runs vs. the per-glyph blit they replace.
