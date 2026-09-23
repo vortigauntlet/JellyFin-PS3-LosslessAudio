@@ -68,8 +68,10 @@ change in size or layout, unless `SOURCE_DATE_EPOCH` is pinned.
   `wave_init`, `thumb_cache`), `wave_vbuf1` lies directly **above
   `thumb_slot0`** (128-byte gap) and directly below `wave_vbuf0` (32-byte gap
   holding vbuf0's header). `wave_vbuf0` lies below `wave_fp`.
-* The 24 KB pad moved `wave_vbuf0` down 0x6000 and `wave_vbuf1` plus every
-  thumbnail slot down 0xC000. It changed **no** adjacency.
+* Adding 24 KB to each vertex-buffer allocation (the `8fd2b538` pad, if it
+  was applied to the allocation) moves `wave_vbuf0` down 0x6000 and
+  `wave_vbuf1` plus every thumbnail slot down 0xC000. It changes **no**
+  adjacency: thumb slot 0 still ends 128 bytes below `wave_vbuf1`.
 * Absolute offsets depend on `gcmConfiguration.localSize` and on the
   fragment-program sizes. Log them rather than infer them.
 
@@ -80,9 +82,9 @@ compression region can alias the vertex buffers.
 **P6. The committed bad-state log is phase-locked to vblank.**
 `player_log.txt` at `428d54a` comes from a build between `d8bff08` and
 `428d54a` (main-memory staging, write-only upload, `repaired=0 dropped=0`,
-8740 verts, 7 draws). Its Home window gives:
-`sync = 13.6 ms`, with p10–p90 of 13 586–13 621 µs over 136 one-second
-samples; `frame = 33.36 ms`, exactly two vblanks; `vsync = 9.55 ms`;
+8740 verts, 7 draws). Over the whole log (136 samples, each averaging 60
+frames) `logstats.py` gives: `sync` median 13.6 ms with p10–p90 of
+13 586–13 621 µs; `frame = 33.36 ms`, exactly two vblanks; `vsync = 9.55 ms`;
 `gpu = 3.3 ms`.
 In that 30 Hz timeline, the frame's `rsxSync()` returns ≈ 0.4 ms **after the
 next vblank** (3.3 gpu + 0.2 other + 13.6 sync ≈ 17.1 ms, against a 16.68 ms
