@@ -113,13 +113,6 @@ int xmb_resume_choice(const XMBItem *it);
 // (Continue Watching, Next Up, Recently Added Movies/Shows, Music stub).
 // -------------------------------------------------------
 void xmb_home_on_enter(void);     // reset focus + mark dynamic rows for refetch
-// The spine's base-layer preview of Home: first non-empty row (loads one row
-// per call).  Returns the count; 0 while nothing has loaded.  src_w/src_h and
-// shape (0 portrait, 1 landscape, 2 square) are that row's card size, so the
-// preview shares the row's cached thumbnails.
-int  xmb_home_preview(const XMBItem **items, const char **title,
-                      int *src_w, int *src_h, int *shape);
-int  xmb_home_focus_row(void);    // Up on row 0 returns to the spine's base
 // Spine gate: true when no row above the focus has anything in it, so Up
 // leaves for the base layer.  (Empty rows are stepped over.)
 bool xmb_home_at_top(void);
@@ -131,6 +124,28 @@ bool xmb_home_open_focused(void);
 void xmb_home_stage_gpu(void);
 void xmb_home_stage_cpu(void);
 void xmb_home_stage_text(void);
+
+// -------------------------------------------------------
+// Library categories on the depth engine (xmb/ui_depth_lib.cpp)
+// -------------------------------------------------------
+// Every tab whose L2 is the card grid, under the spine: the L1 column and its
+// swing into the grid are drawn by the engine's stage; the grid itself takes
+// the screen back at the hand-over.  depth_lib_owns() says whether the stage
+// (true) or the tab's own screen draws this frame.  Inert with the gate off.
+bool depth_lib_owns(int tab);
+void depth_lib_gpu(int tab);
+void depth_lib_cpu(int tab);
+void depth_lib_text(int tab);
+// True for a tab whose L1 -> L2 move is a stage's swing (Home and the grid
+// tabs), so the content glide is not applied on top of it.
+bool depth_stage_tab(int tab);
+
+// The card-grid view of the current tab and sub-screen (ui_xmb.cpp): geometry,
+// item array, count, selection, scroll, grid origin, more-below, and the
+// window's place in the whole library.  False for Search and Settings.
+bool xmb_grid_view(int tab, GridGeom *gg, const XMBItem **items,
+                   int *count, int *sel, int *scroll, int *y0,
+                   bool *more_below, int *abs_start, int *abs_total);
 void xmb_home_gpu_phase(void);    // card images as RSX quads (BEFORE rsxSync)
 void xmb_home_cpu_phase(void);    // card images / placeholders / selection (after rsxSync)
 void xmb_home_text_phase(void);   // row titles, labels, chevrons

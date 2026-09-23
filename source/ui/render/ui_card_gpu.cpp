@@ -405,3 +405,13 @@ bool ui_gpu_tex_draw(int slot, int x, int y, int w, int h)
     ui_card_gpu_draw_scaled(t->off, t->w, t->h, t->pitch, x, y, w, h);
     return true;
 }
+
+bool ui_gpu_tex_draw_a(int slot, int x, int y, int w, int h, u8 alpha)
+{
+    if (alpha >= 255) return ui_gpu_tex_draw(slot, x, y, w, h);
+    if (!s_ready || slot < 0 || slot >= GPU_TEX_SLOTS) return false;
+    const GpuTex *t = &s_tex[slot];
+    if (!t->w) return false;
+    ui_card_gpu_draw_ex(t->off, t->w, t->h, t->pitch, x, y, w, h, 0.0f, 1.0f, alpha);
+    return true;
+}

@@ -26,10 +26,14 @@
 // between rows (the end of this file).  The divider fades in only once the
 // label stack has cleared it (spine_eval()).
 //
+// THE COLUMN under the active icon is no longer drawn here.  It is the depth
+// engine's (render/depth.h + ui_depth.cpp): Home's stage and the libraries'
+// (xmb/ui_depth_lib.cpp) hang it from spine_column_anchor() below and swing
+// it into their L2 layouts.
+//
 // COST.  Nothing here reads video memory: icons are cached runs with their
 // opacity in the run colour, the label is one short tracked string, the
-// underline is an opaque rect, the glows are three 14-vertex fans, and the
-// column is at most two card quads plus one blended dimming rect.
+// underline is an opaque rect, and the glows are three 14-vertex fans.
 
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +46,8 @@
 #include "ui_wave.h"
 #include "ui_spine.h"
 #include "spine.h"
+#include "depth.h"
+#include "ui_depth.h"
 #include "icons.h"
 #include "jf_paths.h"
 #include "timing.h"
@@ -51,6 +57,8 @@
 extern void crash_log(const char *msg);   // main.cpp; survives a GPU wedge
 
 bool g_spine_on = false;
+
+static depth_focus_mem s_focus_mem;   // each category's focus (below)
 
 #define SPINE_FILE "jellyfin_spine.txt"
 
@@ -73,6 +81,7 @@ void spine_load(void) {
     spine_approach_init(&s_cat, 0.0f, SPINE_CATEGORY_MS);
     s_cat_fresh = true;
     s_last_us   = 0;
+    depth_focus_init(&s_focus_mem);
     plog(g_spine_on ? "spine: ON (jellyfin_spine.txt = 1) -- base layer + tabs, approach motion"
                     : "spine: off -- tab strip");
     crash_log(g_spine_on ? "spine on" : "spine off");
@@ -103,6 +112,10 @@ void spine_frame_begin(void) {
     }
     spine_approach_step(&s_dep, dt);
     spine_approach_step(&s_cat, dt);
+}
+
+void spine_clock_reset(void) {
+    s_last_us = 0;          // the next spine_frame_begin() steps by dt = 0
 }
 
 float spine_depth(void) {
@@ -207,11 +220,13 @@ static void spine_open_column_item(int tab) {
         return;
     }
     if (k == TABKIND_SEARCH || k == TABKIND_SETTINGS ||
-        !g_items_loaded[tab] || g_item_count[tab] <= 0) {
+        !g_items_loaded[tab] || g_item_count[tab] <= 0 ||
+        g_sel < 0 || g_sel >= g_item_count[tab]) {
         spine_go(SPINE_L2);
         return;
     }
-    const XMBItem *it = &g_items[tab][0];
+    // The item the column is showing: the category's remembered focus.
+    const XMBItem *it = &g_items[tab][g_sel];
     if (strcmp(it->type, "Series") == 0) {
         spine_go(SPINE_L2);
         if (xmb_open_series(it)) init_btns();
@@ -393,97 +408,13 @@ void spine_draw(void) {
     }
 }
 
-// --- the base layer's column ---------------------------------------------------
+// --- where a category's column hangs ---------------------------------------------
 //
-// dirE's L1: the focused item's artwork on the intersection under the active
-// icon, the next item below it, the focused item's title block beside it.
-//
-// It MOVES WITH ITS TAB.  The column hangs off its category, so when the row
-// glides the column glides with it (XMP's columnX), and fades by the same
-// nearness -- a new tab's items drift in from the side rather than cutting.
-// Entering the tab lifts the column and fades it out over the first half of
-// the depth move; the tab's own screen takes over at the halfway point.
-//
-// The images are the tab's OWN thumbnails.  The column asks the cache for
-// exactly the size the tab's grid (or Home's row) caches them at, and the GPU
-// scales them up with linear filtering.  That makes the two levels share one
-// cache slot per item, so a poster seen in either level shows in the other
-// with no fetch.  (The first cut asked for its own, larger size; on the
-// console those never appeared while the same items loaded fine in the tab.
-// Sharing the tab's size makes the column load exactly when the tab does.)
-//
-// DECIDED HERE, not by the design:
-//   * The column top is y=318, not dirE's 300: under the README's 64 px icon
-//     the L1 underline ends at y~303 (test_spine).
-//   * Two items, not a column sinking into the wave: the wave's first draw is
-//     an opaque full-screen gradient, so anything drawn before it is covered.
-//   * Fades are a blended background-coloured rect over the artwork, since a
-//     card quad is opaque; text fades by colour.
-#define COL_TOP        318
-#define COL_GAP         14
-#define COL_NEXT_K      0.72f   // the next item's size relative to the focused
-#define COL_NEXT_DIM    0.55f   // and how far it sinks toward the background
-#define COL_TEXT_GAP    36      // artwork edge to the title block
-#define COL_LIFT        36      // how far the column rises as a tab is entered
-
-enum { SHAPE_POSTER = 0, SHAPE_WIDE = 1, SHAPE_SQUARE = 2 };
-
-static bool spine_music_type(const char *ty) {
-    return strcmp(ty, "MusicAlbum") == 0 || strcmp(ty, "Audio") == 0 ||
-           strcmp(ty, "MusicArtist") == 0 || strcmp(ty, "MusicGenre") == 0 ||
-           strcmp(ty, "Playlist") == 0;
-}
-
-typedef struct {
-    const XMBItem *items;
-    int            count;
-    const char    *eyebrow;
-    int            src_w, src_h;   // the size the tab caches thumbnails at
-    int            shape;
-} ColSrc;
-
-static void column_source(int tab, ColSrc *c) {
-    memset(c, 0, sizeof *c);
-    c->eyebrow = g_tabs[tab].label;
-    switch (xmb_kind(tab)) {
-    case TABKIND_SEARCH:
-    case TABKIND_SETTINGS:
-        return;
-    case TABKIND_HOME:
-        c->count = xmb_home_preview(&c->items, &c->eyebrow,
-                                    &c->src_w, &c->src_h, &c->shape);
-        return;
-    default: {
-        if (!g_items_loaded[tab]) return;
-        GridGeom gg;
-        xmb_grid_geom(tab, &gg);
-        c->items = g_items[tab];
-        c->count = g_item_count[tab];
-        c->src_w = gg.card_w;
-        c->src_h = gg.card_h;
-        const int k = xmb_kind(tab);
-        c->shape = (k == TABKIND_MUSIC || k == TABKIND_PLAYLISTS) ? SHAPE_SQUARE
-                 : gg.portrait ? SHAPE_POSTER : SHAPE_WIDE;
-        return;
-    }
-    }
-}
-
-// Same rule the grid and Home use for which image a card shows.
-static ThumbImg column_img(const ColSrc *c, const XMBItem *it) {
-    return (c->shape == SHAPE_WIDE && !spine_music_type(it->type) && it->has_thumb)
-         ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
-}
-
-typedef struct { int x, y, w, h; } ColBox;
-
-typedef struct {
-    ColSrc src;
-    ColBox box[2];
-    int    n;
-    float  vis;     // 0..1: slide-in nearness x the level fade
-    int    cx;      // the column's centre x, following its category
-} ColView;
+// The column hangs off its category, so when the row glides the column glides
+// with it (XMP's columnX), and fades by the same nearness -- a new tab's items
+// drift in from the side rather than cutting.  The column itself is the depth
+// engine's (render/depth.h, ui_depth.cpp): Home's stage and the libraries'
+// (xmb/ui_depth_lib.cpp) both hang it from here.
 
 void spine_column_anchor(int tab, int *cx, float *near) {
     (void)tab;
@@ -494,134 +425,39 @@ void spine_column_anchor(int tab, int *cx, float *near) {
     *near = spine_near(d);
 }
 
-static void column_view(int tab, ColView *v) {
-    column_source(tab, &v->src);
+// --- each category remembers its focus ----------------------------------------------
+//
+// xmb_switch_tab() has always put a tab's selection back to its first item,
+// which under the spine made every library's L1 column show item 1 whatever
+// the user had been looking at.  The engine's depth_focus_mem keeps one fixed
+// slot per tab; restoring clamps to what is loaded now.
 
-    int order[XMB_TAB_COUNT], a;
-    spine_row(order, &a);
-    const float d  = (a >= 0) ? (float)a - s_cat.value : 0.0f;
-    const float lf = spine_clampf(1.0f - spine_depth() * 2.0f, 0.0f, 1.0f);
-    v->vis = spine_near(d) * lf;
-    v->cx  = sx(spine_slot_x_f(d));
-    const int lift = UIS_H((int)((1.0f - lf) * (float)COL_LIFT));
+typedef char spine_focus_slots_fit[(XMB_TAB_COUNT <= DEPTH_MAX_CATS) ? 1 : -1];
 
-    const spine_level L1 = SPINE_LEVEL[SPINE_L1];
-    float w = L1.art_w, h = L1.art_h;                     // 128 x 192
-    if (v->src.shape == SHAPE_WIDE)   { w = 224.0f; h = 126.0f; }
-    if (v->src.shape == SHAPE_SQUARE) { w = 160.0f; h = 160.0f; }
-
-    v->n = 0;
-    if (v->src.count <= 0 || v->src.src_w <= 0 || v->src.src_h <= 0) return;
-    int top = sy(COL_TOP) - lift;
-    for (int i = 0; i < 2 && i < v->src.count; i++) {
-        const float k = i ? COL_NEXT_K : 1.0f;
-        ColBox *b = &v->box[i];
-        b->w = UIS_W((int)(w * k));
-        b->h = UIS_H((int)(h * k));
-        b->x = v->cx - b->w / 2;
-        b->y = top;
-        if (b->y + b->h > (int)display_height - XMB_BOTTOM_PAD) break;
-        if (b->x < 0 || b->x + b->w > (int)display_width) break;
-        top += b->h + UIS_H(COL_GAP);
-        v->n++;
-    }
+static bool spine_grid_tab(int tab) {
+    const int k = xmb_kind(tab);
+    return tab != XMB_TAB_HOME && k != TABKIND_SEARCH && k != TABKIND_SETTINGS;
 }
 
-void spine_column_gpu(int tab) {
-    ColView v;
-    column_view(tab, &v);
-    for (int i = 0; i < v.n; i++) {
-        const XMBItem *it = &v.src.items[i];
-        const ColBox  *b  = &v.box[i];
-        xmb_card_gpu_src(it->id, v.src.src_w, v.src.src_h,
-                         b->x, b->y, b->w, b->h, column_img(&v.src, it));
-        // Fade toward the background: the focused item by the column's
-        // visibility, the next one further, since it sits deeper.
-        const float keep = v.vis * (i ? 1.0f - COL_NEXT_DIM : 1.0f);
-        const u8    a    = (u8)((1.0f - keep) * 255.0f + 0.5f);
-        if (a) ui_rect_gpu_draw(b->x, b->y, b->w, b->h, XMB_BG, a);
-    }
-    // The focus ring only once the column has arrived: a card quad's ring
-    // cannot fade, and one flashing in mid-slide reads as a glitch.
-    if (v.n && v.vis > 0.9f)
-        ui_card_gpu_selection(v.box[0].x, v.box[0].y, v.box[0].w, v.box[0].h);
+void spine_focus_leave(int tab, bool window_dropped) {
+    if (!g_spine_on || tab < 0 || tab >= XMB_TAB_COUNT || !spine_grid_tab(tab)) return;
+    if (window_dropped || !g_items_loaded[tab] || g_item_count[tab] <= 0)
+        depth_focus_forget(&s_focus_mem, tab);
+    else
+        depth_focus_save(&s_focus_mem, tab, g_sel, g_scroll_top);
 }
 
-void spine_column_cpu(int tab) {
-    ColView v;
-    column_view(tab, &v);
-    for (int i = 0; i < v.n; i++) {
-        const XMBItem *it = &v.src.items[i];
-        const ColBox  *b  = &v.box[i];
-        xmb_draw_card_src(it->id, v.src.src_w, v.src.src_h,
-                          b->x, b->y, b->w, b->h,
-                          it->progress_pct, i == 0 && v.vis > 0.9f,
-                          spine_music_type(it->type) ? it->name : NULL,
-                          column_img(&v.src, it));
+void spine_focus_enter(int tab) {
+    if (!g_spine_on || tab < 0 || tab >= XMB_TAB_COUNT || !spine_grid_tab(tab)) return;
+    if (!g_items_loaded[tab]) return;
+    GridGeom gg;
+    xmb_grid_geom(tab, &gg);
+    int sel, scroll;
+    if (depth_focus_restore(&s_focus_mem, tab, g_item_count[tab], gg.cols, gg.vis,
+                            &sel, &scroll)) {
+        g_sel        = sel;
+        g_scroll_top = scroll;
     }
-}
-
-// Copy `s` into `out`, cut with "..." to fit `max_w` at (px, face).  The cut
-// walks back to a UTF-8 lead byte so it never splits a character.
-static void fit_text(char *out, size_t cap, const char *s, float px, int face,
-                     int max_w) {
-    snprintf(out, cap, "%s", s);
-    if (ttf_text_width_face(out, px, face) <= max_w) return;
-    size_t len = strlen(out);
-    while (len > 0) {
-        do { len--; } while (len > 0 && ((unsigned char)out[len] & 0xC0) == 0x80);
-        if (len + 4 > cap) continue;
-        memcpy(out + len, "...", 4);
-        if (ttf_text_width_face(out, px, face) <= max_w) return;
-    }
-}
-
-void spine_column_text(int tab) {
-    ColView v;
-    column_view(tab, &v);
-    if (v.vis <= 0.04f) return;
-
-    const spine_level L1 = SPINE_LEVEL[SPINE_L1];
-    // The title block sits beside the focused artwork, or where it would be
-    // when there is none (Search, Settings, a library still loading).
-    const int lift = v.n ? sy(COL_TOP) - v.box[0].y : 0;
-    const int art_right = v.n ? v.box[0].x + v.box[0].w
-                              : v.cx + UIS_W((int)L1.art_w) / 2;
-    const int tx = art_right + UIS_W(COL_TEXT_GAP);
-    const int max_w = (int)display_width - XMB_ITEM_PAD - tx;
-    int ty = sy(COL_TOP) + UIS_H(22) - lift;
-    if (max_w <= 0) return;
-
-    char line[160];
-    int adv = xmb_draw_eyebrow(tx, ty, v.src.eyebrow,
-                               mix_q(XMB_BG, XMB_ACCENT_ALT, v.vis));
-    if (v.src.count > 0) {
-        snprintf(line, sizeof line, "1/%d", v.src.count);
-        drawTTF_face((u32)(tx + adv + UIS_W(12)), (u32)ty, line, UIS_TF(11.0f),
-                     mix_q(XMB_BG, XMB_TEXT_FAINT, v.vis), UI_FACE_TAB_REG);
-    }
-    ty += UIS_H(24);
-
-    const float title_px = UIS_TF(L1.title_px);
-    const char *title;
-    switch (xmb_kind(tab)) {
-    case TABKIND_SEARCH:   title = "Search";   break;
-    case TABKIND_SETTINGS: title = "Settings"; break;
-    default:
-        title = v.src.count > 0 ? v.src.items[0].name
-              : (xmb_kind(tab) == TABKIND_HOME || !g_items_loaded[tab])
-                    ? "Loading..." : "Nothing here yet";
-        break;
-    }
-    fit_text(line, sizeof line, title, title_px, UI_FACE_DISPLAY, max_w);
-    drawTTF_face((u32)tx, (u32)ty, line, title_px,
-                 mix_q(XMB_BG, XMB_TEXT, v.vis), UI_FACE_DISPLAY);
-    ty += (int)(title_px * 1.35f);
-
-    // The meta line draws in its own fixed colours, so it waits for the
-    // column to arrive rather than popping in at full strength mid-slide.
-    if (v.src.count > 0 && v.vis > 0.95f)
-        xmb_draw_meta((u32)tx, (u32)ty, &v.src.items[0], UIS_TF(14.0f));
 }
 
 // --- motion shared with the screens under the spine ---------------------------
@@ -644,6 +480,9 @@ void spine_column_text(int tab) {
 
 int spine_content_dy(void) {
     if (!g_spine_on) return 0;
+    // Home and the library grids swing out of their column instead; gliding
+    // their content too would move the grid off the cells the swing lands on.
+    if (depth_stage_tab(g_active_tab)) return 0;
     const float d = spine_depth();
     if (d <= 0.5f || d >= 1.0f) return 0;
     const float t = (d - 0.5f) * 2.0f;             // 0 at the cut, 1 at rest
@@ -664,6 +503,7 @@ static unsigned       s_ring_frame = 0;    // frame it was last drawn
 
 void spine_focus_ring_gpu(int x, int y, int w, int h) {
     if (!g_spine_on) { ui_card_gpu_selection(x, y, w, h); return; }
+    depth_note_focus_rect(x, y, w, h);     // item detail flies out of it
 
     const float tgt[4] = { (float)x, (float)y, (float)w, (float)h };
     const int   ctx    = motion_ctx();

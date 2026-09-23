@@ -216,6 +216,7 @@ static int info_choose_version(const char *title,
 
 #include "ui_card_gpu.h"
 #include "ui_spine.h"
+#include "ui_depth.h"      // the L2 -> L3 arrival
 #include "ui_text_gpu.h"
 #include "http.h"
 #include "api_facts.h"
@@ -304,7 +305,17 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
     // Hand back whatever level this was opened from: X on the base layer
     // opens detail too, and closing it should land there, not inside the tab.
     const int back_level = spine_target_level();
-    spine_set_level(SPINE_L3);
+
+    // THE ARRIVAL.  Detail is the next depth, not a screen swap: its poster
+    // flies out of the card it was opened from (the stage or the focus ring
+    // noted that rect on the last frame) while the spine rises to L3 and the
+    // backdrop fades in.  The move starts only once the first fetch has
+    // landed -- see `arrived` below -- or the fetch's blocking time would
+    // arrive as one huge frame and the spine would land in a single step.
+    int  org_x = 0, org_y = 0, org_w = 0, org_h = 0;
+    const bool  have_org = depth_last_focus_rect(&org_x, &org_y, &org_w, &org_h);
+    const float d_from   = spine_depth();
+    bool arrived = false;
 
     XMBItem cur_item = *root;
     XMBItemDetail detail;
@@ -376,6 +387,11 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             exit_armed = false;
             init_btns();
             slog_state("INFO3_OPEN item_id=%s name=%.40s", it->id, it->name);
+            if (!arrived) {
+                arrived = true;
+                spine_clock_reset();          // step from here, not from the fetch
+                spine_set_level(SPINE_L3);
+            }
         }
         const XMBItem *it = &cur_item;
 
@@ -429,7 +445,18 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
 
         // ---- GPU phase ---------------------------------------------------
         const int W = (int)display_width, H = (int)display_height;
-        if (back_gpu) ui_gpu_tex_draw(GPU_TEX_BACKDROP, 0, 0, W, H);
+        // How far the arrival has got: 0 where it was opened, 1 at L3.
+        const float arr = d_from < 1.999f
+            ? spine_ease(spine_clampf((spine_depth() - d_from) / (2.0f - d_from), 0.0f, 1.0f))
+            : 1.0f;
+        int PXa = PX, PYa = PY, PWa = PW, PHa = PH;
+        if (have_org && arr < 1.0f) {
+            PXa = org_x + (int)((float)(PX - org_x) * arr + 0.5f);
+            PYa = org_y + (int)((float)(PY - org_y) * arr + 0.5f);
+            PWa = org_w + (int)((float)(PW - org_w) * arr + 0.5f);
+            PHa = org_h + (int)((float)(PH - org_h) * arr + 0.5f);
+        }
+        if (back_gpu) ui_gpu_tex_draw_a(GPU_TEX_BACKDROP, 0, 0, W, H, depth_a8(arr));
         {
             // 90deg rgba(3,4,8) .96 -> .88 @46% -> .34, and a 200 px bottom
             // scrim to .95.  Without a backdrop they still sit over the wave,
@@ -447,7 +474,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             const u8 da = (u8)(72.0f * L.divider_a);
             if (da) wave_draw_divider_gpu(IY((int)L.divider_y), 0x8A, 0x93, 0xC8, da);
         }
-        if (poster_gpu) ui_gpu_tex_draw(GPU_TEX_POSTER, PX, PY, PW, PH);
+        if (poster_gpu) ui_gpu_tex_draw(GPU_TEX_POSTER, PXa, PYa, PWa, PHa);
 
         // Chips (y=262, h=29, pill).
         // The facts worker's words when they have arrived ("DTS-HD MA 5.1",
@@ -540,11 +567,14 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             if (poster_cpu.pixels) info_blit(&poster_cpu, PX, PY);
             else xmb_cpu_blit_thumb_scaled(it->id, PX, PY, PW, PH);
         }
-        // 1 px hairline ring just outside the poster (the canvas's box-shadow).
-        drawRect((u32)(PX - 1), (u32)(PY - 1), (u32)(PW + 2), 1, XMB_HAIRLINE);
-        drawRect((u32)(PX - 1), (u32)(PY + PH), (u32)(PW + 2), 1, XMB_HAIRLINE);
-        drawRect((u32)(PX - 1), (u32)(PY - 1), 1, (u32)(PH + 2), XMB_HAIRLINE);
-        drawRect((u32)(PX + PW), (u32)(PY - 1), 1, (u32)(PH + 2), XMB_HAIRLINE);
+        // 1 px hairline ring just outside the poster (the canvas's box-shadow),
+        // following it while it arrives.
+        if (PXa >= 1 && PYa >= 1) {
+            drawRect((u32)(PXa - 1), (u32)(PYa - 1), (u32)(PWa + 2), 1, XMB_HAIRLINE);
+            drawRect((u32)(PXa - 1), (u32)(PYa + PHa), (u32)(PWa + 2), 1, XMB_HAIRLINE);
+            drawRect((u32)(PXa - 1), (u32)(PYa - 1), 1, (u32)(PHa + 2), XMB_HAIRLINE);
+            drawRect((u32)(PXa + PWa), (u32)(PYa - 1), 1, (u32)(PHa + 2), XMB_HAIRLINE);
+        }
 
         // Cast: 64 px portraits on a 104 px pitch from x=313, y=499.  The
         // canvas has no crew here except the director, who gets the line

@@ -254,41 +254,6 @@ static void home_step_load(void) {
     }
 }
 
-// What the spine's base layer shows under the Home icon: the first Home row
-// that has anything in it, Continue Watching first.  Loads rows the same way
-// the Home screen does -- at most one blocking fetch per call -- so parking on
-// Home at the base layer fills the preview in progressively.  Returns the item
-// count and sets *items / *title; 0 while nothing has loaded yet.
-//
-// *src_w / *src_h / *shape are the card size and shape this row requests its
-// thumbnails at (shape 0 portrait, 1 landscape, 2 square).  The spine draws
-// the preview from exactly those, so it shares this screen's cache slots:
-// a card seen on Home shows in the preview with no fetch, and the reverse.
-int xmb_home_preview(const XMBItem **items, const char **title,
-                     int *src_w, int *src_h, int *shape) {
-    home_init_once();
-    home_step_load();
-    for (int r = 0; r < HOME_ROWS_N; r++) {
-        if (s_rows[r].kind == HROW_STUB || s_rows[r].count <= 0) continue;
-        *items = s_rows[r].items;
-        *title = s_rows[r].title;
-        *src_w = row_card_w(s_rows[r].kind);
-        *src_h = row_card_h(s_rows[r].kind);
-        *shape = s_rows[r].kind == HROW_LANDSCAPE ? 1
-               : s_rows[r].kind == HROW_SQUARE    ? 2 : 0;
-        return s_rows[r].count;
-    }
-    *items = NULL;
-    *title = "Home";
-    *src_w = *src_h = 0;
-    *shape = 0;
-    return 0;
-}
-
-// Row the Home screen's focus is on -- the spine returns to its base layer
-// when Up is pressed on row 0.
-int xmb_home_focus_row(void) { return s_focus_row; }
-
 void xmb_home_on_enter(void) {
     home_init_once();
     if (g_spine_on) {

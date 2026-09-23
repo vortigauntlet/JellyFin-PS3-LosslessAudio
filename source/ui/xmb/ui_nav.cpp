@@ -6,6 +6,7 @@
 #include <ctype.h>
 
 #include "ui_internal.h"
+#include "ui_spine.h"        // each category remembers its focus
 #include "thumbnail_cache.h"
 #include "jellyfin_api.h"
 #include "player.h"
@@ -27,6 +28,11 @@ void xmb_switch_tab(int new_tab) {
     if (new_tab < 0 || new_tab >= XMB_TAB_COUNT) return;
     if (!g_tabs[new_tab].enabled) return;
     int old = g_active_tab;
+    // Under the spine each category remembers where it was (render/depth.h).
+    // A tab whose paged window or name filter is dropped just below starts
+    // from its top again, so its old position is forgotten, not restored.
+    spine_focus_leave(old, old != XMB_TAB_SEARCH && old != XMB_TAB_SETTINGS &&
+                           (g_tab_start[old] > 0 || g_tab_name_filter[old][0]));
     if (old != XMB_TAB_SEARCH && old != XMB_TAB_SETTINGS
         && (g_tab_start[old] > 0 || g_tab_name_filter[old][0])) {
         g_items_loaded[old]       = false;
@@ -53,6 +59,7 @@ void xmb_switch_tab(int new_tab) {
     if (new_tab == XMB_TAB_SETTINGS) {
         g_settings_sel = 0; g_settings_confirm = false;
     }
+    spine_focus_enter(new_tab);     // no-op with the gate off, or first visit
     // Home: reset focus and refetch the dynamic rows (Continue Watching /
     // Next Up change after every playback).
     if (new_tab == XMB_TAB_HOME)

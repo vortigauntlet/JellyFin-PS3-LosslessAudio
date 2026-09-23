@@ -49,6 +49,7 @@ int spine_content_dy(void) { return s_test_dy; }
 // this test changes with it.  That is the whole point: a hand-copied mirror
 // would keep passing while the shipping layout drifted away from it.
 #include "ui_visuals.h"
+#include "render/depth.h"      // the depth engine's boxes, checked below
 
 // Tab strip, from ui_widgets.cpp
 #define TAB_ICON_Y   61
@@ -183,6 +184,87 @@ static void check_spine_res(const char *name, u32 w, u32 h, float ovs) {
     else if (right_x > (int)w)
         printf("   note: furthest slot skipped at %s (ends %d)\n", name, right_x);
 
+    g_spine_on = false;
+}
+
+// ---------------------------------------------------------------------------
+// The depth engine (render/depth.h) through the REAL anchors.
+//
+// test_depth.c proves the engine's boxes on the 1280x720 authoring canvas.
+// This pushes them through the same XMB_OX / XMB_OY / UIS scale every draw
+// uses, at every resolution and overscan, and checks them against the chrome
+// the real macros put on screen: the L1 spine above the column, the hints bar
+// below it, the L2 divider above the queue.
+// ---------------------------------------------------------------------------
+static void check_depth_res(const char *name, u32 w, u32 h, float ovs) {
+    display_width = w; display_height = h; overscan_set_frac(ovs);
+    g_spine_on = true;
+    const depth_xform xf = depth_xform_make(XMB_OX, XMB_OY, (int)w, (int)h, g_uis_pct);
+    const int hint_y = (int)display_height - XMB_OY - UIS_H(22);
+    const spine_level L1 = SPINE_LEVEL[SPINE_L1];
+    const float rule_b = xf.oy + spine_rule_bottom(&L1) * xf.ky;
+    char buf[160];
+
+    // L1: the focused item in every shape sits below the spine's underline,
+    // above the hints bar, and wholly on screen.
+    static const char *shape_name[3] = { "poster", "wide", "square" };
+    int worst_gap = 1 << 30;
+    for (int shape = 0; shape <= 2; shape++) {
+        const depth_box c = depth_column_slot(0, shape, SPINE_ACTIVE_X);
+        const depth_box sc = depth_to_screen(&xf, &c, 0.0f);
+        int x, y, cw, ch;
+        depth_rect(&sc, &x, &y, &cw, &ch);
+        snprintf(buf, sizeof buf, "%s: top %d, underline ends %.1f", shape_name[shape], y, (double)rule_b);
+        ck("depth: L1 column clears the underline", (float)y > rule_b, buf);
+        snprintf(buf, sizeof buf, "%s: bottom %d, hints %d", shape_name[shape], y + ch, hint_y);
+        ck("depth: L1 focus above the hints bar", y + ch <= hint_y, buf);
+        snprintf(buf, sizeof buf, "%s: x %d..%d of %u", shape_name[shape], x, x + cw, w);
+        ck("depth: L1 focus on screen", x >= 0 && x + cw <= (int)w, buf);
+        if (hint_y - (y + ch) < worst_gap) worst_gap = hint_y - (y + ch);
+    }
+
+    // The label block beside it keeps room for a title.
+    const depth_l1_label L = depth_l1_label_layout(DEPTH_POSTER, SPINE_ACTIVE_X);
+    const int lx = (int)(xf.ox + L.x * xf.kx);
+    const int room = (int)w - XMB_ITEM_PAD - lx;
+    snprintf(buf, sizeof buf, "label at %d leaves %d px", lx, room);
+    ck("depth: L1 label has room for a title", room >= UIS_W(300), buf);
+
+    // L2 (Home's queue): the focus and its reflection sit between the divider
+    // and the hints bar; the facts column stays left of the queue.
+    // The floor is ui_depth.cpp's depth_floor_y(): the hints glyphs' top, less
+    // 6 px.  The focus itself must clear it; its reflection is shortened to
+    // end on it (depth_refl_clamp), which only ever happens under overscan.
+    const depth_box q0 = depth_queue_slot(0, DEPTH_POSTER);
+    const depth_box s0 = depth_to_screen(&xf, &q0, 0.0f);
+    const int floor_y = (int)display_height - XMB_OY - UIS_H(22) - UIS_H(12) - UIS_H(6);
+    const int gap = UIS_H(4) > 0 ? UIS_H(4) : 1;
+    const float refl = depth_refl_clamp(s0.top, s0.h, s0.refl, (float)gap, (float)floor_y);
+    const int qtop = (int)(s0.top + 0.5f), qfoc = (int)(s0.top + s0.h + 0.5f);
+    const int qbot = (int)(s0.top + s0.h + gap + refl + 0.5f);
+    snprintf(buf, sizeof buf, "queue top %d, divider %d", qtop, XMB_DIVIDER_Y);
+    ck("depth: L2 focus below the divider", qtop > XMB_DIVIDER_Y, buf);
+    const int glyph_top = (int)display_height - XMB_OY - UIS_H(22) - UIS_H(12);
+    snprintf(buf, sizeof buf, "focus ends %d, hint glyphs start %d", qfoc, glyph_top);
+    ck("depth: L2 focus clear of the hints bar", qfoc < glyph_top, buf);
+    if (qfoc > floor_y)
+        printf("   note: L2 focus ends %d px from the hint glyphs at %s\n",
+               glyph_top - qfoc, name);
+    snprintf(buf, sizeof buf, "reflection ends %d, floor %d", qbot, floor_y);
+    ck("depth: L2 reflection ends on the floor", refl <= 0.0f || qbot <= floor_y + 1, buf);
+    if (refl < s0.refl - 0.5f)
+        printf("   note: L2 reflection shortened %.0f -> %.0f px at %s\n",
+               (double)s0.refl, (double)refl, name);
+    // Without overscan the design's full reflection fits.
+    if (ovs == 0.0f)
+        ck("depth: full reflection without overscan", refl >= s0.refl - 0.01f, NULL);
+    const depth_facts f = depth_facts_layout(DEPTH_POSTER, 1, 1.0f, 0.0f);
+    const depth_box q1 = depth_queue_slot(1, DEPTH_POSTER);
+    ck("depth: facts column left of the queue",
+       xf.ox + (f.x + DEPTH_FACTS_W) * xf.kx < xf.ox + q1.x * xf.kx, NULL);
+
+    printf("%-22s %4ux%-4u ovs %.3f  L1 focus gap to hints %4d  label room %4d"
+           "  L2 focus %3d..%3d\n", name, w, h, (double)ovs, worst_gap, room, qtop, qbot);
     g_spine_on = false;
 }
 
@@ -336,6 +418,15 @@ int main(void) {
     check_spine_res("576i",              720,  576, 0.00f);
     check_spine_res("480p",              720,  480, 0.00f);
     check_spine_res("480p + overscan",   720,  480, 0.08f);
+
+    putchar('\n');
+    check_depth_res("1080p",            1920, 1080, 0.00f);
+    check_depth_res("1080p + overscan", 1920, 1080, 0.05f);
+    check_depth_res("720p",             1280,  720, 0.00f);
+    check_depth_res("720p + overscan",  1280,  720, 0.08f);
+    check_depth_res("576i",              720,  576, 0.00f);
+    check_depth_res("480p",              720,  480, 0.00f);
+    check_depth_res("480p + overscan",   720,  480, 0.08f);
 
     putchar('\n');
     test_glide_sizes();

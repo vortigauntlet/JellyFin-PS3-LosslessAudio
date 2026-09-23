@@ -96,3 +96,6 @@ void ui_card_gpu_selection(int cx, int cy, int w, int h);
 bool ui_gpu_tex_upload(int slot, const Bitmap *bm);
 void ui_gpu_tex_clear(int slot);
 bool ui_gpu_tex_draw(int slot, int x, int y, int w, int h);
+// The same at a constant opacity (255 = ui_gpu_tex_draw).  Item detail
+// fades its backdrop in as the spine arrives at L3.
+bool ui_gpu_tex_draw_a(int slot, int x, int y, int w, int h, u8 alpha);

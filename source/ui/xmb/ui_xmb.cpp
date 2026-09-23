@@ -50,9 +50,9 @@ static void xmb_reset_state(void) {
 // array, count, selection, scroll, grid origin, and whether more rows exist
 // below.  Returns false for tabs that don't use the grid
 // (search/settings).
-static bool xmb_grid_view(int tab, GridGeom *gg, const XMBItem **items,
-                          int *count, int *sel, int *scroll, int *y0,
-                          bool *more_below, int *abs_start, int *abs_total) {
+bool xmb_grid_view(int tab, GridGeom *gg, const XMBItem **items,
+                   int *count, int *sel, int *scroll, int *y0,
+                   bool *more_below, int *abs_start, int *abs_total) {
     if (tab == XMB_TAB_SEARCH || tab == XMB_TAB_SETTINGS)
         return false;
     xmb_grid_geom(tab, gg);
@@ -201,12 +201,13 @@ static void xmb_draw_gpu_phase(int tab) {
 
     if (!ui_card_gpu_ready()) return;
 
-    // Home under the spine is one stage at every depth: its column swings
-    // into the queue instead of cutting over at the halfway point.
+    // Under the spine every category is a depth-engine stage: Home's column
+    // swings into its queue at every depth, a library's into its grid until
+    // the grid takes the screen back (render/depth.h, ui_depth.cpp).
     if (g_spine_on && tab == XMB_TAB_HOME) {
         xmb_home_stage_gpu();
-    } else if (spine_at_base()) {
-        spine_column_gpu(tab);
+    } else if (depth_lib_owns(tab)) {
+        depth_lib_gpu(tab);          // the L1 column, or its swing into the grid
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_gpu_phase();
     } else if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS) {
@@ -232,8 +233,8 @@ static void xmb_draw_cpu_phase(int tab) {
 
     if (g_spine_on && tab == XMB_TAB_HOME) {
         xmb_home_stage_cpu();
-    } else if (spine_at_base()) {
-        spine_column_cpu(tab);
+    } else if (depth_lib_owns(tab)) {
+        depth_lib_cpu(tab);
     } else if (tab == XMB_TAB_SEARCH) {
         xmb_cpu_draw_osk();
         xmb_cpu_draw_search_results();
@@ -260,8 +261,8 @@ static void xmb_draw_text_phase(int tab) {
 
     if (g_spine_on && tab == XMB_TAB_HOME) {
         xmb_home_stage_text();
-    } else if (spine_at_base()) {
-        spine_column_text(tab);
+    } else if (depth_lib_owns(tab)) {
+        depth_lib_text(tab);
     } else if (tab == XMB_TAB_SEARCH) {
         xmb_rsx_draw_osk();
     } else if (tab == XMB_TAB_SETTINGS) {

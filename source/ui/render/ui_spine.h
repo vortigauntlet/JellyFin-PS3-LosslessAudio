@@ -60,15 +60,23 @@ void spine_draw_gpu(void);
 // Icons, active label and underline.  Text phase, where the tab strip went.
 void spine_draw(void);
 
-// The base layer's item column, one call per frame phase.
-void spine_column_gpu(int tab);
-void spine_column_cpu(int tab);
-void spine_column_text(int tab);
-
 // Where the active tab's column hangs this frame: its centre x (following
 // the row as it glides) and its nearness to the focus (1 on it, 0 a slot
-// away).  Home's stage draws its own column from these (ui_home.cpp).
+// away).  The depth engine's stages (Home, the libraries) hang from it.
 void spine_column_anchor(int tab, int *cx, float *near);
+
+// Each category remembers its focus (render/depth.h depth_focus_mem).
+// xmb_switch_tab() calls leave() for the tab it leaves -- window_dropped when
+// that tab's paged window or filter is being thrown away, which makes the old
+// position meaningless -- and enter() once the new tab is current.  Grid tabs
+// only; no-ops with the gate off.
+void spine_focus_leave(int tab, bool window_dropped);
+void spine_focus_enter(int tab);
+
+// Forget the frame clock, so the next spine_frame_begin() steps by 0.  For a
+// screen that blocked (item detail's first fetch) and wants its move to start
+// visibly on its first frame rather than land in one step.
+void spine_clock_reset(void);
 
 // --- motion shared with the screens under the spine ---------------------------
 //
