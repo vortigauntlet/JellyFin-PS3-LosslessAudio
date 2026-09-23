@@ -539,7 +539,10 @@ Reflections now end at the hints bar; nothing changes without overscan.
   its own). `check` now also runs `test_spine`, `test_depth`, `test_facts`.
 - PS3 clean serial build: **115 objects, 48 warnings** — the pre-existing
   census, none in new or edited files; new files also clean under `-Wextra`
-  with the real PSL1GHT headers. NPDRM header `0480`. Not deployed.
+  with the real PSL1GHT headers. NPDRM header `0480`. **Not deployed.**
+  Staged: `outputs/EBOOT.BIN.spine7` (sha 77196770...) and
+  `outputs/JellyFin-PS3-spine7.pkg`, built clean from 9976952. Needs
+  `jellyfin_spine.txt` = 1; 0 or missing is the strobe line exactly.
 
 ### Needs a TV (nothing from spine3 on has been seen on hardware)
 
