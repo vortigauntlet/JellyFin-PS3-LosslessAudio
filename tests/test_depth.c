@@ -380,12 +380,20 @@ static void test_mix(void)
 
 static void test_xform(void)
 {
-    // Matches UIS_W / UIS_H: display / 1280x720, or the override percent.
-    depth_xform xf = depth_xform_make(12, 8, 1920, 1080, 0);
+    // Matches UIS_W / UIS_H: the SAFE rect / 1280x720, or the override percent.
+    depth_xform xf = depth_xform_make(0, 0, 1920, 1080, 0);
     depth_box b = { 100.0f, 200.0f, 128.0f, 192.0f, 1.0f, 0.0f, 46.0f };
     depth_box s = depth_to_screen(&xf, &b, 10.0f);
-    CHECK(feq(s.x, 12.0f + 150.0f) && feq(s.top, 8.0f + 315.0f) && feq(s.w, 192.0f) &&
+    CHECK(feq(s.x, 150.0f) && feq(s.top, 315.0f) && feq(s.w, 192.0f) &&
           feq(s.h, 288.0f) && feq(s.refl, 69.0f), "1080p transform");
+    // Under overscan the canvas fits INSIDE the inset: 58 px each side of a
+    // 1920 screen leaves 1804, so authored 1280 lands exactly on 1920 - 58.
+    xf = depth_xform_make(58, 32, 1920, 1080, 0);
+    b.x = 1280.0f; b.top = 720.0f;
+    s = depth_to_screen(&xf, &b, 0.0f);
+    CHECK(fabsf(s.x - (1920.0f - 58.0f)) < 0.01f && fabsf(s.top - (1080.0f - 32.0f)) < 0.01f,
+          "overscan: canvas edge %.2f,%.2f is not the safe edge", s.x, s.top);
+    b.x = 100.0f; b.top = 200.0f;
     xf = depth_xform_make(0, 0, 1920, 1080, 100);
     s = depth_to_screen(&xf, &b, 0.0f);
     CHECK(feq(s.x, 100.0f) && feq(s.w, 128.0f), "uiscale 100 override");

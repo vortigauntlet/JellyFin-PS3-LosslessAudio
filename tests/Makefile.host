@@ -59,7 +59,7 @@ all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
-     test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts
+     test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -253,6 +253,7 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_wave_gel
 	./test_spine
 	./test_depth
+	./test_stream_budget
 	./test_facts
 
 clean:
@@ -263,7 +264,7 @@ clean:
 	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
 	      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient \
-	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts \
+	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
@@ -423,6 +424,10 @@ test_spine: test_spine.c ../source/ui/render/spine.h
 # The depth engine (render/depth.h): the layouts every category's three
 # levels are drawn from, and a verbatim copy of spine6's Home geometry to
 # prove the move onto the engine changed nothing.
+# What a quality step asks the server for, audio included (2026-09-24).
+test_stream_budget: test_stream_budget.c ../source/player/core/stream_budget.h
+	$(CC) $(CFLAGS) -Wextra -I../source/player/core -o $@ test_stream_budget.c
+
 test_depth: test_depth.c ../source/ui/render/depth.h ../source/ui/render/spine.h
 	$(CC) $(CFLAGS) -Wextra -I../source/ui/render -o $@ test_depth.c -lm
 

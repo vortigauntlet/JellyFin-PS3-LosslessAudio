@@ -84,6 +84,8 @@ typedef struct {
     int  index;       // Jellyfin MediaStream Index (for AudioStreamIndex= etc.)
     char label[64];   // DisplayTitle, e.g. "English - EAC3 - 5.1 - Default"
     char codec[16];   // "subrip", "ass", "pgssub" ... -- see jf_sub_is_text()
+    unsigned bitrate; // MediaStream BitRate, bits/s (audio; 0 = not reported).
+                      // Budgeted inside the quality step (stream_budget.h).
 } JFStream;
 
 // Can this subtitle be drawn on the console, or must the server burn it in?

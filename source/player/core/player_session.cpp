@@ -19,11 +19,24 @@
 #include "ui_visuals.h"
 #include "rsxutil.h"
 #include "jellyfin_api.h"
+#include "jf_paths.h"
+#include "stream_budget.h"
+
+// jellyfin_abudget.txt: 0 = ask for the step as VIDEO bitrate, the way every
+// build before 2026-09-24 did; missing or anything else = budget the audio
+// inside the step.  Read per request (a seek rebuilds the URL), which is rare.
+static bool stream_budget_enabled(void) {
+    FILE *f = fopen(jf_data_path("jellyfin_abudget.txt"), "r");
+    if (!f) return true;
+    int v = 1;
+    if (fscanf(f, "%d", &v) != 1) v = 1;
+    fclose(f);
+    return v != 0;
+}
 
 // -------------------------------------------------------
 // Helper — wait for O with error message
 // -------------------------------------------------------
-
 void show_error(const char *line1, const char *line2) {
 #if !BUILD_FOR_RPCS3
     drawHeader();
@@ -188,12 +201,36 @@ void build_stream_url(char *url, int url_sz, const PlayerState *ps,
     // re-encoding an 8 Mbps file down to a 10 Mbps target for no reason. This
     // is strictly better at every setting: it can only turn a transcode into
     // a copy, never the reverse.
+    //
+    // The step is the WHOLE stream, not just its video (stream_budget.h): the
+    // audio that rides with it -- a lossless track copied untouched above all
+    // -- and the TS framing come out of it.  Measured 2026-09-24: a 25 Mbps
+    // step with DTS-HD MA copied put 27.6 Mbps on the wire against this
+    // console's ~25 Mbps receive ceiling, and the ring drained until the
+    // picture stalled.  jellyfin_abudget.txt = 0 puts the old request back.
+    unsigned vreq = vbitrate;
+    if (vbitrate != 0 && stream_budget_enabled()) {
+        int kind = STREAM_AUDIO_TRANSCODE;
+        unsigned reported = abitrate;
+        if (hd_codec) {
+            kind = strcmp(hd_codec, "truehd") == 0 ? STREAM_AUDIO_COPY_TRUEHD
+                                                   : STREAM_AUDIO_COPY_DTS;
+            reported = ps->tracks.audio[ps->cur_audio].bitrate;
+        }
+        const unsigned acost = stream_audio_cost(kind, reported);
+        vreq = stream_video_budget(vbitrate, acost);
+        char lb[128];
+        snprintf(lb, sizeof(lb),
+                 "stream budget: step=%u video=%u audio=%u (%s, reported %u)",
+                 vbitrate, vreq, acost, hd_codec ? hd_codec : acodec, reported);
+        plog(lb);
+    }
     char vparams[96];
-    if (vbitrate == 0)
+    if (vreq == 0)
         snprintf(vparams, sizeof(vparams), "&AllowVideoStreamCopy=true");
     else
         snprintf(vparams, sizeof(vparams),
-                 "&VideoBitrate=%u&AllowVideoStreamCopy=true", vbitrate);
+                 "&VideoBitrate=%u&AllowVideoStreamCopy=true", vreq);
 
     int n = snprintf(url, url_sz,
         "%s/Videos/%s/stream.ts"

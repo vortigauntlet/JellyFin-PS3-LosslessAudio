@@ -102,17 +102,21 @@ static inline depth_box depth_box_lerp(const depth_box *a, const depth_box *b,
 }
 
 // Authored units -> screen px, exactly as UIS_W / UIS_H + XMB_OX / XMB_OY
-// scale (kx = ky = pct/100 under an override, else display / 1280x720).
+// scale: the canvas maps onto the overscan-SAFE rect (display minus the
+// inset on both sides), so kx = (disp_w - 2 ox) / 1280, or the override
+// percentage shrunk by the same safe fraction.  See ui_visuals.h, "THE SAFE
+// AREA".
 typedef struct { float ox, oy, kx, ky; } depth_xform;
 
 static inline depth_xform depth_xform_make(int ox, int oy, int disp_w,
                                            int disp_h, int uis_pct)
 {
     depth_xform xf;
+    const float sw = (float)(disp_w - 2 * ox), sh = (float)(disp_h - 2 * oy);
     xf.ox = (float)ox;
     xf.oy = (float)oy;
-    xf.kx = uis_pct ? (float)uis_pct / 100.0f : (float)disp_w / 1280.0f;
-    xf.ky = uis_pct ? (float)uis_pct / 100.0f : (float)disp_h / 720.0f;
+    xf.kx = uis_pct ? (float)uis_pct / 100.0f * sw / (float)disp_w : sw / 1280.0f;
+    xf.ky = uis_pct ? (float)uis_pct / 100.0f * sh / (float)disp_h : sh / 720.0f;
     return xf;
 }
 

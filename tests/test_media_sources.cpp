@@ -11,7 +11,7 @@ static const char kPlaybackInfo[] =
        "\"Name\":\"Same cut\",\"RunTimeTicks\":600000000,"
        "\"MediaStreams\":["
          "{\"DisplayTitle\":\"720p H264 SDR\",\"Type\":\"Video\",\"Index\":0},"
-         "{\"DisplayTitle\":\"English - DTS - 5.1\",\"IsDefault\":true,"
+         "{\"DisplayTitle\":\"English - DTS - 5.1\",\"IsDefault\":true,\"BitRate\":1509000,"
           "\"Type\":\"Audio\",\"Index\":1},"
          "{\"DisplayTitle\":\"English - SRT\",\"Type\":\"Subtitle\",\"Index\":2}"
        "]},"
@@ -46,6 +46,10 @@ int main(int argc, char **argv) {
     assert(all.source[0].tracks.n_audio == 1);
     assert(all.source[0].tracks.default_audio == 0);
     assert(all.source[0].tracks.audio[0].index == 1);
+    // BitRate feeds the stream budget (player/core/stream_budget.h); a
+    // track that does not report one reads as 0, never garbage.
+    assert(all.source[0].tracks.audio[0].bitrate == 1509000u);
+    assert(all.source[1].tracks.audio[0].bitrate == 0u);
     assert(all.source[0].tracks.n_subs == 1);
     assert(all.source[0].tracks.subs[0].index == 2);
     assert(strcmp(all.source[1].live_stream_id, "live-b") == 0);

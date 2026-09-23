@@ -269,6 +269,113 @@ static void check_depth_res(const char *name, u32 w, u32 h, float ovs) {
 }
 
 // ---------------------------------------------------------------------------
+// THE SAFE AREA: one display transform for everything (ui_visuals.h).
+//
+// The reported fault: "no overscan value fits".  The canvas used to be scaled
+// to the WHOLE framebuffer and then translated by the inset, so the left/top
+// edges moved in while the right/bottom edges moved out by the same amount.
+// These are the properties that make a calibration fit, at every resolution
+// and at the values the user tried (2%, 2.5%) and beyond:
+//
+//   * left and right margins of the canvas are equal, and so are top/bottom;
+//   * the canvas centre is the screen centre;
+//   * an AUTHORED position and a PAD-anchored one land on the same pixel
+//     (OX + UIS_W(1240) == W - XMB_ITEM_PAD; OY + UIS_H(698) == the hints
+//     bar's centre line) -- one geometry, not two;
+//   * the redesigned player HUD, which positions from authored coordinates,
+//     is symmetric too;
+//   * the depth engine's transform agrees with UIS_W/UIS_H;
+//   * with NO calibration every value is integer-identical to the old one.
+// ---------------------------------------------------------------------------
+static int iabs(int v) { return v < 0 ? -v : v; }
+
+static void test_safe_area(void) {
+    puts("-- the safe area: one display transform --");
+    static const u32 res[4][2] = { {1920,1080}, {1280,720}, {720,576}, {720,480} };
+    static const float ovs[6] = { 0.0f, 0.02f, 0.025f, 0.03f, 0.05f, 0.08f };
+    char buf[200];
+    g_uis_pct = 0;
+    for (int r = 0; r < 4; r++) {
+        for (int o = 0; o < 6; o++) {
+            display_width = res[r][0]; display_height = res[r][1];
+            overscan_set_frac(ovs[o]);
+            const int W = (int)display_width, H = (int)display_height;
+            const int ox = XMB_OX, oy = XMB_OY;
+
+            // Canvas edges and margins.
+            const int left  = ox + UIS_W(0),    right  = W - (ox + UIS_W(1280));
+            const int top   = oy + UIS_H(0),    bottom = H - (oy + UIS_H(720));
+            snprintf(buf, sizeof buf, "%ux%u @%.1f%%: left %d right %d top %d bottom %d",
+                     display_width, display_height, (double)(ovs[o] * 100.0f),
+                     left, right, top, bottom);
+            ck("safe: left/right margins equal", iabs(left - right) <= 1, buf);
+            ck("safe: top/bottom margins equal", iabs(top - bottom) <= 1, buf);
+            ck("safe: canvas inside the screen", right >= 0 && bottom >= 0, buf);
+
+            // Centre.
+            snprintf(buf, sizeof buf, "%ux%u @%.1f%%: centre %d,%d vs %d,%d",
+                     display_width, display_height, (double)(ovs[o] * 100.0f),
+                     ox + UIS_W(640), oy + UIS_H(360), W / 2, H / 2);
+            ck("safe: canvas centre is the screen centre",
+               iabs(ox + UIS_W(640) - W / 2) <= 1 && iabs(oy + UIS_H(360) - H / 2) <= 1, buf);
+
+            // Authored vs pad-anchored.
+            snprintf(buf, sizeof buf, "%ux%u @%.1f%%: authored right %d, pad right %d; "
+                     "authored y698 %d, hints line %d",
+                     display_width, display_height, (double)(ovs[o] * 100.0f),
+                     ox + UIS_W(1240), W - XMB_ITEM_PAD, oy + UIS_H(698),
+                     H - oy - UIS_H(22));
+            ck("safe: authored and pad-anchored right edges agree",
+               iabs(ox + UIS_W(1240) - (W - XMB_ITEM_PAD)) <= 1, buf);
+            ck("safe: authored and hints-bar anchors agree",
+               iabs(oy + UIS_H(698) - (H - oy - UIS_H(22))) <= 1, buf);
+
+            // The redesigned player HUD: its seek bar runs authored x 57..1223,
+            // i.e. 57 from each edge of the canvas (hud_v3.inc v3x()).
+            const int bl = ox + UIS_W(57), br = ox + UIS_W(1223);
+            snprintf(buf, sizeof buf, "%ux%u @%.1f%%: HUD bar %d..%d, margins %d / %d",
+                     display_width, display_height, (double)(ovs[o] * 100.0f),
+                     bl, br, bl, W - br);
+            ck("safe: player HUD bar symmetric", iabs(bl - (W - br)) <= 2, buf);
+
+            // The depth engine's float transform agrees with UIS_W/UIS_H.
+            const depth_xform xf = depth_xform_make(ox, oy, W, H, g_uis_pct);
+            for (int a = 0; a <= 1280; a += 160) {
+                const int ex = ox + UIS_W(a), dx = (int)(xf.ox + (float)a * xf.kx + 0.5f);
+                snprintf(buf, sizeof buf, "%ux%u @%.1f%%: authored x %d -> UIS %d, depth %d",
+                         display_width, display_height, (double)(ovs[o] * 100.0f), a, ex, dx);
+                ck("safe: depth transform matches UIS", iabs(ex - dx) <= 1, buf);
+            }
+
+            // No calibration: bit-identical to the pre-fix formula.
+            if (ovs[o] == 0.0f) {
+                for (int px = 0; px <= 1300; px += 7) {
+                    if (UIS_W(px) != px * W / 1280 || UIS_H(px) != px * H / 720) {
+                        snprintf(buf, sizeof buf, "%ux%u: px %d -> %d,%d (was %d,%d)",
+                                 display_width, display_height, px, UIS_W(px), UIS_H(px),
+                                 px * W / 1280, px * H / 720);
+                        ck("safe: zero overscan unchanged", false, buf);
+                        break;
+                    }
+                }
+            }
+        }
+        printf("%4ux%-4u  overscan 0/2/2.5/3/5/8%%: margins symmetric, centred, one geometry\n",
+               res[r][0], res[r][1]);
+    }
+    // The override keeps its meaning with no calibration, and fits with one.
+    display_width = 1920; display_height = 1080;
+    g_uis_pct = 100; overscan_set_frac(0.0f);
+    ck("safe: uiscale=100 still literal with no overscan", UIS_W(640) == 640 && UIS_H(64) == 64, NULL);
+    overscan_set_frac(0.03f);
+    snprintf(buf, sizeof buf, "uiscale 100 @3%%: 1280 authored spans %d of safe %d",
+             UIS_W(1280), 1920 - 2 * XMB_OX);
+    ck("safe: override shrinks by the safe fraction",
+       UIS_W(1280) <= 1920 - 2 * XMB_OX && UIS_W(1280) >= (1920 - 2 * XMB_OX) * 1280 / 1920 - 1, buf);
+    g_uis_pct = 0; overscan_set_frac(0.0f);
+}
+
+// ---------------------------------------------------------------------------
 // The content glide moves POSITIONS only.
 //
 // While a tab is entered, spine_content_dy() pushes the content down and eases
@@ -427,6 +534,9 @@ int main(void) {
     check_depth_res("576i",              720,  576, 0.00f);
     check_depth_res("480p",              720,  480, 0.00f);
     check_depth_res("480p + overscan",   720,  480, 0.08f);
+
+    putchar('\n');
+    test_safe_area();
 
     putchar('\n');
     test_glide_sizes();

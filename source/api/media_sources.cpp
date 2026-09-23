@@ -201,6 +201,11 @@ static void parse_tracks(const char *source, const char *source_end,
                      display[0] ? display : (language[0] ? language : "Audio"));
             v = find_top_value(p, oe, "IsDefault");
             if (v && read_json_bool(v, oe)) out->default_audio = pos;
+            v = find_top_value(p, oe, "BitRate");
+            if (v) {
+                const long long br = read_json_int(v, oe, 0);
+                out->audio[pos].bitrate = br > 0 && br < 100000000 ? (unsigned)br : 0;
+            }
         } else if (index >= 0 && strcmp(type, "Subtitle") == 0 &&
                    out->n_subs < JF_MAX_STREAMS) {
             int pos = out->n_subs++;

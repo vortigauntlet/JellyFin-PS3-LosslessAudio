@@ -149,17 +149,48 @@ int xmb_tab_order(int *order);
 // rebuild and a reflash.
 extern int g_uis_pct;
 
+// THE SAFE AREA (2026-09-24).  The 1280x720 authoring canvas maps onto the
+// overscan-SAFE rect -- the framebuffer minus the CRT inset on every edge --
+// not onto the whole framebuffer.  Before this, the scale came from the full
+// display and the inset was only ADDED as a translation (XMB_OX / XMB_OY), so
+// the left and top edges moved in by the inset while the right and bottom
+// edges moved OUT by the same amount.  No overscan value could fit both
+// sides: raising it to pull the right edge in pushed the left edge further
+// from the bezel than the right one, and anything drawn at an authored
+// absolute position (the spine, the depth stage, item detail, the redesigned
+// player HUD) overflowed right and bottom by one inset while pad-anchored
+// chrome (XMB_ITEM_PAD, XMB_BOTTOM_PAD) did not -- two geometries on one
+// screen.
+//
+// Now: screen = inset + authored * (safe size / canvas size), on both axes,
+// geometry AND type.  So XMB_OX + UIS_W(1240) == display_width - XMB_ITEM_PAD
+// and XMB_OY + UIS_H(698) == display_height - XMB_OY - UIS_H(22): an authored
+// position and a pad-anchored one land on the same pixel, and margins are
+// symmetric at every calibration (tests/test_layout, test_safe_area()).
+//
+// With no calibration the inset is 0, the safe rect is the framebuffer, and
+// every expression below is integer-identical to what it was.
+int overscan_x(void);
+int overscan_y(void);
+static inline int uis_safe_w(void) { return (int)display_width  - 2 * overscan_x(); }
+static inline int uis_safe_h(void) { return (int)display_height - 2 * overscan_y(); }
+
+// The override is a percentage of the authoring canvas; under overscan it is
+// shrunk by the same safe fraction, so a calibrated screen still fits.  The
+// divide is exact when the inset is 0: floor(px*pct*W / (100*W)) is
+// floor(px*pct/100).
 static inline int uis_w(int px) {
-    return g_uis_pct ? px * g_uis_pct / 100
-                     : px * (int)display_width / 1280;
+    return g_uis_pct ? px * g_uis_pct * uis_safe_w() / (100 * (int)display_width)
+                     : px * uis_safe_w() / 1280;
 }
 static inline int uis_h(int px) {
-    return g_uis_pct ? px * g_uis_pct / 100
-                     : px * (int)display_height / 720;
+    return g_uis_pct ? px * g_uis_pct * uis_safe_h() / (100 * (int)display_height)
+                     : px * uis_safe_h() / 720;
 }
 static inline float uis_tf(float px) {
     return g_uis_pct ? px * (float)g_uis_pct / 100.0f
-                     : px * (float)display_height / 720.0f;
+                          * (float)uis_safe_h() / (float)display_height
+                     : px * (float)uis_safe_h() / 720.0f;
 }
 
 #define UIS_W(px)  uis_w((int)(px))

@@ -317,6 +317,10 @@ bool jellyfin_fetch_tracks(const char *item_id, JFTracks *out) {
                      disp[0] ? disp : "Audio");
             if (json_get_bool_in_range(obj_start, olen, "IsDefault"))
                 out->default_audio = out->n_audio;
+            {
+                const int br = json_get_int_in_range(obj_start, olen, "BitRate", 0);
+                s->bitrate = br > 0 && br < 100000000 ? (unsigned)br : 0;
+            }
             out->n_audio++;
         } else if (strcmp(stype, "Subtitle") == 0 && out->n_subs < JF_MAX_STREAMS) {
             JFStream *s = &out->subs[out->n_subs];
