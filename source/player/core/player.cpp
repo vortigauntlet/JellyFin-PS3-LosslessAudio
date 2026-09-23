@@ -34,6 +34,8 @@
 #include "jellyfin_api.h"
 #include "rsxutil.h"
 #include "thumbnail_cache.h"
+#include "display_24p.h"   // physical 1080p24 output
+#include "display_diag.h"
 #include "meminfo.h"   // read-ahead ring sizing
 #include "slog.h"
 #include "trickplay.h"
@@ -79,6 +81,34 @@ static inline void player_status_screen(const char *name, const char *msg) {
     (void)name; (void)msg;
 #endif
     player_startup_flip();
+}
+
+// -------------------------------------------------------
+// 24p output callbacks.  display_24p.cpp never draws or reads the pad itself:
+// it asks for exactly one prompt, drawn and flipped while the ORIGINAL mode is
+// still up, and then only polls for an answer.  See display_24p.h.
+// -------------------------------------------------------
+static const char *s_d24_title = "";
+
+static void d24_draw_prompt(const char *line1, const char *line2) {
+#if !BUILD_FOR_RPCS3
+    drawHeader();
+    drawTextf(40, 100, "%.70s", s_d24_title);
+    drawText(40, 130, line1);
+    if (line2 && line2[0]) drawText(40, 160, line2);
+#else
+    (void)line1; (void)line2;
+#endif
+    gcmResetFlipStatus();
+    flip();
+    waitflip();          // on screen before the mode changes
+}
+
+static int d24_poll_answer(void) {
+    poll_buttons();
+    if (BTN_PRESSED(cross))  return 1;
+    if (BTN_PRESSED(circle)) return -1;
+    return 0;
 }
 
 // -------------------------------------------------------
@@ -364,6 +394,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     player_status_screen(item->name, "Streaming... START=stop");
 
     video_reset();
+    display_diag_reset();   // this session's frame rate, not the last one's
     // Clear any avsync state (incl. the video-PTS base correction) left over
     // from a previous playback session so the first frame of THIS stream
     // re-latches cleanly.  Seeks/track-changes reset it via avsync_reset() in
@@ -444,6 +475,19 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     plog("jbuf: pre-fill done — starting threads");
     timing_register_vblank();
+
+    // ---- Physical 24Hz output for 24fps film ----
+    // The frame rate is known by now (the prefill decoded frames) and no
+    // playback thread is running yet: the quietest moment there is to change
+    // the display mode.  Off unless jellyfin_24p.txt says 1; every gate and
+    // the measurement that verifies the switch are in display_24p.cpp, and on
+    // any doubt it leaves the output exactly as it found it.
+    {
+        s_d24_title = item->name;
+        const d24_ui ui = { d24_draw_prompt, d24_poll_answer };
+        d24_session_begin(&ui);
+        init_btns();
+    }
 
     // ---- Spawn decode thread ----
     player_spawn_decode(&ps);
@@ -779,6 +823,9 @@ void show_player(const JFItem *item, u32 resume_secs,
         sysThreadJoin(prog_tid, &tret);
     }
     crash_log("p12 threads joined");
+
+    // Back to the mode the session started in, before any UI draws again.
+    d24_session_end();
 
     // Tell the server where we stopped (also finalizes Continue Watching).
     jellyfin_report_stopped(item->id, ps.session_id, final_pos_ticks);

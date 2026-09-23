@@ -2,7 +2,7 @@
 //
 // Every line starts "24p:" so one grep over player_log.txt gives the whole
 // story of a hardware test: what the app believed, what it would have wanted,
-// and what it did -- which today is always nothing, by design.
+// and what it decided.  What the switch then did is display_24p.cpp's lines.
 
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +10,7 @@
 #include <sysutil/video.h>
 
 #include "display_diag.h"
+#include "display_24p.h"
 #include "plog.h"
 
 static const char *port_name(u8 p)
@@ -28,9 +29,25 @@ static const char *port_name(u8 p)
 	}
 }
 
+// The last session's content facts, for display_24p.cpp.
+static bool          s_have = false;
+static u32           s_num, s_den, s_w, s_h;
+static dm_fps_source s_src;
+
+bool display_diag_last(u32 *num, u32 *den, dm_fps_source *src, u32 *w, u32 *h)
+{
+	if (!s_have) return false;
+	*num = s_num; *den = s_den; *src = s_src; *w = s_w; *h = s_h;
+	return true;
+}
+
+void display_diag_reset(void) { s_have = false; }
+
 void display_diag_session(u32 fps_num, u32 fps_den, dm_fps_source src,
                           u32 width, u32 height)
 {
+	s_have = true;
+	s_num = fps_num; s_den = fps_den; s_src = src; s_w = width; s_h = height;
 	char b[160];
 	char rates[64];
 
@@ -79,7 +96,7 @@ void display_diag_session(u32 fps_num, u32 fps_den, dm_fps_source src,
 	dm_rates_str(adv1080, rates, sizeof(rates));
 	snprintf(b, sizeof(b),
 	         "24p: DISPLAY capabilities 1080p rates=%s -> 24Hz-family %s"
-	         " (bit meaning inferred, 23.976 vs 24 unproven)",
+	         " (which bit is 23.976 is measured at switch time)",
 	         nmodes >= 0 ? rates : "unreadable", dm_support_name(sup));
 	plog(b);
 
@@ -95,8 +112,11 @@ void display_diag_session(u32 fps_num, u32 fps_den, dm_fps_source src,
 	plog(b);
 
 	// ---- DECISION ----
+	const int progressive = st_ok &&
+		st.displayMode.scanMode == VIDEO_SCANMODE_PROGRESSIVE;
 	const dm_decision d = dm_decide(film, confident, width, height,
-	                                cur_res, cur_rates, sup);
+	                                cur_res, cur_rates, progressive, sup,
+	                                d24_enabled());
 	snprintf(b, sizeof(b),
 	         "24p: DECISION candidate=%s (%s) display_support=%s path=%s attempt=%s",
 	         d.candidate ? "yes" : "no", d.candidate_why,
@@ -106,10 +126,11 @@ void display_diag_session(u32 fps_num, u32 fps_den, dm_fps_source src,
 	// ---- RESULT ----
 	char cad[32];
 	dm_cadence_str(dnum, dden, fps_num, fps_den, cad, sizeof(cad));
+	// A "pending" result is settled by display_24p.cpp's own 24p: lines.
 	snprintf(b, sizeof(b), "24p: RESULT mode_switch=%s (%s)", d.result, d.result_why);
 	plog(b);
 	snprintf(b, sizeof(b),
-	         "24p: RESULT output=%ux%u@%u/%u presentation=%s",
+	         "24p: RESULT output=%ux%u@%u/%u presentation=%s (at detection)",
 	         (unsigned)vr.width, (unsigned)vr.height,
 	         (unsigned)dnum, (unsigned)dden, cad);
 	plog(b);
