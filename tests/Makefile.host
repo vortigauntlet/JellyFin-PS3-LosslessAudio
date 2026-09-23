@@ -59,7 +59,7 @@ all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
-     test_wave_cam test_wave_light test_wave_gel
+     test_wave_cam test_wave_light test_wave_gel test_spine
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -409,6 +409,12 @@ test_wave_light: test_wave_light.c ../source/ui/render/wave_light.h \
 
 test_wave_gel: test_wave_gel.c $(JW_HDRS) $(WAVE_HDRS)
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_gel.c -lm
+
+# The spine (README 2.9 depth model): per-level geometry, the divider/label
+# clearance through a transition, slot falloff and the eased motion clock.
+# Header-only pure C, like the JellyWave headers above.
+test_spine: test_spine.c ../source/ui/render/spine.h
+	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_spine.c -lm
 
 # ---------------------------------------------------------------------------
 # Audio-reactive wave -- three more header-only scalar kernels, three tests.
