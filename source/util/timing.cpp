@@ -74,17 +74,19 @@ void timing_init(u32 fps_num, u32 fps_den) {
     s_display_num = 60000;
     s_display_den = 1001;
     {
+        u16 rr_raw = 0;
         videoState vs;
         if (videoGetState(0, 0, &vs) == 0) {
             u16 rr = vs.displayMode.refreshRates;
+            rr_raw = rr;
             if      (rr & VIDEO_REFRESH_59_94HZ) { s_display_num = 60000; s_display_den = 1001; }
             else if (rr & VIDEO_REFRESH_50HZ)    { s_display_num = 50;    s_display_den = 1;    }
             else if (rr & VIDEO_REFRESH_60HZ)    { s_display_num = 60;    s_display_den = 1;    }
             else if (rr & VIDEO_REFRESH_30HZ)    { s_display_num = 30;    s_display_den = 1;    }
         }
-        char buf[80];
-        snprintf(buf, sizeof(buf), "timing: display=%u/%u fps=%u/%u",
-                 s_display_num, s_display_den, fps_num, fps_den);
+        char buf[96];
+        snprintf(buf, sizeof(buf), "timing: display=%u/%u (rr=0x%02x) fps=%u/%u",
+                 s_display_num, s_display_den, (unsigned)rr_raw, fps_num, fps_den);
         plog(buf);
     }
 

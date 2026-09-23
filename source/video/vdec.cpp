@@ -7,6 +7,7 @@
 #include "hd1080.h"
 #include "vquality.h"
 #include "jellyfin_api.h"   // g_source_fps_milli — server-reported frame rate
+#include "display_diag.h"   // 24p decision record, logged once the rate is known
 
 #include <stdio.h>
 #include <string.h>
@@ -418,7 +419,12 @@ void vdec_submit(const u8 *data, int len, u64 pts) {
 
 // MPEG-2/H264 frame rate codes reported by the PS3 VDEC hardware.
 // Values 1-8 follow the ISO 13818-2 frame_rate_code table.
+// Where the last fps_from_frc() answer came from -- the 24p record needs to
+// know a DETECTED rate from a guessed one.
+static dm_fps_source s_fps_src = DM_FPS_DEFAULT;
+
 static void fps_from_frc(int frc, int *num, int *den) {
+    s_fps_src = DM_FPS_VDEC_FRC;
     switch (frc) {
         case 1: *num = 24000; *den = 1001; break;  /* 23.976fps */
         case 2: *num = 24;    *den = 1;    break;  /* 24fps     */
@@ -448,6 +454,7 @@ static void fps_from_frc(int frc, int *num, int *den) {
                 else if (m >= 29950 && m <= 29990) { *num = 30000; *den = 1001; }
                 else if (m >= 59900 && m <= 59980) { *num = 60000; *den = 1001; }
                 else { *num = m; *den = 1000; }
+                s_fps_src = DM_FPS_SERVER;
                 char b[80];
                 snprintf(b, sizeof(b),
                          "fps_detect: no frc, using server rate %d.%03d",
@@ -456,6 +463,7 @@ static void fps_from_frc(int frc, int *num, int *den) {
             } else {
                 plog("fps_detect: no frc and no server rate, defaulting to 30fps");
                 *num = 30; *den = 1;
+                s_fps_src = DM_FPS_DEFAULT;
             }
             break;
     }
@@ -602,6 +610,10 @@ bool vdec_pull_frame(void) {
         char buf[64];
         snprintf(buf, sizeof(buf), "fps_detect: frc=%d -> %d/%d", (int)frc, fps_num, fps_den);
         plog(buf);
+        // Observe only: records what the display is doing against what the
+        // content needs.  Changes no mode and nothing in the timing above.
+        display_diag_session((u32)fps_num, (u32)fps_den, s_fps_src,
+                             jbuf_fw(), jbuf_fh());
     }
 
     return true;

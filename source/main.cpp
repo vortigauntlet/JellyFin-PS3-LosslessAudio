@@ -11,6 +11,7 @@
 #include <io/pad.h>
 
 #include "rsxutil.h"
+#include "avconf_capture.h"
 #include "ui.h"
 #include "ui_visuals.h"
 #include "ui_sfx.h"
@@ -156,6 +157,7 @@ int main(int argc, const char *argv[]) {
     ui_sfx_init();         // XMB menu sounds, read from the console flash
     video_log_capabilities();   // what refresh rates does this panel offer?
     audio_out_log_capabilities();  // ...and will this chain take a bitstream?
+    avconf_capture_run();       // opt-in 24p research capture; see its header
 
     // Cold-boot animation: black, then the Jellyfin mark, while the rest of
     // startup runs underneath it; the XMB then rises out of the black and the

@@ -16,6 +16,7 @@
 #include "ui.h"          // drawTTF
 #include "ui_visuals.h" // ttf_text_width
 #include "subtitles.h"
+#include "display_diag.h"
 #include "subfont.h"
 #include "subcolor.h"
 #include <string.h>
@@ -36,6 +37,7 @@ static void check_fps_fallback(PlayerState *ps) {
         plog("fps_detect: timeout, fallback 30fps");
         timing_init(30, 1);
         s_timing_ready = true;
+        display_diag_session(30, 1, DM_FPS_TIMEOUT, jbuf_fw(), jbuf_fh());
     }
 }
 
