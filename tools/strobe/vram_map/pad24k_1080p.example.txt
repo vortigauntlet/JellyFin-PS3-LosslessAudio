@@ -1,0 +1,22 @@
+# RSX-local allocation ORDER at startup, JellyWave tip (428d54a), 1080p.
+# Order and alignments are from the source; sizes marked EST are estimates --
+# replace them with logged values (see INVESTIGATION.md, "layout log").
+#
+# init_screen()                               source/gfx/rsxutil.cpp
+color_buffer0      64   8294400     # 1080 * (1920*4)
+color_buffer1      64   8294400
+depth_buffer       64   16588800    # (1080 * 7680) * 2, as written
+# ui_card_gpu_init()                          source/ui/render/ui_card_gpu.cpp
+card_fp            256  256         # EST: fragment ucode size
+card_rect_fp       256  256         # EST
+# ui_text_gpu_init()                          source/ui/render/ui_text_gpu.cpp
+text_atlas         128  4M          # ATLAS_BYTES
+text_fp            256  256         # EST
+# wave_init()                                 source/ui/render/ui_wave.cpp
+wave_fp            256  256         # EST
+wave_vbuf0         128  234336      # WAVE_MAX_VERTS(8740+1024) * sizeof(WaveVert)(24)
+wave_vbuf1         128  234336
+# thumb_cache_init(): THUMB_CACHE_SIZE slots of s_vram_bytes (first three shown)
+thumb_slot0        128  465920      # EST ~455 KB per source comment
+thumb_slot1        128  465920
+thumb_slot2        128  465920
