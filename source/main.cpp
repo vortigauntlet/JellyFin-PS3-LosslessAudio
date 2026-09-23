@@ -24,6 +24,7 @@
 #include "audio/audio_out.h"   // audio_out_log_capabilities()
 #include "overscan.h"
 #include "ui/ui_scale.h"
+#include "ui/render/ui_spine.h"
 #include "hd1080.h"
 #include "vquality.h"
 #include "surround.h"
@@ -136,6 +137,7 @@ int main(int argc, const char *argv[]) {
     crash_log("6.4d wave_init");
     wave_init();
     ui_scale_load();       // how 1280x720 authored numbers map to this screen
+    spine_load();          // spine vs tab strip (jellyfin_spine.txt); logs which
     overscan_load();       // restore the user's CRT overscan calibration
     hd1080_load();         // restore the 1080p playback (Alpha) toggle
     vquality_load();       // restore the video quality choice (info screen)

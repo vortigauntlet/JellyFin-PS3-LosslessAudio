@@ -1455,3 +1455,31 @@ void wave_dim_screen(u8 alpha) {
 
     rsxSync();
 }
+
+// Bind the wave's resident passthrough programs and the UI's standard alpha
+// blend, for IMMEDIATE-MODE geometry issued by other files -- the spine's
+// panels, glows and ramps (ui_wave_panels.cpp).  Exactly the preamble
+// wave_draw_divider_gpu() and wave_draw_glow_gpu() above already use.  It
+// touches no vertex buffer, no vertex-array binding and no fence: the
+// JellyWave upload path and its buffers are not involved.  False until
+// wave_init() has put the fragment program in RSX memory.
+bool wave_imm_bind(void) {
+    if (!s_wave_fp_buf) return false;
+
+    rsxVertexProgram   *vpo = (rsxVertexProgram*)  wave_vp_data;
+    rsxFragmentProgram *fpo = (rsxFragmentProgram*) wave_fp_data;
+    void *vp_ucode; u32 vp_size;
+    rsxVertexProgramGetUCode(vpo, &vp_ucode, &vp_size);
+    rsxLoadVertexProgram(context, vpo, vp_ucode);
+    rsxSetVertexAttribOutputMask(context, vpo->output_mask);
+    rsxLoadFragmentProgramLocation(context, fpo, s_wave_fp_offset, GCM_LOCATION_RSX);
+
+    rsxSetDepthTestEnable(context, GCM_FALSE);
+    rsxSetDepthWriteEnable(context, GCM_FALSE);
+    rsxSetBlendFunc(context,
+        GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+        GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+    rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
+    rsxSetBlendEnable(context, GCM_TRUE);
+    return true;
+}

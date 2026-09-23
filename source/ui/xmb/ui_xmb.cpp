@@ -12,6 +12,7 @@
 #include "ui_card_gpu.h"
 #include "ui_text_gpu.h"
 #include "ui_strobe_test.h"
+#include "ui_spine.h"      // the README 2.9 spine, gated by jellyfin_spine.txt
 #include "thumbnail_cache.h"
 #include "slog.h"
 #include "plog.h"
@@ -149,14 +150,41 @@ static inline void slog_menu_tick(void) {}
 // selection borders, progress strips and labels to land on top of them.
 static bool s_div_on_gpu = false;   // set per frame by the GPU phase
 
+// Grid scroll easing (spine_grid_motion).  While rows are moving, tell the
+// grid walks which rows to draw and clip them to the grid's band, so a row
+// easing out past the top never draws over the breadcrumb or the spine.  At
+// rest -- and always with the spine gate off -- this does nothing at all.
+static bool grid_motion_begin(const GridGeom *gg, int scroll, int y0, bool gpu) {
+    int r0, rn, dy;
+    spine_grid_motion(gg, scroll, &r0, &rn, &dy);
+    if (r0 == 0 && rn == XMB_GRID_ROWS && dy == 0) return false;
+    xmb_grid_motion(r0, rn, dy);
+    const int top = y0, bot = y0 + XMB_GRID_ROWS * gg->stride;
+    if (gpu) ui_card_gpu_clip(top, bot);
+    else     { g_cpu_clip_top = top; g_cpu_clip_bot = bot; }
+    return true;
+}
+static void grid_motion_end(bool on, bool gpu) {
+    if (!on) return;
+    xmb_grid_motion(0, XMB_GRID_ROWS, 0);
+    if (gpu) ui_card_gpu_clip(0, 0);
+    else     { g_cpu_clip_top = 0; g_cpu_clip_bot = 0; }
+}
+
 static void xmb_draw_gpu_phase(int tab) {
     // The hairline goes first and is NOT gated on the card path: it is a
     // blended quad over the wave, and at 1,351 us of CPU VRAM reads it was the
     // single largest item in the frame.  It has to be issued here, before the
     // frame's rsxSync() -- see wave_draw_divider_gpu().
     if (wave_gpu_blend_ready()) {
-        wave_draw_divider_gpu(XMB_DIVIDER_Y, 0x8A, 0x93, 0xC8, 72);
-        if (!strobe_test_disable_gpu_glow()) {
+        // The spine's base layer draws no divider; between levels it fades
+        // (spine_divider_alpha() is 1 with the gate off, so this is 72 there).
+        const u8 div_a = (u8)(72.0f * spine_divider_alpha() + 0.5f);
+        if (div_a) wave_draw_divider_gpu(XMB_DIVIDER_Y, 0x8A, 0x93, 0xC8, div_a);
+        if (g_spine_on) {
+            spine_draw_gpu();  // glow band + bloom
+        } else if (!strobe_test_disable_gpu_glow()) {
+            // The tab strip's focus glow, exactly as the strobe line has it.
             const u32 accent = XMB_ACCENT;
             const int alpha = xmb_nav_depth() > 0 ? 24 : 72;
             wave_draw_glow_gpu(xmb_tab_focus_center(),
@@ -173,14 +201,24 @@ static void xmb_draw_gpu_phase(int tab) {
 
     if (!ui_card_gpu_ready()) return;
 
-    if (tab == XMB_TAB_HOME) {
+    // Home under the spine is one stage at every depth: its column swings
+    // into the queue instead of cutting over at the halfway point.
+    if (g_spine_on && tab == XMB_TAB_HOME) {
+        xmb_home_stage_gpu();
+    } else if (spine_at_base()) {
+        spine_column_gpu(tab);
+    } else if (tab == XMB_TAB_HOME) {
         xmb_home_gpu_phase();
     } else if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS) {
         GridGeom gg; const XMBItem *items;
         int count, sel, scroll, y0, a_start, a_total; bool more;
         if (xmb_grid_view(tab, &gg, &items, &count, &sel, &scroll, &y0,
                           &more, &a_start, &a_total))
+        {
+            const bool m = grid_motion_begin(&gg, scroll, y0, true);
             xmb_grid_gpu(&gg, items, count, sel, scroll, y0);
+            grid_motion_end(m, true);
+        }
     }
     ui_card_gpu_end();
 }
@@ -188,10 +226,15 @@ static void xmb_draw_gpu_phase(int tab) {
 // CPU draw phase — direct framebuffer writes, runs after rsxSync().
 static void xmb_draw_cpu_phase(int tab) {
     // Only when the GPU phase did not already lay it down as a blended quad.
-    if (!s_div_on_gpu && !strobe_test_disable_cpu_divider())
+    if (!s_div_on_gpu && spine_divider_alpha() >= 0.5f &&
+        !strobe_test_disable_cpu_divider())
         xmb_draw_divider();
 
-    if (tab == XMB_TAB_SEARCH) {
+    if (g_spine_on && tab == XMB_TAB_HOME) {
+        xmb_home_stage_cpu();
+    } else if (spine_at_base()) {
+        spine_column_cpu(tab);
+    } else if (tab == XMB_TAB_SEARCH) {
         xmb_cpu_draw_osk();
         xmb_cpu_draw_search_results();
     } else if (tab == XMB_TAB_SETTINGS) {
@@ -203,7 +246,11 @@ static void xmb_draw_cpu_phase(int tab) {
         int count, sel, scroll, y0, a_start, a_total; bool more;
         if (xmb_grid_view(tab, &gg, &items, &count, &sel, &scroll, &y0,
                           &more, &a_start, &a_total))
+        {
+            const bool m = grid_motion_begin(&gg, scroll, y0, false);
             xmb_grid_cpu(&gg, items, count, sel, scroll, y0);
+            grid_motion_end(m, false);
+        }
     }
 }
 
@@ -211,7 +258,11 @@ static void xmb_draw_cpu_phase(int tab) {
 static void xmb_draw_text_phase(int tab) {
     xmb_draw_topbar();
 
-    if (tab == XMB_TAB_SEARCH) {
+    if (g_spine_on && tab == XMB_TAB_HOME) {
+        xmb_home_stage_text();
+    } else if (spine_at_base()) {
+        spine_column_text(tab);
+    } else if (tab == XMB_TAB_SEARCH) {
         xmb_rsx_draw_osk();
     } else if (tab == XMB_TAB_SETTINGS) {
         xmb_draw_settings();
@@ -261,8 +312,10 @@ static void xmb_draw_text_phase(int tab) {
                             tab == XMB_TAB_RESUME ? "Nothing in progress"
                                                   : "No items in this library");
             } else {
+                const bool m = grid_motion_begin(&gg, scroll, y0, false);
                 xmb_grid_text(&gg, items, count, sel, scroll, y0, more,
                               a_start, a_total);
+                grid_motion_end(m, false);
             }
             // Letter jump bar on library tabs at depth 0 (not the resume
             // list — it isn't alphabetical).
@@ -356,6 +409,16 @@ static void xmb_draw_hints(int tab) {
     bool in_tv_sub  = (g_tv_depth > 0);
     bool in_col_sub = (g_col_depth > 0);
 
+    // The spine's base layer: the row is walked with the d-pad and a tab is
+    // entered with Down or X.  Inside a tab, the Home and library hints gain
+    // O Back -- the way out to the base layer.
+    if (spine_at_base()) {
+        static const Hint h[] = {{'E',"Nav"},{'X',"Open"}};
+        draw_hints_bar(h, 2);
+        return;
+    }
+    const bool spine_back = g_spine_on;
+
     if (tab == XMB_TAB_SETTINGS) {
         if (g_settings_confirm) {
             static const Hint h[] = {{'X',"Confirm"},{'C',"Cancel"}};
@@ -382,18 +445,24 @@ static void xmb_draw_hints(int tab) {
     } else if (g_jumpbar_active) {
         static const Hint h[] = {{'X',"Jump"},{'C',"Cancel"}};
         draw_hints_bar(h, 2);
+    } else if (tab == XMB_TAB_HOME && spine_back) {
+        // The canvas's L2 bar: the d-pad walks the queue and the categories,
+        // X opens detail, O goes back up to the base layer.
+        static const Hint h[] = {{'E',"Nav"},{'X',"Open"},{'C',"Back"}};
+        draw_hints_bar(h, 3);
     } else if (tab == XMB_TAB_HOME) {
         // The L1/R1 cluster leads, per handoff section 3.1.  Label is "Tab"
         // and not the document's "Page" because L1/R1 switch TABS on this
         // build (ui_nav.cpp / ui_home.cpp) -- paging is Phase 4, and a hint
         // must describe what the button does today.
         static const Hint h[] = {{'l',""},{'r',"Tab"},
-                                 {'X',"Open"},{'T',"Info"}};
-        draw_hints_bar(h, 4);
+                                 {'X',"Open"},{'T',"Info"},{'C',"Back"}};
+        draw_hints_bar(h, spine_back ? 5 : 4);
     } else {
         static const Hint h[] = {{'l',""},{'r',"Tab"},
-                                 {'E',"Nav"},{'X',"Select"},{'T',"Info"}};
-        draw_hints_bar(h, 5);
+                                 {'E',"Nav"},{'X',"Select"},{'T',"Info"},
+                                 {'C',"Back"}};
+        draw_hints_bar(h, spine_back ? 6 : 5);
     }
 }
 
@@ -501,9 +570,14 @@ void ui_run_xmb(void) {
             }
 
         poll_buttons();
+        spine_frame_begin();   // one depth sample for the whole frame
         bool should_exit = false;
         if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
+        else if (spine_at_base())
+            should_exit = spine_input_base();
+        else if (spine_try_back(tab))
+            ;                           // Up / O at the tab's root: back to base
         else if (tab == XMB_TAB_SEARCH)
             should_exit = xmb_handle_input_search();
         else if (tab == XMB_TAB_HOME)
@@ -546,7 +620,8 @@ void ui_run_xmb(void) {
             bool popup = xmb_update_popup_active();
             if (!popup) xmb_draw_hints(tab);   // the popup swaps in its own hint
             if (first_iter) crash_log("13.8d tabs");
-            xmb_draw_tabs();
+            if (g_spine_on) spine_draw();
+            else            xmb_draw_tabs();
             if (popup) {
                 // The popup GPU-dims the whole screen and then lays an opaque
                 // panel on it, so everything queued so far has to be on the

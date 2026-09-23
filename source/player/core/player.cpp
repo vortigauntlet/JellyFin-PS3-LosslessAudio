@@ -620,6 +620,12 @@ void show_player(const JFItem *item, u32 resume_secs,
         // focused control: play/pause, REW/FF, AUDIO, or CC), returning the
         // action to perform.
         HudAction act = hud_handle_input(l2_pressed, r2_pressed, ps.paused);
+        if (act == HUD_ACTION_STOP) {          // O on the redesigned HUD
+            plog("playing=0 reason=user_stop_circle");
+            user_stopped = true;
+            ps.playing = false;
+            break;
+        }
 
         // D-pad / focus-mode taps come through the HUD; queue them like any
         // tap.  R2/L2 are NOT handled here — the seek input machine owns them,

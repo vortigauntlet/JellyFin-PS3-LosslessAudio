@@ -188,8 +188,31 @@ static inline float uis_tf(float px) {
 // At 1080p the divider lands at 216, which IS 144 on this screen.
 #define XMB_TOPBAR_H    UIS_H(64)
 #define XMB_TABBAR_H    UIS_H(80)
-#define XMB_DIVIDER_Y   (XMB_OY + XMB_TOPBAR_H + XMB_TABBAR_H)
-#define XMB_CONTENT_Y   (XMB_DIVIDER_Y + UIS_H(30))
+
+// The spine (README 2.9, render/spine.h) replaces the tab strip when
+// jellyfin_spine.txt says 1 -- read once at boot by spine_load().  Every XMB
+// screen is currently L2, where the spine's label stack runs down to y~205
+// and the header divider moves from 144 to 214.  Everything below the chrome
+// is positioned from XMB_CONTENT_Y, so moving the divider moves every screen
+// with it; nothing else needs to know the spine exists.
+//
+// A runtime choice rather than a rebuild, like the other gates: a spine that
+// reads badly on the TV is one character over FTP from the old strip.
+extern bool g_spine_on;
+#include "render/spine.h"
+#define XMB_DIVIDER_Y   (g_spine_on                                              \
+        ? (XMB_OY + UIS_H((int)SPINE_LEVEL[SPINE_L2].divider_y))                \
+        : (XMB_OY + XMB_TOPBAR_H + XMB_TABBAR_H))
+// Where content sits AT REST, and where it is drawn this frame.  They differ
+// only while the spine is gliding a tab's content up into place (0 with the
+// gate off and at rest; see spine_content_dy() in render/ui_spine.cpp).
+// POSITIONS use XMB_CONTENT_Y.  SIZES -- card heights, visible row counts,
+// the jump rail's pitch -- must use XMB_CONTENT_Y_REST, or every card would
+// resize on every frame of the glide and its thumbnail (cached per size)
+// would be refetched.
+int spine_content_dy(void);
+#define XMB_CONTENT_Y_REST (XMB_DIVIDER_Y + UIS_H(30))
+#define XMB_CONTENT_Y      (XMB_CONTENT_Y_REST + spine_content_dy())
 #define XMB_BOTTOM_PAD  (UIS_H(70) + XMB_OY)
 #define XMB_ITEM_H      UIS_H(90)
 #define XMB_THUMB_W     UIS_H(52)
@@ -206,7 +229,7 @@ static inline float uis_tf(float px) {
 #define XMB_ROW_RADIUS  UIS_W(8)                         // reserved for future rounded corners
 
 // Items visible simultaneously in the list area
-#define XMB_ITEMS_VIS ((int)((display_height - XMB_CONTENT_Y - XMB_BOTTOM_PAD) / XMB_ROW_STRIDE))
+#define XMB_ITEMS_VIS ((int)((display_height - XMB_CONTENT_Y_REST - XMB_BOTTOM_PAD) / XMB_ROW_STRIDE))
 
 // -------------------------------------------------------
 // Card grid layout (library tabs: Continue/Movies/TV/Collections)
@@ -225,10 +248,11 @@ static inline float uis_tf(float px) {
 // Cards are sized to fill the space between the content area and the hints
 // bar at any resolution.  The 26px reserve covers the breadcrumb offset on
 // sub-screens so the bottom row's text band never runs into the hints bar.
-#define XMB_GRID_AVAIL_H ((int)display_height - XMB_BOTTOM_PAD - XMB_GRID_Y0 - UIS_H(26))
+#define XMB_GRID_AVAIL_H ((int)display_height - XMB_BOTTOM_PAD - XMB_GRID_Y0_REST - UIS_H(26))
 #define XMB_CARD_H_FIT   (XMB_GRID_AVAIL_H / XMB_GRID_ROWS - XMB_CARD_TEXT_H - UIS_H(6))
 #define XMB_CARD_W_CAP   UIS_W(300)
 #define XMB_GRID_Y0      (XMB_CONTENT_Y + UIS_H(8))
+#define XMB_GRID_Y0_REST (XMB_CONTENT_Y_REST + UIS_H(8))   // for sizes
 
 // Music tab: square album cards under a sub-tab header row, with a taller
 // text band (title + artist + meta for the selected card).
@@ -258,6 +282,11 @@ bool xmb_tab_uses_portrait(int tab);
 void xmb_grid_geom(int tab, GridGeom *gg);
 // Poster-grid geometry not tied to any tab (search list, thumb prefetch).
 void xmb_grid_geom_portrait(GridGeom *gg);
+
+// The one size the spine's Home queue fetches every poster at (ui_home.cpp):
+// its focused 200x300, capped to a pixel budget the thumbnail cache can hold.
+// 0 x 0 with the gate off.  The cache sizes its slots to fit it.
+void xmb_queue_src(int *w, int *h);
 
 // Jump bar (narrow letter column to the left of the item list).  The column
 // scales with the letters in it -- when it did not, the font size derived from
@@ -477,6 +506,11 @@ void xmb_draw_meta(u32 x, u32 y, const XMBItem *it, float px = UIS_TF(14));
 // See ui/render/ui_card_gpu.h for why this exists and what it costs.
 void xmb_grid_gpu(const GridGeom *gg, const XMBItem *items, int count,
                   int sel, int scroll, int y0);
+
+// Which rows the three grid walks DRAW, relative to `scroll`'s row, and a
+// pixel offset for all of them -- the grid's scroll easing (render/ui_spine.cpp
+// spine_grid_motion).  Rest is (0, XMB_GRID_ROWS, 0); callers put it back.
+void xmb_grid_motion(int row0, int rows, int dy);
 
 void xmb_grid_cpu(const GridGeom *gg, const XMBItem *items, int count,
                   int sel, int scroll, int y0);

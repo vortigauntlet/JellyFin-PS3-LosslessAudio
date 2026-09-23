@@ -85,6 +85,11 @@ int xmb_json_first_arr_str(const char *start, int len,
 }
 
 int parse_xmb_items(const char *json, XMBItem *arr, int max) {
+    return parse_xmb_items_each(json, arr, max, NULL, NULL);
+}
+
+int parse_xmb_items_each(const char *json, XMBItem *arr, int max,
+                         XMBItemEach each, void *ctx) {
     const char *p = strstr(json, "\"Items\":[");
     if (!p) return 0;
     p += 9;
@@ -187,6 +192,7 @@ int parse_xmb_items(const char *json, XMBItem *arr, int max) {
         decode_unicode_escapes(it.name);
         decode_unicode_escapes(it.genre);
         decode_unicode_escapes(it.artist);
+        if (each) each(count, obj, olen, ctx);
         arr[count++] = it;
     }
     return count;

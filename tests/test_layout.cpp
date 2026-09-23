@@ -36,6 +36,15 @@ QualityMode g_quality = QUALITY_FULL;
 // 0 = auto, which is the shipping default and what most of this file exercises.
 int g_uis_pct = 0;
 
+// Normally defined in ui/render/ui_spine.cpp.  false = the tab strip, which is
+// what check_res() exercises; check_spine_res() turns it on.
+bool g_spine_on = false;
+// Also ui_spine.cpp's: the content glide offset, which is 0 at rest.  Layout
+// is checked at rest, and SIZES must not depend on it anyway (they use
+// XMB_CONTENT_Y_REST) -- see test_glide_sizes() below.
+static int s_test_dy = 0;
+int spine_content_dy(void) { return s_test_dy; }
+
 // The macros under test come from the REAL header, so if ui_visuals.h changes
 // this test changes with it.  That is the whole point: a hand-copied mirror
 // would keep passing while the shipping layout drifted away from it.
@@ -102,6 +111,107 @@ static void check_res(const char *name, u32 w, u32 h, float ovs) {
     ck("jump bar column is at least 8px wide", JBAR_W >= 8, buf);
     ck("jump bar fits beside the content margin",
        JBAR_W + JBAR_GAP * 3 <= XMB_ITEM_PAD + JBAR_W, buf);
+}
+
+// ---------------------------------------------------------------------------
+// The spine (jellyfin_spine.txt = 1, stage S1: every XMB screen at L2).
+//
+// test_spine.c proves the geometry on the 1280x720 authoring canvas.  This is
+// the other half: the same numbers pushed through the REAL anchors at every
+// resolution, overscan included, because the spine moves the divider from 144
+// to 214 and so takes 70 authored px away from every screen below it.
+// ---------------------------------------------------------------------------
+static void check_spine_res(const char *name, u32 w, u32 h, float ovs) {
+    display_width = w; display_height = h; overscan_set_frac(ovs);
+    g_spine_on = true;
+
+    const spine_level L = spine_eval((float)SPINE_L2);
+    const int icon_top = XMB_OY + UIS_H((int)L.icon_y) - UIS_H((int)L.active_px) / 2;
+    const int rule_b   = XMB_OY + UIS_H((int)spine_rule_top(&L)) + UIS_H((int)SPINE_RULE_H);
+    const int div_y    = XMB_DIVIDER_Y;
+    const int card_h   = XMB_CARD_H_FIT;
+    const int vis      = XMB_ITEMS_VIS;
+    const int hint_y   = (int)display_height - XMB_OY - UIS_H(22);
+    // The slot left of the active one, the only left slot the design keeps.
+    const int left_x   = XMB_OX + UIS_W((int)spine_slot_x(0, 1))
+                       - UIS_H((int)SPINE_IDLE_PX) / 2;
+    const int right_x  = XMB_OX + UIS_W((int)spine_slot_x(SPINE_FALLOFF_N - 1, 0))
+                       + UIS_H((int)SPINE_IDLE_PX) / 2;
+
+    char buf[160];
+    printf("%-22s %4ux%-4u ovs %.3f  spine %3d..%3d  div %3d  card_h %3d"
+           "  rows %d  left %4d  right %4d\n",
+           name, w, h, (double)ovs, icon_top, rule_b, div_y, card_h, vis,
+           left_x, right_x);
+
+    snprintf(buf, sizeof buf, "underline ends %d, divider %d", rule_b, div_y);
+    ck("spine: underline clears the divider", rule_b < div_y, buf);
+    ck("spine: active icon below the top bar",
+       icon_top >= XMB_OY + UIS_H(20) + UIS_H(24), NULL);
+
+    snprintf(buf, sizeof buf, "card_h %d", card_h);
+    ck("spine: cards have positive height", card_h > 40, buf);
+    // The divider's move to 214 is paid for by every screen below it.  Two
+    // list rows is the floor at which a list still navigates; below three is
+    // recorded rather than failed, because it is the design's cost and not a
+    // layout bug -- measured 2026-09-23 it happens only WITH overscan at 720p
+    // and 480p, where the tab strip still managed three.
+    snprintf(buf, sizeof buf, "rows %d", vis);
+    ck("spine: list shows at least 2 rows", vis >= 2, buf);
+    if (vis < 3)
+        printf("   note: only %d list rows at %s (tab strip gives 3+)\n", vis, name);
+    snprintf(buf, sizeof buf, "hints %d, grid bottom %d",
+             hint_y, XMB_GRID_Y0 + XMB_GRID_AVAIL_H);
+    ck("spine: hints bar clears the grid",
+       hint_y >= XMB_GRID_Y0 + XMB_GRID_AVAIL_H, buf);
+
+    // Icons are sized on the HEIGHT scale and placed on the WIDTH scale, so on
+    // SD's non-square pixel grids the left neighbour's margin shrinks.  The
+    // draw code SKIPS a slot that is not wholly on screen rather than
+    // clipping it, so this is reported, not failed, where it does not fit:
+    // the cost there is a missing neighbour icon, not a broken frame.
+    if (left_x < 0)
+        printf("   note: left neighbour skipped at %s (x %d)\n", name, left_x);
+    // Without overscan the furthest slot the falloff draws must end on screen
+    // -- that is the design's own framing.  Overscan shifts the row right
+    // without narrowing it, and the row is DESIGNED to run off the right
+    // edge, so there the last (0.14-alpha) slot is skipped by spine_draw()
+    // and that is reported rather than failed.
+    snprintf(buf, sizeof buf, "furthest drawn slot ends at %d", right_x);
+    if (ovs == 0.0f)
+        ck("spine: furthest drawn slot ends on screen", right_x <= (int)w, buf);
+    else if (right_x > (int)w)
+        printf("   note: furthest slot skipped at %s (ends %d)\n", name, right_x);
+
+    g_spine_on = false;
+}
+
+// ---------------------------------------------------------------------------
+// The content glide moves POSITIONS only.
+//
+// While a tab is entered, spine_content_dy() pushes the content down and eases
+// it back.  Every SIZE derived from the content top must ignore that, or cards
+// would resize on each frame of the glide and every thumbnail -- cached per
+// size -- would be refetched mid-animation.
+// ---------------------------------------------------------------------------
+static void test_glide_sizes(void) {
+    puts("-- content glide moves positions, not sizes --");
+    display_width = 1920; display_height = 1080; overscan_set_frac(0.0f);
+    g_spine_on = true;
+    s_test_dy = 0;
+    const int y0 = XMB_CONTENT_Y, g0 = XMB_GRID_Y0;
+    const int h0 = XMB_CARD_H_FIT, v0 = XMB_ITEMS_VIS, a0 = XMB_GRID_AVAIL_H;
+    s_test_dy = 72;                       // CONTENT_RISE_PX at 1080p
+    char buf[160];
+    snprintf(buf, sizeof buf, "content %d -> %d, grid %d -> %d",
+             y0, XMB_CONTENT_Y, g0, XMB_GRID_Y0);
+    ck("glide moves the content", XMB_CONTENT_Y == y0 + 72 && XMB_GRID_Y0 == g0 + 72, buf);
+    snprintf(buf, sizeof buf, "card_h %d -> %d, rows %d -> %d, avail %d -> %d",
+             h0, XMB_CARD_H_FIT, v0, XMB_ITEMS_VIS, a0, XMB_GRID_AVAIL_H);
+    ck("glide leaves every size alone",
+       XMB_CARD_H_FIT == h0 && XMB_ITEMS_VIS == v0 && XMB_GRID_AVAIL_H == a0, buf);
+    s_test_dy = 0;
+    g_spine_on = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +327,18 @@ int main(void) {
     check_res("576i",              720,  576, 0.00f);
     check_res("480p",              720,  480, 0.00f);
     check_res("480p + overscan",   720,  480, 0.08f);
+
+    putchar('\n');
+    check_spine_res("1080p",            1920, 1080, 0.00f);
+    check_spine_res("1080p + overscan", 1920, 1080, 0.05f);
+    check_spine_res("720p",             1280,  720, 0.00f);
+    check_spine_res("720p + overscan",  1280,  720, 0.08f);
+    check_spine_res("576i",              720,  576, 0.00f);
+    check_spine_res("480p",              720,  480, 0.00f);
+    check_spine_res("480p + overscan",   720,  480, 0.08f);
+
+    putchar('\n');
+    test_glide_sizes();
 
     putchar('\n');
     test_one_scale("1080p", 1920, 1080);

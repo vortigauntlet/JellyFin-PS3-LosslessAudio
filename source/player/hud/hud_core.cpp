@@ -10,6 +10,8 @@
 #include "ui.h"
 #include "timing.h"
 #include "audio.h"
+#include "ui_visuals.h"   // g_spine_on: the redesigned HUD's buttons
+#include "statsovl.h"
 
 HudState g_hud;
 
@@ -144,6 +146,21 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
             else if (g_hud.focus < FOCUS_COUNT - 1) g_hud.focus++;
             return HUD_ACTION_NONE;
         }
+    }
+
+    // The redesigned HUD (design-import-v3 "07 · Player HUD") names four
+    // buttons in its hint cluster: X Pause, Triangle Tracks, O Stop, Square
+    // Stats.  X keeps doing what it always did (the focused control, which is
+    // play/pause by default); the other three had no meaning during playback
+    // and gain the canvas's.  Only with the spine gate on, so the old HUD's
+    // input is unchanged, and never on the press that revealed the bar -- a
+    // stray O must not end the film.
+    if (g_spine_on && !was_hidden) {
+        if (BTN_PRESSED(triangle)) return HUD_ACTION_AUDIO_TRACK;
+        if (BTN_PRESSED(circle))   return HUD_ACTION_STOP;
+#if ENABLE_PLAYER_STATS
+        if (BTN_PRESSED(square)) { statsovl_set_enabled(!statsovl_enabled()); return HUD_ACTION_NONE; }
+#endif
     }
 
     // X (cross) activates the focused control.

@@ -49,7 +49,22 @@ void ui_card_gpu_draw(u32 tex_off, u32 tex_w, u32 tex_h, u32 tex_pitch,
 // cpu_row_clipped().  An RSX quad ignores those entirely and would bleed over
 // the tab bar and the hints bar, so the GPU pass needs the hardware scissor to
 // mean the same thing.  Pass bot = 0 to reset to the whole surface.
+// As ui_card_gpu_draw, but for a texture drawn at a different size (the spine
+// column shows a grid-sized thumbnail larger than the grid does).  Filters
+// LINEAR when the size differs, NEAREST when it does not.
+void ui_card_gpu_draw_scaled(u32 tex_off, u32 tex_w, u32 tex_h, u32 tex_pitch,
+                             int x, int y, int w, int h);
 void ui_card_gpu_clip(int top, int bot);
+
+// The general form: texture rows v_top..v_bot (0..1; pass them reversed for a
+// mirror image) drawn at (x, y, w, h) at a constant opacity, alpha 255 being
+// opaque.  Linear filtering unless it is a plain 1:1 draw.  Opacity uses the
+// RSX's constant blend colour, so the image's own alpha channel is ignored,
+// as it is for opaque cards.  The Home queue's receding items and their
+// reflections use this.
+void ui_card_gpu_draw_ex(u32 tex_off, u32 tex_w, u32 tex_h, u32 tex_pitch,
+                         int x, int y, int w, int h,
+                         float v_top, float v_bot, u8 alpha);
 
 // Restore the blend/program state the rest of the UI expects.  Call once
 // after the last ui_card_gpu_draw() of a frame.
@@ -70,3 +85,14 @@ void ui_rect_gpu_draw(int x, int y, int w, int h, u32 colour, u8 alpha);
 // The full selection treatment for a card at (cx,cy,w,h): the same geometry
 // xmb_draw_card draws on the CPU, so the two are interchangeable.
 void ui_card_gpu_selection(int cx, int cy, int w, int h);
+
+// Persistent VRAM textures for art too big for the thumbnail cache (the
+// detail page's backdrop and poster).  upload copies a main-memory Bitmap in
+// once; draw scales it (LINEAR) every frame in a GPU phase.  Slot 0 backdrop,
+// slot 1 poster.  upload returns false when the RSX path is not up.
+#include "bitmap.h"
+#define GPU_TEX_BACKDROP 0
+#define GPU_TEX_POSTER   1
+bool ui_gpu_tex_upload(int slot, const Bitmap *bm);
+void ui_gpu_tex_clear(int slot);
+bool ui_gpu_tex_draw(int slot, int x, int y, int w, int h);

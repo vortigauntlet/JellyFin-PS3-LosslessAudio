@@ -810,10 +810,17 @@ bool ttf_icon_box(int codepoint, float px, TtfRunBox *box)
     return true;
 }
 
+// The colour's TOP byte is an attenuation, not an alpha: 0 (what every
+// 0x00RRGGBB caller passes) keeps the raw coverage bit-for-bit, and 255 - N
+// scales it by N/255.  Spelled that way round so no existing call site
+// changes meaning.  The run cache keys on the full 32-bit colour, so each
+// attenuation is its own settled run and still uploads nothing once cached.
+// See drawIconA().
 void ttf_icon_raster(int codepoint, float px, u32 colour,
                      u32 *dst, const TtfRunBox *box)
 {
-    const u32 rgb = colour & 0x00FFFFFFu;
+    const u32 rgb  = colour & 0x00FFFFFFu;
+    const u32 keep = 255u - (colour >> 24);
     const int W = box->w, H = box->h;
 
     memset(dst, 0, (size_t)W * (size_t)H * sizeof(u32));
@@ -848,6 +855,7 @@ void ttf_icon_raster(int codepoint, float px, u32 colour,
             const unsigned char *srow = bm  + (size_t)r  * (size_t)gw;
             for (int c = 0; c < gw; c++) {
                 u32 a = srow[c];
+                if (keep != 255u) a = a * keep / 255u;
                 if (!a) continue;
                 int dx = lx + c;
                 if (dx < 0 || dx >= W) continue;
@@ -1088,6 +1096,34 @@ void drawIcon(u32 x, u32 y, int codepoint, float px, u32 color) {
     // Icons keep the plain 8-bit blend (gamma_aa = false) they have always used.
     draw_glyph(&s_icons, GC_FONT_ICONS, px, scale, codepoint,
                (int)x, (int)y + baseline, color, false);
+}
+
+// drawIcon at an opacity.  The spine's idle slots fall off by distance
+// (0.62 / 0.46 / 0.33 / 0.22 / 0.14) and the design means real opacity over
+// whatever is behind them -- the month gradient is not one colour, so a
+// colour premixed against the theme background would read as a different
+// tone wherever the gradient is not bg.  On the GPU path the attenuation
+// rides in the colour's top byte into ttf_icon_raster(), which scales the
+// stored coverage; the RSX's existing SRC_ALPHA blend does the rest, so this
+// binds nothing new and reads no video memory.
+//
+// The CPU fallback has no attenuation channel (draw_glyph blends coverage
+// against the framebuffer at full strength), so it premixes against the
+// theme background instead -- approximate, and only ever seen when the GPU
+// text path is gated off.
+void drawIconA(u32 x, u32 y, int codepoint, float px, u32 color, u32 alpha) {
+    if (alpha >= 255u) { drawIcon(x, y, codepoint, px, color); return; }
+    if (!alpha || !s_icons_ok) return;
+    const u32 rgb = color & 0x00FFFFFFu;
+    if (ui_text_gpu_icon(x, y, codepoint, px, ((255u - alpha) << 24) | rgb))
+        return;
+    const u32 bg = XMB_BG;
+    u32 mixed = 0;
+    for (int sh = 0; sh <= 16; sh += 8) {
+        u32 f = (rgb >> sh) & 0xFF, b = (bg >> sh) & 0xFF;
+        mixed |= ((f * alpha + b * (255u - alpha)) / 255u) << sh;
+    }
+    drawIcon(x, y, codepoint, px, mixed);
 }
 
 // -------------------------------------------------------

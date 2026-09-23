@@ -13,6 +13,7 @@
 #include "circle_blit.h"
 #include "ui_card_gpu.h"
 #include "ui_strobe_test.h"
+#include "ui_spine.h"      // spine_focus_ring_gpu, grid scroll motion
 
 // -------------------------------------------------------
 // CPU blits: main-memory bitmap -> framebuffer
@@ -299,10 +300,35 @@ void xmb_grid_geom_portrait(GridGeom *gg) {
     grid_geom_core(TABKIND_GENERIC, true, gg);
 }
 
-static void grid_cell_pos(const GridGeom *gg, int vis_idx, int y0,
-                          int *cx, int *cy) {
-    *cx = gg->x0 + (vis_idx % gg->cols) * (gg->card_w + XMB_CARD_GAP_X);
-    *cy = y0     + (vis_idx / gg->cols) * gg->stride;
+// Grid scroll motion window, set by the XMB around each grid phase from
+// spine_grid_motion().  The grid still has ONE logical scroll position; this
+// only says which rows to DRAW and how far to shift them, so a row change
+// eases instead of jumping.  Its resting value -- rows [0, XMB_GRID_ROWS) of
+// `scroll`, no offset -- is exactly the walk these loops always did, which is
+// what keeps jellyfin_spine.txt=0 identical.  The scrollbar deliberately
+// ignores it: that tracks the logical position.
+static int s_gm_row0 = 0, s_gm_rows = XMB_GRID_ROWS, s_gm_dy = 0;
+
+void xmb_grid_motion(int row0, int rows, int dy) {
+    s_gm_row0 = row0; s_gm_rows = rows; s_gm_dy = dy;
+}
+
+// The window as indices relative to `scroll`; i0 is negative when a row
+// above the logical top is still easing out.
+static void gm_range(const GridGeom *gg, int *i0, int *i1) {
+    *i0 = s_gm_row0 * gg->cols;
+    *i1 = (s_gm_row0 + s_gm_rows) * gg->cols;
+}
+
+// grid_cell_pos for the window: rel may be negative (floor division), and
+// every cell carries the window's offset.
+static void grid_cell_pos_m(const GridGeom *gg, int rel, int y0,
+                            int *cx, int *cy) {
+    const int C   = gg->cols;
+    const int row = rel >= 0 ? rel / C : -((-rel + C - 1) / C);
+    const int col = rel - row * C;
+    *cx = gg->x0 + col * (gg->card_w + XMB_CARD_GAP_X);
+    *cy = y0 + row * gg->stride + s_gm_dy;
 }
 
 // Colored letter tile: stable per-item hash picks one of eight muted
@@ -355,8 +381,21 @@ void xmb_draw_letter_tile(const char *seed, const char *name,
 void xmb_draw_card(const char *item_id, int cx, int cy, int card_w, int card_h,
                    u8 progress_pct, bool selected, const char *tile_name,
                    ThumbImg img) {
-    thumb_request(item_id, card_w, card_h, img);
-    const Bitmap *bm = thumb_get(item_id, card_w, card_h, img);
+    xmb_draw_card_src(item_id, card_w, card_h, cx, cy, card_w, card_h,
+                      progress_pct, selected, tile_name, img);
+}
+
+// The same card, drawn at (card_w x card_h) from a thumbnail fetched at
+// (src_w x src_h).  The spine's base-layer column uses this to show the SAME
+// cached thumbnail the tab's own grid uses, larger: one cache slot, shared by
+// both levels, so an item seen in either shows in the other with no fetch.
+// With src == card size this is exactly xmb_draw_card().
+void xmb_draw_card_src(const char *item_id, int src_w, int src_h,
+                       int cx, int cy, int card_w, int card_h,
+                       u8 progress_pct, bool selected, const char *tile_name,
+                       ThumbImg img) {
+    thumb_request(item_id, src_w, src_h, img);
+    const Bitmap *bm = thumb_get(item_id, src_w, src_h, img);
     if (bm) {
         // The GPU pass (xmb_card_gpu_one, run before this frame's rsxSync)
         // has already drawn this image straight from the slot's VRAM mirror.
@@ -365,9 +404,13 @@ void xmb_draw_card(const char *item_id, int cx, int cy, int card_w, int card_h,
         // Only fall back when the GPU path could not take it.
         u32 dummy_off, dummy_pitch;
         if (!ui_card_gpu_ready() ||
-            !thumb_gpu_texture(item_id, card_w, card_h,
-                               &dummy_off, &dummy_pitch, img))
-            cpu_blit_bitmap(bm, cx, cy);
+            !thumb_gpu_texture(item_id, src_w, src_h,
+                               &dummy_off, &dummy_pitch, img)) {
+            if (src_w == card_w && src_h == card_h)
+                cpu_blit_bitmap(bm, cx, cy);
+            else
+                cpu_blit_bitmap_scaled(bm, cx, cy, card_w, card_h);
+        }
     } else if (tile_name) {
         // Music cards: colored letter tile (matches the Now Playing art).
         xmb_draw_letter_tile(item_id, tile_name, cx, cy,
@@ -424,15 +467,31 @@ bool xmb_card_gpu_one(const char *item_id, int cx, int cy,
     return true;
 }
 
+// GPU counterpart of xmb_draw_card_src(): the (src_w x src_h) thumbnail drawn
+// at (card_w x card_h), linearly filtered when the sizes differ.
+bool xmb_card_gpu_src(const char *item_id, int src_w, int src_h,
+                      int cx, int cy, int card_w, int card_h, ThumbImg img) {
+    if (!ui_card_gpu_ready()) return false;
+    u32 off = 0, pitch = 0;
+    if (!thumb_gpu_texture(item_id, src_w, src_h, &off, &pitch, img))
+        return false;
+    ui_card_gpu_draw_scaled(off, (u32)src_w, (u32)src_h, pitch,
+                            cx, cy, card_w, card_h);
+    return true;
+}
+
 // GPU phase for a card grid: the same walk xmb_grid_cpu does, images only.
 void xmb_grid_gpu(const GridGeom *gg, const XMBItem *items, int count,
                   int sel, int scroll, int y0) {
     if (!ui_card_gpu_ready()) return;
-    for (int i = 0; i < gg->vis; i++) {
+    int i0, i1;
+    gm_range(gg, &i0, &i1);
+    for (int i = i0; i < i1; i++) {
         int idx = scroll + i;
+        if (idx < 0) continue;
         if (idx >= count) break;
         int cx, cy;
-        grid_cell_pos(gg, i, y0, &cx, &cy);
+        grid_cell_pos_m(gg, i, y0, &cx, &cy);
         const char *ty = items[idx].type;
         bool music = strcmp(ty, "MusicAlbum")  == 0 ||
                      strcmp(ty, "Audio")       == 0 ||
@@ -441,8 +500,8 @@ void xmb_grid_gpu(const GridGeom *gg, const XMBItem *items, int count,
         ThumbImg img = (!gg->portrait && !music && items[idx].has_thumb)
                      ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
         xmb_card_gpu_one(items[idx].id, cx, cy, gg->card_w, gg->card_h, img);
-        if (idx == sel)
-            ui_card_gpu_selection(cx, cy, gg->card_w, gg->card_h);
+        if (idx == sel)   // glides between cards (inert with the gate off)
+            spine_focus_ring_gpu(cx, cy, gg->card_w, gg->card_h);
     }
 }
 
@@ -450,11 +509,14 @@ void xmb_grid_gpu(const GridGeom *gg, const XMBItem *items, int count,
 // progress strips.
 void xmb_grid_cpu(const GridGeom *gg, const XMBItem *items, int count,
                   int sel, int scroll, int y0) {
-    for (int i = 0; i < gg->vis; i++) {
+    int i0, i1;
+    gm_range(gg, &i0, &i1);
+    for (int i = i0; i < i1; i++) {
         int idx = scroll + i;
+        if (idx < 0) continue;
         if (idx >= count) break;
         int cx, cy;
-        grid_cell_pos(gg, i, y0, &cx, &cy);
+        grid_cell_pos_m(gg, i, y0, &cx, &cy);
         const char *ty = items[idx].type;
         bool music = strcmp(ty, "MusicAlbum")  == 0 ||
                      strcmp(ty, "Audio")       == 0 ||
@@ -486,12 +548,15 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
     (void)more_below;
     // Dimmed title under every non-selected card so the user always sees
     // what each card is.
-    for (int i = 0; i < gg->vis; i++) {
+    int i0, i1;
+    gm_range(gg, &i0, &i1);
+    for (int i = i0; i < i1; i++) {
         int idx = scroll + i;
+        if (idx < 0) continue;
         if (idx >= count) break;
         if (idx == sel) continue;
         int cx, cy;
-        grid_cell_pos(gg, i, y0, &cx, &cy);
+        grid_cell_pos_m(gg, i, y0, &cx, &cy);
         // Media title -- section 3.0 gives these to the display face.
         draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(8)),
                          items[idx].name, UIS_TF(16), XMB_TEXT_DIM, gg->card_w,
@@ -503,10 +568,10 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
                              gg->card_w);
     }
 
-    if (sel >= scroll && sel < scroll + gg->vis && sel < count) {
+    if (sel - scroll >= i0 && sel - scroll < i1 && sel >= 0 && sel < count) {
         const XMBItem *it = &items[sel];
         int cx, cy;
-        grid_cell_pos(gg, sel - scroll, y0, &cx, &cy);
+        grid_cell_pos_m(gg, sel - scroll, y0, &cx, &cy);
         int ty = cy + gg->card_h + UIS_H(7);
         draw_ttf_clipped((u32)cx, (u32)ty, it->name, UIS_TF(20),
                          XMB_WHITE, gg->card_w, false, UI_FACE_DISPLAY);

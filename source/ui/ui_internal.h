@@ -18,6 +18,11 @@ long long xmb_json_ll_range(const char *start, int len,
 int       xmb_json_first_arr_str(const char *start, int len,
                                  const char *key, char *out, int out_size);
 int       parse_xmb_items(const char *json, XMBItem *arr, int max);
+// The same, calling each(index, object, length, ctx) for every item kept, so
+// a caller can read fields XMBItem has no room for (Home's series ids).
+typedef void (*XMBItemEach)(int index, const char *obj, int olen, void *ctx);
+int       parse_xmb_items_each(const char *json, XMBItem *arr, int max,
+                               XMBItemEach each, void *ctx);
 
 // -------------------------------------------------------
 // Tab switching + library fetch (xmb/ui_nav.cpp, xmb/ui_fetch.cpp)
@@ -76,6 +81,10 @@ bool xmb_handle_input_home(void);
 void xmb_play_item(const XMBItem *it, u32 resume_secs,
                    const char *media_source_id = NULL);
 
+// Counts playback starts and mark-as-watched (ui_nav.cpp, ui_info.cpp).  A
+// change means Continue Watching and Next Up are out of date.
+extern unsigned g_play_gen;
+
 // Play an episode with the end-of-item NEXT prompt / auto-advance, resolving
 // each follower from the server so it works from any launch point (Home rows,
 // Continue Watching, search, season lists) and across season boundaries.
@@ -104,6 +113,24 @@ int xmb_resume_choice(const XMBItem *it);
 // (Continue Watching, Next Up, Recently Added Movies/Shows, Music stub).
 // -------------------------------------------------------
 void xmb_home_on_enter(void);     // reset focus + mark dynamic rows for refetch
+// The spine's base-layer preview of Home: first non-empty row (loads one row
+// per call).  Returns the count; 0 while nothing has loaded.  src_w/src_h and
+// shape (0 portrait, 1 landscape, 2 square) are that row's card size, so the
+// preview shares the row's cached thumbnails.
+int  xmb_home_preview(const XMBItem **items, const char **title,
+                      int *src_w, int *src_h, int *shape);
+int  xmb_home_focus_row(void);    // Up on row 0 returns to the spine's base
+// Spine gate: true when no row above the focus has anything in it, so Up
+// leaves for the base layer.  (Empty rows are stepped over.)
+bool xmb_home_at_top(void);
+// Spine gate: X on the base layer -- open the focused queue item (detail, a
+// series' seasons, an album).  False when there is nothing to open.
+bool xmb_home_open_focused(void);
+// Spine gate: Home drawn at every depth, its column swinging into the queue
+// (the canvas's "L2 · Category").  Replace the column and xmb_home_*_phase.
+void xmb_home_stage_gpu(void);
+void xmb_home_stage_cpu(void);
+void xmb_home_stage_text(void);
 void xmb_home_gpu_phase(void);    // card images as RSX quads (BEFORE rsxSync)
 void xmb_home_cpu_phase(void);    // card images / placeholders / selection (after rsxSync)
 void xmb_home_text_phase(void);   // row titles, labels, chevrons

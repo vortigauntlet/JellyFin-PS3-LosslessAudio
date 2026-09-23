@@ -59,7 +59,7 @@ all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
-     test_wave_cam test_wave_light test_wave_gel test_spine
+     test_wave_cam test_wave_light test_wave_gel test_spine test_facts
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -251,6 +251,8 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_wave_cam
 	./test_wave_light
 	./test_wave_gel
+	./test_spine
+	./test_facts
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -260,7 +262,7 @@ clean:
 	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
 	      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient \
-	      test_wave_cam test_wave_light test_wave_gel \
+	      test_wave_cam test_wave_light test_wave_gel test_spine test_facts \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
@@ -293,7 +295,8 @@ test_theme: test_theme.cpp ../source/ui/theme.cpp ../themes/xmb-wave.ini
 # invisible in source and obvious on a TV: a chrome band that grows into the
 # content, a negative card height, a hints bar overlapping the grid.
 LAYOUT_INC = -Ihoststub -I../source/ui -I../source/ui/render -I../source/ui/fonts -I../source/gfx -I../source/util -I../source
-test_layout: test_layout.cpp ../source/ui/ui_visuals.h ../source/ui/theme.h
+test_layout: test_layout.cpp ../source/ui/ui_visuals.h ../source/ui/theme.h \
+             ../source/ui/render/spine.h
 	$(CXX) $(CXXFLAGS) $(LAYOUT_INC) -o $@ test_layout.cpp
 
 # Handoff section 3.0 typefaces, verified against this client's stb_truetype
@@ -415,6 +418,10 @@ test_wave_gel: test_wave_gel.c $(JW_HDRS) $(WAVE_HDRS)
 # Header-only pure C, like the JellyWave headers above.
 test_spine: test_spine.c ../source/ui/render/spine.h
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_spine.c -lm
+
+# Item facts (the Home queue's tech strip): the stream-to-words parser.
+test_facts: test_facts.cpp ../source/api/facts_parse.cpp ../source/api/api_facts.h
+	$(CXX) $(CXXFLAGS) -Ihoststub -o $@ test_facts.cpp ../source/api/facts_parse.cpp
 
 # ---------------------------------------------------------------------------
 # Audio-reactive wave -- three more header-only scalar kernels, three tests.

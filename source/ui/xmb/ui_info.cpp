@@ -190,7 +190,535 @@ static int info_choose_version(const char *title,
     return -1;
 }
 
+// ===========================================================================
+// Item detail, redesigned -- design-import-v3 "06 · Item detail", L3 of the
+// spine's depth model.  Used whenever jellyfin_spine.txt is on; the screen
+// above is the pre-revamp page and still runs with the gate off.
+//
+// Every position is the canvas's, measured by script at 1280x720 (see
+// design-import-v3/MEASURED-detail-hud.md) and scaled like everything else.
+//
+// WHAT IS DRAWN WHERE, and why it matters here:
+//   GPU phase  backdrop + scrims, the spine's glow, the divider, every panel,
+//              chip and button (rounded fans), the uploaded poster.  All of
+//              it blended on the RSX, none of it read back.
+//   CPU phase  cast portraits (write-only circle blits), hairlines.
+//   text       everything else, through the text-run cache -- the old page
+//              drew every glyph on the CPU against the framebuffer.
+//
+// DEVIATIONS FROM THE CANVAS, all because the data is not there:
+//   * the second chip shows the VIDEO line ("1080p H264 SDR"), not the HDMI
+//     audio path -- the client does not know the output path until playback;
+//   * no Trailer: nothing plays trailers yet, so the hint says what X does;
+//   * "More Like This", the tagline and the facts list are not on this page.
+//     The canvas has none of them and the old page keeps them.
+// ===========================================================================
+
+#include "ui_card_gpu.h"
+#include "ui_spine.h"
+#include "ui_text_gpu.h"
+#include "http.h"
+#include "api_facts.h"
+
+static int IX(int x) { return XMB_OX + UIS_W(x); }
+static int IY(int y) { return XMB_OY + UIS_H(y); }
+
+// Colour mixed toward another; used for the canvas's opacity steps on text
+// (a run's colour is cached, so these are fixed values, not animations).
+static u32 info_mix(u32 a, u32 b, float t) {
+    u32 out = 0;
+    for (int sh = 0; sh <= 16; sh += 8) {
+        int ca = (int)((a >> sh) & 0xFF), cb = (int)((b >> sh) & 0xFF);
+        out |= (u32)(ca + (int)((float)(cb - ca) * t)) << sh;
+    }
+    return out;
+}
+
+// Mark an item played on the server.  POST /Users/{user}/PlayedItems/{id},
+// the same call the web client makes.
+static bool info_mark_played(const char *item_id) {
+    char url[512];
+    static char resp[2048];
+    snprintf(url, sizeof url, "%s/Users/%s/PlayedItems/%s",
+             g_server, g_userid, item_id);
+    int st = http_request(HTTP_POST, url, "", g_token, resp, sizeof resp);
+    char msg[160];
+    snprintf(msg, sizeof msg, "info: mark played %s -> %d", item_id, st);
+    plog(msg);
+    const bool ok = st >= 200 && st < 300;
+    if (ok) g_play_gen++;         // Continue Watching / Next Up are now stale
+    return ok;
+}
+
+// The audio line without its leading language ("English EAC3 5.1" -> "EAC3
+// 5.1"), for the codec chip.  Unchanged when there is only one word.
+static void info_audio_chip(const char *audio, char *out, size_t cap) {
+    const char *sp = strchr(audio, ' ');
+    snprintf(out, cap, "%s", (sp && sp[1]) ? sp + 1 : audio);
+}
+
+// Word-wrap `text` at max_w, drawing up to max_lines at `pitch`.  Returns the
+// number of lines drawn.
+static int info_wrap(int x, int y, const char *text, float px, u32 colour,
+                     int max_w, int pitch, int max_lines) {
+    const char *p = text;
+    int lines = 0;
+    while (*p && lines < max_lines) {
+        int fit = 0, last_sp = -1, wpx = 0;
+        char buf[200], one[2] = { 0, 0 };
+        while (p[fit] && fit < (int)sizeof(buf) - 4) {
+            if (p[fit] == ' ') last_sp = fit;
+            one[0] = p[fit];
+            wpx += ttf_text_width(one, px);
+            if (wpx > max_w) break;
+            fit++;
+        }
+        const bool more = p[fit] != 0;
+        int take = (!more || fit >= (int)sizeof(buf) - 4) ? fit
+                 : (last_sp > 0 ? last_sp : fit);
+        if (take <= 0) take = 1;
+        if (lines == max_lines - 1 && more && take < (int)strlen(p))
+            snprintf(buf, sizeof buf, "%.*s...", take, p);   // last line: cut
+        else
+            snprintf(buf, sizeof buf, "%.*s", take, p);
+        drawTTF((u32)x, (u32)(y + lines * pitch), buf, px, colour);
+        p += take;
+        while (*p == ' ') p++;
+        lines++;
+    }
+    return lines;
+}
+
+// One pill chip (canvas: height 29, radius full, border 0.8, 8 px padding).
+// GPU part: the shape.  Returns its width so the caller can place the next.
+static int info_chip_width(const char *label, float px, int face) {
+    return ttf_text_width_face(label, px, face) + UIS_W(20);
+}
+
+enum { F3_RESUME, F3_PLAY, F3_START, F3_WATCHED, F3_VERSION, F3_QUALITY };
+
+static void xmb_show_item_info_v3(const XMBItem *root) {
+    rsxSync();
+    flip();
+    init_btns();
+    // Hand back whatever level this was opened from: X on the base layer
+    // opens detail too, and closing it should land there, not inside the tab.
+    const int back_level = spine_target_level();
+    spine_set_level(SPINE_L3);
+
+    XMBItem cur_item = *root;
+    XMBItemDetail detail;
+    static JFMediaSources versions;
+    int  version_sel = 0;
+    bool reload = true, exit_armed = false, watched = false;
+    Bitmap poster_cpu;               // CPU fallback when the upload fails
+    memset(&poster_cpu, 0, sizeof poster_cpu);
+    bool poster_gpu = false, back_gpu = false;
+
+    // Row 0: the action buttons; row 1: the selectors.  Built per title.
+    int row0[3], n0 = 0, row1[2], n1 = 0;
+    int frow = 0, fcol = 0;
+
+    // Layout, from the canvas.
+    const int PX = IX(57), PY = IY(187), PW = UIS_W(216), PH = UIS_H(324);
+    const int TX = IX(313);
+    const int TW = UIS_W(700);
+
+    while (running) {
+        if (reload) {
+            reload = false;
+            const XMBItem *it = &cur_item;
+            memset(&detail, 0, sizeof detail);
+            if (facts_wanted(it->type)) facts_request(it->id);   // lands while this loads
+            jellyfin_fetch_item_detail(it->id, &detail);
+            {
+                int remembered = vquality_for_item(it->id);
+                if (remembered >= 0) vquality_set((vquality_t)remembered);
+            }
+            memset(&versions, 0, sizeof versions);
+            if (strcmp(it->type, "Movie") == 0 || strcmp(it->type, "Episode") == 0 ||
+                strcmp(it->type, "Video") == 0)
+                jellyfin_fetch_media_sources(it->id, &versions);
+            version_sel = 0;
+            watched = false;
+
+            // Poster: into VRAM once.  Kept in main memory only if that fails.
+            detail_media_free(&poster_cpu);
+            Bitmap poster;
+            memset(&poster, 0, sizeof poster);
+            detail_media_load(it->id, "Primary", PW, PH, 0.5f, &poster);
+            poster_gpu = ui_gpu_tex_upload(GPU_TEX_POSTER, &poster);
+            if (poster_gpu) detail_media_free(&poster);
+            else            poster_cpu = poster;
+
+            // Backdrop: 960x540 is plenty under a 0.88-0.96 scrim, and the RSX
+            // scales it to the screen with linear filtering.  Freed as soon as
+            // it is in VRAM -- the 2 MB never sits in main memory.
+            Bitmap back;
+            memset(&back, 0, sizeof back);
+            back_gpu = false;
+            if (detail_media_load(it->id, "Backdrop", 960, 540, 0.3f, &back))
+                back_gpu = ui_gpu_tex_upload(GPU_TEX_BACKDROP, &back);
+            detail_media_free(&back);
+            if (!back_gpu) ui_gpu_tex_clear(GPU_TEX_BACKDROP);
+
+            thumb_cache_retarget();     // cast headshots come from the card cache
+
+            const bool has_resume = it->resume_secs >= 10;
+            n0 = 0;
+            if (has_resume) { row0[n0++] = F3_RESUME; row0[n0++] = F3_START; }
+            else            { row0[n0++] = F3_PLAY; }
+            row0[n0++] = F3_WATCHED;
+            n1 = 0;
+            if (versions.n_sources > 1) row1[n1++] = F3_VERSION;
+            row1[n1++] = F3_QUALITY;
+            frow = 0; fcol = 0;
+            exit_armed = false;
+            init_btns();
+            slog_state("INFO3_OPEN item_id=%s name=%.40s", it->id, it->name);
+        }
+        const XMBItem *it = &cur_item;
+
+        waitflip();
+        sysUtilCheckCallback();
+        poll_buttons();
+        spine_frame_begin();
+
+        const int focus = frow == 0 ? row0[fcol] : row1[fcol];
+        if (!exit_armed) {
+            if (!btn_cur.circle && !btn_cur.triangle && !btn_cur.cross) exit_armed = true;
+        } else {
+            if (BTN_PRESSED(circle)) break;
+            const int n = frow == 0 ? n0 : n1;
+            if (BTN_REPEAT(left)  && fcol > 0)     fcol--;
+            if (BTN_REPEAT(right) && fcol < n - 1) fcol++;
+            if (BTN_PRESSED(down) && frow == 0 && n1 > 0) { frow = 1; if (fcol >= n1) fcol = n1 - 1; }
+            if (BTN_PRESSED(up)   && frow == 1)           { frow = 0; if (fcol >= n0) fcol = n0 - 1; }
+            if (BTN_PRESSED(cross)) {
+                if (focus == F3_RESUME || focus == F3_PLAY || focus == F3_START) {
+                    const u32 at = focus == F3_RESUME ? it->resume_secs : 0;
+                    const char *source_id = versions.n_sources > 0
+                        ? versions.source[version_sel].id : NULL;
+                    if (strcmp(it->type, "Episode") == 0)
+                        xmb_play_episode_with_next(it, at, source_id);
+                    else
+                        xmb_play_item(it, at, source_id);
+                    exit_armed = false;
+                    init_btns();
+                    info_skip_frame();
+                    continue;
+                } else if (focus == F3_WATCHED) {
+                    if (!watched) watched = info_mark_played(it->id);
+                } else if (focus == F3_VERSION) {
+                    int chosen = info_choose_version(it->name, &versions, version_sel);
+                    if (chosen >= 0) version_sel = chosen;
+                    exit_armed = false;
+                    init_btns();
+                    info_skip_frame();
+                    continue;
+                } else if (focus == F3_QUALITY) {
+                    vquality_next(+1);
+                    vquality_remember_item(it->id, vquality_get());
+                }
+            }
+        }
+
+        thumb_cache_tick();
+        clearScreen(XMB_BG);
+        wave_draw();
+
+        // ---- GPU phase ---------------------------------------------------
+        const int W = (int)display_width, H = (int)display_height;
+        if (back_gpu) ui_gpu_tex_draw(GPU_TEX_BACKDROP, 0, 0, W, H);
+        {
+            // 90deg rgba(3,4,8) .96 -> .88 @46% -> .34, and a 200 px bottom
+            // scrim to .95.  Without a backdrop they still sit over the wave,
+            // which keeps the text contrast the same either way.
+            static const float hp[3] = { 0.0f, 0.46f, 1.0f };
+            static const u8    ha[3] = { 245, 224, 87 };
+            wave_draw_ramp_gpu(0, 0, W, H, 0x00030408, false, 3, hp, ha);
+            static const float vp[2] = { 0.0f, 1.0f };
+            static const u8    va[2] = { 0, 242 };
+            wave_draw_ramp_gpu(0, IY(519), W, H - IY(519), 0x00030408, true, 2, vp, va);
+        }
+        spine_draw_gpu();
+        {
+            const spine_level L = spine_eval(spine_depth());
+            const u8 da = (u8)(72.0f * L.divider_a);
+            if (da) wave_draw_divider_gpu(IY((int)L.divider_y), 0x8A, 0x93, 0xC8, da);
+        }
+        if (poster_gpu) ui_gpu_tex_draw(GPU_TEX_POSTER, PX, PY, PW, PH);
+
+        // Chips (y=262, h=29, pill).
+        // The facts worker's words when they have arrived ("DTS-HD MA 5.1",
+        // "1080P H.264"), the detail fetch's DisplayTitle until then.  The
+        // audio chip keeps its blue outline for lossless audio only: blue is
+        // "state the file has", and lossless is the state worth stating.
+        char achip[96] = "", vchip[64] = "", pchip[48] = "";
+        ItemFacts fx;
+        const bool hfx = facts_get(it->id, &fx, NULL);
+        bool a_ll = true;
+        if (hfx && fx.audio[0]) { snprintf(achip, sizeof achip, "%s", fx.audio); a_ll = fx.lossless; }
+        else if (detail.audio_info[0]) info_audio_chip(detail.audio_info, achip, sizeof achip);
+        if (hfx && fx.video[0]) snprintf(vchip, sizeof vchip, "%s", fx.video);
+        else if (detail.video_info[0]) snprintf(vchip, sizeof vchip, "%s", detail.video_info);
+        {
+            u32 qw = 0, qh = 0; unsigned qbr = 0;
+            vquality_params(vquality_get(), hd1080_enabled(), display_width,
+                            display_height, &qw, &qh, NULL, NULL, &qbr);
+            if (qbr == 0) snprintf(pchip, sizeof pchip, "direct play");
+            else          snprintf(pchip, sizeof pchip, "transcode %u Mbps", qbr / 1000000u);
+        }
+        const int CY = IY(262), CH = UIS_H(29), CG = UIS_W(8);
+        const float apx = UIS_TF(10.0f), cpx = UIS_TF(11.0f);
+        int cx = TX;
+        const int aw = achip[0] ? info_chip_width(achip, apx, UI_FACE_SPEC) : 0;
+        const int vw = vchip[0] ? info_chip_width(vchip, cpx, UI_FACE_REGULAR) : 0;
+        const int pw = info_chip_width(pchip, cpx, UI_FACE_REGULAR);
+        if (aw) { wave_draw_rrect_outline_gpu(cx, CY, aw, CH, CH / 2, 1,
+                                              a_ll ? XMB_ACCENT_ALT : XMB_HAIRLINE, 255,
+                                              XMB_PANEL, XMB_PANEL, 255); cx += aw + CG; }
+        if (vw) { wave_draw_rrect_outline_gpu(cx, CY, vw, CH, CH / 2, 1, XMB_HAIRLINE, 255,
+                                              XMB_PANEL, XMB_PANEL, 255); cx += vw + CG; }
+        wave_draw_rrect_outline_gpu(cx, CY, pw, CH, CH / 2, 1, XMB_HAIRLINE, 255,
+                                    XMB_PANEL, XMB_PANEL, 255);
+
+        // Action row (y=410, h=44, r=4, gaps 12).  Resume/Play is the one
+        // primary: the accent->accent_alt ramp with its glow; the others are
+        // panels.  The focused control gets the focus ring, whichever it is.
+        const int AY = IY(410), AH = UIS_H(44), AR = UIS_H(4), AG = UIS_W(12);
+        int ax[3], aww[3];
+        {
+            int x = TX;
+            for (int i = 0; i < n0; i++) {
+                const int id = row0[i];
+                aww[i] = UIS_W(id == F3_RESUME ? 200 : id == F3_PLAY ? 150
+                             : id == F3_START ? 150 : 168);
+                ax[i] = x;
+                x += aww[i] + AG;
+                const bool primary = (id == F3_RESUME || id == F3_PLAY);
+                const bool foc = (frow == 0 && fcol == i);
+                if (primary) {
+                    wave_draw_glow_gpu(ax[i] + aww[i] / 2, AY + AH / 2,
+                                       aww[i] / 2 + UIS_W(24), AH / 2 + UIS_H(24),
+                                       (u8)((XMB_ACCENT >> 16) & 0xFF),
+                                       (u8)((XMB_ACCENT >> 8) & 0xFF),
+                                       (u8)(XMB_ACCENT & 0xFF), 97);   // .38
+                    wave_draw_rrect_gpu(ax[i], AY, aww[i], AH, AR,
+                                        XMB_ACCENT, XMB_ACCENT_ALT, 255);
+                } else {
+                    wave_draw_rrect_outline_gpu(ax[i], AY, aww[i], AH, AR, 1,
+                                                XMB_HAIRLINE, 255,
+                                                XMB_PANEL, XMB_PANEL, 255);
+                }
+                // The card focus ring, gliding between controls the way it
+                // glides between posters (spine_focus_ring_gpu).
+                if (foc) spine_focus_ring_gpu(ax[i], AY, aww[i], AH);
+            }
+        }
+
+        // Selectors (y=634, h=34, r=4).
+        const int SY = IY(634), SH = UIS_H(34);
+        int sx_[2], sw_[2];
+        {
+            int x = TX;
+            for (int i = 0; i < n1; i++) {
+                sw_[i] = UIS_W(row1[i] == F3_VERSION ? 172 : 216);
+                sx_[i] = x;
+                x += sw_[i] + UIS_W(12);
+                wave_draw_rrect_outline_gpu(sx_[i], SY, sw_[i], SH, AR, 1,
+                                            XMB_HAIRLINE, 255, XMB_PANEL, XMB_PANEL, 255);
+                if (frow == 1 && fcol == i) spine_focus_ring_gpu(sx_[i], SY, sw_[i], SH);
+            }
+        }
+
+        rsxSync();
+        ui_text_gpu_begin();
+
+        // ---- CPU phase ---------------------------------------------------
+        if (!poster_gpu) {
+            if (poster_cpu.pixels) info_blit(&poster_cpu, PX, PY);
+            else xmb_cpu_blit_thumb_scaled(it->id, PX, PY, PW, PH);
+        }
+        // 1 px hairline ring just outside the poster (the canvas's box-shadow).
+        drawRect((u32)(PX - 1), (u32)(PY - 1), (u32)(PW + 2), 1, XMB_HAIRLINE);
+        drawRect((u32)(PX - 1), (u32)(PY + PH), (u32)(PW + 2), 1, XMB_HAIRLINE);
+        drawRect((u32)(PX - 1), (u32)(PY - 1), 1, (u32)(PH + 2), XMB_HAIRLINE);
+        drawRect((u32)(PX + PW), (u32)(PY - 1), 1, (u32)(PH + 2), XMB_HAIRLINE);
+
+        // Cast: 64 px portraits on a 104 px pitch from x=313, y=499.  The
+        // canvas has no crew here except the director, who gets the line
+        // above, so crew entries are skipped.
+        const char *director = NULL;
+        int cast_idx[5], n_cast = 0;
+        for (int i = 0; i < detail.n_people; i++) {
+            if (strcmp(detail.people[i].role, "Director") == 0) {
+                if (!director) director = detail.people[i].name;
+                continue;
+            }
+            if (n_cast < 5) cast_idx[n_cast++] = i;
+        }
+        const int KY = IY(499), KD = UIS_H(64), KP = UIS_W(104);
+        for (int k = 0; k < n_cast; k++)
+            xmb_cpu_blit_thumb_circle(detail.people[cast_idx[k]].id,
+                                      TX + k * KP, KY, KD, XMB_HAIRLINE);
+
+        // ---- text --------------------------------------------------------
+        xmb_draw_topbar();
+        spine_draw();
+
+        // Title: 25px/700 display face, -0.01em.
+        {
+            const float tpx = UIS_TF(25.0f), trk = tpx * -0.01f;
+            char tbuf[132];
+            snprintf(tbuf, sizeof tbuf, "%s", it->name);
+            int len = (int)strlen(tbuf);
+            while (len > 1 && ttf_text_width_tracked(tbuf, tpx, UI_FACE_DISPLAY, trk) > TW)
+                tbuf[--len] = 0;
+            drawTTF_tracked((u32)TX, (u32)PY, tbuf, tpx, XMB_TEXT, UI_FACE_DISPLAY, trk);
+        }
+
+        // Meta row: 13.5 text_dim, separators at 50%, rating in accent_alt.
+        {
+            const float mpx = UIS_TF(13.5f);
+            const u32 sep_c = info_mix(XMB_TEXT_DIM, XMB_BG, 0.5f);
+            const char *parts[4] = { it->year_str, it->duration_str,
+                                     detail.official_rating, detail.genres };
+            int mx = TX;
+            bool first = true;
+            for (int i = 0; i < 4; i++) {
+                if (!parts[i] || !parts[i][0]) continue;
+                if (!first) {
+                    drawTTF((u32)(mx + UIS_W(6)), (u32)IY(228), "\xC2\xB7", mpx, sep_c);
+                    mx += UIS_W(18);
+                }
+                drawTTF((u32)mx, (u32)IY(228), parts[i], mpx, XMB_TEXT_DIM);
+                mx += ttf_text_width(parts[i], mpx);
+                first = false;
+            }
+            if (detail.community_rating[0]) {
+                if (!first) {
+                    drawTTF((u32)(mx + UIS_W(6)), (u32)IY(228), "\xC2\xB7", mpx, sep_c);
+                    mx += UIS_W(18);
+                }
+                drawTTF((u32)mx, (u32)IY(228), detail.community_rating, mpx, XMB_ACCENT_ALT);
+            }
+        }
+
+        // Chip labels, vertically centred in the 29 px pills.
+        {
+            int x = TX;
+            const int ty_s = CY + (CH - (int)apx) / 2 - UIS_H(1);
+            const int ty_r = CY + (CH - (int)cpx) / 2 - UIS_H(1);
+            if (aw) { drawTTF_face((u32)(x + UIS_W(10)), (u32)ty_s, achip, apx,
+                                   a_ll ? XMB_ACCENT_ALT : XMB_TEXT_DIM, UI_FACE_SPEC);
+                      x += aw + CG; }
+            if (vw) { drawTTF((u32)(x + UIS_W(10)), (u32)ty_r, vchip, cpx, XMB_TEXT_DIM);
+                      x += vw + CG; }
+            drawTTF((u32)(x + UIS_W(10)), (u32)ty_r, pchip, cpx, XMB_TEXT_DIM);
+        }
+
+        // Overview: 14 px text_dim, 620 wide, four lines at 1.55.
+        if (detail.overview[0])
+            info_wrap(TX, IY(304), detail.overview, UIS_TF(14.0f), XMB_TEXT_DIM,
+                      UIS_W(620), UIS_H(22), 4);
+
+        // Button labels.
+        for (int i = 0; i < n0; i++) {
+            const int id = row0[i];
+            char lab[40];
+            if (id == F3_RESUME) {
+                const u32 s = it->resume_secs;
+                snprintf(lab, sizeof lab, "Resume %u:%02u:%02u",
+                         s / 3600u, (s / 60u) % 60u, s % 60u);
+            } else if (id == F3_PLAY)    snprintf(lab, sizeof lab, "Play");
+            else if (id == F3_START)     snprintf(lab, sizeof lab, "Play from start");
+            else                         snprintf(lab, sizeof lab, watched ? "Watched" : "Mark as watched");
+            const bool primary = (id == F3_RESUME || id == F3_PLAY);
+            const float bpx = UIS_TF(15.0f);
+            const int lw = ttf_text_width(lab, bpx, primary);
+            int lx = ax[i] + (aww[i] - lw) / 2;
+            if (primary) {
+                // The 22 px cross glyph sits at the left, the label after it.
+                const int gx = ax[i] + UIS_W(20);
+                draw_ps_button_vcentered((u32)gx, AY + AH / 2, 'X', UIS_H(22), 0x00FFFFFF);
+                lx = gx + UIS_W(32);
+            }
+            drawTTF((u32)lx, (u32)(AY + (AH - (int)bpx) / 2 - UIS_H(1)), lab, bpx,
+                    primary ? XMB_WHITE : XMB_TEXT, primary);
+        }
+
+        // Director line.
+        if (director) {
+            char line[140];
+            snprintf(line, sizeof line, "Director \xC2\xB7 %s", director);
+            drawTTF((u32)TX, (u32)IY(467), line, UIS_TF(13.0f), XMB_TEXT_FAINT);
+        }
+
+        // Cast names: actor above character, Satoshi one weight.
+        for (int k = 0; k < n_cast; k++) {
+            const JFPerson *pp = &detail.people[cast_idx[k]];
+            const int x = TX + k * KP;
+            info_clip_text(x, KY + KD + UIS_H(8), pp->name, UIS_TF(12.0f), XMB_TEXT,
+                           KP - UIS_W(8), false, UI_FACE_TAB_REG);
+            if (pp->role[0])
+                info_clip_text(x, KY + KD + UIS_H(26), pp->role, UIS_TF(11.5f),
+                               XMB_TEXT_DIM, KP - UIS_W(8), false, UI_FACE_TAB_REG);
+        }
+
+        // Selector labels.
+        for (int i = 0; i < n1; i++) {
+            const int y = SY + (SH - (int)UIS_TF(12.0f)) / 2 - UIS_H(1);
+            const char *name = row1[i] == F3_VERSION ? "Version" : "Quality";
+            drawTTF((u32)(sx_[i] + UIS_W(15)), (u32)y, name, UIS_TF(12.0f), XMB_TEXT_DIM);
+            char val[64];
+            if (row1[i] == F3_VERSION) {
+                snprintf(val, sizeof val, "%s", versions.source[version_sel].label);
+            } else {
+                u32 qw = 0, qh = 0; unsigned qbr = 0;
+                const vquality_t vq = vquality_get();
+                vquality_params(vq, hd1080_enabled(), display_width, display_height,
+                                &qw, &qh, NULL, NULL, &qbr);
+                if (qbr == 0) snprintf(val, sizeof val, "Original \xC2\xB7 direct play");
+                else          snprintf(val, sizeof val, "%s \xC2\xB7 %u Mbps",
+                                       vquality_label(vq), qbr / 1000000u);
+            }
+            const int vx = sx_[i] + UIS_W(row1[i] == F3_VERSION ? 70 : 66);
+            info_clip_text(vx, y, val, UIS_TF(12.5f), XMB_TEXT,
+                           sx_[i] + sw_[i] - vx - UIS_W(24), true);
+            drawTTF((u32)(sx_[i] + sw_[i] - UIS_W(18)), (u32)(y + UIS_H(1)),
+                    "\xE2\x96\xBE", UIS_TF(10.0f), XMB_TEXT_FAINT);
+        }
+
+        // Hints: what X does on the focused control, and Back.
+        {
+            Hint h[2];
+            h[0].glyph = 'X';
+            h[0].label = focus == F3_RESUME ? "Resume" : focus == F3_PLAY ? "Play"
+                       : focus == F3_START ? "Play from start"
+                       : focus == F3_WATCHED ? "Mark watched"
+                       : focus == F3_VERSION ? "Choose version" : "Change quality";
+            h[1].glyph = 'C'; h[1].label = "Back";
+            draw_hints_bar(h, 2);
+        }
+
+        ui_text_gpu_flush();
+        flip();
+    }
+
+    detail_media_free(&poster_cpu);
+    ui_gpu_tex_clear(GPU_TEX_POSTER);
+    ui_gpu_tex_clear(GPU_TEX_BACKDROP);
+    spine_set_level(back_level);
+    slog_state("INFO3_CLOSE");
+    g_info_cooldown_until = timing_get_us() + 500000;
+    init_btns();
+}
+
 void xmb_show_item_info(const XMBItem *root) {
+    // The redesigned page (above) whenever the spine is on; this pre-revamp
+    // page is what jellyfin_spine.txt=0 still gets.
+    if (g_spine_on) { xmb_show_item_info_v3(root); return; }
     {
         char dbg[260];
         snprintf(dbg, sizeof(dbg),

@@ -8,6 +8,7 @@ typedef enum {
     HUD_ACTION_AUDIO_TRACK,
     HUD_ACTION_SUBTITLE,
     HUD_ACTION_MENU_SELECT,   // hud_menu_choice() gives the chosen entry
+    HUD_ACTION_STOP,          // O on the redesigned HUD (spine gate on)
 } HudAction;
 
 // total_secs: item runtime in seconds (0 = unknown, hides progress)

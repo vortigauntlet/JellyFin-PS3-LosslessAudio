@@ -370,6 +370,14 @@ void thumb_cache_init(void) {
     size_t pp = (size_t)gp.card_w * gp.card_h;
     size_t pl = (size_t)gl.card_w * gl.card_h;
     s_max_px  = (pp > pl) ? pp : pl;
+    // The spine's Home queue shows its focused poster larger than any grid
+    // card (200x300 authored), and fetches every queue item at that one size
+    // so an item keeps its slot as it travels from the back of the queue to
+    // the front.  xmb_queue_src() caps that at a budget, so this can grow the
+    // slots by at most ~6% over what 1080p already allocates.
+    int qw = 0, qh = 0;
+    xmb_queue_src(&qw, &qh);
+    if ((size_t)qw * qh > s_max_px) s_max_px = (size_t)qw * qh;
 
     // The VRAM mirror is a TEXTURE, and the RSX requires a linear texture's
     // pitch to be 64-byte aligned.  A card is 230 px wide at 1080p, so its
@@ -383,7 +391,9 @@ void thumb_cache_init(void) {
     {
         size_t bp = (size_t)VRAM_PITCH(gp.card_w) * gp.card_h;
         size_t bl = (size_t)VRAM_PITCH(gl.card_w) * gl.card_h;
+        size_t bq = qw > 0 ? (size_t)VRAM_PITCH(qw) * qh : 0;
         s_vram_bytes = (bp > bl) ? bp : bl;
+        if (bq > s_vram_bytes) s_vram_bytes = bq;
     }
     // Pixels live in MAIN memory (not RSX local): the UI blits cards with
     // the CPU every frame, and CPU reads of RSX-local memory are far too

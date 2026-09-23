@@ -88,6 +88,11 @@ bool strobe_test_disable_tracked_text(void) { return false; }
 // and which is NOT the gamma-corrected one the run path uses.
 bool ui_text_gpu_icon(u32, u32, int, float, u32) { return false; }
 
+// drawIconA()'s CPU fallback mixes toward XMB_BG, which reads the theme.
+// Colours do not affect metrics, so a zeroed theme is enough.
+#include "theme.h"
+Theme g_theme;
+
 // The real thing, compiled as-is.
 #include "../source/ui/render/ui_text.cpp"
 

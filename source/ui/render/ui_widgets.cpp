@@ -10,6 +10,7 @@
 #include "ui_visuals.h"
 #include "ui_wave.h"
 #include "ui_strobe_test.h"
+#include "ui_spine.h"    // frame clock for the A-Z rail's glide
 #include "icons.h"
 #include "stb_image.h"
 #include "ps_buttons_png.h"
@@ -320,44 +321,125 @@ void xmb_draw_tabs(void) {
 // Alphabetical jump bar rendered to the left of the item list.
 // Always visible on library tabs at depth 0; letters are dimmed when unfocused,
 // the selected entry pops white while g_jumpbar_active is true.
+// The A-Z rail as an XMB list -- used whenever the spine is on.
+//
+// WHY NOT THE DESIGN'S STATIC RAIL.  README 3.3 draws all 27 entries at once.
+// Under the spine that is physically capped: 27 rows have to fit between the
+// grid's top and the hints bar, which at 1080p is ~22 px a row, so the letters
+// can never be much above 19 px however the constants are tuned -- and the TV
+// report after that tuning was still "tiny".  So the rail becomes what the
+// rest of the UI now is: a window of JB_WIN letters centred on the current one,
+// on a pitch roomy enough for 25 px type, fading toward its ends and gliding
+// (the spine's approach) as the current letter changes.  At the ends the
+// window stops rather than showing empty rows.  This IS a departure from the
+// canvas and is recorded in SPINE-PLAN.md.
+//
+// The current letter is the jump cursor while the rail is focused, otherwise
+// the focused item's section.  Size is constant (cached runs stay cached);
+// only colour steps, in sixteenths, so a settled rail uploads nothing.
+#define JB_WIN       15      // letters visible
+#define JB_PITCH     24      // authored px per letter
+#define JB_FONT      17.0f   // authored px
+
+static spine_approach s_jb;
+static unsigned       s_jb_frame = 0;
+
+static u32 jb_mix(u32 a, u32 b, float t) {
+    int k = (int)(t * 16.0f + 0.5f);
+    if (k < 0) k = 0;
+    if (k > 16) k = 16;
+    u32 out = 0;
+    for (int sh = 0; sh <= 16; sh += 8) {
+        int ca = (int)((a >> sh) & 0xFF), cb = (int)((b >> sh) & 0xFF);
+        out |= (u32)(ca + (cb - ca) * k / 16) << sh;
+    }
+    return out;
+}
+
+static void xmb_draw_jumpbar_window(int tab, int jbar_x, int bar_top, int avail,
+                                    const char * const *labels) {
+    // The letter the window centres on.
+    int cur = 0;
+    if (g_jumpbar_active) {
+        cur = g_jumpbar_sel;
+    } else if (g_sel >= 0 && g_sel < g_item_count[tab]) {
+        char c = g_items[tab][g_sel].name[0];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        cur = (c >= 'A' && c <= 'Z') ? 1 + (c - 'A') : 0;
+    }
+    const int half = JB_WIN / 2;
+    float centre = (float)cur;
+    if (centre < (float)half) centre = (float)half;
+    if (centre > (float)(JBAR_ENTRIES - 1 - half)) centre = (float)(JBAR_ENTRIES - 1 - half);
+
+    // Glide once per frame; snap on the first frame after the rail was absent.
+    const unsigned id = spine_frame_id();
+    if (id != s_jb_frame) {
+        if (s_jb_frame + 1 < id) spine_approach_init(&s_jb, centre, SPINE_CATEGORY_MS);
+        spine_approach_set(&s_jb, centre);
+        spine_approach_step(&s_jb, spine_frame_dt_us());
+        s_jb_frame = id;
+    }
+    const float c = s_jb.value;
+
+    float pitch = (float)UIS_H(JB_PITCH);
+    if (pitch * JB_WIN > (float)avail) pitch = (float)avail / JB_WIN;
+    float font_px = UIS_TF(JB_FONT);
+    if (font_px > pitch * 0.85f) font_px = pitch * 0.85f;
+    float wide = (float)ttf_text_width("W", font_px, true);
+    if (wide > (float)JBAR_W) font_px *= (float)JBAR_W / wide;
+
+    const u32 bg = XMB_BG;
+    for (int i = 0; i < JBAR_ENTRIES; i++) {
+        const float d = (float)i - c;                 // rows from the centre
+        if (d < -(float)half - 0.5f || d > (float)half + 0.5f) continue;
+        const int ty = bar_top + (int)(((float)half + d) * pitch
+                                       + (pitch - font_px) * 0.5f);
+        if (ty < 0 || (u32)ty >= display_height) continue;
+
+        const bool sel  = g_jumpbar_active && i == g_jumpbar_sel;
+        const bool here = !g_jumpbar_active && i == cur;
+        const u32  base = sel ? XMB_ACCENT_ALT : here ? XMB_TEXT : XMB_TEXT_DIM;
+        float a = d < 0.0f ? -d : d;
+        a = a / ((float)half + 0.5f);                 // 0 centre .. 1 at the edge
+        const u32 colour = jb_mix(base, bg, a * a * 0.85f);
+
+        const int lw = ttf_text_width(labels[i], font_px, sel || here);
+        drawTTF((u32)(jbar_x + (JBAR_W - lw) / 2), (u32)ty, labels[i],
+                font_px, colour, sel || here);
+    }
+}
+
 void xmb_draw_jumpbar(int tab) {
     GridGeom gg;
     xmb_grid_geom(tab, &gg);
-    int bar_top = XMB_GRID_Y0
-                + (xmb_kind(tab) == TABKIND_MUSIC ? XMB_MUSIC_SUBTAB_H : 0);
-    int bar_bot = bar_top + XMB_GRID_ROWS * gg.stride - XMB_CARD_TEXT_H;
-    int bar_h   = bar_bot - bar_top;
-    int jbar_x  = gg.x0 - JBAR_GAP * 3 - JBAR_W;
+    const int bar_top = XMB_GRID_Y0
+                      + (xmb_kind(tab) == TABKIND_MUSIC ? XMB_MUSIC_SUBTAB_H : 0);
+    int jbar_x = gg.x0 - JBAR_GAP * 3 - JBAR_W;
     if (jbar_x < 0) jbar_x = 0;
-    // Step height evenly divides the bar.  The LETTERS, though, are type, and
-    // type is sized from the type scale -- not from however tall the grid
-    // happens to be.
-    //
-    // They used to be entry_h * 1.2, i.e. "fill the slot": 27 slots spread down
-    // a 1080p grid gave 40px+ letters, clamped back to the 28px cap and then
-    // squeezed again by the column width. The result was a rail of huge
-    // letters next to the posters, which is not what an alphabetical index is
-    // -- it is a quiet scale you glance at, at the same size as every other
-    // small label on the screen.
-    //
-    // So: the design's small-label size, and only smaller if a short bar makes
-    // even that overlap.
-    float entry_h = (float)bar_h / (float)JBAR_ENTRIES;
-    float font_px = UIS_TF(12);
+
+    // A FIXED PITCH, not a share of the grid.  This used to divide two grid
+    // rows' height by 27, so the letters were only ever as big as the cards
+    // left room for: when the spine moved the divider down 70 px the grid got
+    // shorter, and on the Music tab (smaller square cards, a sub-tab header
+    // above them) the letters fell to ~12 px at 1080p.  The design's rail
+    // (README 3.3) is a type ladder with its own stride -- mono 11 at a 15 px
+    // pitch -- set here one step larger (13 / 17), because the rail was
+    // reported unreadable on the TV.  Only a screen too short for 27 of those
+    // shrinks it, and then against the room actually below the grid's top
+    // rather than two card rows.
+    // From the REST top: the rail's pitch is a size, and must not change while
+    // the content glides in (it would re-rasterise every letter per frame).
+    const int avail = (int)display_height - XMB_BOTTOM_PAD
+                    - (bar_top - spine_content_dy());
+    float entry_h = (float)UIS_H(17);
+    if (entry_h * JBAR_ENTRIES > (float)avail) entry_h = (float)avail / JBAR_ENTRIES;
+    float font_px = UIS_TF(13);
     if (font_px > entry_h * 0.9f) font_px = entry_h * 0.9f;
     if (font_px < UIS_TF(8)) font_px = UIS_TF(8);
 
-    // THE COLUMN IS THE HARD CONSTRAINT, and it wins over both clamps above.
-    //
-    // The size above comes from the GRID's height, but the letters are drawn
-    // into a JBAR_W-wide strip, and nothing tied the two together: when the
-    // chrome band was rescaled the grid moved, font_px went to its cap, and the
-    // A-Z strip drew far too large in a column that had not changed at all.
-    //
-    // Measured rather than guessed at a ratio -- "W" is the widest label, the
-    // advance scales linearly with px so one division is exact, and the system
-    // face is Rodin now, whose proportions are not the ones the old 1.2x was
-    // eyeballed against.
+    // The column is still the hard constraint: 'W' is the widest label, and
+    // the advance scales linearly with px, so one division is exact.
     float wide = (float)ttf_text_width("W", font_px, false);
     if (wide > (float)JBAR_W) font_px *= (float)JBAR_W / wide;
 
@@ -366,16 +448,34 @@ void xmb_draw_jumpbar(int tab) {
         "N","O","P","Q","R","S","T","U","V","W","X","Y","Z"
     };
 
+    if (g_spine_on) {
+        xmb_draw_jumpbar_window(tab, jbar_x, bar_top, avail, jbar_labels);
+        return;
+    }
+
+    // README 3.3's three states: the letter heading the focused item's section
+    // in `text`, the jump cursor in `accent_alt`, everything else `text_faint`.
+    // Every letter used to be `hairline`, a shade off the background, which is
+    // most of why the rail read as too small to see.
+    int here = -1;
+    if (g_sel >= 0 && g_sel < g_item_count[tab]) {
+        char c = g_items[tab][g_sel].name[0];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        here = (c >= 'A' && c <= 'Z') ? 1 + (c - 'A') : 0;
+    }
+
     for (int i = 0; i < JBAR_ENTRIES; i++) {
         int ey = bar_top + (int)(i * entry_h);
         int ty = ey + (int)((entry_h - font_px) * 0.5f);
         if (ty < 0) ty = 0;
         if ((u32)ty >= display_height) continue;
         bool sel = g_jumpbar_active && (i == g_jumpbar_sel);
-        u32 color = sel ? XMB_WHITE
-                  : g_jumpbar_active ? XMB_ICON_IDLE
-                  : XMB_HAIRLINE;
-        drawTTF((u32)jbar_x, (u32)ty, jbar_labels[i], font_px, color, sel);
+        u32 color = sel               ? XMB_ACCENT_ALT
+                  : (i == here)       ? XMB_TEXT
+                  :                     XMB_TEXT_FAINT;
+        int lw = ttf_text_width(jbar_labels[i], font_px, sel);
+        drawTTF((u32)(jbar_x + (JBAR_W - lw) / 2), (u32)ty, jbar_labels[i],
+                font_px, color, sel);
     }
 }
 

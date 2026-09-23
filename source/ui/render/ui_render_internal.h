@@ -24,3 +24,13 @@ void xmb_draw_card(const char *item_id, int cx, int cy, int card_w, int card_h,
                    u8 progress_pct, bool selected,
                    const char *tile_name = NULL,
                    ThumbImg img = THUMB_IMG_PRIMARY);
+// Source-size variants: the thumbnail is fetched at (src_w x src_h) -- the
+// size some grid already caches it at -- and drawn at (card_w x card_h).
+void xmb_draw_card_src(const char *item_id, int src_w, int src_h,
+                       int cx, int cy, int card_w, int card_h,
+                       u8 progress_pct, bool selected,
+                       const char *tile_name = NULL,
+                       ThumbImg img = THUMB_IMG_PRIMARY);
+bool xmb_card_gpu_src(const char *item_id, int src_w, int src_h,
+                      int cx, int cy, int card_w, int card_h,
+                      ThumbImg img = THUMB_IMG_PRIMARY);

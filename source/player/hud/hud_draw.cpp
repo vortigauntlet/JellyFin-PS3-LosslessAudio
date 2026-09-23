@@ -286,15 +286,9 @@ static void draw_menu(int dw, int dh) {
 // hud_compose — render the full overlay into the staging buffer
 // -------------------------------------------------------
 
-static void hud_compose(u64 elapsed_us, bool paused, bool scrubbing) {
-    // Wipe the rows the previous compose drew, then track this one's span.
-    if (s_ovl_prev_y1 > s_ovl_prev_y0)
-        memset(s_ovl_stage + (u32)s_ovl_prev_y0 * s_ovl_w, 0,
-               (u32)(s_ovl_prev_y1 - s_ovl_prev_y0) * s_ovl_w * 4);
-    s_ovl_y0 = (int)s_ovl_h;
-    s_ovl_y1 = 0;
-
-    cpu_rt_begin(s_ovl_stage, s_ovl_w, s_ovl_h);
+// The pre-revamp HUD: one strip, focusable transport controls.  Moved out of
+// hud_compose() unchanged; it is what jellyfin_spine.txt=0 still draws.
+static void hud_body_v2(u64 elapsed_us, bool paused, bool scrubbing) {
 
     // CRT overscan inset: lift the effective bottom by oy and pad the left/right
     // edges by ox so the transport row, times and buttons clear the bezel (#21).
@@ -471,6 +465,23 @@ static void hud_compose(u64 elapsed_us, bool paused, bool scrubbing) {
 
     if (g_hud.menu_visible && g_hud.menu_n > 0)
         draw_menu(dw, dh);
+
+}
+
+#include "hud_v3.inc"
+
+static void hud_compose(u64 elapsed_us, bool paused, bool scrubbing) {
+    // Wipe the rows the previous compose drew, then track this one's span.
+    if (s_ovl_prev_y1 > s_ovl_prev_y0)
+        memset(s_ovl_stage + (u32)s_ovl_prev_y0 * s_ovl_w, 0,
+               (u32)(s_ovl_prev_y1 - s_ovl_prev_y0) * s_ovl_w * 4);
+    s_ovl_y0 = (int)s_ovl_h;
+    s_ovl_y1 = 0;
+
+    cpu_rt_begin(s_ovl_stage, s_ovl_w, s_ovl_h);
+
+    if (g_spine_on) hud_body_v3(elapsed_us, paused, scrubbing);
+    else            hud_body_v2(elapsed_us, paused, scrubbing);
 
     cpu_rt_end();
 

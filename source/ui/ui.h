@@ -80,6 +80,8 @@ void drawTTF(u32 x, u32 y, const char *text, float px, u32 color, bool bold = fa
 void drawTTF_vcentered(u32 x, int cy, const char *text, float px, u32 color,
                        bool bold = false);
 void drawIcon(u32 x, u32 y, int codepoint, float px, u32 color);
+// drawIcon at an opacity, 0..255 (255 = drawIcon).  See ui_text.cpp.
+void drawIconA(u32 x, u32 y, int codepoint, float px, u32 color, u32 alpha);
 void drawHeader(void);
 void decode_unicode_escapes(char *str);
 

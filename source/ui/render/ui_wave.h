@@ -27,6 +27,33 @@ void wave_draw_divider_gpu(int y_px, u8 r, u8 g, u8 b, u8 peak_alpha);
 void wave_draw_glow_gpu(int cx_px, int cy_px, int radius_px,
                         u8 r, u8 g, u8 b, u8 peak_alpha);
 
+// Bind the wave's passthrough programs + standard alpha blend for immediate-
+// mode geometry drawn elsewhere.  No vertex buffers, no fence.  GPU phase.
+bool wave_imm_bind(void);
+
+// --- spine panels (ui_wave_panels.cpp) -------------------------------------
+// All immediate-mode on the programs above; GPU phase only, before the
+// frame's rsxSync().
+
+// Elliptical glow: peak alpha at the centre, falling linearly to zero at
+// (rx, ry).  The three-radius form above is the round case.
+void wave_draw_glow_gpu(int cx_px, int cy_px, int rx_px, int ry_px,
+                        u8 r, u8 g, u8 b, u8 peak_alpha);
+
+// Rounded rectangle (r = h/2 gives a pill), filled with a horizontal colour
+// ramp from rgb_left to rgb_right at one alpha.
+void wave_draw_rrect_gpu(int x, int y, int w, int h, int r,
+                         u32 rgb_left, u32 rgb_right, u8 alpha);
+// The same shape with a t-pixel border: the outer shape in the line colour,
+// the inset one in the fill.
+void wave_draw_rrect_outline_gpu(int x, int y, int w, int h, int r, int t,
+                                 u32 line_rgb, u8 line_a,
+                                 u32 fill_left, u32 fill_right, u8 fill_a);
+// A one-colour alpha ramp over a rectangle -- a CSS linear-gradient of n
+// stops at fractions pos[] (0..1 along x, or along y when vertical).
+void wave_draw_ramp_gpu(int x, int y, int w, int h, u32 rgb, bool vertical,
+                        int n, const float *pos, const u8 *alpha);
+
 // Blended full-screen black quad at the given alpha, drawn on the GPU and
 // fenced with rsxSync() so CPU pixel writes may follow immediately.  Used to
 // dim the finished frame under a modal.

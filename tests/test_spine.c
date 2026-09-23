@@ -270,6 +270,102 @@ static void test_motion(void)
     ck_near(spine_motion_value(&m, t0 + T / 2), 1.0f, 1e-6f, "0 -> 2 passes L2 at halfway");
 }
 
+// --- 6. approach motion and fractional slots ------------------------------
+static float run_approach(float from, float to, int ms, double fps, double secs)
+{
+    spine_approach a;
+    int i, n = (int)(fps * secs + 0.5);
+    unsigned long long dt = (unsigned long long)(1000000.0 / fps + 0.5);
+    spine_approach_init(&a, from, ms);
+    spine_approach_set(&a, to);
+    for (i = 0; i < n; i++) spine_approach_step(&a, dt);
+    return a.value;
+}
+
+static void test_approach(void)
+{
+    spine_approach a;
+    int i, mono = 1, inside = 1;
+    float prev;
+
+    printf("6. approach motion + fractional slots\n");
+
+    // XMP's gainOf(): the tabulated short durations, then the formula.
+    ck_near(spine_approach_gain(0),   1.0f,        1e-7f, "gain(0 ms) = 1");
+    ck_near(spine_approach_gain(50),  0.63694263f, 1e-7f, "gain(50 ms) = table[3]");
+    ck_near(spine_approach_gain(200), 1.0f / (7 * 0.33333299f + 2.2f), 1e-6f,
+            "gain(200 ms) = 1/((12-5)*0.3333+2.2)");
+
+    // At 60 Hz, 12 frames of a 200 ms move cover 1-(1-g)^12 of the way,
+    // which is the curve the XMB draws.
+    {
+        float g = spine_approach_gain(200), want = 1.0f - powf(1.0f - g, 12.0f);
+        ck_near(run_approach(0.0f, 1.0f, 200, 60.0, 0.2), want, 1e-4f,
+                "12 frames at 60 Hz reproduce the per-frame curve");
+    }
+
+    // Frame-rate independence: the same 0.25 s at 60, 36 and 20 fps lands
+    // within a couple of percent of the same place.  0.25 s is a whole number
+    // of frames at all three (15 / 9 / 5), so every run covers the same
+    // time.  Without the dt scaling a 36 fps console would drift at 60% speed.
+    {
+        float v60 = run_approach(0.0f, 1.0f, 320, 60.0, 0.25);
+        float v36 = run_approach(0.0f, 1.0f, 320, 36.0, 0.25);
+        float v20 = run_approach(0.0f, 1.0f, 320, 20.0, 0.25);
+        ck_near(v36, v60, 0.02f, "36 fps tracks 60 fps");
+        ck_near(v20, v60, 0.03f, "20 fps tracks 60 fps");
+    }
+
+    // Monotonic, never overshoots, lands exactly (the snap), and a long
+    // stall cannot throw it past the target.
+    spine_approach_init(&a, 0.0f, 200);
+    spine_approach_set(&a, 3.0f);
+    prev = 0.0f;
+    for (i = 0; i < 120; i++) {
+        float v = spine_approach_step(&a, 16667);
+        if (v < prev) mono = 0;
+        if (v > 3.0f) inside = 0;
+        prev = v;
+    }
+    ck(mono, "approach is monotonic toward its target");
+    ck(inside, "approach never overshoots");
+    ck(a.value == 3.0f && !spine_approach_busy(&a), "approach lands exactly");
+    spine_approach_init(&a, 0.0f, 200);
+    spine_approach_set(&a, 1.0f);
+    spine_approach_step(&a, 5000000ULL);
+    ck(a.value <= 1.0f && a.value > 0.99f, "a 5 s stall lands, not overshoots");
+
+    // Retarget mid-move: position is continuous (the value is simply chased
+    // from where it is).
+    spine_approach_init(&a, 0.0f, 200);
+    spine_approach_set(&a, 1.0f);
+    for (i = 0; i < 4; i++) spine_approach_step(&a, 16667);
+    prev = a.value;
+    spine_approach_set(&a, -1.0f);
+    ck(a.value == prev, "retarget does not move the value");
+    spine_approach_step(&a, 16667);
+    ck(a.value < prev, "and the next step heads for the new target");
+
+    // Fractional slots agree with the integer table and are continuous.
+    for (i = 0; i <= 7; i++)
+        ck_near(spine_slot_alpha_f((float)i), spine_slot_alpha(i, 0), 1e-7f,
+                "fractional falloff equals the table at whole slots");
+    {
+        int ok = 1;
+        float p = spine_slot_alpha_f(0.0f);
+        for (i = 1; i <= 7000; i++) {
+            float v = spine_slot_alpha_f((float)i / 1000.0f);
+            if (v > p + 1e-6f || p - v > 0.02f) ok = 0;   // falls, no jumps
+            p = v;
+        }
+        ck(ok, "fractional falloff is continuous and never rises");
+    }
+    ck(spine_near(0.0f) == 1.0f && spine_near(1.0f) == 0.0f &&
+       spine_near(-0.25f) == 0.75f, "nearness");
+    ck(spine_slot_x_f(0.5f) == SPINE_ACTIVE_X + 0.5f * SPINE_STRIDE,
+       "slot x is linear in distance");
+}
+
 int main(void)
 {
     test_table();
@@ -277,6 +373,7 @@ int main(void)
     test_divider_clearance();
     test_slots();
     test_motion();
+    test_approach();
     if (fails) { printf("\ntest_spine: %d FAILED\n", fails); return 1; }
     printf("\ntest_spine: all passed\n");
     return 0;

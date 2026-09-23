@@ -82,8 +82,13 @@ int xmb_next_enabled(int start, int dir) {
 
 // Launch the player for one list item, mapping XMBItem -> JFItem.
 // resume_secs > 0 starts playback at that position (Continue Watching).
+// Bumped by every playback start and every mark-as-watched, so screens
+// holding Continue Watching / Next Up know those rows have gone stale.
+unsigned g_play_gen = 0;
+
 void xmb_play_item(const XMBItem *it, u32 resume_secs,
                    const char *media_source_id) {
+    g_play_gen++;
     JFItem jf; memset(&jf, 0, sizeof(jf));
     strncpy(jf.id,   it->id,   sizeof(jf.id)-1);
     strncpy(jf.name, it->name, sizeof(jf.name)-1);
@@ -111,6 +116,7 @@ static void xmb_play_list_with_next(const XMBItem *items, int count, int idx,
 // was launched from and keeps going across season boundaries.
 void xmb_play_episode_with_next(const XMBItem *first, u32 resume_secs,
                                 const char *media_source_id) {
+    g_play_gen++;
     XMBItem cur = *first;
     u32 resume = resume_secs;
     for (;;) {

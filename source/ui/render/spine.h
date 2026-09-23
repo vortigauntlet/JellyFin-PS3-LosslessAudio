@@ -280,6 +280,125 @@ static inline void spine_motion_go(spine_motion *m, int level,
     m->t0_us = now_us;
 }
 
+// --- the XMB's own motion: APPROACH -------------------------------------------
+//
+// The first hardware pass drove everything off the timed 280 ms smoothstep
+// above and tab changes were instant.  On a TV that read as "way too static":
+// the row jumped a whole stride in one frame and nothing drifted.  The real
+// XMB does not use a timed curve for navigation at all.  It uses APPROACH: every
+// frame the value covers a fixed fraction of the remaining distance, so a move
+// starts quick and settles long and soft -- the "floaty" feel -- and a new
+// target mid-move is simply chased from wherever the value is, with no seam.
+//
+// The gain table is 1etu/XMP's (MIT), packages/paf/src/anim/approach.ts, where
+// it is marked as verified against the console: frames = trunc(ms * 60 / 1000),
+// the five short durations are tabulated, and longer ones follow
+// 1 / ((frames - 5) * 0.333333 + 2.2).  XMP's CATEGORY_MOVE and ITEM_MOVE are
+// 200 ms.
+//
+// FRAME-RATE INDEPENDENT.  That gain is per 60 Hz frame, and this client does
+// not always hold 60 (JellyWave mode 3 runs ~36 fps today).  Stepped once per
+// rendered frame, a slow frame would make the motion slower, not just
+// choppier.  So a step covers the number of 60 Hz frames that ELAPSED: the
+// remaining gap is multiplied by (1 - g) once per whole frame and linearly for
+// the fraction.  No libm, so it stays callable from anywhere.
+#define SPINE_CATEGORY_MS   200   // XMP CATEGORY_MOVE (verified)
+// Decided here, not measured: XMP pushes a level in 220 ms, but that is a
+// timed decelerate, which ends dead.  As an approach, 320 ms keeps the long
+// soft tail the rest of the motion has, so entering a tab drifts in rather
+// than landing.
+#define SPINE_LEVEL_MS      320
+#define SPINE_APPROACH_SNAP 0.0015f   // closer than this and it is there
+
+static inline float spine_approach_gain(int ms)
+{
+    static const float SHORT[5] = {
+        1.0f, 0.96153849f, 0.78125f, 0.63694263f, 0.52910054f
+    };
+    int frames = (int)((float)ms * 0.001f * 60.0f);
+    if (frames < 0) frames = 0;
+    if (frames < 5) return SHORT[frames];
+    return 1.0f / ((float)(frames - 5) * 0.33333299f + 2.2f);
+}
+
+typedef struct {
+    float value;
+    float target;
+    float gain;     // per 60 Hz frame
+} spine_approach;
+
+static inline void spine_approach_init(spine_approach *a, float v, int ms)
+{
+    a->value  = v;
+    a->target = v;
+    a->gain   = spine_approach_gain(ms);
+}
+
+static inline void spine_approach_set(spine_approach *a, float target)
+{
+    a->target = target;
+}
+
+static inline int spine_approach_busy(const spine_approach *a)
+{
+    return a->value != a->target;
+}
+
+static inline float spine_approach_step(spine_approach *a,
+                                        unsigned long long dt_us)
+{
+    float frames = (float)dt_us * (60.0f / 1000000.0f);
+    const float q = 1.0f - a->gain;
+    float keep = 1.0f, gap;
+    int   n, i;
+
+    if (frames > 30.0f) frames = 30.0f;          // a stall lands, not spins
+    n = (int)frames;
+    for (i = 0; i < n; i++) keep *= q;
+    keep *= 1.0f - (frames - (float)n) * a->gain;
+
+    a->value = a->target + (a->value - a->target) * keep;
+    gap = a->value - a->target;
+    if (gap < 0.0f) gap = -gap;
+    if (gap < SPINE_APPROACH_SNAP) a->value = a->target;
+    return a->value;
+}
+
+// --- slots at a FRACTIONAL distance from the focus --------------------------
+//
+// With the row's position animated, a slot sits at a fractional distance d
+// from the focus, and everything about it is continuous in d: position,
+// size and opacity all glide instead of stepping when the focus moves.
+// Integer d gives exactly the table values above.
+
+// 1 on the focus, falling linearly to 0 one slot away.  XMP's nearness().
+static inline float spine_near(float d)
+{
+    if (d < 0.0f) d = -d;
+    return d >= 1.0f ? 0.0f : 1.0f - d;
+}
+
+static inline float spine_slot_x_f(float d)
+{
+    return SPINE_ACTIVE_X + d * SPINE_STRIDE;
+}
+
+// The falloff interpolated between table entries, fading from the last entry
+// to 0 over one more slot -- so a slot leaving the drawn range dissolves
+// instead of vanishing.
+static inline float spine_slot_alpha_f(float d)
+{
+    int   k;
+    float f, a, b;
+    if (d < 0.0f) d = -d;
+    if (d >= (float)SPINE_FALLOFF_N) return 0.0f;
+    k = (int)d;
+    f = d - (float)k;
+    a = SPINE_FALLOFF[k];
+    b = (k + 1 < SPINE_FALLOFF_N) ? SPINE_FALLOFF[k + 1] : 0.0f;
+    return spine_lerp(a, b, f);
+}
+
 #ifdef __cplusplus
 }
 #endif
