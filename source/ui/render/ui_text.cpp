@@ -276,6 +276,12 @@ static const GlyphSlot *gc_glyph(const stbtt_fontinfo *fi, u8 font, float px,
 // loop would measurably change what it is trying to measure.
 static u32 s_tx_glyphs, s_tx_px_blend, s_tx_px_opaque;
 
+// Coverage multiplier, 0..255, applied to every glyph pixel blit_coverage
+// draws.  255 -- a no-op that skips the multiply -- except for the duration of
+// one drawTTF_ramp_posed() glyph, which is how the boot animation fades a
+// single letter of the wordmark in without a second compositing path.
+static u32 s_cov_scale = 255;
+
 void ui_text_stats_reset(void) { s_tx_glyphs = s_tx_px_blend = s_tx_px_opaque = 0; }
 void ui_text_stats_get(u32 *glyphs, u32 *blend_px, u32 *opaque_px) {
     if (glyphs)    *glyphs    = s_tx_glyphs;
@@ -307,6 +313,10 @@ static void blit_coverage(const unsigned char *bm, int w, int h,
             if (sx < 0 || (u32)sx >= tw_) continue;
             u32 a = src[gx];
             if (a == 0) continue;
+            if (s_cov_scale != 255) {
+                a = a * s_cov_scale / 255;
+                if (a == 0) continue;
+            }
             if (rt) { row[sx] = argb_over(row[sx], color, a); n_blend++; continue; }
             if (a == 255) { row[sx] = color; n_opaque++; continue; }
             n_blend++;
@@ -931,7 +941,9 @@ static u32 ramp_at(const u32 *stop, int n, float t)
 
 static float run_tracked(u32 x, u32 y, const char *text, float px, u32 color,
                          int face, float track, bool draw,
-                         const u32 *ramp, int nramp)
+                         const u32 *ramp, int nramp,
+                         const float *reveal = NULL, const float *alpha = NULL,
+                         int npose = 0, float max_slide = 0.0f)
 {
     if (!s_ttf_ok) {
         if (draw) drawTextScaled(x, y, text, (int)px);
@@ -951,6 +963,7 @@ static float run_tracked(u32 x, u32 y, const char *text, float px, u32 color,
     float xf      = draw ? (float)x : 0.0f;
     int   prev_cp = 0, prev_k = -1;
     bool  first   = true;
+    int   gi      = 0;                 // glyph index, for the pose arrays
 
     while (*text) {
         int cp = utf8_next(&text);
@@ -970,12 +983,36 @@ static float run_tracked(u32 x, u32 y, const char *text, float px, u32 color,
             u32 col = color;
             if (ramp && nramp > 0 && total > 0.0f)
                 col = ramp_at(ramp, nramp, (xf - (float)x + adv * 0.5f) / total);
-            draw_glyph(ch.fi[k], ch.id[k], px, ch.scale[k], cp,
-                       (int)xf, (int)y + ch.baseline, col, true);
+            if (reveal && gi < npose) {
+                // Posed: the glyph slides into its home from up to max_slide
+                // px to its left -- never from further left than the run's
+                // start (<= 0: always from the start) -- by reveal[gi]
+                // (1 = home, exactly), at alpha[gi].  The ramp colour above is
+                // still taken at HOME, so a letter keeps its colour while it
+                // moves instead of sliding along the ramp.
+                float a = alpha ? alpha[gi] : 1.0f;
+                if (a > 0.0f) {
+                    float d = xf - (float)x;
+                    if (max_slide > 0.0f && d > max_slide) d = max_slide;
+                    // At exactly home use xf itself: xf - d * 0 is xf, but
+                    // spell it out -- one pixel off is a visible handoff.
+                    float gx = (reveal[gi] == 1.0f)
+                             ? xf : xf - d * (1.0f - reveal[gi]);
+                    s_cov_scale = a >= 1.0f ? 255u : (u32)(a * 255.0f + 0.5f);
+                    if (s_cov_scale)
+                        draw_glyph(ch.fi[k], ch.id[k], px, ch.scale[k], cp,
+                                   (int)gx, (int)y + ch.baseline, col, true);
+                    s_cov_scale = 255;
+                }
+            } else {
+                draw_glyph(ch.fi[k], ch.id[k], px, ch.scale[k], cp,
+                           (int)xf, (int)y + ch.baseline, col, true);
+            }
         }
 
         xf += adv;
         prev_cp = cp; prev_k = k; first = false;
+        gi++;
     }
     return draw ? xf - (float)x : xf;
 }
@@ -995,6 +1032,21 @@ void drawTTF_ramp(u32 x, u32 y, const char *text, float px,
     if (strobe_test_disable_tracked_text()) return;
     run_tracked(x, y, text, px, stops ? stops[0] : 0, face, track, true,
                 stops, nstops);
+}
+
+// The boot animation's wordmark: drawTTF_ramp with each glyph posed.  With
+// every reveal and alpha at exactly 1 this draws the same pixels as
+// drawTTF_ramp -- same pen positions, same colours -- which is what lets the
+// animation's last frame BE the static lockup.  Arrays shorter than the text
+// leave the remaining glyphs drawn normally.
+void drawTTF_ramp_posed(u32 x, u32 y, const char *text, float px,
+                        const u32 *stops, int nstops, int face, float track,
+                        const float *reveal, const float *alpha, int npose,
+                        float max_slide)
+{
+    if (strobe_test_disable_tracked_text()) return;
+    run_tracked(x, y, text, px, stops ? stops[0] : 0, face, track, true,
+                stops, nstops, reveal, alpha, npose, max_slide);
 }
 
 int ttf_text_width_tracked(const char *text, float px, int face, float track)

@@ -182,6 +182,29 @@ void xmb_detect_tabs(void) {
       plog(b); }
 }
 
+// Runs on the boot worker (boot_anim_run) while the main thread only draws,
+// so nothing else is using responseBuffer, g_tabs or the Home rows.  The
+// Home prefetch is skipped when no library came back: that is a server that
+// is not answering, and five more requests at up to 29 s each would hold the
+// boot for minutes.  The XMB then loads the rows itself, as it always did,
+// and its background detect_tabs retry takes over.
+static volatile bool s_prepared = false;
+
+void xmb_prepare(void) {
+    xmb_detect_tabs();
+    bool have_lib = false;
+    for (int t = XMB_TAB_LIB0; t < XMB_TAB_COUNT; t++)
+        if (g_tabs[t].enabled) { have_lib = true; break; }
+    if (have_lib) xmb_home_prefetch();
+    s_prepared = true;
+}
+
+bool xmb_take_prepared(void) {
+    bool p = s_prepared;
+    s_prepared = false;
+    return p;
+}
+
 static void xmb_build_items_url(char *url, int url_size, int tab,
                                   int start_index, int limit) {
     const char *filt = g_tab_name_filter[tab];

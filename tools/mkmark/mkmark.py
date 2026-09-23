@@ -18,6 +18,10 @@ files land by themselves.
              assets/ may live in a sibling import -- pass --assets for that.
   --out      where to write the header (default source/gfx/jfmark_png.h)
   --port     local port for the one-shot server (default 8732)
+  --master   raster size in px (default 80, the lockup's).  The boot
+             animation's centred mark is the same SVG at 256:
+                 --master 256 --symbol jfmark_hd --out source/gfx/jfmark_hd_png.h
+  --symbol   C array prefix (default jfmark); arrays are <symbol>_<variant>_png
 
 Two variants come out, because the ramp is baked into the pixels: `cool` is the
 XMB wave theme's AA5CC3 -> 00A4DC with the soft PS mark, `gold` is Golden Age's
@@ -76,7 +80,8 @@ HEADER_DOC = """\
 """
 
 
-def build_svgs(bundle: pathlib.Path, assets: pathlib.Path) -> dict:
+def build_svgs(bundle: pathlib.Path, assets: pathlib.Path,
+               master: int = MASTER) -> dict:
     html = (bundle / "JFChrome.dc.html").read_text(encoding="utf-8", errors="replace")
     i = html.find("jfps3-mark")
     if i < 0:
@@ -101,7 +106,7 @@ def build_svgs(bundle: pathlib.Path, assets: pathlib.Path) -> dict:
     svg = re.sub(r'viewBox="0 0 72 72"',
                  'viewBox="%d %d %d %d"' % (-PAD, -PAD, SPAN, SPAN), svg, count=1)
     svg = re.sub(r'width="21" height="21"',
-                 'width="%d" height="%d"' % (MASTER, MASTER), svg, count=1)
+                 'width="%d" height="%d"' % (master, master), svg, count=1)
     # The root filter is a CSS var with a drop-shadow default; keep the default
     # and drop the var, which does not resolve outside the component.
     svg = svg.replace("var(--lk-mkglow,", "(").replace(
@@ -117,7 +122,7 @@ def build_svgs(bundle: pathlib.Path, assets: pathlib.Path) -> dict:
     return out
 
 
-def page(svgs: dict) -> str:
+def page(svgs: dict, master: int = MASTER) -> str:
     def js(s):
         return "`" + s.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$") + "`"
     return """<!DOCTYPE html>
@@ -143,7 +148,7 @@ async function raster(svgText) {
   document.getElementById("out").textContent = "done -- you can close this tab";
 })();
 </script>
-""" % (",".join('"%s": %s' % (k, js(v)) for k, v in svgs.items()), MASTER)
+""" % (",".join('"%s": %s' % (k, js(v)) for k, v in svgs.items()), master)
 
 
 def serve_and_collect(html: str, port: int, want: set) -> dict:
@@ -194,6 +199,8 @@ def main():
     ap.add_argument("--assets", default="")
     ap.add_argument("--out", default=str(here.parents[1] / "source/gfx/jfmark_png.h"))
     ap.add_argument("--port", type=int, default=8732)
+    ap.add_argument("--master", type=int, default=MASTER)
+    ap.add_argument("--symbol", default="jfmark")
     a = ap.parse_args()
 
     bundle = pathlib.Path(a.bundle)
@@ -207,13 +214,27 @@ def main():
         else:
             sys.exit("no jfps3-mark-soft-2x.png under %s -- pass --assets" % assets)
 
-    svgs = build_svgs(bundle, assets)
-    pngs = serve_and_collect(page(svgs), a.port, set(svgs))
+    svgs = build_svgs(bundle, assets, a.master)
+    pngs = serve_and_collect(page(svgs, a.master), a.port, set(svgs))
 
-    text = HEADER_DOC % (MASTER, SPAN, 72, PAD)
+    if a.symbol == "jfmark":
+        text = HEADER_DOC % (a.master, SPAN, 72, PAD)
+    else:
+        # A second raster of the same SVG shares the lockup header's geometry
+        # (SPAN/BELL/PAD are viewBox units, independent of size), so it only
+        # declares its own size.
+        text = ("// %s: the lockup mark (see jfmark_png.h) rendered at %dpx by\n"
+                "// tools/mkmark/mkmark.py --master %d --symbol %s.  Same SVG,\n"
+                "// same geometry; only the raster size differs.\n\n"
+                "#define %s_MASTER %d\n\n"
+                % (pathlib.Path(a.out).name, a.master, a.master, a.symbol,
+                   a.symbol.upper(), a.master))
     for name in VARIANTS:
-        text += c_array("jfmark_%s_png" % name, pngs[name])
-    pathlib.Path(a.out).write_text(text, encoding="utf-8")
+        text += c_array("%s_%s_png" % (a.symbol, name), pngs[name])
+    # newline="\n": LF on every host.  Run from Windows Python, write_text's
+    # default newline translation turned every line into CRLF.
+    with open(a.out, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
     print("wrote %s (%d bytes)" % (a.out, len(text)))
 
 

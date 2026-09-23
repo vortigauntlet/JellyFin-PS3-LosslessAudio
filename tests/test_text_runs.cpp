@@ -320,6 +320,145 @@ static int test_wordmark_ramp(void)
     return 0;
 }
 
+// ---- phase 4: the boot animation's posed wordmark --------------------------
+//
+// The cold-boot animation (render/boot_anim.cpp) assembles the lockup letter
+// by letter through drawTTF_ramp_posed, then stops posing it.  That handoff is
+// only invisible if the posed path at rest -- every reveal and alpha exactly
+// 1 -- IS the static lockup, to the bit, on any background.  Plus the three
+// ways the pose itself could go wrong: alpha 0 must draw nothing, reveal 0
+// must stack every letter at the pen origin (the letters unfold OUT of the
+// mark), and the coverage scale a posed glyph sets must never leak into the
+// text drawn after it.
+static u32 s_fb_ref[FB_W * FB_H];
+
+static int test_wordmark_posed(void)
+{
+    const char *W     = "JELLYFIN";
+    const int   face  = UI_FACE_LOCKUP;
+    const u32   ramp[4] = { 0x0000A4DC, 0x004189D3, 0x007A70CA, 0x00AA5CC3 };
+    const float ones[8]  = { 1, 1, 1, 1, 1, 1, 1, 1 };
+    const float zeros[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    const float halves[8] = { .5f, .5f, .5f, .5f, .5f, .5f, .5f, .5f };
+    const float sizes[]  = { 14.0f, 21.0f, 9.33f };   // 720p, 1080p, 480p
+    const u32   bgs[]    = { 0x00000000, 0x00161430, 0x00FFFFFF };
+
+    printf("-- phase 4: the posed wordmark (boot animation) --\n");
+
+    // 1. at rest it is the static lockup, bit for bit: ink AND shadow
+    for (size_t zi = 0; zi < sizeof sizes / sizeof *sizes; zi++)
+        for (size_t bi = 0; bi < sizeof bgs / sizeof *bgs; bi++)
+            for (u32 X = 20; X < 24; X++) {
+                const float px = sizes[zi], track = px * 0.02f;
+                fb_clear(bgs[bi]);
+                drawTTF_tracked(X, 41, W, px, 0x00000000, face, track);
+                drawTTF_ramp(X, 40, W, px, ramp, 4, face, track);
+                memcpy(s_fb_ref, s_fb, sizeof s_fb);
+
+                fb_clear(bgs[bi]);
+                drawTTF_ramp_posed(X, 41, W, px, NULL, 0, face, track,
+                                   ones, ones, 8);
+                drawTTF_ramp_posed(X, 40, W, px, ramp, 4, face, track,
+                                   ones, ones, 8);
+                if (memcmp(s_fb_ref, s_fb, sizeof s_fb) != 0) {
+                    printf("FAIL: posed-at-rest differs from the static lockup "
+                           "(px %.2f, bg %06X, x %u) -- the boot handoff would "
+                           "visibly jump\n", px, bgs[bi], X);
+                    return 1;
+                }
+            }
+    printf("at rest == static lockup : bit-exact (3 sizes x 3 backgrounds x 4 x)\n");
+
+    const float px = 21.0f, track = px * 0.02f;
+    const int   wfull = ttf_text_width_tracked(W, px, face, track);
+
+    // 2. alpha 0 draws nothing at all
+    fb_clear(0x00161430);
+    memcpy(s_fb_ref, s_fb, sizeof s_fb);
+    drawTTF_ramp_posed(20, 40, W, px, ramp, 4, face, track, ones, zeros, 8);
+    if (memcmp(s_fb_ref, s_fb, sizeof s_fb) != 0) {
+        printf("FAIL: alpha 0 left ink\n");
+        return 1;
+    }
+
+    // 3. reveal 0 stacks every letter at the origin: no ink out where the
+    //    back half of the word will end up
+    fb_clear(0x00000000);
+    drawTTF_ramp_posed(20, 40, W, px, ramp, 4, face, track, zeros, ones, 8);
+    int max_col = -1;
+    for (int y = 0; y < FB_H; y++)
+        for (int x = 0; x < FB_W; x++)
+            if (s_fb[(size_t)y * FB_W + x] && x > max_col) max_col = x;
+    if (max_col < 20 || max_col > 20 + (int)(px * 1.2f)) {
+        printf("FAIL: at reveal 0 ink reaches column %d; expected all of it "
+               "within one glyph of x=20 (word is %d wide)\n", max_col, wfull);
+        return 1;
+    }
+
+    // 3b. with a slide limit, reveal 0 holds each letter at most max_slide
+    //     short of home -- so the back of the word is already nearly in
+    //     place, and nothing is ever drawn left of the run's start
+    {
+        const float slide = 0.9f * px;
+        int lo0 = FB_W, hi0 = -1, lo1 = FB_W, hi1 = -1;
+        for (int pass = 0; pass < 2; pass++) {
+            fb_clear(0x00000000);
+            drawTTF_ramp_posed(20, 40, W, px, ramp, 4, face, track,
+                               pass ? ones : zeros, ones, 8, slide);
+            int &lo = pass ? lo1 : lo0, &hi = pass ? hi1 : hi0;
+            for (int y = 0; y < FB_H; y++)
+                for (int x = 0; x < FB_W; x++)
+                    if (s_fb[(size_t)y * FB_W + x]) {
+                        if (x < lo) lo = x;
+                        if (x > hi) hi = x;
+                    }
+        }
+        // The last letter is further than `slide` from the start, so at
+        // reveal 0 its ink ends exactly `slide` (+/- a pixel of truncation)
+        // left of where it rests.  The first letter never moves.
+        if (lo0 != lo1 || hi1 - hi0 < (int)slide - 1 || hi1 - hi0 > (int)slide + 1) {
+            printf("FAIL: slide-limited reveal 0 inks %d..%d vs %d..%d at rest; "
+                   "expected the end %.1f px short and the start unmoved "
+                   "(word %d wide)\n", lo0, hi0, lo1, hi1, slide, wfull);
+            return 1;
+        }
+    }
+
+    // 4. alpha 0.5 is visibly there and visibly dimmer than 1
+    long lum_full = 0, lum_half = 0;
+    fb_clear(0x00000000);
+    drawTTF_ramp_posed(20, 40, W, px, ramp, 4, face, track, ones, ones, 8);
+    for (int i = 0; i < FB_W * FB_H; i++)
+        lum_full += (s_fb[i] >> 16 & 0xFF) + (s_fb[i] >> 8 & 0xFF) + (s_fb[i] & 0xFF);
+    fb_clear(0x00000000);
+    drawTTF_ramp_posed(20, 40, W, px, ramp, 4, face, track, ones, halves, 8);
+    for (int i = 0; i < FB_W * FB_H; i++)
+        lum_half += (s_fb[i] >> 16 & 0xFF) + (s_fb[i] >> 8 & 0xFF) + (s_fb[i] & 0xFF);
+    if (!(lum_half > lum_full / 4 && lum_half < lum_full * 9 / 10)) {
+        printf("FAIL: alpha 0.5 gave %ld of %ld luminance\n", lum_half, lum_full);
+        return 1;
+    }
+
+    // 5. nothing leaks: a plain ramp drawn after a half-alpha pose is the
+    //    plain ramp
+    fb_clear(0x00000000);
+    drawTTF_ramp(20, 40, W, px, ramp, 4, face, track);
+    memcpy(s_fb_ref, s_fb, sizeof s_fb);
+    fb_clear(0x00000000);
+    drawTTF_ramp_posed(20, 90, W, px, ramp, 4, face, track, ones, halves, 8);
+    for (int y = 60; y < FB_H; y++)            // wipe the posed one again
+        for (int x = 0; x < FB_W; x++) s_fb[(size_t)y * FB_W + x] = 0;
+    drawTTF_ramp(20, 40, W, px, ramp, 4, face, track);
+    if (memcmp(s_fb_ref, s_fb, sizeof s_fb) != 0) {
+        printf("FAIL: the posed call leaked its coverage scale into later text\n");
+        return 1;
+    }
+
+    printf("alpha 0 / reveal 0 / alpha 0.5 / no leak : ok\n");
+    printf("PASS\n");
+    return 0;
+}
+
 int main(void)
 {
     ttf_init();
@@ -422,5 +561,7 @@ int main(void)
     }
     printf("PASS\n\n");
 
-    return test_wordmark_ramp();
+    if (test_wordmark_ramp()) return 1;
+    printf("\n");
+    return test_wordmark_posed();
 }

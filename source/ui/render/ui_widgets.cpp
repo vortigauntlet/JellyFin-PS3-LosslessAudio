@@ -10,6 +10,7 @@
 #include "ui_visuals.h"
 #include "ui_wave.h"
 #include "ui_strobe_test.h"
+#include "boot_anim.h"
 #include "icons.h"
 #include "stb_image.h"
 #include "ps_buttons_png.h"
@@ -103,32 +104,67 @@ int xmb_tab_focus_center(void)
 //   * ONE shadow pass, not the canvas's stack of five.  They exist so the
 //     wordmark survives the wave moving behind it; at 14px they resolve to
 //     about a single hard 1px drop, which is what this draws.
-void xmb_draw_topbar(void) {
+void xmb_lockup_geom(XmbLockupGeom *g) {
     const int oy    = XMB_OY;   // shift the top bar down out of the CRT overscan
     const int row_y = oy + UIS_H(20);            // the shared 24px row
-    const int cy    = row_y + UIS_H(24) / 2;
-
-    const int mark_px = UIS_H(21);
-    xmb_draw_mark((int)XMB_ITEM_PAD, cy - mark_px / 2, mark_px);
-
+    g->cy      = row_y + UIS_H(24) / 2;
+    g->mark_px = UIS_H(21);
+    g->mark_x  = (int)XMB_ITEM_PAD;
+    g->mark_y  = g->cy - g->mark_px / 2;
     // The wordmark's ink is centred on the same line as the mark rather than
     // being given a y of its own: 14px type against a 21px mark is exactly the
     // case where an eyeballed offset stops being right at the next scale.
-    const float word_px = UIS_TF(14.0f);
-    const float track   = word_px * 0.02f;       // the design's 0.02em
-    const u32   ramp[4] = { XMB_LK_WORD_A, XMB_LK_WORD_B,
-                            XMB_LK_WORD_C, XMB_LK_WORD_D };
-    const int   wx = (int)XMB_ITEM_PAD + mark_px + UIS_H(6);
-    int wy;
-    if (ttf_center_y("JELLYFIN", word_px, UI_FACE_LOCKUP, cy, &wy)) {
+    g->word_px = UIS_TF(14.0f);
+    g->track   = g->word_px * 0.02f;             // the design's 0.02em
+    g->word_x  = g->mark_x + g->mark_px + UIS_H(6);
+    g->word_y  = g->cy;
+    g->word_ok = ttf_center_y("JELLYFIN", g->word_px, UI_FACE_LOCKUP, g->cy,
+                              &g->word_y);
+}
+
+void xmb_draw_topbar(void) {
+    const int oy    = XMB_OY;
+    const int row_y = oy + UIS_H(20);            // the shared 24px row
+
+    XmbLockupGeom lk;
+    xmb_lockup_geom(&lk);
+
+    // During a cold boot the lockup is ASSEMBLED rather than drawn: the boot
+    // animation hands back a pose saying which parts exist yet and where.
+    // NULL -- every frame after the boot, and every boot with the animation
+    // off -- is the static lockup, drawn by exactly the calls it always was.
+    const BootLockupPose *pose = boot_anim_lockup_pose();
+
+    if (!pose || pose->show_mark) {
+        if (pose && pose->mark_posed)
+            xmb_draw_mark(pose->mark_x, pose->mark_y, pose->mark_bell);
+        else
+            xmb_draw_mark(lk.mark_x, lk.mark_y, lk.mark_px);
+    }
+
+    const u32 ramp[4] = { XMB_LK_WORD_A, XMB_LK_WORD_B,
+                          XMB_LK_WORD_C, XMB_LK_WORD_D };
+    if (lk.word_ok && (!pose || pose->show_word)) {
+        const u32 wx = (u32)lk.word_x, wy = (u32)lk.word_y;
         if (xmb_nav_depth() > 0) {
-            drawTTF_tracked((u32)wx, (u32)wy, "JELLYFIN", word_px,
-                            XMB_TEXT_FAINT, UI_FACE_LOCKUP, track);
+            drawTTF_tracked(wx, wy, "JELLYFIN", lk.word_px,
+                            XMB_TEXT_FAINT, UI_FACE_LOCKUP, lk.track);
+        } else if (pose && pose->word_posed) {
+            // Same two passes as below, each letter at its pose.  NULL stops
+            // is a flat black run: the drop shadow travels with its letter.
+            drawTTF_ramp_posed(wx, wy + (u32)UIS_H(1), "JELLYFIN", lk.word_px,
+                               NULL, 0, UI_FACE_LOCKUP, lk.track,
+                               pose->word_reveal, pose->word_alpha,
+                               BOOT_WORD_LETTERS, pose->word_slide_px);
+            drawTTF_ramp_posed(wx, wy, "JELLYFIN", lk.word_px,
+                               ramp, 4, UI_FACE_LOCKUP, lk.track,
+                               pose->word_reveal, pose->word_alpha,
+                               BOOT_WORD_LETTERS, pose->word_slide_px);
         } else {
-            drawTTF_tracked((u32)wx, (u32)(wy + UIS_H(1)), "JELLYFIN", word_px,
-                            0x00000000, UI_FACE_LOCKUP, track);
-            drawTTF_ramp((u32)wx, (u32)wy, "JELLYFIN", word_px,
-                         ramp, 4, UI_FACE_LOCKUP, track);
+            drawTTF_tracked(wx, wy + (u32)UIS_H(1), "JELLYFIN", lk.word_px,
+                            0x00000000, UI_FACE_LOCKUP, lk.track);
+            drawTTF_ramp(wx, wy, "JELLYFIN", lk.word_px,
+                         ramp, 4, UI_FACE_LOCKUP, lk.track);
         }
     }
 
@@ -598,6 +634,8 @@ static int mark_variant(void) {
     u32 c = XMB_LK_MARK_A;
     return (((c >> 16) & 0xFF) > (c & 0xFF)) ? JFMARK_GOLD : JFMARK_COOL;
 }
+
+int xmb_mark_variant(void) { return mark_variant(); }
 
 // Draw the mark with its BELL that many pixels wide, its top-left at (x,y).
 // The raster is wider than the bell -- it carries the design's drop shadow in

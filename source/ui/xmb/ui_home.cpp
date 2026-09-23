@@ -164,6 +164,15 @@ static void home_step_load(void) {
     }
 }
 
+// Every row now, not one a frame -- for the boot worker (xmb_prepare).  The
+// per-frame loader below then finds nothing left to do.
+void xmb_home_prefetch(void) {
+    home_init_once();
+    for (int r = 0; r < HOME_ROWS_N; r++)
+        if (s_rows[r].kind != HROW_STUB && !s_rows[r].loaded)
+            home_fetch_row(r);
+}
+
 void xmb_home_on_enter(void) {
     home_init_once();
     s_focus_row = 0; s_focus_col = 0; s_vscroll = 0;

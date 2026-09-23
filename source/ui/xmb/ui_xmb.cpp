@@ -12,6 +12,7 @@
 #include "ui_card_gpu.h"
 #include "ui_text_gpu.h"
 #include "ui_strobe_test.h"
+#include "boot_anim.h"
 #include "thumbnail_cache.h"
 #include "slog.h"
 #include "plog.h"
@@ -403,7 +404,8 @@ void ui_run_xmb(void) {
     wave_reset();
 
     crash_log("13.2 detect_tabs");
-    xmb_detect_tabs();
+    // Already done behind the boot animation on a cold boot (xmb_prepare).
+    if (!xmb_take_prepared()) xmb_detect_tabs();
     crash_log("13.3 detect_tabs done");
 
     if (!g_tabs[g_active_tab].enabled) {
@@ -502,7 +504,9 @@ void ui_run_xmb(void) {
 
         poll_buttons();
         bool should_exit = false;
-        if (xmb_update_popup_active())
+        if (boot_anim_xmb_frame())
+            ;   // cold boot still assembling: a press skips it, nothing else
+        else if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
         else if (tab == XMB_TAB_SEARCH)
             should_exit = xmb_handle_input_search();
@@ -567,6 +571,9 @@ void ui_run_xmb(void) {
         u64 t_tg0 = timing_get_us();
         ui_text_gpu_flush();
         s_fc.textgpu += timing_get_us() - t_tg0;
+
+        // Cold boot: the veil and the travelling mark, over everything above.
+        boot_anim_xmb_overlay();
 
         u64 t_flip0 = timing_get_us();
         if (first_iter) crash_log("13.9 first flip");

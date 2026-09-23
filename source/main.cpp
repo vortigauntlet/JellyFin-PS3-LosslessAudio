@@ -39,6 +39,7 @@
 #include "jf_spu.h"
 #include "ui_card_gpu.h"
 #include "ui_text_gpu.h"
+#include "boot_anim.h"
 
 SYS_PROCESS_PARAM(1001, 0x8000000);
 
@@ -148,13 +149,23 @@ int main(int argc, const char *argv[]) {
     video_log_capabilities();   // what refresh rates does this panel offer?
     audio_out_log_capabilities();  // ...and will this chain take a bitstream?
 
-    crash_log("7 splash drawHeader");
-    drawHeader();
-    crash_log("7b splash drawTTF");
-    drawTTF(40, 96, "Starting...", 16, 0x0099A0BC);
-    crash_log("7c splash flip");
-    flip();
+    // Cold-boot animation: black, then the Jellyfin mark, while the rest of
+    // startup runs underneath it; the XMB then rises out of the black and the
+    // mark docks into the lockup (docs/boot-animation.md).  It needs the
+    // theme, the UI scale and wave_init(), all loaded above.  When it is off
+    // -- jellyfin_bootanim.txt = 0, or the emulator build -- this is the old
+    // "Starting..." splash, unchanged, and every boot_anim_* below no-ops.
+    crash_log("7 boot_anim_begin");
+    if (!boot_anim_begin()) {
+        crash_log("7 splash drawHeader");
+        drawHeader();
+        crash_log("7b splash drawTTF");
+        drawTTF(40, 96, "Starting...", 16, 0x0099A0BC);
+        crash_log("7c splash flip");
+        flip();
+    }
     crash_log("7d splash done");
+    boot_anim_pump();
 
     // Bring the network up and run the one-shot update check BEFORE reserving
     // the big buffers below.  The check has to load the HTTPS + SSL PRX modules;
@@ -170,6 +181,7 @@ int main(int argc, const char *argv[]) {
     crash_log("8 http_init");
     if (http_init() != HTTP_SUCCESS) {
         crash_log("8 FAILED");
+        boot_anim_leave();
         drawHeader();
         drawTTF(40, 96, "Network initialisation failed.", 16, 0x0099A0BC);
         flip();
@@ -183,6 +195,7 @@ int main(int argc, const char *argv[]) {
     // is still pristine and before vdec_reserve_mem() takes its 96MB -- and
     // crucially before anything could want the SPUs cellVdec will claim.
     jf_spu_selftest();
+    boot_anim_pump();
 
     crash_log("9 running=1");
     running = 1;
@@ -190,10 +203,10 @@ int main(int argc, const char *argv[]) {
     update_check_start();
     // Wait (responsively) until it finishes so its HTTPS/SSL memory is released
     // before we reserve VDEC.  Bounded by the check's own 2s network timeouts;
-    // the "Starting..." splash stays up meanwhile.
+    // the boot animation runs meanwhile (or the "Starting..." splash stays up).
     while (!update_check_done() && running) {
         sysUtilCheckCallback();
-        usleep(16000);
+        if (!boot_anim_pump()) usleep(16000);
     }
     crash_log("8c update check done");
 
@@ -221,6 +234,7 @@ int main(int argc, const char *argv[]) {
                         NULL, NULL, NULL);
         if (!jbuf_reserve(rw, rh)) crash_log("7e jbuf_reserve FAILED");
     }
+    boot_anim_pump();
     // The image decoder gets a reserved home too.  Thumbnail SLOTS were already
     // reserved, but the decode that fills them still called malloc per image
     // (~455KB output + working set) — and thumb_cache_init() below allocates
@@ -232,6 +246,7 @@ int main(int argc, const char *argv[]) {
     img_arena_reserve(4 * 1024 * 1024);
     // Big one-shot transient (~9MB+), so do it here rather than on first draw.
     ps_sprites_preload();
+    boot_anim_pump();
     {
         u32 total = 0, avail = 0;
         char buf[96];
@@ -245,6 +260,7 @@ int main(int argc, const char *argv[]) {
     }
 
     thumb_cache_init();
+    boot_anim_pump();
 
     crash_log("10 load_config");
     load_config();
@@ -257,6 +273,7 @@ int main(int argc, const char *argv[]) {
 
     while (running) {
         if (!g_server[0]) {
+            boot_anim_leave();   // first run: fade the mark out, then ask
             crash_log("11 get_server");
             slog_state("SERVER_URL_SCREEN");
             char new_server[256] = "http://";
@@ -270,14 +287,23 @@ int main(int argc, const char *argv[]) {
         }
 
         if (!g_token[0]) {
+            boot_anim_leave();
             crash_log("12 do_login");
             if (!do_login()) { g_server[0] = '\0'; continue; }
             slog_state("LOGIN_OK userid=%s", g_userid);
         }
 
         crash_log("13 show_main_menu");
+        // Cold boot only: the library list and Home rows load on a worker
+        // while the mark holds, so the XMB's first frame has its data.  A
+        // no-op call-through when the animation is off or already over.
+        if (boot_anim_active())
+            boot_anim_run(xmb_prepare, "library + Home prefetch");
         slog_state("MAIN_MENU_ENTER");
         show_main_menu();
+        // Normally long finished; this covers the XMB returning mid-reveal
+        // (a revoked token on the first request) and frees the mark's VRAM.
+        boot_anim_finish();
         // If the menu returned with no token, the user logged out. Keep the
         // server URL (jellyfin_logout preserves it) so the loop goes straight
         // back to the login screen rather than asking for the server again.

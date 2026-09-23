@@ -26,6 +26,7 @@ void xmb_switch_tab(int new_tab);
 int  xmb_next_enabled(int start, int dir);
 
 void xmb_detect_tabs(void);
+bool xmb_take_prepared(void);     // see xmb_prepare() in ui.h
 // One attempt only — for the XMB's background retry, which must not block
 // the render loop inside the full retry set.
 bool xmb_detect_tabs_once(void);
@@ -104,6 +105,7 @@ int xmb_resume_choice(const XMBItem *it);
 // (Continue Watching, Next Up, Recently Added Movies/Shows, Music stub).
 // -------------------------------------------------------
 void xmb_home_on_enter(void);     // reset focus + mark dynamic rows for refetch
+void xmb_home_prefetch(void);     // fetch every unloaded row now (boot worker)
 void xmb_home_gpu_phase(void);    // card images as RSX quads (BEFORE rsxSync)
 void xmb_home_cpu_phase(void);    // card images / placeholders / selection (after rsxSync)
 void xmb_home_text_phase(void);   // row titles, labels, chevrons
