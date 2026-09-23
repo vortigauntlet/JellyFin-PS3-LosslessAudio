@@ -86,14 +86,18 @@ static u32 resolve_host(const char *host) {
 
 // -------------------------------------------------------
 // Connect with a bounded timeout, then arm idle read/write timeouts.
-// Returns a connected blocking socket, or -1.
+// Returns a connected blocking socket, or -1.  rcvbuf > 0 sets SO_RCVBUF,
+// which has to happen BEFORE netConnect: the window scale is negotiated in
+// the SYN (see stream.cpp's receive-buffer note).
 // -------------------------------------------------------
-static int http_connect(const char *host, int port) {
+static int http_connect(const char *host, int port, int rcvbuf = 0) {
     u32 ip = resolve_host(host);
     if (ip == 0) return -1;
 
     int sock = netSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock < 0) return -1;
+    if (rcvbuf > 0)
+        netSetSockOpt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -417,6 +421,17 @@ int http_request(int method, const char *url, const char *body,
 
     if (s_http_mtx_ok) sysMutexUnlock(s_http_mtx);
     return status;
+}
+
+int http_open_socket(const char *host, int port, int rcvbuf_bytes) {
+    // Only the resolve + connect is serialised -- that is the part of the
+    // net stack that is not reentrant (see http_fetch_binary below).  The
+    // caller's own reads run unlocked, so a long download never holds up the
+    // UI's requests.
+    if (s_http_mtx_ok) sysMutexLock(s_http_mtx, 0);
+    int sock = http_connect(host, port, rcvbuf_bytes);
+    if (s_http_mtx_ok) sysMutexUnlock(s_http_mtx);
+    return sock;
 }
 
 int http_fetch_binary(const char *url, const char *token,

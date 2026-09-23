@@ -32,3 +32,11 @@ int  http_request(int method, const char *url, const char *body,
 // Returns number of bytes written, or -1 on failure.
 int http_fetch_binary(const char *url, const char *token,
                       uint8_t *out, int out_size);
+
+// Connected TCP socket to host:port (name or dotted quad) for a caller that
+// does its own streaming I/O -- the offline download worker.  Resolution and
+// connect share http_request()'s lock and its bounded connect timeout; the
+// socket comes back blocking with the same idle timeouts, which the caller
+// may tighten.  rcvbuf_bytes > 0 sets SO_RCVBUF before connecting.  Returns
+// the socket, or -1.  Close it with netClose().
+int http_open_socket(const char *host, int port, int rcvbuf_bytes);
