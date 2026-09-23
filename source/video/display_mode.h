@@ -8,24 +8,20 @@
 //
 //   A. know the content is 24000/1001        (vdec frc / server RealFrameRate)
 //   B. present it correctly on 59.94          (Bresenham + duration gate, 3:2)
-//   C. switch the PHYSICAL output to 24Hz     (not possible yet, see below)
+//   C. switch the PHYSICAL output to 24Hz     (display_24p.cpp)
 //
-// This module does not switch anything.  It turns what the firmware reports
-// into a record that says, on every playback, what the app believed about the
-// display and the content, what it would have wanted, and why it did not.
+// This module is the pure half: it turns what the firmware reports into a
+// decision and a record, and classifies a MEASURED vblank period.  The
+// switching itself is display_24p.cpp.  Full write-up: docs/24P_OUTPUT.md.
 //
-// WHY C IS NOT IMPLEMENTED (full write-up: docs/24P_OUTPUT.md):
-//   * cellVideoOutConfigure's configuration struct has no refresh field, and on
-//     this console it REJECTS resolution 0x83 -- 1080p frame packing, whose only
-//     advertised rates are the 24Hz-family bits -- with 0x8002b226
-//     UNSUPPORTED_DISPLAY_MODE.  The v1 call cannot reach a 24Hz timing.
-//   * cellVideoOutConfigure2 (cellSysutilAvconfExt, FNID 0x9faa12be) exists in
-//     firmware, but its argument layout is not public anywhere -- RPCS3 stubs it
-//     with no arguments at all.  Calling it on a guessed struct is exactly the
-//     experiment that cost a hard power-off on 2026-09-18.
-//   * Sony's own Blu-ray player never calls either.  It chooses a display mode
-//     itself (its enum has 1080P_23_976 AND 1080P_24) and hands frames to VSH
-//     ("VSH_FLIP"); VSH, a privileged process, performs the output change.
+// WHY v1 cellVideoOutConfigure CANNOT DO IT, and Configure2 can -- read from
+// the 4.93 firmware, not guessed:
+//   * v1 sends VSH packet 0x4b07; VSH's handler (vsh.self 0x126e18) passes
+//     refresh 0 = AUTO to its mode converter at every call site.
+//   * cellVideoOutConfigure2 (cellSysutilAvconfExt) sends packet 0x4b08; VSH's
+//     handler (0x126af8) reads a u16 refresh at config+0x0A and accepts exactly
+//     {0, 0x01, 0x02, 0x10, 0x20, 0x40}.  That converter (0xc6b18) is the ONLY
+//     place in VSH that honours a requested rate.
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -114,17 +110,32 @@ typedef struct {
     int         candidate;     // content would benefit from 24Hz output
     const char *candidate_why; // short reason either way
     dm_support  support;
-    const char *path;          // mechanism that would perform the switch
-    int         attempt;       // always 0: see header comment
-    const char *result;        // "not_attempted"
+    const char *path;          // mechanism that performs the switch
+    int         attempt;       // 1 only when every gate below passed
+    const char *result;        // "not_attempted" or "pending"
     const char *result_why;
 } dm_decision;
 
-// Pure decision.  display_res/display_rates describe the CURRENT output.
+// Pure decision.  display_res/display_rates describe the CURRENT output;
+// progressive is its scan mode; enabled is the user's opt-in.
 dm_decision dm_decide(dm_film film, int fps_confident,
                       uint32_t width, uint32_t height,
                       uint8_t display_res, uint16_t display_rates,
-                      dm_support support);
+                      int progressive, dm_support support, int enabled);
+
+// What a measured vblank period says the output clock ACTUALLY is.  This is
+// how 23.976 is told from 24.000: the two differ by 1000 ppm, and ~2 s of
+// vblanks timed against the timebase resolves that with room to spare.
+typedef enum {
+    DM_CLK_UNKNOWN = 0,
+    DM_CLK_23976, DM_CLK_24, DM_CLK_25, DM_CLK_2997, DM_CLK_30,
+    DM_CLK_50, DM_CLK_5994, DM_CLK_60
+} dm_clock;
+
+// period_ns: mean vblank period.  Matches the nearest nominal rate within
+// 250 ppm (a quarter of the 23.976/24 gap); anything else is UNKNOWN.
+dm_clock dm_classify_period(uint64_t period_ns, uint32_t *num, uint32_t *den);
+const char *dm_clock_name(dm_clock c);
 
 const char *dm_support_name(dm_support s);
 

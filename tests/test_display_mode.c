@@ -106,59 +106,94 @@ static void test_cadence(void)
 static void test_decide(void)
 {
     const dm_support yes = DM_SUPPORT_YES, no = DM_SUPPORT_NO;
+    const int P = 1, ON = 1, OFF = 0;
     dm_decision d;
 
-    // A. 1080p 23.976 on a 24p TV: the only "would switch" case.  Still no
-    // attempt, and the reason names the missing piece.
-    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, yes);
-    CHECK(d.candidate == 1 && d.attempt == 0);
-    CHECK_STR(d.path, "none");
-    CHECK_STR(d.result, "not_attempted");
-    CHECK(strstr(d.result_why, "Configure2") != NULL);
+    // A. 1080p 23.976 on a 24p TV, enabled: the one path that switches.
+    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, P, yes, ON);
+    CHECK(d.candidate == 1 && d.attempt == 1);
+    CHECK_STR(d.path, "cellVideoOutConfigure2");
+    CHECK_STR(d.result, "pending");
 
-    // B. same content, TV without 24p.
-    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, no);
+    // Same, but the user has not opted in: nothing happens, and it says why.
+    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, P, yes, OFF);
+    CHECK(d.candidate == 1 && d.attempt == 0);
+    CHECK_STR(d.result, "not_attempted");
+    CHECK(strstr(d.result_why, "off") != NULL);
+
+    // B. same content, TV without 24p: never attempted, even when enabled.
+    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, P, no, ON);
     CHECK(d.candidate == 1 && d.attempt == 0);
     CHECK(strstr(d.result_why, "does not advertise") != NULL);
+    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, P, DM_SUPPORT_UNKNOWN, ON);
+    CHECK(d.attempt == 0);
 
     // C-F. 30, 25, 50, 60 fps are never candidates.
-    d = dm_decide(dm_classify_film(30, 1), 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, yes);
+    d = dm_decide(dm_classify_film(30, 1), 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, P, yes, ON);
     CHECK(d.candidate == 0 && d.attempt == 0);
-    d = dm_decide(dm_classify_film(25, 1), 1, 1920, 1080, DM_RES_1080, DM_RATE_50, yes);
-    CHECK(d.candidate == 0);
-    d = dm_decide(dm_classify_film(50, 1), 1, 1920, 1080, DM_RES_1080, DM_RATE_50, yes);
-    CHECK(d.candidate == 0);
-    d = dm_decide(dm_classify_film(60000, 1001), 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, yes);
-    CHECK(d.candidate == 0);
+    d = dm_decide(dm_classify_film(25, 1), 1, 1920, 1080, DM_RES_1080, DM_RATE_50, P, yes, ON);
+    CHECK(d.candidate == 0 && d.attempt == 0);
+    d = dm_decide(dm_classify_film(50, 1), 1, 1920, 1080, DM_RES_1080, DM_RATE_50, P, yes, ON);
+    CHECK(d.candidate == 0 && d.attempt == 0);
+    d = dm_decide(dm_classify_film(60000, 1001), 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, P, yes, ON);
+    CHECK(d.candidate == 0 && d.attempt == 0);
 
     // A guessed rate never qualifies, even if it happened to be 24.
-    d = dm_decide(DM_FILM_24, 0, 1920, 1080, DM_RES_1080, DM_RATE_59_94, yes);
-    CHECK(d.candidate == 0 && strstr(d.candidate_why, "guessed") != NULL);
+    d = dm_decide(DM_FILM_24, 0, 1920, 1080, DM_RES_1080, DM_RATE_59_94, P, yes, ON);
+    CHECK(d.attempt == 0 && strstr(d.candidate_why, "guessed") != NULL);
 
     // 720p output configurations behave as today.
-    d = dm_decide(DM_FILM_23976, 1, 1280, 720, DM_RES_720, DM_RATE_59_94, yes);
-    CHECK(d.candidate == 0 && strstr(d.candidate_why, "1920x1080") != NULL);
+    d = dm_decide(DM_FILM_23976, 1, 1280, 720, DM_RES_720, DM_RATE_59_94, P, yes, ON);
+    CHECK(d.attempt == 0 && strstr(d.candidate_why, "1920x1080") != NULL);
 
-    // PAL 50Hz 1080 output with film is a candidate by content, never attempted.
-    d = dm_decide(DM_FILM_24, 1, 1920, 1080, DM_RES_1080, DM_RATE_50, yes);
-    CHECK(d.candidate == 1 && d.attempt == 0);
+    // 1080i output: left alone.
+    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_59_94, 0, yes, ON);
+    CHECK(d.attempt == 0 && strstr(d.candidate_why, "interlaced") != NULL);
+
+    // PAL 50Hz 1080p output with film: a candidate like any other.
+    d = dm_decide(DM_FILM_24, 1, 1920, 1080, DM_RES_1080, DM_RATE_50, P, yes, ON);
+    CHECK(d.candidate == 1 && d.attempt == 1);
 
     // SD content on a 1080 output: not a candidate.
-    d = dm_decide(DM_FILM_23976, 1, 720, 480, DM_RES_1080, DM_RATE_59_94, yes);
-    CHECK(d.candidate == 0);
+    d = dm_decide(DM_FILM_23976, 1, 720, 480, DM_RES_1080, DM_RATE_59_94, P, yes, ON);
+    CHECK(d.attempt == 0);
 
-    // Already on a 24Hz-family output (if that ever happens): nothing to do.
-    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_24FAM_A, yes);
-    CHECK(d.candidate == 0);
+    // Already on a 24Hz-family output: nothing to do.
+    d = dm_decide(DM_FILM_23976, 1, 1920, 1080, DM_RES_1080, DM_RATE_24FAM_A, P, yes, ON);
+    CHECK(d.attempt == 0);
 
-    // attempt is 0 on every path -- the invariant this whole module exists to keep.
+    // attempt requires ALL of: film, confident, supported, enabled.
     for (int f = 0; f <= 2; f++)
         for (int c = 0; c <= 1; c++)
-            for (int s = 0; s <= 2; s++) {
-                d = dm_decide((dm_film)f, c, 1920, 1080, DM_RES_1080, DM_RATE_59_94, (dm_support)s);
-                CHECK(d.attempt == 0);
-                CHECK(d.candidate_why != NULL && d.result_why != NULL);
-            }
+            for (int s = 0; s <= 2; s++)
+                for (int e = 0; e <= 1; e++) {
+                    d = dm_decide((dm_film)f, c, 1920, 1080, DM_RES_1080, DM_RATE_59_94,
+                                  P, (dm_support)s, e);
+                    CHECK(d.attempt == (f != 0 && c && s == DM_SUPPORT_YES && e));
+                    CHECK(d.candidate_why != NULL && d.result_why != NULL);
+                }
+}
+
+static void test_clock(void)
+{
+    uint32_t n = 0, d = 0;
+    // Ideal periods in ns.
+    CHECK(dm_classify_period(41708333, &n, &d) == DM_CLK_23976 && n == 24000 && d == 1001);
+    CHECK(dm_classify_period(41666667, &n, &d) == DM_CLK_24 && n == 24 && d == 1);
+    CHECK(dm_classify_period(16683333, &n, &d) == DM_CLK_5994 && n == 60000 && d == 1001);
+    CHECK(dm_classify_period(16666667, &n, &d) == DM_CLK_60);
+    CHECK(dm_classify_period(20000000, &n, &d) == DM_CLK_50);
+    // Measurement noise of +/-100 ppm must not flip 23.976 into 24 or back.
+    CHECK(dm_classify_period(41708333 + 4170, 0, 0) == DM_CLK_23976);
+    CHECK(dm_classify_period(41708333 - 4170, 0, 0) == DM_CLK_23976);
+    CHECK(dm_classify_period(41666667 + 4166, 0, 0) == DM_CLK_24);
+    CHECK(dm_classify_period(41666667 - 4166, 0, 0) == DM_CLK_24);
+    // Halfway between them (500 ppm off both) is refused, not guessed.
+    CHECK(dm_classify_period(41687500, 0, 0) == DM_CLK_UNKNOWN);
+    CHECK(dm_classify_period(0, 0, 0) == DM_CLK_UNKNOWN);
+    CHECK(dm_classify_period(35000000, 0, 0) == DM_CLK_UNKNOWN);
+    CHECK_STR(dm_clock_name(DM_CLK_23976), "23.976");
+    CHECK_STR(dm_clock_name(DM_CLK_UNKNOWN), "unknown");
 }
 
 int main(void)
@@ -172,6 +207,7 @@ int main(void)
     test_support();
     test_cadence();
     test_decide();
+    test_clock();
     if (fails) { printf("test_display_mode: %d FAILED\n", fails); return 1; }
     printf("test_display_mode: all passed\n");
     return 0;

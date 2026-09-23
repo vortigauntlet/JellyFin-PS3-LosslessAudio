@@ -12,6 +12,7 @@
 
 #include "rsxutil.h"
 #include "avconf_capture.h"
+#include "display_24p.h"
 #include "ui.h"
 #include "ui_visuals.h"
 #include "ui_sfx.h"
@@ -158,6 +159,7 @@ int main(int argc, const char *argv[]) {
     video_log_capabilities();   // what refresh rates does this panel offer?
     audio_out_log_capabilities();  // ...and will this chain take a bitstream?
     avconf_capture_run();       // opt-in 24p research capture; see its header
+    d24_boot_check();           // did the last run die with the output in 24p?
 
     // Cold-boot animation: black, then the Jellyfin mark, while the rest of
     // startup runs underneath it; the XMB then rises out of the black and the

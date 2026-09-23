@@ -126,7 +126,7 @@ void dm_cadence_str(uint32_t disp_num, uint32_t disp_den,
 dm_decision dm_decide(dm_film film, int fps_confident,
                       uint32_t width, uint32_t height,
                       uint8_t display_res, uint16_t display_rates,
-                      dm_support support)
+                      int progressive, dm_support support, int enabled)
 {
     dm_decision d;
     memset(&d, 0, sizeof(d));
@@ -142,24 +142,64 @@ dm_decision dm_decide(dm_film film, int fps_confident,
     } else if (display_res != DM_RES_1080) {
         // 720p-only and SD setups must behave exactly as today.
         d.candidate_why = "output is not 1920x1080";
+    } else if (!progressive) {
+        d.candidate_why = "output is interlaced";
     } else if (width < 1280 || height < 720) {
         d.candidate_why = "content below 720p";
     } else if (display_rates & DM_RATE_24FAM) {
         d.candidate_why = "output already reports a 24Hz-family rate";
     } else {
         d.candidate     = 1;
-        d.candidate_why = "24fps film on a non-24Hz 1080 output";
+        d.candidate_why = "24fps film on a non-24Hz 1080p output";
     }
 
     if (!d.candidate) {
         d.result_why = "not a candidate";
     } else if (support != DM_SUPPORT_YES) {
         d.result_why = "display does not advertise 24Hz for 1080";
+    } else if (!enabled) {
+        d.result_why = "24p output is off (jellyfin_24p.txt)";
     } else {
-        // The one case that would switch if a mechanism existed.  Named
-        // precisely so a hardware log says which step is missing.
-        d.result_why = "no verified firmware call selects a refresh rate "
-                       "(Configure has no rate field; Configure2 ABI unknown)";
+        d.path       = "cellVideoOutConfigure2";
+        d.attempt    = 1;
+        d.result     = "pending";
+        d.result_why = "switching; verified by vblank timing";
     }
     return d;
+}
+
+static const struct { dm_clock c; uint32_t num, den; const char *name; } kClocks[] = {
+    { DM_CLK_23976, 24000, 1001, "23.976" },
+    { DM_CLK_24,    24,    1,    "24.000" },
+    { DM_CLK_25,    25,    1,    "25.000" },
+    { DM_CLK_2997,  30000, 1001, "29.970" },
+    { DM_CLK_30,    30,    1,    "30.000" },
+    { DM_CLK_50,    50,    1,    "50.000" },
+    { DM_CLK_5994,  60000, 1001, "59.940" },
+    { DM_CLK_60,    60,    1,    "60.000" },
+};
+
+dm_clock dm_classify_period(uint64_t period_ns, uint32_t *num, uint32_t *den)
+{
+    if (period_ns == 0) return DM_CLK_UNKNOWN;
+    for (unsigned i = 0; i < sizeof(kClocks) / sizeof(kClocks[0]); i++) {
+        // nominal period in ns = 1e9 * den / num; compare in ppm without floats:
+        // |period*num - 1e9*den| <= 250e-6 * 1e9*den
+        const int64_t ideal = (int64_t)1000000000 * kClocks[i].den;
+        const int64_t got   = (int64_t)period_ns * kClocks[i].num;
+        const int64_t diff  = got > ideal ? got - ideal : ideal - got;
+        if (diff * 4000 <= ideal) {                 // <= 250 ppm
+            if (num) *num = kClocks[i].num;
+            if (den) *den = kClocks[i].den;
+            return kClocks[i].c;
+        }
+    }
+    return DM_CLK_UNKNOWN;
+}
+
+const char *dm_clock_name(dm_clock c)
+{
+    for (unsigned i = 0; i < sizeof(kClocks) / sizeof(kClocks[0]); i++)
+        if (kClocks[i].c == c) return kClocks[i].name;
+    return "unknown";
 }

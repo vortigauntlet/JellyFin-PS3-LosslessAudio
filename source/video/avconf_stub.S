@@ -1,18 +1,20 @@
 /*
- * Import slots for cellSysutilAvconfExt -- RESOLVED BUT NEVER CALLED.
+ * Import slots for cellSysutilAvconfExt.
  *
- * The 24p question comes down to one function: cellVideoOutConfigure2, the
- * only firmware entry point that could plausibly carry a refresh rate (the v1
- * configuration struct has no field for one).  Its argument layout is not
- * public -- RPCS3 stubs it as taking no arguments -- so the next step is to
- * read the real code, and the simplest way to get the decrypted 4.92 code is
- * to ask the loader where it put it.  See avconf_capture.cpp.
+ * cellVideoOutConfigure2 is the only firmware entry point that carries a
+ * refresh rate.  Its ABI is now read from the 4.93 firmware itself
+ * (docs/24P_OUTPUT.md), not guessed:
  *
- * This is the same loader mechanism as source/audio/audio_out_stub.S, minus
- * the trampolines: there is deliberately NO callable symbol here, so nothing
- * in the app can call a function whose ABI is a guess.  The loader fills each
- * slot with the address of the function's descriptor (OPD) when the library is
- * loaded (sysModuleLoad(0x31)), and avconf_capture.cpp only READS the slots.
+ *   s32 cellVideoOutConfigure2(u32 videoOut, CellVideoOutConfiguration2 *cfg,
+ *                              CellVideoOutOption2 *opt, u32 waitForEvent)
+ *
+ * libsysutil_avconf_ext copies cfg (16 bytes) and opt (16 bytes, NULL allowed)
+ * verbatim into VSH packet 0x4b08; VSH reads refresh as a u16 at cfg+0x0A.
+ *
+ * So slot 0 gets a trampoline (videoConfigure2, video_24p.h) and the others
+ * stay deliberately UNCALLABLE: their layouts have not been read from firmware.
+ * The loader fills each slot with the function's descriptor (OPD) address when
+ * the library is loaded (sysModuleLoad(0x31)); avconf_capture.cpp reads them.
  *
  * FNIDs are sha1(name + suffix), first four bytes little-endian -- the
  * algorithm that reproduces PSL1GHT's own cellVideoOutConfigure (0x0bae8772)
@@ -22,6 +24,34 @@
  *
  * ORDER MATTERS: entry N of the FNID table pairs with slot N.
  */
+
+#include <ppc-asm.h>
+
+/* Trampoline for slot 0 only -- same shape as audio_out_stub.S's AOEXPORT. */
+	.align 2
+	.section ".sceStub.text","ax"
+	.globl __videoConfigure2
+__videoConfigure2:
+	mflr	r0
+	std		r0,16(r1)
+	std		r2,40(r1)
+	stdu	r1,-128(r1)
+	lis		r12,(jf_avx_stubs+0)@ha
+	lwz		r12,(jf_avx_stubs+0)@l(r12)
+	lwz		r0,0(r12)
+	lwz		r2,4(r12)
+	mtctr	r0
+	bctrl
+	addi	r1,r1,128
+	ld		r2,40(r1)
+	ld		r0,16(r1)
+	mtlr	r0
+	blr
+	.align 3
+	.section ".opd","aw"
+	.globl videoConfigure2
+videoConfigure2:
+	.quad __videoConfigure2,.TOC.@tocbase,0
 
 	.section ".rodata.sceFNID","a"
 	.align 2
