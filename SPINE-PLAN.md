@@ -575,3 +575,85 @@ Reflections now end at the hints bar; nothing changes without overscan.
   `xmb_draw_topbar`; this branch changed the three XMB phase functions and made
   `xmb_grid_view()` public. The strobe session's uncommitted `ui_wave.cpp`
   overlaps only at end-of-file (`wave_imm_bind`).
+
+---
+
+## 2026-09-24 — playback regression and screen sizing (cd662dd), BUILT, NOT DEPLOYED
+
+Two separate investigations; neither was caused by the other.
+
+### Playback: not the UI — the quality step did not include its audio
+
+Evidence, read together: the console's `player_log.txt` (five 1080p "25 Mbps"
+sessions, a spine-on mode-2 build) and the Jellyfin server's own ffmpeg logs
+on this PC (`C:\ProgramData\Jellyfin\Server\log`, PS3 clock ≈ PC + 5 h 34 m).
+
+| | observed |
+| --- | --- |
+| server request | `-b:v 25000000 -maxrate 25000000`, **DTS-HD MA 5.1 copied** on top |
+| server output | averaged **27.6 Mbps** (peak 28.5); ffmpeg ran at 16–18× realtime |
+| console receive | ~25 Mbps (the known ceiling), `rxw` 70–99% (blocked in netRecv) |
+| read-ahead ring | 34 MB, draining ~3 Mbps: 186k → 56k packets in a minute |
+| picture | a flat 24.0 fps whenever the ring held data; stalls only at `ring=0` |
+
+- `source/player`, `net`, `video`, `audio`, `api`: **zero changes** between the
+  pre-JellyWave build (4c1a63b) and the strobe base; the spine adds only HUD
+  buttons. Static memory grew ~0.5 MB; the ring was 34 MB (bigger than the
+  09-18 known-good 24 MB), so heap was not the constraint.
+- Nothing from the XMB, spine, depth stage or wave runs per frame during video:
+  the player loop draws video + HUD only. The facts worker is a 25 Hz one-byte
+  poll. The audio-reactive tap is fed by the music player only (`lvl=` in the
+  video heartbeat is the player's own meters).
+- Later sessions dropped to ~1 Mbps with `rxw` 99% while the progress POSTs to
+  the same server also failed (`http=-1`). That is delivery, not the console
+  being busy. It was not reproduced.
+
+**Fix:** `player/core/stream_budget.h`. A step now means the whole stream: the
+audio (its `BitRate`, or for a copied lossless track at least 3.0 Mbps DTS-HD
+/ 4.5 Mbps TrueHD, because Jellyfin reports only the DTS core) plus ~3% TS
+framing come out of it. For the measured case, video 21.25 Mbps and ~23.9 on
+the wire instead of ~27.7. "Original" is still uncapped. Logged as
+`stream budget: ...`. **`jellyfin_abudget.txt` = 0 puts the old request back**
+for an A/B.
+
+### Screen size: the canvas was scaled to the display, then translated
+
+`uis_w/uis_h/uis_tf` scaled the 1280×720 canvas to the **whole** framebuffer,
+and `XMB_OX/OY` only added the inset. The left/top edges moved in while the
+right/bottom edges moved **out** by the same amount, so no calibration could fit.
+Everything drawn at an authored position overflowed right/bottom by one inset:
+the spine, the depth stage, item detail, and the redesigned player HUD (`v3x()`).
+Pad-anchored chrome (`XMB_ITEM_PAD`, `XMB_BOTTOM_PAD`) did not overflow, which
+put two geometries on one screen.
+
+**Model now:** physical framebuffer → safe rect (framebuffer minus the inset on
+every edge) → the logical 1280×720 canvas scaled into it, geometry **and** type.
+There is one transform (`ui_visuals.h` "THE SAFE AREA"), and `depth_xform_make`
+matches it. With no calibration it is integer-identical to before. Video and
+full-bleed backdrops stay full-bleed. The old raw-pixel HUD and the boot/auth
+screens keep their own symmetric insets.
+
+`test_layout` `test_safe_area()`: 1080p/720p/576i/480p × 0/2/2.5/3/5/8%.
+Margins are symmetric and the canvas centre is the screen centre. An authored
+edge and a pad-anchored edge land on the same pixel. The HUD seek bar is
+symmetric, and the depth transform matches UIS. The earlier overscan-only
+artefacts (shortened reflections, skipped spine slot, 2-row lists) are gone.
+The console's calibration file reads `30` (3.0%).
+
+### Tests / build
+
+Host suite 33/33 (new `test_stream_budget`, a `BitRate` fixture in
+`test_media_sources`, `test_safe_area`). PS3 clean serial build: 115 objects,
+48 warnings (unchanged census), header `0480`. Staged: `outputs/EBOOT.BIN.spine8`.
+
+### Needs the console
+
+1. Play the same film at 25 Mbps with Surround HD. The log should show
+   `stream budget: step=25000000 video=21250000 audio=3000000 (dts...)`, the
+   ring should stay above 0, and the server's ffmpeg output should average
+   ≤ ~24 Mbps. A/B with `jellyfin_abudget.txt` = 0.
+2. Re-calibrate overscan once. Everything now shrinks into the safe rect, so the
+   value that fits is the true one (probably lower than the 2–3% used to
+   compensate). Check the XMB, spine, detail page and the player HUD at that value.
+3. The 1 Mbps sessions: if they recur, check the network and server at the time
+   (both connections failed together).
