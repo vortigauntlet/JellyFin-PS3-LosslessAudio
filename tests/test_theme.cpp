@@ -344,7 +344,7 @@ static void test_scan_finds_files(void) {
     ThemeEntry e[THEME_MAX_ENTRIES];
     int n = theme_scan(e, THEME_MAX_ENTRIES);
     ck_true("at least the two built-ins", n >= 2);
-    ck_true("slot 0 is XMB wave",   strcmp(e[0].name, "XMB wave") == 0);
+    ck_true("slot 0 is Jellywave",   strcmp(e[0].name, "Jellywave") == 0);
     ck_true("slot 1 is Golden Age", strcmp(e[1].name, "Golden Age") == 0);
     ck_true("built-ins have no path", e[0].path[0] == '\0' && e[1].path[0] == '\0');
 }
@@ -356,14 +356,14 @@ static void test_theme_cycle(void) {
     printf("theme_cycle\n");
 
     theme_apply_builtin(0);
-    ck_true("starts on XMB wave", strcmp(g_theme.name, "XMB wave") == 0);
+    ck_true("starts on Jellywave", strcmp(g_theme.name, "Jellywave") == 0);
 
     theme_cycle();
     ck_true("cycles to Golden Age", strcmp(g_theme.name, "Golden Age") == 0);
     ck_u32("and the palette really changed", g_theme.accent, 0xE0A13C);
 
     theme_cycle();
-    ck_true("wraps back to XMB wave", strcmp(g_theme.name, "XMB wave") == 0);
+    ck_true("wraps back to Jellywave", strcmp(g_theme.name, "Jellywave") == 0);
     ck_u32("palette restored", g_theme.accent, 0xAA5CC3);
 
     // The choice is persisted by NAME, and reloading it must land back on the

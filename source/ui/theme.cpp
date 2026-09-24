@@ -81,7 +81,7 @@ static const char *THEME_DIRS[] = {
         230,            /* scrim_a       0.90 * 255                     */ \
         168,            /* scrim_2_a     0.66 * 255                     */ \
         4, 999, 115, 28, 0, 12,                                            \
-        "XMB wave"                                                         \
+        "Jellywave"                                                        \
     }
 
 static const Theme THEME_BUILTIN[THEME_BUILTIN_COUNT] = {
