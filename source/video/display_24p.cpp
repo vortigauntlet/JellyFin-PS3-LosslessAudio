@@ -369,6 +369,15 @@ bool d24_session_begin(const d24_ui *ui)
 		return false;
 	}
 
+	// The vblank was just measured ticking at the new rate, so a flip will
+	// complete -- the 2026-09-18 hang was a flip with NO vblank.  Hardware
+	// 2026-09-24 showed why this is needed: the TV synced to 23.976 but showed
+	// black, because after the mode change nothing is visible until a new
+	// frame is flipped, so the confirmation prompt could not be read.
+	ui->draw_prompt(confirmed != 1
+	                ? "The TV is now at 1080p 24Hz. Press X if you can read this."
+	                : "1080p 24Hz", confirmed != 1 ? "O or 15 s = no, go back." : "");
+
 	if (confirmed != 1) {
 		// Only now does a press count: the switch is done and measured.
 		ui->poll_answer();               // drop anything pressed during the switch
