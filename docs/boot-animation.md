@@ -4,8 +4,9 @@ What the console shows between the EBOOT starting and the XMB taking over:
 
 ```
 BLACK  ->  the Jellyfin mark fades in, centred
-       ->  the XMB rises out of the black behind it, bottom edge first
-       ->  the mark shrinks and glides into the top-left lockup
+       ->  it catches the light: a thin glint, a twinkle on its apex
+       ->  it shrinks and glides into the top-left lockup, and the XMB rises
+           out of the black behind it as it goes, bottom edge first
        ->  J-E-L-L-Y-F-I-N unfolds out of it to the right
        ->  the static XMB
 ```
@@ -64,20 +65,22 @@ was.
 | `DARK` | black | 200 ms |
 | `EMBLEM` | the mark fades in (ease-in-out, 900 ms) and settles 94% → 100% scale; a halo in the mark's own purple follows it in | 900 ms |
 | `AWAIT` | the mark holds; the halo **breathes** (60–100%, 3.2 s period) so the screen never looks frozen; after 4 s, "Connecting to server" fades in under it | the XMB is drawing frames **and** the mark has been fully visible 350 ms |
-| `EMERGE` | the XMB appears from under a black veil whose soft edge (60% of the screen tall, smootherstep) rises from the bottom: the wave first, then the shelves, the chrome last | handoff clock |
+| `SHINE` | before anything moves, the mark catches the light for about a second: a thin glint streaks across it (a 128 px highlight, added over the mark and clipped to its shape) and a small four-point star twinkles on its apex, peaking as the glint crosses it; the halo swells with the twinkle | handoff clock |
+| `EMERGE` | the XMB appears from under a black veil whose soft edge (60% of the screen tall, smootherstep) rises from the bottom: the wave first, then the shelves, the chrome last. It is **timed to the dock**: the shelves stay 70%+ dark while the mark is still over them and are fully shown once it is ~75% of the way to the corner | handoff clock |
 | `DOCK` | the mark shrinks (geometrically, so the rate looks constant) and travels a gentle arc: it lifts, then glides **left** into the lockup | handoff clock |
 | `WORDMARK` | each letter slides into place from up to 0.9 em left, fading in, with a ~4.5% spring (`easeOutBack`, c1 = 1.1), staggered 45 ms left to right | handoff clock |
 | `DONE` | nothing: the static lockup is drawn by its usual code | — |
 | `DISMISS` | not going to the XMB (first run, login, network init failure): the mark fades back to black from wherever it was | 450 ms |
 
-EMERGE, DOCK and WORDMARK are **overlapping windows on one clock** that starts
+SHINE, EMERGE, DOCK and WORDMARK are **overlapping windows on one clock** that starts
 when AWAIT ends, so the handoff reads as one motion:
 
 ```
-handoff ms   0        495      1100  1158          1853
-EMERGE       |=========================|
-DOCK                  |=======================|  (850 ms)
-WORDMARK                             |===================|
+handoff ms   0      300  580   920 950        1770 1780         2475
+SHINE        |===========|                         glint 300-950, twinkle 340-940
+EMERGE                         |=================|  (850 ms)
+DOCK                              |====================|  (900 ms)
+WORDMARK                                        |============|
 ```
 
 ## Readiness signals
@@ -103,7 +106,7 @@ reveal never uncovers a half-built UI.
   and only its reveal waits for the rest of the 350 ms hold (a button press
   skips it). That is the only wait the animation adds, and it only happens
   on a faster boot than any seen so far.
-- **A fixed handoff, and it never blocks.** 1.85 s after readiness, with the
+- **A fixed handoff, and it never blocks.** 2.5 s after readiness (1 s of it the shine), with the
   XMB live underneath. Any press ends it at once. A press made *before* the
   XMB exists is discarded rather than stored, so it cannot throw away the
   reveal later.
@@ -219,7 +222,8 @@ are drawn by the browser, so use it for timing and motion, not pixels.
   `boot:` lines in `player_log.txt`.
 - Whether the veil's soft edge bands on a real panel (it is an 8-bit
   gradient over ~650 rows; the wave's dither unit is not enabled for it).
-- Whether 1.85 s of handoff feels deliberate or slow at TV distance. The
+- Whether the shine reads as a glint and not a flash on a real panel, and
+  whether 2.5 s of handoff feels deliberate or slow at TV distance. The
   constants are all at the top of `boot_seq.h`.
 - The halo's 12-segment fan at 30% alpha: smooth enough, or faceted?
 - 480p/576p framing: the layout is in fractions of the screen height, but

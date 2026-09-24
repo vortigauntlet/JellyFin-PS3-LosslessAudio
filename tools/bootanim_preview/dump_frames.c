@@ -32,8 +32,8 @@
 
 static const char *phase_name(BootPhase p)
 {
-    static const char *n[] = { "DARK", "EMBLEM", "AWAIT", "EMERGE", "DOCK",
-                               "WORDMARK", "DISMISS", "DONE" };
+    static const char *n[] = { "DARK", "EMBLEM", "AWAIT", "SHINE", "EMERGE",
+                               "DOCK", "WORDMARK", "DISMISS", "DONE" };
     return n[p];
 }
 
@@ -102,9 +102,11 @@ int main(int argc, char **argv)
         for (int i = 0; i < n; i++)
             printf("%s[%.1f,%u]", i ? "," : "", ys[i], as[i]);
         printf("],\"halo\":%.4f,\"status\":%.4f,\"op\":%.4f,"
+               "\"glint\":%.4f,\"gpos\":%.4f,\"spark\":%.4f,\"srot\":%.4f,"
                "\"mark\":{\"cx\":%.2f,\"cy\":%.2f,\"bell\":%.2f,\"owner\":\"%s\"},"
                "\"word\":[",
                f.halo * BOOT_HALO_PEAK, f.status, f.mark_opacity,
+               f.glint, f.glint_pos, f.spark, f.spark_rot,
                cx, cy, bell, owner);
         for (int i = 0; i < BOOT_WORD_LETTERS; i++)
             printf("%s[%.4f,%.4f]", i ? "," : "",

@@ -150,6 +150,60 @@ function drawWord(f) {
   g.globalAlpha = 1;
 }
 
+// The glint: boot_glint_at() over the mark's coverage at 128px, added --
+// the same thing boot_anim.cpp writes into its glint texture.
+const GL = 128, gc = document.createElement("canvas"); gc.width = gc.height = GL;
+const gx = gc.getContext("2d");
+let cov = null;
+function coverage() {
+  if (cov || !mark.complete) return cov;
+  gx.clearRect(0, 0, GL, GL); gx.drawImage(mark, 0, 0, GL, GL);
+  const d = gx.getImageData(0, 0, GL, GL).data;
+  cov = new Uint8Array(GL * GL);
+  for (let i = 0; i < GL * GL; i++) cov[i] = d[i * 4 + 3];
+  return cov;
+}
+function glintAt(u, v, pos) {
+  const sc = (u + 0.45 * v) / 1.45, d = (sc - pos) / 0.08, b = 1 - d * d;
+  return b > 0 ? b * b : 0;
+}
+function drawGlint(f, box) {
+  const c = coverage(); if (!c) return;
+  const img = gx.createImageData(GL, GL);
+  for (let y = 0; y < GL; y++) for (let x = 0; x < GL; x++) {
+    const i = y * GL + x; if (!c[i]) continue;
+    const k = Math.min(1, glintAt((x + .5) / GL, (y + .5) / GL, f.gpos) * 0.55 * f.glint * c[i] / 255);
+    img.data[i * 4] = 255; img.data[i * 4 + 1] = 245; img.data[i * 4 + 2] = 250;
+    img.data[i * 4 + 3] = 255 * k;
+  }
+  gx.putImageData(img, 0, 0);
+  g.globalCompositeOperation = "lighter";
+  g.drawImage(gc, f.mark.cx - box / 2, f.mark.cy - box / 2, box, box);
+  g.globalCompositeOperation = "source-over";
+}
+function star(x, y, arm, waist, rot, a) {
+  const gr = g.createRadialGradient(x, y, 0, x, y, arm);
+  gr.addColorStop(0, "rgba(255,248,255," + a + ")");
+  gr.addColorStop(1, "rgba(255,248,255,0)");
+  g.fillStyle = gr; g.beginPath();
+  for (let k = 0; k < 8; k++) {
+    const ang = rot + k * Math.PI / 4, r = (k & 1) ? waist : arm;
+    g.lineTo(x + r * Math.cos(ang), y + r * Math.sin(ang));
+  }
+  g.closePath(); g.fill();
+}
+function drawSpark(x, y, bell, s, rot) {
+  const size = bell * 0.38 * (0.55 + 0.45 * s);
+  g.globalCompositeOperation = "lighter";
+  const gr = g.createRadialGradient(x, y, 0, x, y, size * 0.45);
+  gr.addColorStop(0, "rgba(255,248,255," + 0.40 * s + ")");
+  gr.addColorStop(1, "rgba(255,248,255,0)");
+  g.fillStyle = gr; g.fillRect(x - size, y - size, size * 2, size * 2);
+  star(x, y, size, size * 0.11, rot, s);
+  star(x, y, size * 0.5, size * 0.08, rot + Math.PI / 4, s * 0.7);
+  g.globalCompositeOperation = "source-over";
+}
+
 function draw(f) {
   g.globalAlpha = 1;
   if (f.xmb || (f.phase === "DONE" && f.mark.owner === "static")) drawXmb();
@@ -167,7 +221,10 @@ function draw(f) {
     g.globalAlpha = f.xmb ? 1 : f.op;
     g.drawImage(mark, f.mark.cx - box / 2, f.mark.cy - box / 2, box, box);
     g.globalAlpha = 1;
+    if (f.glint > 0) drawGlint(f, box);
   }
+  if (f.spark > 0) drawSpark(f.mark.cx, f.mark.cy - 0.47 * f.mark.bell,
+                             f.mark.bell, f.spark, f.srot);
   if (f.status > 0) {
     g.font = "22px system-ui, sans-serif"; g.textAlign = "center";
     g.fillStyle = "rgba(150,150,175," + f.status + ")";

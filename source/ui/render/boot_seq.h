@@ -15,8 +15,12 @@
  *   AWAIT     the mark holds; a soft halo breathes behind it.  Leaves only
  *             when the XMB is actually drawing frames AND the mark has been
  *             fully visible for BOOT_HOLD_MIN_MS
+ *   SHINE     before anything moves, the mark catches the light: a soft
+ *             glint sweeps across it and a star twinkles on its apex
  *   EMERGE    the XMB rises out of the black from the bottom edge up -- the
- *             wave first, then the shelves, the chrome last
+ *             wave first, then the shelves, the chrome last -- paced to the
+ *             DOCK so the middle of the screen only clears once the mark has
+ *             left it
  *   DOCK      the mark shrinks and glides into the lockup's top-left slot
  *   WORDMARK  J-E-L-L-Y-F-I-N unfolds rightward out of the docked mark
  *   DONE      the static lockup; the XMB owns every pixel again
@@ -25,7 +29,7 @@
  *             network failed): the mark fades back to black and the caller's
  *             own screen takes over
  *
- * EMERGE, DOCK and WORDMARK overlap -- they are windows on ONE clock that
+ * SHINE, EMERGE, DOCK and WORDMARK overlap -- they are windows on ONE clock that
  * starts when AWAIT is left, which is what makes the handoff read as a single
  * motion rather than three steps.  `phase` names the latest window that has
  * opened.
@@ -72,19 +76,46 @@ extern "C" {
 #define BOOT_BREATH_MS        3200.0f   /* halo breathing period              */
 #define BOOT_DISMISS_MS        450.0f   /* mark fade-out when not going to XMB */
 
-/* The handoff clock, zero when AWAIT is left.  Windows overlap on purpose. */
-#define BOOT_EMERGE_START_MS     0.0f
-#define BOOT_EMERGE_MS        1100.0f
-#define BOOT_DOCK_START_MS     495.0f   /* 45% into EMERGE                    */
-#define BOOT_DOCK_MS           850.0f
-#define BOOT_WORD_START_MS    1158.0f   /* 78% into DOCK: the mark is landing */
+/* The handoff clock, zero when AWAIT is left.  Windows overlap on purpose.
+ *
+ *   0       SHINE     the mark holds still and catches the light (~1 s)
+ *   300-950   glint sweeps left to right across the mark
+ *   340-940   a star twinkles on the apex, peaking (580) as the glint
+ *             crosses it
+ *   920     EMERGE    the veil starts lifting at the bottom edge, just as
+ *   950     DOCK      the mark starts to move -- only after the shine
+ *   ~1330             mark ~30% along and still over the shelves: they
+ *                     are still ~70% dark
+ *   ~1500             mark ~75% along, clear of the shelves: every poster
+ *                     row fully shown
+ *   1770              veil fully gone; the mark is all but landed
+ *   1780    WORDMARK
+ *
+ * The veil is timed to the DOCK, not to the SHINE: fitted so the shelves
+ * stay dark while the mark sits over them and clear as it leaves.  (A veil
+ * that started with the shine revealed the posters around a mark that had
+ * barely moved -- the dock eases in slowly.)  test_veil_sync pins this.
+ */
+#define BOOT_SHINE_MS         1000.0f
+#define BOOT_GLINT_START_MS    300.0f
+#define BOOT_GLINT_MS          650.0f
+#define BOOT_SPARK_START_MS    340.0f
+#define BOOT_SPARK_MS          600.0f
+#define BOOT_SPARK_RISE        0.40f    /* fraction of the twinkle spent rising */
+#define BOOT_EMERGE_START_MS   920.0f
+#define BOOT_EMERGE_MS         850.0f
+#define BOOT_DOCK_START_MS     950.0f   /* after the shine: nothing moves while it plays */
+#define BOOT_DOCK_MS           900.0f
+#define BOOT_WORD_START_MS    1780.0f   /* just after the veil is gone        */
 #define BOOT_WORD_STAGGER_MS    45.0f   /* between successive letters         */
 #define BOOT_WORD_LETTER_MS    380.0f   /* one letter's own reveal            */
 #define BOOT_WORD_LETTERS        8      /* J E L L Y F I N                    */
 #define BOOT_HANDOFF_END_MS   (BOOT_WORD_START_MS + \
                                (BOOT_WORD_LETTERS - 1) * BOOT_WORD_STAGGER_MS + \
                                BOOT_WORD_LETTER_MS)
-#define BOOT_HALO_OUT_MS       500.0f   /* halo + status fade at EMERGE start */
+#define BOOT_HALO_OUT_START_MS 850.0f   /* the halo leaves as the mark moves  */
+#define BOOT_HALO_OUT_MS       500.0f
+#define BOOT_STATUS_OUT_MS     500.0f   /* status line goes first thing       */
 
 /* ---- look ---------------------------------------------------------------- */
 
@@ -101,6 +132,13 @@ extern "C" {
 #define BOOT_WORD_SLIDE_EM      0.90f
 #define BOOT_VEIL_BAND          0.60f   /* soft edge, fraction of screen H    */
 #define BOOT_HALO_PEAK          0.30f   /* halo alpha at the top of a breath  */
+#define BOOT_HALO_SPARK_BOOST   0.35f   /* the halo swells with the twinkle   */
+/* The glint: a soft band across the mark along s = (u + K*v) / (1 + K) in
+ * the mark's own box (u,v in 0..1, v down) -- K 0.45 tilts it ~24 degrees
+ * off vertical -- from s = -W to s = 1 + W, so it enters and leaves clean. */
+#define BOOT_GLINT_TILT         0.45f
+#define BOOT_GLINT_WIDTH        0.08f   /* a narrow streak, not a wash */
+#define BOOT_GLINT_GAIN         0.55f   /* added brightness at the band's core */
 
 /* ---- state --------------------------------------------------------------- */
 
@@ -108,6 +146,7 @@ typedef enum {
     BOOT_DARK = 0,
     BOOT_EMBLEM,
     BOOT_AWAIT,
+    BOOT_SHINE,
     BOOT_EMERGE,
     BOOT_DOCK,
     BOOT_WORDMARK,
@@ -148,6 +187,10 @@ typedef struct {
     float veil;           /* 0..1: 0 = whole screen black, 1 = fully lifted  */
     float dock_pos;       /* 0..1 eased progress along the dock path         */
     float dock_size;      /* 0..1 eased progress centre size -> lockup size  */
+    float glint;          /* 0..1 strength of the glint band this frame      */
+    float glint_pos;      /* the band's centre, in boot_glint_at()'s s units */
+    float spark;          /* 0..1 the apex twinkle                           */
+    float spark_rot;      /* its rotation, radians                           */
     float word_reveal[BOOT_WORD_LETTERS];  /* pen travel 0..~1.04, lands 1   */
     float word_alpha[BOOT_WORD_LETTERS];   /* 0..1                           */
     int   xmb_visible;    /* 1 once any of the XMB can be seen               */
@@ -219,6 +262,18 @@ static inline float boot_breath(float t_ms, float period_ms)
     ph -= (float)(long)ph;                     /* frac, t >= 0 */
     float tri = ph < 0.5f ? ph * 2.0f : 2.0f - ph * 2.0f;
     return boot_ease_smoother(tri);
+}
+
+/* The glint's brightness at (u,v) in the mark's box (0..1, v down) with the
+ * band centred on pos: a squared parabola, 1 at the centre, 0 by
+ * BOOT_GLINT_WIDTH either side.  The renderer multiplies by the mark's own
+ * coverage, so it only ever lights the mark. */
+static inline float boot_glint_at(float u, float v, float pos)
+{
+    float sc = (u + BOOT_GLINT_TILT * v) / (1.0f + BOOT_GLINT_TILT);
+    float d  = (sc - pos) / BOOT_GLINT_WIDTH;
+    float b  = 1.0f - d * d;
+    return b > 0.0f ? b * b : 0.0f;
 }
 
 /* ---- the machine --------------------------------------------------------- */
@@ -310,7 +365,8 @@ static inline BootPhase boot__hand_phase(float th)
     if (th >= BOOT_HANDOFF_END_MS) return BOOT_DONE;
     if (th >= BOOT_WORD_START_MS)  return BOOT_WORDMARK;
     if (th >= BOOT_DOCK_START_MS)  return BOOT_DOCK;
-    return BOOT_EMERGE;
+    if (th >= BOOT_EMERGE_START_MS) return BOOT_EMERGE;
+    return BOOT_SHINE;
 }
 
 /* What the current frame shows. */
@@ -326,6 +382,10 @@ static inline void boot_seq_frame(const BootSeq *s, BootFrame *f)
     f->veil = 0.0f;
     f->dock_pos = 0.0f;
     f->dock_size = 0.0f;
+    f->glint = 0.0f;
+    f->glint_pos = -BOOT_GLINT_WIDTH;   /* parked at its start */
+    f->spark = 0.0f;
+    f->spark_rot = 0.0f;
     f->xmb_visible = 0;
     for (i = 0; i < BOOT_WORD_LETTERS; i++) {
         f->word_reveal[i] = 0.0f;
@@ -357,6 +417,7 @@ static inline void boot_seq_frame(const BootSeq *s, BootFrame *f)
         return;
     }
 
+    case BOOT_SHINE:
     case BOOT_EMERGE:
     case BOOT_DOCK:
     case BOOT_WORDMARK:
@@ -369,11 +430,33 @@ static inline void boot_seq_frame(const BootSeq *s, BootFrame *f)
             return;
         }
         th  = (s->phase == BOOT_DONE) ? BOOT_HANDOFF_END_MS : s->t_hand;
-        float out = 1.0f - boot_ease_out_cubic(th / BOOT_HALO_OUT_MS);
+        float out = 1.0f - boot_ease_smoother((th - BOOT_HALO_OUT_START_MS) /
+                                               BOOT_HALO_OUT_MS);
         f->xmb_visible  = 1;
         f->mark_opacity = 1.0f;
-        f->halo   = s->from_halo * out;
-        f->status = s->from_status * out;
+        /* The glint: a smootherstep sweep, brightest mid-crossing. */
+        {
+            float u = boot_clamp01((th - BOOT_GLINT_START_MS) / BOOT_GLINT_MS);
+            float tri = u < 0.5f ? 2.0f * u : 2.0f - 2.0f * u;
+            f->glint     = boot_ease_smoother(tri);
+            /* Parked at its ends outside the sweep, never reset to 0. */
+            f->glint_pos = -BOOT_GLINT_WIDTH +
+                           (1.0f + 2.0f * BOOT_GLINT_WIDTH) * boot_ease_smoother(u);
+        }
+        /* The twinkle: rises, peaks as the glint reaches the apex, falls;
+         * turning slowly the whole time. */
+        {
+            float v = boot_clamp01((th - BOOT_SPARK_START_MS) / BOOT_SPARK_MS);
+            f->spark = v < BOOT_SPARK_RISE
+                ? boot_ease_smoother(v / BOOT_SPARK_RISE)
+                : 1.0f - boot_ease_smoother((v - BOOT_SPARK_RISE) /
+                                            (1.0f - BOOT_SPARK_RISE));
+            f->spark_rot = 0.5f * v;
+        }
+        f->halo = s->from_halo * (1.0f + BOOT_HALO_SPARK_BOOST * f->spark) * out;
+        if (f->halo > 1.0f) f->halo = 1.0f;
+        f->status = s->from_status *
+                    (1.0f - boot_ease_smoother(th / BOOT_STATUS_OUT_MS));
         f->veil   = boot_ease_smoother((th - BOOT_EMERGE_START_MS) / BOOT_EMERGE_MS);
         {
             float u = (th - BOOT_DOCK_START_MS) / BOOT_DOCK_MS;
@@ -415,7 +498,7 @@ static inline void boot_seq_step(BootSeq *s, float dt_ms)
     }
 
     /* Leaving for another screen beats everything that has not yet started
-     * revealing the XMB.  Once EMERGE has begun the XMB is on screen and the
+     * the handoff.  From SHINE on the XMB is running underneath and the
      * signal is meaningless, so it is ignored there. */
     if ((s->sig & BOOT_SIG_LEAVE) &&
         (s->phase == BOOT_DARK || s->phase == BOOT_EMBLEM ||
@@ -439,9 +522,10 @@ static inline void boot_seq_step(BootSeq *s, float dt_ms)
         if ((s->sig & BOOT_SIG_XMB) && s->t_phase >= BOOT_HOLD_MIN_MS) {
             boot__snapshot(s);
             s->t_hand = 0.0f;
-            boot__enter(s, BOOT_EMERGE);
+            boot__enter(s, BOOT_SHINE);
         }
         break;
+    case BOOT_SHINE:
     case BOOT_EMERGE:
     case BOOT_DOCK:
     case BOOT_WORDMARK:

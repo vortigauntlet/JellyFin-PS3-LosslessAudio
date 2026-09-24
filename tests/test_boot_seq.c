@@ -193,7 +193,8 @@ static void run(const Scenario *sc, float max_real_ms, Result *r)
         boot_seq_frame(&s, &f);
         r->frames++;
 
-        if (f.phase == BOOT_EMERGE && r->emerge_real_ms < 0.0f) r->emerge_real_ms = t;
+        // The handoff starts with SHINE now; EMERGE is a window inside it.
+        if (f.phase == BOOT_SHINE && r->emerge_real_ms < 0.0f) r->emerge_real_ms = t;
         if (f.xmb_visible && !(s.sig & BOOT_SIG_XMB)) r->xmb_before_ready++;
         if (f.phase == BOOT_DARK && f.mark_opacity > 0.0f) r->mark_in_dark++;
         if (bad01(f.mark_opacity) || bad01(f.halo) || bad01(f.status) ||
@@ -219,6 +220,10 @@ static void run(const Scenario *sc, float max_real_ms, Result *r)
             POPCK(dock_pos, MAXD_DOCK);
             POPCK(dock_size, MAXD_DOCK);
             POPCK(mark_scale, 0.01f);
+            POPCK(glint, 0.12f);
+            POPCK(glint_pos, 0.10f);
+            POPCK(spark, 0.15f);      // a twinkle: quick, but never a cut
+            POPCK(spark_rot, 0.02f);
             for (int i = 0; i < BOOT_WORD_LETTERS; i++) {
                 POPCK(word_reveal[i], MAXD_REVEAL);
                 POPCK(word_alpha[i], MAXD_WORD);
@@ -257,7 +262,7 @@ static void test_early_ready(void)
     ck(r.reached_done, "early: reaches DONE");
     // EMERGE waits for the minimum -- and not a frame more.
     float min_pre = BOOT_DARK_MIN_MS + BOOT_EMBLEM_MS + BOOT_HOLD_MIN_MS;
-    printf("  early: EMERGE at %.0f ms (minimum %.0f), DONE at %.0f ms\n",
+    printf("  early: handoff at %.0f ms (minimum %.0f), DONE at %.0f ms\n",
            r.emerge_real_ms, min_pre, r.done_real_ms);
     ck(r.emerge_real_ms >= min_pre - 0.5f, "early: mark gets its minimum time");
     ck(r.emerge_real_ms <= min_pre + 4 * FRAME_MS, "early: no extra delay");
@@ -276,7 +281,7 @@ static void test_late_ready(void)
     report_pops("late", &r);
     ck(r.reached_done, "late: reaches DONE");
     ck(r.emerge_real_ms >= 12000.0f && r.emerge_real_ms <= 12000.0f + 2 * FRAME_MS,
-       "late: EMERGE the frame after the XMB arrives");
+       "late: handoff the frame after the XMB arrives");
     ck(r.done_real_ms - r.trigger_real_ms <= BOOT_HANDOFF_END_MS + 3 * FRAME_MS,
        "late: DONE within one handoff of readiness");
 
@@ -346,11 +351,12 @@ static void test_leave(void)
         BootSeq s; BootFrame f;
         boot_seq_begin(&s);
         boot_seq_signal(&s, BOOT_SIG_XMB);
-        while (s.phase != BOOT_EMERGE) boot_seq_step(&s, FRAME_MS);
+        while (s.phase != BOOT_SHINE) boot_seq_step(&s, FRAME_MS);
         boot_seq_signal(&s, BOOT_SIG_LEAVE);
         boot_seq_step(&s, FRAME_MS);
         boot_seq_frame(&s, &f);
-        ck(f.phase == BOOT_EMERGE && f.xmb_visible, "leave during EMERGE ignored");
+        ck(f.phase != BOOT_DISMISS && !s.left && f.xmb_visible,
+           "leave once the handoff has started is ignored");
     }
     // A dismiss with the status line up fades that too.
     {
@@ -381,7 +387,7 @@ static void test_skip(void)
     }
     // After the XMB is up, a press ends it at once -- from every phase.
     static const BootPhase at[] = { BOOT_DARK, BOOT_EMBLEM, BOOT_AWAIT,
-                                    BOOT_EMERGE, BOOT_DOCK, BOOT_WORDMARK };
+                                    BOOT_SHINE, BOOT_EMERGE, BOOT_DOCK, BOOT_WORDMARK };
     for (unsigned k = 0; k < sizeof at / sizeof at[0]; k++) {
         BootSeq s; BootFrame f;
         char b[80];
@@ -467,7 +473,7 @@ static void test_final_frame(void)
     boot_seq_begin(&q);
     boot_seq_signal(&q, BOOT_SIG_XMB);
     while (q.phase != BOOT_EMERGE) boot_seq_step(&q, FRAME_MS);
-    while (q.t_hand < BOOT_EMERGE_MS) boot_seq_step(&q, FRAME_MS);
+    while (q.t_hand < BOOT_EMERGE_START_MS + BOOT_EMERGE_MS) boot_seq_step(&q, FRAME_MS);
     boot_seq_frame(&q, &g);
     ck(g.dock_size > 0.9f, "veil clears when the mark is >90% docked in size");
 }
@@ -640,6 +646,112 @@ static void test_dock(void)
     ck(mono, "dock size: shrinks monotonically");
 }
 
+// ---------------------------------------------------------------------------
+// 12. the shine: the mark catches the light, THEN moves
+// ---------------------------------------------------------------------------
+static void test_shine(void)
+{
+    // The glint profile: full at its centre, gone past its width.
+    ck(boot_glint_at(0.5f, 0.0f, (0.5f) / (1.0f + BOOT_GLINT_TILT)) == 1.0f,
+       "glint: 1 at the band centre");
+    ck(boot_glint_at(0.0f, 0.0f, 0.5f) == 0.0f, "glint: 0 outside the band");
+
+    // Where the apex is in s units: the bell's top, centred -- measured from
+    // the 256px raster at (127.5, 23) of 256.
+    const float s_apex = (0.5f + BOOT_GLINT_TILT * (23.0f / 256.0f)) /
+                         (1.0f + BOOT_GLINT_TILT);
+
+    BootSeq s; BootFrame f;
+    boot_seq_begin(&s);
+    boot_seq_signal(&s, BOOT_SIG_XMB);
+    while (s.phase != BOOT_SHINE) boot_seq_step(&s, FRAME_MS);
+
+    int moved_early = 0, glint_backwards = 0, glint_seen = 0;
+    float gpeak = 0.0f, prev_pos = -1e9f, spark_peak = 0.0f, pos_at_spark = 0.0f;
+    float glint_left_at = -1.0f, spark_at_dock = 0.0f;
+    while (!boot_seq_done(&s)) {
+        boot_seq_step(&s, FRAME_MS);
+        boot_seq_frame(&s, &f);
+        const float th = s.t_hand;
+        if (th < BOOT_DOCK_START_MS && f.dock_pos != 0.0f) moved_early++;
+        if (f.glint > 0.0f) {
+            glint_seen = 1;
+            if (f.glint_pos < prev_pos) glint_backwards++;
+            prev_pos = f.glint_pos;
+            if (f.glint > gpeak) gpeak = f.glint;
+            glint_left_at = th;
+        }
+        if (f.spark > spark_peak) { spark_peak = f.spark; pos_at_spark = f.glint_pos; }
+        if (th >= BOOT_DOCK_START_MS && spark_at_dock == 0.0f) spark_at_dock = f.spark + 1e-9f;
+        if (f.phase == BOOT_SHINE && f.xmb_visible && f.veil != 0.0f) moved_early++;
+    }
+    printf("  shine: glint peak %.2f, twinkle peak %.2f with the glint at s=%.2f "
+           "(apex s=%.2f), twinkle %.2f when the mark starts to move\n",
+           gpeak, spark_peak, pos_at_spark, s_apex, spark_at_dock);
+    ck(moved_early == 0, "shine: the mark holds still and the veil stays shut during SHINE");
+    ck(glint_seen && gpeak > 0.98f, "shine: the glint reaches full strength");
+    ck(glint_backwards == 0, "shine: the glint only ever sweeps forward");
+    ck(glint_left_at <= BOOT_DOCK_START_MS, "shine: the glint is gone before the mark moves");
+    ck(spark_peak > 0.98f, "shine: the twinkle reaches full strength");
+    ck(fabsf(pos_at_spark - s_apex) < 0.25f,
+       "shine: the twinkle peaks as the glint passes the apex");
+    ck(spark_at_dock < 0.15f, "shine: the twinkle has all but faded when the mark moves");
+    ck(BOOT_GLINT_START_MS + BOOT_GLINT_MS <= BOOT_DOCK_START_MS &&
+       BOOT_SHINE_MS >= 900.0f, "shine: about a second, all before the move");
+}
+
+// ---------------------------------------------------------------------------
+// 13. the reveal is paced to the dock: the shelves stay dark while the mark
+//     sits over them and are fully shown once it has moved away
+// ---------------------------------------------------------------------------
+static float veil_alpha_at(float v, float H, float y)
+{
+    float ys[BOOT_VEIL_ROWS_MAX];
+    unsigned char as[BOOT_VEIL_ROWS_MAX];
+    int n = boot_veil_rows(v, H, ys, as);
+    if (n == 0) return 0.0f;
+    if (y <= ys[0]) return as[0];
+    for (int i = 0; i + 1 < n; i++)
+        if (y <= ys[i + 1]) {
+            float k = (ys[i + 1] > ys[i]) ? (y - ys[i]) / (ys[i + 1] - ys[i]) : 0.0f;
+            return as[i] + (as[i + 1] - as[i]) * k;
+        }
+    return as[n - 1];
+}
+
+static void test_veil_sync(void)
+{
+    const float H = 1080.0f;
+    const float shelves[3] = { 0.30f * H, 0.47f * H, 0.70f * H };   // posters
+    BootSeq s; BootFrame f;
+    boot_seq_begin(&s);
+    boot_seq_signal(&s, BOOT_SIG_XMB);
+    int dark_fail = 0, clear_fail = 0;
+    float pos_when_clear = -1.0f;
+    while (!boot_seq_done(&s)) {
+        boot_seq_step(&s, FRAME_MS);
+        boot_seq_frame(&s, &f);
+        if (!f.xmb_visible) continue;
+        float mean = 0.0f, least = 0.0f;
+        for (int i = 0; i < 3; i++) {
+            float a = veil_alpha_at(f.veil, H, shelves[i]);
+            mean += a / 3.0f;
+            if (a > least) least = a;
+        }
+        // While the mark is still over the shelves (the first ~20% of its
+        // path, measured on the 1080p arc) they stay at least ~70% dark.
+        if (f.dock_pos <= 0.2f && mean < 180.0f) dark_fail++;
+        // Once it is clear of them (~75%), every poster row is fully shown.
+        if (f.dock_pos >= 0.75f && least > 8.0f) clear_fail++;
+        if (pos_when_clear < 0.0f && least <= 8.0f) pos_when_clear = f.dock_pos;
+    }
+    printf("  reveal: the shelves are fully shown when the mark is %.0f%% of the "
+           "way to the lockup\n", pos_when_clear * 100.0f);
+    ck(dark_fail == 0, "reveal: the shelves stay >=70% dark while the mark is over them");
+    ck(clear_fail == 0, "reveal: the shelves are fully shown once the mark is 75% docked");
+    ck(pos_when_clear >= 0.5f, "reveal: the shelves do not clear before the mark has left");
+}
+
 int main(void)
 {
     printf("test_boot_seq\n");
@@ -656,6 +768,8 @@ int main(void)
     test_random();
     test_veil_rows();
     test_dock();
+    test_shine();
+    test_veil_sync();
     if (fails) { printf("test_boot_seq: %d FAILED\n", fails); return 1; }
     printf("test_boot_seq: all passed\n");
     return 0;

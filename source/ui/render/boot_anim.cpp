@@ -2,13 +2,17 @@
 // docs/boot-animation.md for the whole story; the timeline is boot_seq.h.
 //
 // RSX DISCIPLINE.  This file adds no new GPU technique.  Every draw is one of
-// three things this client already does on hardware:
+// the things this client already does on hardware:
 //
 //   * blended colour quads through the wave's passthrough programs, streamed
 //     inline -- the veil, exactly like wave_dim_screen() and the hairline;
 //   * the existing radial glow fan, wave_draw_glow_gpu() -- the halo;
 //   * a textured quad through the video passthrough programs with the
-//     player's own LINEAR, CLAMP_TO_EDGE bind -- the mark.
+//     player's own LINEAR, CLAMP_TO_EDGE bind -- the mark, and the SHINE's
+//     glint, which is the same quad over a small texture the CPU rewrites
+//     (write-only) each frame the glint shows, added with ONE / ONE;
+//   * triangle fans on the wave's colour programs -- the SHINE's twinkle,
+//     built exactly like the glow fan.
 //
 // The textured quad is only used when the user has already opted into RSX
 // textures in the XMB (jellyfin_gpucards.txt or jellyfin_gputext.txt), since
@@ -24,6 +28,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <math.h>
 
 #include <rsx/rsx.h>
 #include <sys/thread.h>
@@ -101,6 +106,27 @@ static MarkLevel s_lv[LEVELS];
 // path; the GPU path frees it as soon as the levels are uploaded.
 static u32 *s_master = NULL;
 static int  s_master_px = 0;
+
+// The SHINE's glint layer.  s_glint_a is the mark's coverage at GLINT_PX
+// (16 KB, main RAM); the texture is rewritten from it every frame the glint
+// shows -- the band times the coverage, so it only ever lights the mark --
+// and drawn additively over the mark at the mark's box.  128px is plenty: the
+// band is soft, and its only hard edge is the mark's own, which the mark
+// itself draws sharp underneath.
+//
+// Rewriting a texture the RSX samples is safe HERE because every write
+// happens after the frame's waitflip() (pump) or rsxSync() (XMB overlay), so
+// the previous frame's draw of it has retired.
+#define GLINT_PX     128
+#define GLINT_PITCH  (GLINT_PX * 4)         // 512: a 64-byte multiple
+static u8  *s_glint_a   = NULL;
+static u32 *s_glint_tex = NULL;
+static u32  s_glint_off = 0;
+
+// Where the twinkle sits: the bell's apex, which the 256px raster puts at
+// exactly the top of the bell -- (127.5, 23) of 256 -- a touch inside it.
+#define SPARK_APEX_Y  (-0.47f)   // x bell, from the mark's centre
+#define SPARK_SIZE     0.38f     // arm length at full twinkle, x bell
 
 // -------------------------------------------------------------------------
 // Setup
@@ -204,7 +230,55 @@ static void release(void)
     if (s_tex_fp) { rsxFree(s_tex_fp); s_tex_fp = NULL; }
     if (s_col_fp) { rsxFree(s_col_fp); s_col_fp = NULL; }
     if (s_master) { free(s_master); s_master = NULL; }
+    if (s_glint_tex) { rsxFree(s_glint_tex); s_glint_tex = NULL; }
+    if (s_glint_a) { free(s_glint_a); s_glint_a = NULL; }
     s_gpu = false;
+}
+
+// The glint's coverage map, from the master before it is freed.  Failure
+// only costs the glint (the twinkle and everything else still play).
+static void make_glint(void)
+{
+    u32 *tmp = (u32 *)malloc(GLINT_PX * GLINT_PX * 4);
+    s_glint_a = (u8 *)malloc(GLINT_PX * GLINT_PX);
+    s_glint_tex = (u32 *)rsxMemalign(128, GLINT_PITCH * GLINT_PX);
+    if (!tmp || !s_glint_a || !s_glint_tex) {
+        free(tmp);
+        if (s_glint_a) { free(s_glint_a); s_glint_a = NULL; }
+        if (s_glint_tex) { rsxFree(s_glint_tex); s_glint_tex = NULL; }
+        plog("boot: no memory for the glint -- the shine is the twinkle only");
+        return;
+    }
+    resample(s_master, s_master_px, tmp, GLINT_PX, GLINT_PX);
+    for (int i = 0; i < GLINT_PX * GLINT_PX; i++) s_glint_a[i] = (u8)(tmp[i] >> 24);
+    free(tmp);
+    rsxAddressToOffset(s_glint_tex, &s_glint_off);
+}
+
+// Rewrite the glint texture for this frame: premultiplied near-white, alpha
+// 0 (it is ADDED, so alpha plays no part), zero wherever the band is not.
+static void fill_glint(float pos, float strength)
+{
+    const float gain = BOOT_GLINT_GAIN * strength / 255.0f;
+    const float inv = 1.0f / (float)GLINT_PX;
+    for (int y = 0; y < GLINT_PX; y++) {
+        u32 *row = s_glint_tex + y * (GLINT_PITCH / 4);
+        const u8 *a = s_glint_a + y * GLINT_PX;
+        const float v = ((float)y + 0.5f) * inv;
+        for (int x = 0; x < GLINT_PX; x++) {
+            u32 out = 0;
+            if (a[x]) {
+                float k = boot_glint_at(((float)x + 0.5f) * inv, v, pos) *
+                          gain * (float)a[x];
+                if (k > 0.0f) {
+                    if (k > 1.0f) k = 1.0f;
+                    out = ((u32)(255.0f * k) << 16) | ((u32)(245.0f * k) << 8) |
+                           (u32)(250.0f * k);
+                }
+            }
+            row[x] = out;               // sequential stores, no reads
+        }
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -264,17 +338,11 @@ static void gpu_fade(float opacity)
 
 // The mark as a textured quad: premultiplied texels, ONE / ONE_MINUS_SRC_ALPHA,
 // LINEAR filtering.  The bind is the player's bind_texture() with a pitch.
-static void gpu_mark(float cx, float cy, float bell)
+// A square texture drawn as a quad of `box` px centred on (cx, cy).
+// additive: ONE / ONE (the glint); otherwise premultiplied OVER.
+static void gpu_tex_quad(u32 off, int px, u32 pitch, float cx, float cy,
+                         float box, bool additive)
 {
-    if (!s_gpu || bell <= 0.0f) return;
-    const float box = bell * (float)MARK_SPAN_U / (float)MARK_BELL_U;
-
-    // Smallest level at least as large as the box (or the largest).
-    int L = 0;
-    for (int i = LEVELS - 1; i >= 0; i--)
-        if ((float)s_lv[i].px >= box) { L = i; break; }
-    const MarkLevel &lv = s_lv[L];
-
     rsxVertexProgram   *vpo = (rsxVertexProgram *)  video_vp_data;
     rsxFragmentProgram *fpo = (rsxFragmentProgram *)video_fp_data;
     void *vp_ucode; u32 vp_size;
@@ -297,12 +365,12 @@ static void gpu_mark(float cx, float cy, float bell)
       | ((u32)GCM_TEXTURE_REMAP_COLOR_G    << GCM_TEXTURE_REMAP_COLOR_G_SHIFT)
       | ((u32)GCM_TEXTURE_REMAP_TYPE_REMAP << GCM_TEXTURE_REMAP_TYPE_B_SHIFT)
       | ((u32)GCM_TEXTURE_REMAP_COLOR_B    << GCM_TEXTURE_REMAP_COLOR_B_SHIFT);
-    tex.width    = (u16)lv.px;
-    tex.height   = (u16)lv.px;
+    tex.width    = (u16)px;
+    tex.height   = (u16)px;
     tex.depth    = 1;
     tex.location = GCM_LOCATION_RSX;
-    tex.pitch    = lv.pitch;
-    tex.offset   = lv.off;
+    tex.pitch    = pitch;
+    tex.offset   = off;
     rsxInvalidateTextureCache(context, GCM_INVALIDATE_TEXTURE);
     rsxLoadTexture(context, 0, &tex);
     rsxTextureControl(context, 0, GCM_TRUE, 0, 12 << 8, GCM_TEXTURE_MAX_ANISO_1);
@@ -315,9 +383,12 @@ static void gpu_mark(float cx, float cy, float bell)
 
     rsxSetDepthTestEnable(context, GCM_FALSE);
     rsxSetDepthWriteEnable(context, GCM_FALSE);
-    rsxSetBlendFunc(context,
-        GCM_ONE, GCM_ONE_MINUS_SRC_ALPHA,
-        GCM_ONE, GCM_ONE_MINUS_SRC_ALPHA);
+    if (additive)
+        rsxSetBlendFunc(context, GCM_ONE, GCM_ONE, GCM_ONE, GCM_ONE);
+    else
+        rsxSetBlendFunc(context,
+            GCM_ONE, GCM_ONE_MINUS_SRC_ALPHA,
+            GCM_ONE, GCM_ONE_MINUS_SRC_ALPHA);
     rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
     rsxSetBlendEnable(context, GCM_TRUE);
 
@@ -346,6 +417,78 @@ static void gpu_mark(float cx, float cy, float bell)
     restore_blend();
 }
 
+static void gpu_mark(float cx, float cy, float bell)
+{
+    if (!s_gpu || bell <= 0.0f) return;
+    const float box = bell * (float)MARK_SPAN_U / (float)MARK_BELL_U;
+    // Smallest level at least as large as the box (or the largest).
+    int L = 0;
+    for (int i = LEVELS - 1; i >= 0; i--)
+        if ((float)s_lv[i].px >= box) { L = i; break; }
+    gpu_tex_quad(s_lv[L].off, s_lv[L].px, s_lv[L].pitch, cx, cy, box, false);
+}
+
+static void gpu_glint(float cx, float cy, float bell, float pos, float strength)
+{
+    if (!s_gpu || !s_glint_tex || strength <= 0.0f || bell <= 0.0f) return;
+    fill_glint(pos, strength);
+    gpu_tex_quad(s_glint_off, GLINT_PX, GLINT_PITCH, cx, cy,
+                 bell * (float)MARK_SPAN_U / (float)MARK_BELL_U, true);
+}
+
+// One four-point star as a triangle fan: a bright centre, four long arms
+// and four short waists between them, alpha 0 at every rim point -- so the
+// rasteriser draws the falloff.  Added (SRC_ALPHA, ONE), so it brightens
+// whatever it crosses, the mark included, the way a real glint does.
+static void gpu_star(float x, float y, float arm, float waist, float rot, u8 a)
+{
+    if (!s_col_fp || arm <= 0.0f || !a) return;
+    rsxVertexProgram   *vpo = (rsxVertexProgram *)  wave_vp_data;
+    rsxFragmentProgram *fpo = (rsxFragmentProgram *)wave_fp_data;
+    void *vp_ucode; u32 vp_size;
+    rsxVertexProgramGetUCode(vpo, &vp_ucode, &vp_size);
+    rsxLoadVertexProgram(context, vpo, vp_ucode);
+    rsxSetVertexAttribOutputMask(context, vpo->output_mask);
+    rsxLoadFragmentProgramLocation(context, fpo, s_col_fp_off, GCM_LOCATION_RSX);
+    rsxSetDepthTestEnable(context, GCM_FALSE);
+    rsxSetDepthWriteEnable(context, GCM_FALSE);
+    rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE, GCM_SRC_ALPHA, GCM_ONE);
+    rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
+    rsxSetBlendEnable(context, GCM_TRUE);
+
+    const float W = (float)display_width, H = (float)display_height;
+    #define SV(px, py, pa) do {                                        \
+        const u8 c4[4] = { 255, 248, 255, (pa) };                      \
+        const float p4[4] = { 2.0f * (px) / W - 1.0f,                  \
+                               1.0f - 2.0f * (py) / H, 0.0f, 1.0f };   \
+        rsxDrawVertex4ub(context, GCM_VERTEX_ATTRIB_COLOR0, c4);       \
+        rsxDrawVertex4f (context, GCM_VERTEX_ATTRIB_POS,    p4);       \
+    } while (0)
+    rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_FAN);
+    SV(x, y, a);
+    for (int k = 0; k <= 8; k++) {
+        const float ang = rot + (float)k * 0.78539816f;     // 45 degrees
+        const float r   = (k & 1) ? waist : arm;
+        SV(x + r * cosf(ang), y + r * sinf(ang), 0);
+    }
+    rsxDrawVertexEnd(context);
+    #undef SV
+    restore_blend();
+}
+
+// The SHINE's twinkle on the apex: a soft bloom, a long star, and a shorter
+// one turned 45 degrees inside it.  Grows a little as it brightens.
+static void gpu_sparkle(float x, float y, float bell, float spark, float rot)
+{
+    if (spark <= 0.0f || bell <= 0.0f) return;
+    const float size = bell * SPARK_SIZE * (0.55f + 0.45f * spark);
+    wave_draw_glow_gpu((int)x, (int)y, (int)(size * 0.45f), 255, 248, 255,
+                       (u8)(spark * 0.40f * 255.0f + 0.5f));
+    gpu_star(x, y, size, size * 0.11f, rot, (u8)(spark * 255.0f + 0.5f));
+    gpu_star(x, y, size * 0.5f, size * 0.08f, rot + 0.78539816f,
+             (u8)(spark * 0.7f * 255.0f + 0.5f));
+}
+
 // -------------------------------------------------------------------------
 // CPU draws (after the frame's fence)
 // -------------------------------------------------------------------------
@@ -353,7 +496,8 @@ static void gpu_mark(float cx, float cy, float bell)
 // The mark from the premultiplied master, area-sampled to `box`.  over_black
 // writes without reading -- exact when the pixels underneath are black, and
 // ~100x cheaper than a blend because RSX memory reads are that slow.
-static void cpu_mark(float cx, float cy, float bell, float opacity, bool over_black)
+static void cpu_mark(float cx, float cy, float bell, float opacity, bool over_black,
+                     float gpos, float gstr)
 {
     if (!s_master || bell <= 0.0f || opacity <= 0.0f) return;
     const int box = (int)(bell * (float)MARK_SPAN_U / (float)MARK_BELL_U + 0.5f);
@@ -385,13 +529,26 @@ static void cpu_mark(float cx, float cy, float bell, float opacity, bool over_bl
             }
             a = a / n * k >> 8; r = r / n * k >> 8;
             g = g / n * k >> 8; b = b / n * k >> 8;
-            if (over_black) { row[sx] = (r << 16) | (g << 8) | b; continue; }
+            if (gstr > 0.0f && a) {
+                // The SHINE's glint, same profile as the GPU layer: added,
+                // scaled by this pixel's coverage.
+                const float gk = boot_glint_at(((float)ox + 0.5f) / (float)box,
+                                               ((float)oy + 0.5f) / (float)box, gpos)
+                               * gstr * BOOT_GLINT_GAIN * (float)a;
+                r += (u32)(gk); g += (u32)(gk * 0.96f); b += (u32)(gk * 0.98f);
+            }
+            if (over_black) {
+                row[sx] = ((r > 255 ? 255 : r) << 16) | ((g > 255 ? 255 : g) << 8) |
+                           (b > 255 ? 255 : b);
+                continue;
+            }
             if (a == 0) continue;
-            if (a >= 255) { row[sx] = (r << 16) | (g << 8) | b; continue; }
-            const u32 d = row[sx], ia = 255 - a;
-            row[sx] = ((r + ((d >> 16) & 0xFF) * ia / 255) << 16) |
-                      ((g + ((d >>  8) & 0xFF) * ia / 255) << 8)  |
-                       (b + ( d        & 0xFF) * ia / 255);
+            const u32 d = row[sx], ia = a >= 255 ? 0 : 255 - a;
+            u32 ro = r + ((d >> 16) & 0xFF) * ia / 255;
+            u32 go = g + ((d >>  8) & 0xFF) * ia / 255;
+            u32 bo = b + ( d        & 0xFF) * ia / 255;
+            row[sx] = ((ro > 255 ? 255 : ro) << 16) | ((go > 255 ? 255 : go) << 8) |
+                       (bo > 255 ? 255 : bo);
         }
     }
 }
@@ -505,7 +662,10 @@ static void draw(bool scene_black)
                            (u8)((c >> 16) & 0xFF), (u8)((c >> 8) & 0xFF),
                            (u8)(c & 0xFF), (u8)(halo_a * 255.0f + 0.5f));
     }
-    if (s_gpu && s_mark_overlay) gpu_mark(s_mcx, s_mcy, s_mbell);
+    if (s_gpu && s_mark_overlay) {
+        gpu_mark(s_mcx, s_mcy, s_mbell);
+        gpu_glint(s_mcx, s_mcy, s_mbell, f.glint_pos, f.glint);
+    }
     // Fading in or out over black: dim mark and halo together with one
     // full-screen quad.  Only ever before the XMB shows, so the only thing
     // under it is black and dimming it is exact.
@@ -517,10 +677,18 @@ static void draw(bool scene_black)
     if (cpu_mark_needed || f.status > 0.0f) {
         rsxSync();
         if (cpu_mark_needed)
-            cpu_mark(s_mcx, s_mcy, s_mbell, pre ? f.mark_opacity : 1.0f, pre);
+            cpu_mark(s_mcx, s_mcy, s_mbell, pre ? f.mark_opacity : 1.0f, pre,
+                     f.glint_pos, f.glint);
         const float box = s_mbell * (float)MARK_SPAN_U / (float)MARK_BELL_U;
         cpu_status(s_mcx, s_mcy + 0.5f * box, f.status);
     }
+
+    // The twinkle goes last, so it lies over the mark on both paths (on the
+    // CPU path the mark was just written after the fence; these GPU commands
+    // run after it).
+    if (f.spark > 0.0f)
+        gpu_sparkle(s_mcx, s_mcy + SPARK_APEX_Y * s_mbell, s_mbell,
+                    f.spark, f.spark_rot);
 }
 
 static void finish_if_done(void)
@@ -574,6 +742,7 @@ bool boot_anim_begin(void)
         s_tex_fp = upload_fp(video_fp_data, &s_tex_fp_off);
         if (s_tex_fp && s_col_fp && upload_levels()) {
             s_gpu = true;
+            make_glint();                 // from the master, before it goes
             free(s_master);               // the CPU copy is not needed
             s_master = NULL;
         } else {
@@ -678,7 +847,7 @@ void boot_anim_finish(void)
         s_on = false;
     }
     s_pose_live = false;
-    if (s_master || s_tex_fp || s_col_fp || s_lv[0].mem) {
+    if (s_master || s_tex_fp || s_col_fp || s_lv[0].mem || s_glint_tex) {
         rsxSync();
         release();
     }
@@ -690,7 +859,8 @@ bool boot_anim_xmb_frame(void)
         // The frame after DONE: this frame's fence has not run yet but every
         // earlier frame's has, and nothing this frame will sample the mark.
         s_pose_live = false;
-        if (s_master || s_tex_fp || s_col_fp || s_lv[0].mem) release();
+        if (s_master || s_tex_fp || s_col_fp || s_lv[0].mem || s_glint_tex)
+            release();
         return false;
     }
     boot_seq_signal(&s_seq, BOOT_SIG_XMB);
