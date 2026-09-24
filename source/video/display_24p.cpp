@@ -32,6 +32,7 @@
 #include "timing.h"
 #include "rsxutil.h"
 #include "plog.h"
+#include "lclog.h"
 
 #define F_ENABLE    "/dev_hdd0/tmp/jellyfin_24p.txt"     // "1" = on
 #define F_CONFIRMED "/dev_hdd0/tmp/jf_24p_confirmed.txt" // "1" seen, "0" not
@@ -191,6 +192,7 @@ static void revert(const char *why)
 	char b[160];
 	const u16 orig = S.orig.displayMode.refreshRates;
 	s32 rc = -1;
+	lc_logf("24p: revert begin (%s) -> refresh 0x%02x", why, (unsigned)orig);
 	if (S.module_loaded && accepted_by_configure2(orig))
 		rc = configure2(orig);
 	if (rc != 0) {
@@ -215,6 +217,8 @@ static void revert(const char *why)
 	         why, (unsigned)rc, (unsigned)now, (unsigned)orig,
 	         now == orig ? "" : " MISMATCH");
 	plog(b);
+	lc_logf("24p: revert done refresh=0x%02x%s", (unsigned)now,
+	        now == orig ? " (back at the original rate)" : " MISMATCH");
 }
 
 // Switch to `bit` and measure.  Returns the measured clock (UNKNOWN on any
@@ -251,6 +255,12 @@ static dm_clock try_bit(u16 bit, u32 *num, u32 *den)
 	}
 	if (clk == DM_CLK_23976 || clk == DM_CLK_24) map_put(bit, clk);
 	return rc == 0 ? clk : DM_CLK_UNKNOWN;
+}
+
+static void phase(const d24_ui *ui, const char *what)
+{
+	lc_logf("24p: phase %s", what);
+	if (ui->lifecycle) ui->lifecycle(what);
 }
 
 bool d24_session_begin(const d24_ui *ui)
@@ -350,6 +360,12 @@ bool d24_session_begin(const d24_ui *ui)
 
 	write_text(F_PENDING, "switching\n");   // BEFORE the mode changes
 	S.active = true;
+	{
+		char ph[64];
+		snprintf(ph, sizeof(ph), "mode_switch_begin cand=%d first=0x%02x",
+		         nc, (unsigned)cand[0]);
+		phase(ui, ph);
+	}
 
 	u32 num = 0, den = 0;
 	dm_clock got = DM_CLK_UNKNOWN;
@@ -360,6 +376,7 @@ bool d24_session_begin(const d24_ui *ui)
 		if (!S.active) break;            // try_bit reverted: head died
 	}
 	if (!S.active || got != want) {
+		phase(ui, "mode_switch_failed");
 		if (S.active) revert("no 24Hz bit measured at the content's clock");
 		snprintf(b, sizeof(b), "24p: RESULT mode_switch=failure resulting_refresh=0x%02x "
 		         "presentation=unchanged", (unsigned)S.orig.displayMode.refreshRates);
@@ -374,19 +391,38 @@ bool d24_session_begin(const d24_ui *ui)
 	// 2026-09-24 showed why this is needed: the TV synced to 23.976 but showed
 	// black, because after the mode change nothing is visible until a new
 	// frame is flipped, so the confirmation prompt could not be read.
+	phase(ui, "mode_switch_verified");
 	ui->draw_prompt(confirmed != 1
 	                ? "The TV is now at 1080p 24Hz. Press X if you can read this."
 	                : "1080p 24Hz", confirmed != 1 ? "O or 15 s = no, go back." : "");
+	phase(ui, "prompt_redrawn_after_switch");
 
 	if (confirmed != 1) {
 		// Only now does a press count: the switch is done and measured.
 		ui->poll_answer();               // drop anything pressed during the switch
-		const u64 until = timing_get_us() + CONFIRM_SECS * 1000000ULL;
+		const u64 t0    = timing_get_us();
+		const u64 until = t0 + CONFIRM_SECS * 1000000ULL;
+		u64 next_hb     = t0;
 		int ans = 0;
+		phase(ui, "confirm_wait_begin");
 		while (ans == 0 && timing_get_us() < until) {
 			sysUtilCheckCallback();
 			ans = ui->poll_answer();
+			if (timing_get_us() >= next_hb) {
+				char ph[48];
+				snprintf(ph, sizeof(ph), "confirm_wait %llus",
+				         (unsigned long long)((timing_get_us() - t0) / 1000000ULL));
+				phase(ui, ph);
+				next_hb += 1000000ULL;
+			}
 			usleep(20000);
+		}
+		{
+			char ph[64];
+			snprintf(ph, sizeof(ph), "confirm_wait_end ans=%d after %llums%s", ans,
+			         (unsigned long long)((timing_get_us() - t0) / 1000ULL),
+			         ans == 0 ? " (TIMEOUT)" : "");
+			phase(ui, ph);
 		}
 		if (ans != 1) {
 			write_text(F_CONFIRMED, "0\n");
@@ -395,6 +431,7 @@ bool d24_session_begin(const d24_ui *ui)
 			     "not retry until jf_24p_confirmed.txt is deleted)");
 			sysModuleUnload((sysModuleId)JF_SYSMODULE_AVCONF_EXT);
 			S.module_loaded = false;
+			phase(ui, "reverted_after_confirm_failure");
 			return false;
 		}
 		write_text(F_CONFIRMED, "1\n");
@@ -411,11 +448,13 @@ bool d24_session_begin(const d24_ui *ui)
 	         "(measured %s) presentation=%s",
 	         (unsigned)used, (unsigned)num, (unsigned)den, dm_clock_name(got), cad);
 	plog(b);
+	phase(ui, "mode_switch_success timing_reinit");
 	return true;
 }
 
 void d24_session_end(void)
 {
+	lc_logf("24p: session_end active=%d module=%d", (int)S.active, (int)S.module_loaded);
 	if (S.active) {
 		rsxSync();
 		revert("playback ended");

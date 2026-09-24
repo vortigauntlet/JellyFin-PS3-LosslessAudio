@@ -21,6 +21,7 @@
 #include "player_internal.h"
 #include "player_stats.h"
 #include "jellyfin_api.h"
+#include "lclog.h"
 
 extern u32 running;
 
@@ -159,6 +160,11 @@ void decode_thread_fn(void *arg) {
     long stall_ep_dur_total_us = 0;
     u64  hb_last_us            = timing_get_us();
     int  hb_fr_last            = 0;
+    bool lc_got_pkt            = false;
+    u64  lc_zero_since_us      = 0;     // first rd==0 of the current quiet spell
+    u64  lc_zero_next_us       = 0;
+
+    lc_logf("decode: thread running playing=%d", (int)*playing);
 
     while (running && *playing && *ctx->dec_run && !s_vdec_error) {
         // Buffered video first, in arrival order, while there is room for it.
@@ -199,10 +205,32 @@ void decode_thread_fn(void *arg) {
             int rd = stream_read(ctx->sock, ts_pkt, TS_PACKET_SIZE);
             if (rd < 0) {
                 plog("playing=0 reason=stream_eof");
+                lc_logf("decode: stream_read FAILED -> playing=0 (got_any_pkt=%d)",
+                        (int)lc_got_pkt);
                 *ctx->playing = false;
                 break;
             }
-            if (rd == 0) { usleep(1000); continue; }
+            if (rd == 0) {
+                // Quiet socket: the stream is alive but nothing is arriving.
+                // Logged once per second of silence, so a server that stopped
+                // sending (A) is told apart from one that closed (E).
+                const u64 now = timing_get_us();
+                if (!lc_zero_since_us) {
+                    lc_zero_since_us = now;
+                    lc_zero_next_us  = now + 1000000ULL;
+                } else if (now >= lc_zero_next_us) {
+                    lc_logf("decode: no data for %llums (socket open)",
+                            (unsigned long long)((now - lc_zero_since_us) / 1000ULL));
+                    lc_zero_next_us += 1000000ULL;
+                }
+                usleep(1000);
+                continue;
+            }
+            lc_zero_since_us = 0;
+            if (!lc_got_pkt) {
+                lc_got_pkt = true;
+                lc_logf("decode: first packet after spawn");
+            }
 
             if (in_stall) {
                 in_stall = false;
@@ -346,6 +374,8 @@ void decode_thread_fn(void *arg) {
         }
     }
 
+    lc_logf("decode: thread exit running=%u playing=%d dec_run=%d vdec_err=%d",
+            running, (int)*playing, (int)*ctx->dec_run, (int)s_vdec_error);
     sysThreadExit(0);
 }
 

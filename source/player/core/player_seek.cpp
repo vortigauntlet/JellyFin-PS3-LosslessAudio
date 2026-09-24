@@ -227,6 +227,7 @@ bool player_execute_seek(PlayerState *ps) {
     crash_log("sk2a vdec_close done");
     if (!vdec_open()) {
         crash_log("sk2b vdec_open FAILED");
+        plog("playing=0 reason=seek_vdec_open_failed");
         s_seeking   = false;
         ps->playing = false;
         return false;
@@ -303,6 +304,7 @@ bool player_execute_seek(PlayerState *ps) {
     int nsock = stream_open(surl);
     if (nsock < 0) {
         plog("seek: stream_open FAILED");
+        plog("playing=0 reason=seek_stream_open_failed");
         crash_log("sk_fail reopen");
         ps->playing = false;       // give up cleanly; loop will exit
         return false;

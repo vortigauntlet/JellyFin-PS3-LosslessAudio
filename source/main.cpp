@@ -38,6 +38,7 @@
 #include "video.h"
 #include "player_hud.h"
 #include "slog.h"
+#include "lclog.h"
 #include "jf_spu.h"
 #include "ui_card_gpu.h"
 #include "ui_text_gpu.h"
@@ -58,7 +59,11 @@ static void program_exit_callback(void) {
     rsxFinish(context, 1);
 }
 static void sysutil_exit_callback(u64 status, u64 param, void *usrdata) {
-    (void)param; (void)usrdata;
+    (void)usrdata;
+    // Every event, not just EXIT_GAME: an XMB open/close or menu event during
+    // the 24p confirmation window must be visible in the lifecycle trace.
+    lc_logf("sysutil: event status=0x%llx param=0x%llx",
+            (unsigned long long)status, (unsigned long long)param);
     if (status == SYSUTIL_EXIT_GAME) running = 0;
 }
 }

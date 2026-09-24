@@ -39,6 +39,7 @@
 #include "meminfo.h"   // read-ahead ring sizing
 #include "slog.h"
 #include "trickplay.h"
+#include "lclog.h"     // 24p lifecycle trace
 
 extern void crash_log(const char *msg);
 
@@ -109,6 +110,29 @@ static int d24_poll_answer(void) {
     if (BTN_PRESSED(cross))  return 1;
     if (BTN_PRESSED(circle)) return -1;
     return 0;
+}
+
+// Lifecycle trace (lclog.h): the whole playback session in one line, so each
+// 24p phase can be read against the state of the player, the play session and
+// the socket.  Only valid while no thread but the caller reads ps->sock --
+// i.e. before player_spawn_decode -- because it peeks the socket.
+static const PlayerState *s_lc_ps = NULL;
+
+static void lc_session_snapshot(const char *phase, bool probe_sock) {
+    const PlayerState *p = s_lc_ps;
+    if (!p) { lc_logf("session[%s] no session", phase); return; }
+    char sk[200] = "sock=(not probed: decode thread owns it)";
+    if (probe_sock && p->sock >= 0) stream_probe(p->sock, sk, sizeof(sk));
+    lc_logf("session[%s] running=%u playing=%d vdec_err=%d dec_tid=%llu "
+            "jbuf=%d ring=%d/%d psid=%.12s",
+            phase, running, (int)p->playing, (int)s_vdec_error,
+            (unsigned long long)p->dec_tid, jbuf_count(),
+            decode_ring_fill(), decode_ring_cap(), p->session_id);
+    lc_logf("session[%s] %s", phase, sk);
+}
+
+static void d24_lifecycle(const char *phase) {
+    lc_session_snapshot(phase, true);
 }
 
 // -------------------------------------------------------
@@ -267,6 +291,8 @@ void show_player(const JFItem *item, u32 resume_secs,
         plog("show_player: PlaybackInfo failed, streaming without PlaySessionId");
         ps.session_id[0] = '\0';
     }
+    lc_logf("play-session CREATED psid=%s item=%s resume=%us",
+            ps.session_id[0] ? ps.session_id : "(none)", item->id, resume_secs);
 
     // Only the version chosen on the info screen enters the player.  Its own
     // tracks come from the same source-aware PlaybackInfo response.
@@ -389,6 +415,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         return;
     }
     plog("show_player: stream_open OK");
+    lc_logf("stream CONNECTED sock=%d", ps.sock);
     crash_log("p7 stream_open OK");
 
     player_status_screen(item->name, "Streaming... START=stop");
@@ -462,6 +489,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     player_prefill(&ps, true, 0x7FFFFFFF);
 
     if (!ps.playing) {
+        lc_logf("show_player: RETURN to UI -- prefill ended playback (before 24p)");
         vid_gpu_free();
         decode_ring_free();
         jbuf_free();
@@ -484,13 +512,21 @@ void show_player(const JFItem *item, u32 resume_secs,
     // any doubt it leaves the output exactly as it found it.
     {
         s_d24_title = item->name;
-        const d24_ui ui = { d24_draw_prompt, d24_poll_answer };
-        d24_session_begin(&ui);
+        s_lc_ps     = &ps;
+        lc_session_snapshot("before_24p", true);
+        const d24_ui ui = { d24_draw_prompt, d24_poll_answer, d24_lifecycle };
+        const bool d24_ok = d24_session_begin(&ui);
+        lc_logf("24p: session_begin returned %s", d24_ok ? "SWITCHED" : "not switched");
+        lc_session_snapshot("after_24p", true);
         init_btns();
     }
 
     // ---- Spawn decode thread ----
-    player_spawn_decode(&ps);
+    {
+        const bool dec_ok = player_spawn_decode(&ps);
+        lc_logf("playback: decode thread %s playing=%d",
+                dec_ok ? "STARTED" : "NOT started", (int)ps.playing);
+    }
 
     // ---- Pre-roll: fill the read-ahead ring before the picture starts ----
     //
@@ -548,6 +584,7 @@ void show_player(const JFItem *item, u32 resume_secs,
                      decode_ring_fill(), decode_ring_cap());
             plog(b);
         }
+        lc_session_snapshot("after_preroll", false);
         init_btns();
     }
 
@@ -598,6 +635,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     }
 
     crash_log("p9 threads started");
+    lc_logf("playback: START aud=%d upl=%d prog=%d playing=%d",
+            aud_tid != 0, upl_tid != 0, prog_tid != 0, (int)ps.playing);
     slog_state("PLAYBACK_STARTED item_id=%s name=%.40s total=%us "
                "resume=%us w=%u h=%u",
                item->id, item->name, ps.total_secs,
@@ -609,6 +648,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     bool flip_queued  = true;
     bool was_paused   = false;
     int  pause_settle = 0;   // frames still to draw after a pause-state change
+    bool lc_first_frame = false;
 
     // ---- Main (display) loop ----
     while (running && ps.playing && !s_vdec_error) {
@@ -762,6 +802,10 @@ void show_player(const JFItem *item, u32 resume_secs,
 #endif
 
         player_display_frame(&ps);
+        if (!lc_first_frame && ps.frame_count > 0) {
+            lc_first_frame = true;
+            lc_logf("playback: first frame displayed fr=%d", ps.frame_count);
+        }
 
         if (next_popup && ps.frame_count > 0) {
             // Fence the in-flight video draw before CPU framebuffer writes,
@@ -781,6 +825,16 @@ void show_player(const JFItem *item, u32 resume_secs,
             "show_player: loop exit running=%u playing=%d vdec_err=%d fr=%d",
             running, (int)ps.playing, (int)s_vdec_error, ps.frame_count);
         plog(buf);
+        // Which of the loop's three conditions ended it.  "playing cleared"
+        // is set by another thread or a helper; its own "playing=0 reason="
+        // line just before this one says which.
+        lc_logf("playback: STOP cause=%s user_stop=%d next=%d frames=%d",
+                !running        ? "sysutil_exit(running=0)"
+              : s_vdec_error    ? "vdec_error"
+              : user_stopped    ? "user_stop"
+              : s_next_requested ? "next_item"
+              : "playing_cleared(see playing=0 reason=)",
+                (int)user_stopped, (int)s_next_requested, ps.frame_count);
     }
 
     // Transcoded streams often run slightly short of RunTimeTicks, so EOF
@@ -828,6 +882,9 @@ void show_player(const JFItem *item, u32 resume_secs,
     d24_session_end();
 
     // Tell the server where we stopped (also finalizes Continue Watching).
+    lc_logf("play-session DESTROY psid=%s pos=%llus (report_stopped + stop_transcode)",
+            ps.session_id[0] ? ps.session_id : "(none)",
+            (unsigned long long)(final_pos_ticks / 10000000ULL));
     jellyfin_report_stopped(item->id, ps.session_id, final_pos_ticks);
 
     // Kill the server-side transcode for this session.  Without this the job
@@ -863,6 +920,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     subs_clear();
     crash_log("p19 done");
     plog("show_player: done");
+    lc_logf("show_player: RETURN to UI (caller's screen, e.g. Home) frames=%d", ps.frame_count);
+    s_lc_ps = NULL;
     slog_state("PLAYBACK_STOPPED reason=%s frames=%d vdec_err=%d",
                user_stopped     ? "user_stop"
              : s_next_requested ? "next_item"

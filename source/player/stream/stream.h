@@ -41,3 +41,9 @@ int stream_read(int sock, u8 *buf, int size);
 // microseconds spent blocked inside it, and how many times it was called.
 // The heartbeat diffs these to report throughput and blocked-time share.
 void stream_rx_stats(u64 *bytes, u64 *wait_us, u32 *calls);
+
+// One-line, non-consuming description of the socket for the lifecycle trace
+// (see lclog.h): whether the peer has closed it, whether data is waiting, and
+// what stream_read still holds in its own buffers.  Must not be called while
+// another thread is reading the socket.
+void stream_probe(int sock, char *out, int outsz);
