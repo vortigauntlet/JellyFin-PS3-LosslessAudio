@@ -352,7 +352,12 @@ static inline void wrm_accent(const wrm_accent_set *a, int layer,
 // much higher.  test_distinct_framing re-runs the same measurement -- real
 // solver, real loft, the fullest swell, the accent on the crest -- with THESE
 // caps, and must stay inside the same box with the same 0.05 margin.
-#define WRM_DB_FLOOR        0.28f   // band level (self-referenced) that reads as 0
+// Per layer: the band level (self-referenced) that reads as 0, and a response
+// multiplier.  2026-09-24 hardware: "the bass could be a bit more sensitive"
+// -- the lows start lower and climb faster; the caps (and so the framing) do
+// not move.
+static const float WRM_DB_FLOOR[3] = { 0.18f, 0.28f, 0.28f };
+static const float WRM_DB_RESP[3]  = { 1.40f, 1.00f, 1.00f };
 #define WRM_DB_AMP_QUIET    0.78f
 #define WRM_DB_DRIVE_MAX    0.70f
 #define WRM_DB_DRIVE_KEEP   0.20f
@@ -394,8 +399,8 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         const float k   = dt / (tau + dt);
         float s, amp;
         st->env[i] += (x - st->env[i]) * k;
-        s   = wrm_clamp((st->env[i] - WRM_DB_FLOOR) / (1.0f - WRM_DB_FLOOR) * resp,
-                        0.0f, 1.0f);
+        s   = wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
+                        * resp * WRM_DB_RESP[i], 0.0f, 1.0f);
         amp = WRM_DB_AMP_QUIET + (WRM_DB_AMP_MAX[i] - WRM_DB_AMP_QUIET) * s;
         if (present <= 0.0f) {
             o->amp[i] = 1.0f;                   // rest is exactly rest

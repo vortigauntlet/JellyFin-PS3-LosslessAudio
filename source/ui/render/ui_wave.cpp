@@ -8,6 +8,7 @@
 #include "wave_shaders.h"
 #include "wave_field.h"
 #include "wave_gel.h"          /* JellyWave: pulls wave_cam.h + wave_light.h */
+#include "wave_motes.h"        /* stage 9: the motes, while music plays */
 #include "bg_gradient.h"
 #include "timing.h"
 #include "month_bg.h"
@@ -409,6 +410,91 @@ static u32 s_jw_draws    = 0;
 static u32 s_jw_off[JW_LAYERS][2];
 static u32 s_jw_cnt[JW_LAYERS][2];
 static int s_jw_have_geom = 0;     // 0 until the first build lands
+
+// --- the motes (wave_motes.h, stage 9), while music plays ------------------
+//
+// A cloud of small flakes around the band, lit by the band's own key light,
+// driven by the same stage B parameters as the wave: bass makes the cloud
+// breathe, highs spin the flakes so they glint, onsets brighten the glints and
+// the beat pulses lift the motes they pass under.  It fades in with the music
+// and out with it; with no audio nothing is simulated, shaded or drawn.
+//
+// Drawn from buffers of their OWN -- never the JellyWave stage or its ranges.
+// Built in main memory, uploaded with jw_upload() right after the JellyWave
+// upload (whose rsxSync is the fence for both), drawn once after the gel with
+// an ADDITIVE blend (so order inside the cloud does not matter).  Each mote is
+// a small hexagonal fan, bright centre to transparent rim: a soft dot.
+#define MOTE_COUNT  320
+#define MOTE_SEG    6
+#define MOTE_VERTS  (MOTE_COUNT * MOTE_SEG * 3)
+static wmo_state   s_mote;
+static wmo_sprite  s_mote_spr[MOTE_COUNT];
+static WaveVert    s_mote_stage[MOTE_VERTS] __attribute__((aligned(16)));
+static WaveVert   *s_mote_vbuf[2] = { NULL, NULL };
+static u32         s_mote_voff[2] = { 0, 0 };
+static u32         s_mote_n  = 0;          // vertices uploaded by this call
+static bool        s_mote_ok = false;
+static float       s_mote_a  = 0.0f;       // presence fade
+static u64         s_mote_us = 0;
+
+static void motes_init(void)
+{
+    for (int i = 0; i < 2; i++) {
+        s_mote_vbuf[i] = (WaveVert *)rsxMemalign(128, MOTE_VERTS * sizeof(WaveVert));
+        if (!s_mote_vbuf[i]) { plog("wave: motes buffer alloc FAILED -- no motes"); return; }
+        rsxAddressToOffset(s_mote_vbuf[i], &s_mote_voff[i]);
+    }
+    if (!wmo_init(&s_mote, MOTE_COUNT, 0x4A454C4Cu)) { plog("wave: motes init FAILED"); return; }
+    s_mote_ok = true;
+    plog("wave: motes ready (320, shown while music plays)");
+}
+
+// Step, shade and build this call's motes into s_mote_stage; returns the
+// vertex count (0 = draw nothing).
+static u32 motes_build(float aspect)
+{
+    const u64 now = timing_get_us();
+    float dt = s_mote_us ? (float)(now - s_mote_us) * 1.0e-6f : 0.0f;
+    s_mote_us = now;
+    if (dt > WMO_DT_MAX) dt = WMO_DT_MAX;
+
+    // Fade toward how present the music is: in over ~0.8 s, out over ~0.6 s.
+    const float target = wave_audio_presence();
+    const float tau = target > s_mote_a ? 0.8f : 0.6f;
+    s_mote_a += (target - s_mote_a) * (dt / (tau + dt));
+    if (s_mote_a < 0.01f) return 0;
+
+    wmo_ctl c;
+    wmo_controls(wave_audio_params(), &c);
+    c.ts = 0.75f;                      // calm drift, like the wave's own
+    wmo_step(&s_mote, &c, dt);
+    wmo_shade(&s_mote, &c, aspect, s_mote_spr, MOTE_COUNT);
+
+    static const float CS[MOTE_SEG + 1] = { 1.0f, 0.5f, -0.5f, -1.0f, -0.5f, 0.5f, 1.0f };
+    static const float SN[MOTE_SEG + 1] = { 0.0f, 0.8660254f, 0.8660254f, 0.0f,
+                                            -0.8660254f, -0.8660254f, 0.0f };
+    const float inv_aspect = 1.0f / aspect;
+    u32 n = 0;
+    for (int i = 0; i < MOTE_COUNT; i++) {
+        const wmo_sprite *m = &s_mote_spr[i];
+        if (!m->a) continue;
+        int a = (int)((float)m->a * s_mote_a + 0.5f);
+        if (a <= 0) continue;
+        if (a > 255) a = 255;
+        const u32 cc = WAVE_RGBA(m->r, m->g, m->b, a);
+        const u32 ce = WAVE_RGBA(m->r, m->g, m->b, 0);
+        const float sy = m->s * 1.6f, sx = sy * inv_aspect;   // soft halo past the core
+        for (int k = 0; k < MOTE_SEG; k++) {
+            WaveVert *v = &s_mote_stage[n];
+            v[0].x = m->x;                v[0].y = m->y;                v[0].rgba = cc;
+            v[1].x = m->x + sx * CS[k];   v[1].y = m->y + sy * SN[k];   v[1].rgba = ce;
+            v[2].x = m->x + sx * CS[k+1]; v[2].y = m->y + sy * SN[k+1]; v[2].rgba = ce;
+            for (int j = 0; j < 3; j++) { v[j].z = 0.0f; v[j].w = 1.0f; }
+            n += 3;
+        }
+    }
+    return n;
+}
 
 // Build the complete JellyWave stream into dst, starting at index n (the
 // gradient quad owns [0,4)), from one snapshot of the field's sampled
@@ -880,6 +966,7 @@ void wave_init(void) {
         s_jw_rebuild_phase = 0;
         s_jw_have_geom     = 0;
         jw_worker_start();
+        motes_init();
         snprintf(msg, sizeof(msg),
                  "wave: JellyWave %d stations x %d section, %d verts/layer, "
                  "%d layers, %d draws",
@@ -1322,6 +1409,11 @@ void wave_draw(void) {
             vo = s_wave_vbuf_off[s_wave_vbuf_turn];
 
             jw_upload(v, s_jw_stage, s_jw_verts);
+            // The motes ride the same fence: the rsxSync above means nothing
+            // queued is still reading either of their buffers.
+            s_mote_n = s_mote_ok ? motes_build(W / H) : 0;
+            if (s_mote_n)
+                jw_upload(s_mote_vbuf[s_wave_vbuf_turn], s_mote_stage, s_mote_n);
             s_jw_upload_us += timing_get_us() - jw_up0;
         }
 
@@ -1443,6 +1535,26 @@ void wave_draw(void) {
                         count);
                     s_jw_draws++;
                 }
+            }
+
+            // The motes, in front of the gel, additive.  Their own buffer is
+            // bound for this one draw and POS goes straight back to the wave's
+            // buffer, so the teardown below finds exactly the binding it
+            // always has.
+            if (s_mote_n) {
+                const u32 mo = s_mote_voff[s_wave_vbuf_turn];
+                rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
+                    mo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
+                    mo + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+                rsxInvalidateVertexCache(context);
+                rsxSetBlendFunc(context,
+                    GCM_SRC_ALPHA, GCM_ONE,
+                    GCM_SRC_ALPHA, GCM_ONE);
+                rsxDrawVertexArray(context, GCM_TYPE_TRIANGLES, 0, s_mote_n);
+                s_jw_draws++;
+                rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
+                    vo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
             }
         }
 

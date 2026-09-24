@@ -572,7 +572,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     // ---- art (follows the current track's album) + accent frame/glow ----
     int A  = (int)(H * 0.42f);
     int ax = UIS_W(40);
-    int ay = (int)(H * 0.27f);
+    int ay = (int)(H * 0.225f);   // 0.27 before: more room for the wave below
     if (!s_cover_gpu && sa > 0.5f && !xmb_cpu_blit_thumb(t->art_id, ax, ay, A, A))
         xmb_draw_letter_tile(t->art_id,
                              ctx->title[0] ? ctx->title : t->name,
@@ -988,7 +988,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             if (cur < 0) cur = 0;
             const int A = (int)(display_height * 0.42f);
             music_accent_update(s_tracks[cur].art_id, A);
-            music_cover_gpu(s_tracks[cur].art_id, UIS_W(40), (int)(display_height * 0.27f), A);
+            music_cover_gpu(s_tracks[cur].art_id, UIS_W(40), (int)(display_height * 0.225f), A);
             music_upnext_gpu(s_tracks, count, s_scr_a * s_up_a);
         }
         c_gpu += timing_get_us() - t_gpu0;

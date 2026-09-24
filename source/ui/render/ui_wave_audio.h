@@ -52,5 +52,10 @@ void wave_audio_shape(float *thick, wrm_accent_set *acc);
 // lum from wave_audio_look().
 void wave_audio_lum3(float lum3[3]);
 
+// Stage B's parameters for the motes (wave_motes.h), NULL when the analyser is
+// off; and how present audio is, 0 at rest .. 1 with music.
+const wm_params *wave_audio_params(void);
+float wave_audio_presence(void);
+
 // True when the analyser is running (gate on, initialised).  For logging only.
 bool wave_audio_active(void);
