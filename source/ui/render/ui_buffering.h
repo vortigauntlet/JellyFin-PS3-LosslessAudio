@@ -40,3 +40,11 @@ void buffering_finish(bool ready);
 
 // Whether a presentation is running (between begin and finish).
 bool buffering_active(void);
+
+// A short LOADING screen for a blocking load: `work(arg)` runs on a thread
+// while the render thread draws the wave with the Jellyfin ring turning and
+// the label.  Nothing is drawn for the first 120 ms, so a fast load shows no
+// flash.  `flip_pending`: whether the caller has a flip queued (waitflip()
+// would otherwise block forever).  Returns whether one is pending on exit.
+bool loading_run(void (*work)(void *), void *arg, const char *label,
+                 bool flip_pending);

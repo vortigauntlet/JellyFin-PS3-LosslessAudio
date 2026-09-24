@@ -587,3 +587,6 @@ test_utf8: test_utf8.cpp ../source/ui/render/ui_text.cpp \
 # must stay 0).  That trade only holds if the write mask is exact.
 test_circle_blit: test_circle_blit.c ../source/ui/render/circle_blit.h
 	$(CC) $(CFLAGS) -o $@ test_circle_blit.c -lm
+
+test_wave_snow: test_wave_snow.c ../source/ui/render/wave_snow.h
+	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_snow.c -lm

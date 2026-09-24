@@ -216,6 +216,7 @@ static int info_choose_version(const char *title,
 
 #include "ui_card_gpu.h"
 #include "ui_art.h"
+#include "ui_buffering.h"
 #include "ui_spine.h"
 #include "ui_depth.h"      // the L2 -> L3 arrival
 #include "ui_text_gpu.h"
@@ -299,6 +300,27 @@ static int info_chip_width(const char *label, float px, int face) {
 
 enum { F3_RESUME, F3_PLAY, F3_START, F3_WATCHED, F3_VERSION, F3_QUALITY };
 
+// The details page's blocking loads, run behind loading_run().  Everything here
+// is thread-safe: the item fetches use responseBuffer while the render thread
+// only draws the loader, and detail_media carries its own decoder and buffers.
+struct InfoLoad {
+    const XMBItem  *it;
+    XMBItemDetail  *detail;
+    JFMediaSources *versions;
+    int             pw, ph;
+    Bitmap          poster, back;
+    bool            back_ok;
+};
+static void info_load_work(void *arg) {
+    InfoLoad *ld = (InfoLoad *)arg;
+    jellyfin_fetch_item_detail(ld->it->id, ld->detail);
+    if (strcmp(ld->it->type, "Movie") == 0 || strcmp(ld->it->type, "Episode") == 0 ||
+        strcmp(ld->it->type, "Video") == 0)
+        jellyfin_fetch_media_sources(ld->it->id, ld->versions);
+    detail_media_load(ld->it->id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster);
+    ld->back_ok = detail_media_load(ld->it->id, "Backdrop", 960, 540, 0.3f, &ld->back);
+}
+
 static void xmb_show_item_info_v3(const XMBItem *root) {
     rsxSync();
     flip();
@@ -342,23 +364,24 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             const XMBItem *it = &cur_item;
             memset(&detail, 0, sizeof detail);
             if (facts_wanted(it->type)) facts_request(it->id);   // lands while this loads
-            jellyfin_fetch_item_detail(it->id, &detail);
+            memset(&versions, 0, sizeof versions);
+            detail_media_free(&poster_cpu);
+            // The fetches run behind the LOADING screen (render/ui_buffering).
+            // A flip is always pending here: the entry flip, or the last frame's.
+            InfoLoad ld;
+            memset(&ld, 0, sizeof ld);
+            ld.it = it; ld.detail = &detail; ld.versions = &versions;
+            ld.pw = PW; ld.ph = PH;
+            loading_run(info_load_work, &ld, "Loading", true);
             {
                 int remembered = vquality_for_item(it->id);
                 if (remembered >= 0) vquality_set((vquality_t)remembered);
             }
-            memset(&versions, 0, sizeof versions);
-            if (strcmp(it->type, "Movie") == 0 || strcmp(it->type, "Episode") == 0 ||
-                strcmp(it->type, "Video") == 0)
-                jellyfin_fetch_media_sources(it->id, &versions);
             version_sel = 0;
             watched = false;
 
             // Poster: into VRAM once.  Kept in main memory only if that fails.
-            detail_media_free(&poster_cpu);
-            Bitmap poster;
-            memset(&poster, 0, sizeof poster);
-            detail_media_load(it->id, "Primary", PW, PH, 0.5f, &poster);
+            Bitmap poster = ld.poster;
             // The artwork's accent, sampled once from main memory before the
             // poster goes to VRAM (render/art_colour.h).  The buffering
             // screen's ring and glow use it when this title is played.
@@ -371,10 +394,9 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             // Backdrop: 960x540 is plenty under a 0.88-0.96 scrim, and the RSX
             // scales it to the screen with linear filtering.  Freed as soon as
             // it is in VRAM -- the 2 MB never sits in main memory.
-            Bitmap back;
-            memset(&back, 0, sizeof back);
+            Bitmap back = ld.back;
             back_gpu = false;
-            if (detail_media_load(it->id, "Backdrop", 960, 540, 0.3f, &back))
+            if (ld.back_ok)
                 back_gpu = ui_gpu_tex_upload(GPU_TEX_BACKDROP, &back);
             if (back_gpu) ui_gpu_tex_set_tag(GPU_TEX_BACKDROP, it->id);
             detail_media_free(&back);

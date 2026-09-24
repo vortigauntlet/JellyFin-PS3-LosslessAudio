@@ -370,15 +370,41 @@ static const float WRM_DB_REL[3]     = { 0.420f, 0.260f, 0.120f };
 static const float WRM_DB_AMP_MAX[3] = { 1.75f, 1.65f, 2.10f };   // measured: test_distinct_framing
 static const float WRM_DB_LUM_MAX[3] = { 1.10f, 1.18f, 1.35f };
 
-typedef struct { float env[3]; } wrm_db_state;
+typedef struct {
+    float env[3];
+    float lvl[3];      // this frame's shaped level per layer, 0..1 (for the snow)
+    // the sub-bass shock (2026-09-25: "the subbass needs to be more
+    // distinctive -- when it bumps, send extra shocks through the whole wave")
+    float sub_slow;    // the sub band's recent level
+    float shock;       // 0..1, decays
+    float shock_x;     // where the travelling shock is along the band, u
+    float refr;        // s until the next hit may fire
+    float kick;        // non-zero on the frame a hit lands (read by the snow)
+} wrm_db_state;
+
+// A hit is a fast rise of the sub band above its own recent level.  On a hit
+// every layer is pushed toward its OWN height cap (never past it) and lifted
+// in brightness, and a broad bump runs along the band -- a shock through the
+// whole wave, not just the bass layer.  The accent total is then capped at the
+// measured bound (see the end of wrm_distinct), so the framing still holds.
+#define WRM_SUB_TAU        0.35f
+#define WRM_SUB_THRESH     0.14f
+#define WRM_SUB_REFR       0.22f
+#define WRM_SHOCK_TAU      0.28f
+#define WRM_SHOCK_CROSS    0.55f      // s to run the length of the band
+#define WRM_SHOCK_PUSH     0.60f      // fraction of the way to each layer's cap
+#define WRM_SHOCK_LUM      0.14f
+#define WRM_SHOCK_ACC      0.60f
+#define WRM_SHOCK_WIDTH    0.16f
+#define WRM_ACC_TOTAL_MAX  WRM_DB_ACC_KEEP   // test_distinct_framing measured this
 
 // src[3]: 0..1 band levels for layers 0..2.  present: 0 at rest .. 1 with
 // audio.  resp: the intensity level's response (1 = default).  Rewrites the
 // shared terms of *o and its amp[], and fills lum3[] (per-layer brightness,
 // exactly 1.0 at rest).
 static inline void wrm_distinct(wrm_db_state *st, const float src[3],
-                                float present, float resp, float dt,
-                                wrm_out *o, float lum3[3])
+                                float sub_fast, float present, float resp,
+                                float dt, wrm_out *o, float lum3[3])
 {
     int i;
     if (!st || !o || !lum3) return;
@@ -402,12 +428,60 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         s   = wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
                         * resp * WRM_DB_RESP[i], 0.0f, 1.0f);
         amp = WRM_DB_AMP_QUIET + (WRM_DB_AMP_MAX[i] - WRM_DB_AMP_QUIET) * s;
+        st->lvl[i] = s;
         if (present <= 0.0f) {
             o->amp[i] = 1.0f;                   // rest is exactly rest
             lum3[i]   = 1.0f;
         } else {
             o->amp[i] = 1.0f + present * (amp - 1.0f);
             lum3[i]   = 1.0f + present * (WRM_DB_LUM_MAX[i] - 1.0f) * s;
+        }
+    }
+
+    // --- the sub-bass shock ---
+    {
+        const float sf = wrm_clamp(sub_fast, 0.0f, 1.0f);
+        const float ks = dt / (WRM_SUB_TAU + dt);
+        const float excess = sf - st->sub_slow;
+        st->sub_slow += (sf - st->sub_slow) * ks;
+        st->kick  = 0.0f;
+        st->refr -= dt;
+        st->shock *= 1.0f / (1.0f + dt / WRM_SHOCK_TAU);
+        st->shock_x += dt / WRM_SHOCK_CROSS;
+        if (present > 0.0f && st->refr <= 0.0f && excess > WRM_SUB_THRESH) {
+            const float m = wrm_clamp(0.35f + (excess - WRM_SUB_THRESH) * 3.0f, 0.0f, 1.0f);
+            if (m > st->shock) st->shock = m;
+            st->shock_x = -0.15f;
+            st->refr    = WRM_SUB_REFR;
+            st->kick    = m * present;
+        }
+        if (present <= 0.0f) st->shock = 0.0f;
+        if (st->shock > 0.001f) {
+            const float sh = st->shock * present;
+            for (i = 0; i < 3; i++) {
+                o->amp[i] += (WRM_DB_AMP_MAX[i] - o->amp[i]) * WRM_SHOCK_PUSH * sh;
+                if (o->amp[i] > WRM_DB_AMP_MAX[i]) o->amp[i] = WRM_DB_AMP_MAX[i];
+                lum3[i] += WRM_SHOCK_LUM * sh;
+                if (lum3[i] > WRM_DB_LUM_MAX[2] + WRM_SHOCK_LUM) lum3[i] = WRM_DB_LUM_MAX[2] + WRM_SHOCK_LUM;
+            }
+            if (st->shock_x < 1.3f) {
+                int j, free_j = -1;
+                for (j = 0; j < WM_PULSES; j++) if (o->acc.a[j] <= 0.0f) { free_j = j; break; }
+                if (free_j < 0) free_j = WM_PULSES - 1;
+                o->acc.x[free_j]   = st->shock_x;
+                o->acc.inv[free_j] = 1.0f / WRM_SHOCK_WIDTH;
+                o->acc.a[free_j]   = WRM_SHOCK_ACC * sh;
+            }
+        }
+    }
+
+    // The accents may add up to the measured bound and no further.
+    {
+        float sum = 0.0f;
+        for (i = 0; i < WM_PULSES; i++) sum += o->acc.a[i];
+        if (sum > WRM_ACC_TOTAL_MAX) {
+            const float k = WRM_ACC_TOTAL_MAX / sum;
+            for (i = 0; i < WM_PULSES; i++) o->acc.a[i] *= k;
         }
     }
 }

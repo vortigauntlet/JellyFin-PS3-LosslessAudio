@@ -1167,7 +1167,7 @@ static void test_distinct_bands(void)
 
     memset(&st, 0, sizeof st);
     wrm_map(NULL, &o);
-    wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+    wrm_distinct(&st, src, 0.0f, 0.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
     CHECK(o.amp[0] == 1.0f && o.amp[1] == 1.0f && o.amp[2] == 1.0f &&
           lum3[0] == 1.0f && lum3[1] == 1.0f && lum3[2] == 1.0f &&
           o.dt_scale == WRM_TS_IDLE && o.drive == WRM_DRIVE_IDLE,
@@ -1178,7 +1178,7 @@ static void test_distinct_bands(void)
     src[0] = 1.0f; src[1] = 0.0f; src[2] = 0.0f;
     for (n = 0; n < 120; n++) {
         wrm_map(NULL, &o);
-        wrm_distinct(&st, src, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+        wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
     }
     printf("  distinct: bass only -> amp %.2f/%.2f/%.2f lum %.2f/%.2f/%.2f\n",
            o.amp[0], o.amp[1], o.amp[2], lum3[0], lum3[1], lum3[2]);
@@ -1190,18 +1190,47 @@ static void test_distinct_bands(void)
     src[0] = 0.0f; src[2] = 1.0f;
     for (n = 0; n < 6; n++) {
         wrm_map(NULL, &o);
-        wrm_distinct(&st, src, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+        wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
     }
     CHECK(o.amp[2] > 1.6f && o.amp[0] < 1.0f, "highs are not quick on their own layer");
     src[2] = 0.0f;
     for (n = 0; n < 20; n++) {
         wrm_map(NULL, &o);
-        wrm_distinct(&st, src, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+        wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
     }
     CHECK(o.amp[2] < 1.0f, "highs do not let go quickly");
     for (i = 0; i < 3; i++)
         CHECK(o.amp[i] >= WRM_DB_AMP_QUIET - 1e-4f && o.amp[i] <= WRM_DB_AMP_MAX[i] + 1e-4f,
               "layer %d outside its range", i);
+
+    // Sub-bass hit: settle, then a step -- a kick fires, every layer rises,
+    // nothing passes its cap, the accent total stays inside the bound.
+    {
+        float before[3], asum;
+        int j, fired = 0;
+        memset(&st, 0, sizeof st);
+        src[0] = 0.3f; src[1] = 0.3f; src[2] = 0.3f;
+        for (n = 0; n < 240; n++) {
+            wrm_map(NULL, &o);
+            wrm_distinct(&st, src, 0.2f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+        }
+        for (i = 0; i < 3; i++) before[i] = o.amp[i];
+        for (n = 0; n < 6; n++) {
+            wrm_map(NULL, &o);
+            wrm_distinct(&st, src, 0.9f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+            fired |= st.kick > 0.0f;
+        }
+        asum = 0.0f;
+        for (j = 0; j < WM_PULSES; j++) asum += o.acc.a[j];
+        printf("  distinct: sub hit -> amp %.2f/%.2f/%.2f (from %.2f/%.2f/%.2f) acc %.2f\n",
+               o.amp[0], o.amp[1], o.amp[2], before[0], before[1], before[2], asum);
+        CHECK(fired, "a sub-bass step does not fire a kick");
+        for (i = 0; i < 3; i++) {
+            CHECK(o.amp[i] > before[i] + 0.05f, "the shock does not reach layer %d", i);
+            CHECK(o.amp[i] <= WRM_DB_AMP_MAX[i] + 1e-4f, "the shock passes layer %d's cap", i);
+        }
+        CHECK(asum <= WRM_ACC_TOTAL_MAX + 1e-4f, "accent total %.3f over the bound", asum);
+    }
 }
 
 // --- the response gain (jellyfin_wavereact.txt level) ---------------------

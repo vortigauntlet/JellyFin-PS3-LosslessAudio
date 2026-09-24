@@ -25,6 +25,7 @@
 #include "ui_art.h"
 #include "ui_card_gpu.h"   // ui_card_gpu_ready
 #include "ui_text_gpu.h"
+#include "ui_buffering.h"
 
 // The album art's accent (render/art_colour.h, sampled once per album from the
 // thumbnail already in main memory) tints the visualiser, the artist line and
@@ -68,10 +69,13 @@ static bool s_cover_gpu = false;
 #define FOCUS_OUT_US      220000.0f
 #define FOCUS_CTL_A          0.35f
 #define OUTRO_US          350000.0f
+#define INTRO_US          420000.0f
 static float s_scr_a = 1.0f, s_up_a = 1.0f, s_ctl_a = 1.0f;
 static float s_focus_p = 0.0f;          // 0 = normal .. 1 = focused
 static bool  s_outro = false;
 static u64   s_outro_t0 = 0, s_fade_us = 0, s_last_input_us = 0;
+static u64   s_intro_t0 = 0;
+static bool  s_entry_flipped = false;   // the opener already finished the XMB frame
 
 static inline float fade_q(float a) {
     a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
@@ -91,7 +95,8 @@ static void music_fades_reset(void) {
     s_scr_a = s_up_a = s_ctl_a = 1.0f;
     s_focus_p = 0.0f;
     s_outro = false;
-    s_fade_us = s_last_input_us = timing_get_us();
+    s_fade_us = s_last_input_us = s_intro_t0 = timing_get_us();
+    s_scr_a = 0.0f;                       // the screen fades in, as it fades out
 }
 
 static bool music_any_press(void) {
@@ -122,7 +127,8 @@ static void music_fades_tick(bool focus_ok) {
         const float t = (float)(now - s_outro_t0) / OUTRO_US;
         s_scr_a = t >= 1.0f ? 0.0f : 1.0f - fade_ease(t);
     } else {
-        s_scr_a = 1.0f;
+        const float t = (float)(now - s_intro_t0) / INTRO_US;
+        s_scr_a = t >= 1.0f ? 1.0f : fade_ease(t);
     }
 }
 
@@ -660,11 +666,24 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                 if (orig < 0) break;
                 const MusicTrack *u = &tracks[orig];
                 bool selq = (s_fzone == FZ_QUEUE && p == s_u_sel);
-                if (selq)
-                    drawRect((u32)(up_x - UIS_W(8)), (u32)(ey - MQ_ROW_GAP / 2),
-                             (u32)(W - UIS_W(34) - (up_x - UIS_W(8))), MQ_ROW_H,
-                             fa(XMB_PANEL_HI, ua));
                 const bool on_gpu = row < UQ_ROWS_MAX && s_up_gpu[row];
+                if (selq) {
+                    // The GPU drew this row's art before the CPU phase, so the
+                    // highlight goes AROUND it -- a full-row fill painted over
+                    // the cover and it vanished whenever the row was selected.
+                    const u32 hc = fa(XMB_PANEL_HI, ua);
+                    const int x0 = up_x - UIS_W(8), y0 = ey - MQ_ROW_GAP / 2;
+                    const int x1 = W - UIS_W(34), y1 = y0 + MQ_ROW_H;
+                    if (on_gpu) {
+                        drawRect((u32)x0, (u32)y0, (u32)(up_x - x0), (u32)(y1 - y0), hc);
+                        drawRect((u32)(up_x + MQ_ART), (u32)y0, (u32)(x1 - up_x - MQ_ART), (u32)(y1 - y0), hc);
+                        if (ey > y0) drawRect((u32)up_x, (u32)y0, MQ_ART, (u32)(ey - y0), hc);
+                        if (y1 > ey + MQ_ART)
+                            drawRect((u32)up_x, (u32)(ey + MQ_ART), MQ_ART, (u32)(y1 - ey - MQ_ART), hc);
+                    } else {
+                        drawRect((u32)x0, (u32)y0, (u32)(x1 - x0), (u32)(y1 - y0), hc);
+                    }
+                }
                 if (!on_gpu && ua > 0.5f &&
                     !xmb_cpu_blit_thumb(u->art_id, up_x, ey, MQ_ART, MQ_ART))
                     xmb_draw_letter_tile(u->id, u->name, up_x, ey, MQ_ART);
@@ -951,8 +970,11 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
     // first or the loop's waitflip() below spins forever on a flip that
     // never comes — the same entry dance as the info overlay and the video
     // player (ui_info.cpp / player.cpp).
-    rsxSync();
-    flip();
+    if (!s_entry_flipped) {
+        rsxSync();
+        flip();
+    }
+    s_entry_flipped = false;
 
     s_q_open    = false;
     s_fzone     = FZ_TRANSPORT;
@@ -1064,8 +1086,17 @@ void music_screen_open_album(const XMBItem *album, const char *parent) {
     snprintf(ctx.title,  sizeof(ctx.title),  "%s", album->name);
     snprintf(ctx.year,   sizeof(ctx.year),   "%s", album->year_str);
     snprintf(ctx.genre,  sizeof(ctx.genre),  "%s", album->genre);
-    int count = music_fetch_album_tracks(album->id, s_tracks, MUSIC_QUEUE_MAX);
-    music_screen_run(&ctx, count, 0);
+    // Finish the XMB frame this was opened from, then fetch the tracks behind
+    // the LOADING screen; the music screen then fades in.
+    rsxSync();
+    flip();
+    struct { const char *id; int count; } ld = { album->id, 0 };
+    loading_run([](void *a) {
+                    auto *l = (decltype(ld) *)a;
+                    l->count = music_fetch_album_tracks(l->id, s_tracks, MUSIC_QUEUE_MAX);
+                }, &ld, "Loading", true);
+    s_entry_flipped = true;
+    music_screen_run(&ctx, ld.count, 0);
 }
 
 void music_screen_open_songs(const XMBItem *items, int count, int start_idx) {

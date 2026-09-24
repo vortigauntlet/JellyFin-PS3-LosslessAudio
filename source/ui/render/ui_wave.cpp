@@ -8,7 +8,7 @@
 #include "wave_shaders.h"
 #include "wave_field.h"
 #include "wave_gel.h"          /* JellyWave: pulls wave_cam.h + wave_light.h */
-#include "wave_motes.h"        /* stage 9: the motes, while music plays */
+#include "wave_snow.h"         /* the snow field, while music plays */
 #include "bg_gradient.h"
 #include "timing.h"
 #include "month_bg.h"
@@ -411,24 +411,21 @@ static u32 s_jw_off[JW_LAYERS][2];
 static u32 s_jw_cnt[JW_LAYERS][2];
 static int s_jw_have_geom = 0;     // 0 until the first build lands
 
-// --- the motes (wave_motes.h, stage 9), while music plays ------------------
+// --- the snow field (wave_snow.h), while music plays -------------------------
 //
-// A cloud of small flakes around the band, lit by the band's own key light,
-// driven by the same stage B parameters as the wave: bass makes the cloud
-// breathe, highs spin the flakes so they glint, onsets brighten the glints and
-// the beat pulses lift the motes they pass under.  It fades in with the music
-// and out with it; with no audio nothing is simulated, shaded or drawn.
+// Screen-wide particles drifting down with depth of field -- bokeh near, sharp
+// in the middle, faint far -- swaying with the lows, twinkling with the highs
+// and thrown up and outward by every sub-bass hit.  Fades in with the music and
+// out with it; with no audio nothing is simulated, shaded or drawn.
 //
 // Drawn from buffers of their OWN -- never the JellyWave stage or its ranges.
 // Built in main memory, uploaded with jw_upload() right after the JellyWave
 // upload (whose rsxSync is the fence for both), drawn once after the gel with
-// an ADDITIVE blend (so order inside the cloud does not matter).  Each mote is
-// a small hexagonal fan, bright centre to transparent rim: a soft dot.
-#define MOTE_COUNT  320
-#define MOTE_SEG    6
-#define MOTE_VERTS  (MOTE_COUNT * MOTE_SEG * 3)
-static wmo_state   s_mote;
-static wmo_sprite  s_mote_spr[MOTE_COUNT];
+// an ADDITIVE blend.  A tiny particle is one flat quad; a larger one a fan,
+// bright centre to transparent rim (4 segments, 6 for the bokeh).
+#define MOTE_VERTS  (WS_MAX * 6 * 3)
+static ws_state    s_snow;
+static ws_sprite   s_snow_spr[WS_MAX];
 static WaveVert    s_mote_stage[MOTE_VERTS] __attribute__((aligned(16)));
 static WaveVert   *s_mote_vbuf[2] = { NULL, NULL };
 static u32         s_mote_voff[2] = { 0, 0 };
@@ -441,55 +438,77 @@ static void motes_init(void)
 {
     for (int i = 0; i < 2; i++) {
         s_mote_vbuf[i] = (WaveVert *)rsxMemalign(128, MOTE_VERTS * sizeof(WaveVert));
-        if (!s_mote_vbuf[i]) { plog("wave: motes buffer alloc FAILED -- no motes"); return; }
+        if (!s_mote_vbuf[i]) { plog("wave: snow buffer alloc FAILED -- no particles"); return; }
         rsxAddressToOffset(s_mote_vbuf[i], &s_mote_voff[i]);
     }
-    if (!wmo_init(&s_mote, MOTE_COUNT, 0x4A454C4Cu)) { plog("wave: motes init FAILED"); return; }
+    ws_init(&s_snow, WS_COUNT_DEF, 0x4A454C4Cu);
     s_mote_ok = true;
-    plog("wave: motes ready (320, shown while music plays)");
+    plog("wave: snow ready (700, shown while music plays)");
 }
 
-// Step, shade and build this call's motes into s_mote_stage; returns the
+static inline void mote_v(WaveVert *v, float x, float y, u32 c)
+{
+    v->x = x; v->y = y; v->z = 0.0f; v->w = 1.0f; v->rgba = c;
+}
+
+// Step, shade and build this call's particles into s_mote_stage; returns the
 // vertex count (0 = draw nothing).
 static u32 motes_build(float aspect)
 {
     const u64 now = timing_get_us();
     float dt = s_mote_us ? (float)(now - s_mote_us) * 1.0e-6f : 0.0f;
     s_mote_us = now;
-    if (dt > WMO_DT_MAX) dt = WMO_DT_MAX;
+    if (dt > WS_DT_MAX) dt = WS_DT_MAX;
 
-    // Fade toward how present the music is: in over ~0.8 s, out over ~0.6 s.
     const float target = wave_audio_presence();
-    const float tau = target > s_mote_a ? 0.8f : 0.6f;
+    const float tau = target > s_mote_a ? 1.0f : 0.7f;
     s_mote_a += (target - s_mote_a) * (dt / (tau + dt));
+    float lvl[3], kick = 0.0f;
+    wave_audio_bands(lvl, &kick);
     if (s_mote_a < 0.01f) return 0;
 
-    wmo_ctl c;
-    wmo_controls(wave_audio_params(), &c);
-    c.ts = 0.75f;                      // calm drift, like the wave's own
-    wmo_step(&s_mote, &c, dt);
-    wmo_shade(&s_mote, &c, aspect, s_mote_spr, MOTE_COUNT);
+    ws_ctl c;
+    c.sway    = lvl[0];
+    c.twinkle = lvl[2];
+    c.kick    = kick;
+    c.bright  = (lvl[0] + lvl[1] + lvl[2]) * (1.0f / 3.0f);
+    ws_step(&s_snow, &c, dt);
+    ws_shade(&s_snow, &c, s_mote_a, s_snow_spr, WS_MAX);
 
-    static const float CS[MOTE_SEG + 1] = { 1.0f, 0.5f, -0.5f, -1.0f, -0.5f, 0.5f, 1.0f };
-    static const float SN[MOTE_SEG + 1] = { 0.0f, 0.8660254f, 0.8660254f, 0.0f,
-                                            -0.8660254f, -0.8660254f, 0.0f };
+    static const float C4[5] = { 1.0f, 0.0f, -1.0f, 0.0f, 1.0f };
+    static const float S4[5] = { 0.0f, 1.0f, 0.0f, -1.0f, 0.0f };
+    static const float C6[7] = { 1.0f, 0.5f, -0.5f, -1.0f, -0.5f, 0.5f, 1.0f };
+    static const float S6[7] = { 0.0f, 0.8660254f, 0.8660254f, 0.0f,
+                                 -0.8660254f, -0.8660254f, 0.0f };
+    const float px2y = 1.0f / 540.0f;              // 1080p pixels -> clip y
     const float inv_aspect = 1.0f / aspect;
     u32 n = 0;
-    for (int i = 0; i < MOTE_COUNT; i++) {
-        const wmo_sprite *m = &s_mote_spr[i];
+    for (int i = 0; i < s_snow.n; i++) {
+        const ws_sprite *m = &s_snow_spr[i];
         if (!m->a) continue;
-        int a = (int)((float)m->a * s_mote_a + 0.5f);
-        if (a <= 0) continue;
-        if (a > 255) a = 255;
-        const u32 cc = WAVE_RGBA(m->r, m->g, m->b, a);
+        const u32 cc = WAVE_RGBA(m->r, m->g, m->b, m->a);
         const u32 ce = WAVE_RGBA(m->r, m->g, m->b, 0);
-        const float sy = m->s * 1.6f, sx = sy * inv_aspect;   // soft halo past the core
-        for (int k = 0; k < MOTE_SEG; k++) {
+        if (m->r_px < 2.2f) {                          // a speck: one flat quad
+            const float sy = m->r_px * px2y, sx = sy * inv_aspect;
             WaveVert *v = &s_mote_stage[n];
-            v[0].x = m->x;                v[0].y = m->y;                v[0].rgba = cc;
-            v[1].x = m->x + sx * CS[k];   v[1].y = m->y + sy * SN[k];   v[1].rgba = ce;
-            v[2].x = m->x + sx * CS[k+1]; v[2].y = m->y + sy * SN[k+1]; v[2].rgba = ce;
-            for (int j = 0; j < 3; j++) { v[j].z = 0.0f; v[j].w = 1.0f; }
+            mote_v(&v[0], m->x - sx, m->y - sy, cc);
+            mote_v(&v[1], m->x + sx, m->y - sy, cc);
+            mote_v(&v[2], m->x + sx, m->y + sy, cc);
+            mote_v(&v[3], m->x - sx, m->y - sy, cc);
+            mote_v(&v[4], m->x + sx, m->y + sy, cc);
+            mote_v(&v[5], m->x - sx, m->y + sy, cc);
+            n += 6;
+            continue;
+        }
+        const bool big = m->r_px >= 7.0f;
+        const int  seg = big ? 6 : 4;
+        const float *CS = big ? C6 : C4, *SN = big ? S6 : S4;
+        const float sy = m->r_px * 1.5f * px2y, sx = sy * inv_aspect;   // soft rim past the core
+        for (int k = 0; k < seg; k++) {
+            WaveVert *v = &s_mote_stage[n];
+            mote_v(&v[0], m->x, m->y, cc);
+            mote_v(&v[1], m->x + sx * CS[k],     m->y + sy * SN[k],     ce);
+            mote_v(&v[2], m->x + sx * CS[k + 1], m->y + sy * SN[k + 1], ce);
             n += 3;
         }
     }

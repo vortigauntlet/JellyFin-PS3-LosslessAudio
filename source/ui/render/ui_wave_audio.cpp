@@ -99,6 +99,7 @@ static float        s_gain = 1.0f;              // from the gate level
 static wrm_db_state s_db;                       // per-band envelopes
 static float        s_lum3[3] = { 1.0f, 1.0f, 1.0f };
 static float        s_present = 0.0f;           // 0 at rest .. 1 with audio
+static float        s_kick = 0.0f;              // sub-bass hit waiting for the snow
 
 // Lazy, on the first wave_audio_frame().  NOT at init time: UI-BRIEF rule 2 --
 // ui_init() runs before the logger is loaded, so an init-time plog line is
@@ -199,7 +200,9 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                 const float present = f.silence >= 0.999f ? 0.0f : 1.0f - f.silence;
                 s_present = present;
                 const float resp = s_gain <= 1.0f ? 0.8f : (s_gain < 2.0f ? 1.0f : 1.25f);
-                wrm_distinct(&s_db, src, present, resp, dt, &s_out, s_lum3);
+                wrm_distinct(&s_db, src, f.band_fast[WA_SUB], present, resp, dt,
+                             &s_out, s_lum3);
+                if (s_db.kick > s_kick) s_kick = s_db.kick;   // held until the snow takes it
             }
 
             // A bounded trace of what the wave is actually being driven with.
@@ -270,6 +273,16 @@ void wave_audio_look(float amp[3], float *lum)
 
 const wm_params *wave_audio_params(void) { return s_on ? &s_wm.p : NULL; }
 float wave_audio_presence(void) { return s_on ? s_present : 0.0f; }
+
+void wave_audio_bands(float lvl[3], float *kick)
+{
+    if (lvl) {
+        lvl[0] = s_on ? s_db.lvl[0] : 0.0f;
+        lvl[1] = s_on ? s_db.lvl[1] : 0.0f;
+        lvl[2] = s_on ? s_db.lvl[2] : 0.0f;
+    }
+    if (kick) { *kick = s_kick; s_kick = 0.0f; }
+}
 
 void wave_audio_lum3(float lum3[3])
 {

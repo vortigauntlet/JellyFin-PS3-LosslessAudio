@@ -1,0 +1,252 @@
+// JellyWave: the snow field -- screen-wide drifting particles while music plays.
+//
+// Replaces the stage 9 motes (wave_motes.h, kept, unwired) as what the music
+// screen draws.  Hardware verdict on the motes: "need to be much better and
+// present throughout the whole screen, kinda like a snowing vibe".
+//
+// WHAT IT IS.  Original work; the reference is only the RELATIONSHIPS in the
+// console's own ambient field (lines.qrc, read as parameters, never copied):
+//   * a screen-filling population in the low thousands, not a cloud around one
+//     attractor -- here ~700, sized for this renderer's upload budget;
+//   * near-weightless drift: a slow fall, a light wind, Brownian jostle and a
+//     friction that makes every push decay, so nothing ever moves fast;
+//   * lifetimes of seconds with wide variance, so births are spread out;
+//   * DEPTH OF FIELD doing most of the look: near particles are large, soft and
+//     faint (bokeh), a middle band is small, sharp and bright, far ones are
+//     tiny and dim; parallax makes the near ones fall and sway faster;
+//   * a "shake" response -- an impulse that jolts the whole field -- which is
+//     what the sub-bass hits drive here.
+//
+// Space: x and y in clip units (the screen is [-1,1] both ways, +y up), with a
+// margin so particles enter and leave off-screen; z is a depth fraction,
+// 0 = nearest .. 1 = furthest.
+//
+// THE AUDIO (all through ws_ctl, all neutral at 0):
+//   sway     lows        wider, slower side-to-side drift
+//   twinkle  highs       per-particle sparkle
+//   kick     sub-bass    a one-frame impulse: every particle is thrown up and
+//                        outward from the centre, harder the nearer it is, and
+//                        the field flashes; friction settles it in ~1 s
+//   bright   loudness    the whole field a little brighter
+//
+// House rules: header-only, pure C, no libm, no PS3 headers, caller-owned
+// state, struct of arrays.  tests/test_wave_snow.c.
+
+#ifndef WAVE_SNOW_H
+#define WAVE_SNOW_H
+
+#include <stdint.h>
+
+#define WS_MAX        900
+#define WS_COUNT_DEF  700
+
+#define WS_X_EDGE     1.12f       // spawn/wrap margin past the screen, clip units
+#define WS_Y_EDGE     1.12f
+#define WS_FALL_NEAR  0.090f      // clip units/s at z = 0 (parallax)
+#define WS_FALL_FAR   0.022f      // at z = 1
+#define WS_WIND       0.012f      // steady drift to the right
+#define WS_SWAY       0.030f      // side-to-side amplitude of the drift velocity
+#define WS_SWAY_HZ    0.11f
+#define WS_BROWN      0.060f      // jostle, clip units/s^2 per sqrt-frame
+#define WS_FRICTION   1.6f        // 1/s -- how fast a push dies away
+#define WS_KICK_UP    0.55f       // sub-bass impulse, clip units/s at full kick, z = 0
+#define WS_KICK_OUT   0.35f
+#define WS_FLASH_TAU  0.22f       // s
+#define WS_LIFE_MIN   5.0f
+#define WS_LIFE_MAX  12.0f
+#define WS_FADE       1.0f        // s, in and out
+#define WS_DT_MAX     0.10f
+
+// depth of field, in pixels at 1080p (the renderer scales by display height)
+#define WS_FOCUS_Z    0.45f
+#define WS_R_SHARP    1.3f        // in-focus core radius
+#define WS_R_NEAR    16.0f        // extra radius at the nearest (bokeh)
+#define WS_R_FAR      0.9f
+
+typedef struct {
+    float sway;     // 0..1 lows
+    float twinkle;  // 0..1 highs
+    float kick;     // 0..1, non-zero on the frame a sub-bass hit lands
+    float bright;   // 0..1 loudness
+} ws_ctl;
+
+typedef struct {
+    int      n;
+    float    t;                     // running time, s
+    float    flash;                 // 0..1, decays
+    float    x[WS_MAX], y[WS_MAX], z[WS_MAX];
+    float    vx[WS_MAX], vy[WS_MAX];
+    float    ph[WS_MAX];            // sway / twinkle phase
+    float    hue[WS_MAX];           // 0 violet .. 1 blue
+    float    age[WS_MAX], life[WS_MAX];
+    uint32_t rng;
+} ws_state;
+
+typedef struct {
+    float         x, y;             // clip centre
+    float         r_px;             // radius, pixels at 1080p
+    unsigned char r, g, b, a;       // a == 0: do not draw
+} ws_sprite;
+
+static inline float ws_rand(uint32_t *s)
+{
+    *s = *s * 1664525u + 1013904223u;
+    return (float)(*s >> 8) * (1.0f / 16777216.0f);
+}
+
+static inline float ws_clampf(float v, float lo, float hi)
+{
+    if (v != v) return lo;
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// sin(2 pi t) for any t, libm-free (Bhaskara on the folded phase, < 0.2%)
+static inline float ws_sin2pi(float t)
+{
+    float f = t - (float)(int)t;
+    if (f < 0.0f) f += 1.0f;
+    float s = 1.0f;
+    if (f >= 0.5f) { f -= 0.5f; s = -1.0f; }
+    const float x = f * (0.5f - f);            // f in [0, 0.5): sin(2 pi f)
+    return s * 16.0f * x / (1.25f - 4.0f * x);
+}
+
+// Depth distribution: most particles mid-to-far, a few near (the bokeh).
+static inline float ws_pick_z(uint32_t *s)
+{
+    const float u = ws_rand(s);
+    return u < 0.12f ? 0.02f + 0.20f * (u / 0.12f)             // ~12% near: the bokeh
+                     : 0.22f + 0.78f * ((u - 0.12f) / 0.88f);  // the rest, mid to far
+}
+
+static inline void ws_spawn(ws_state *st, int i, int anywhere)
+{
+    uint32_t *r = &st->rng;
+    st->x[i]  = -WS_X_EDGE + 2.0f * WS_X_EDGE * ws_rand(r);
+    st->y[i]  = anywhere ? (-WS_Y_EDGE + 2.0f * WS_Y_EDGE * ws_rand(r))
+                         : WS_Y_EDGE - 0.05f * ws_rand(r);
+    st->z[i]  = ws_pick_z(r);
+    st->vx[i] = 0.0f;
+    st->vy[i] = 0.0f;
+    st->ph[i] = ws_rand(r);
+    st->hue[i] = ws_rand(r);
+    st->life[i] = WS_LIFE_MIN + (WS_LIFE_MAX - WS_LIFE_MIN) * ws_rand(r);
+    st->age[i]  = anywhere ? st->life[i] * ws_rand(r) : 0.0f;
+}
+
+static inline int ws_init(ws_state *st, int count, uint32_t seed)
+{
+    int i;
+    if (!st) return 0;
+    if (count < 0) count = 0;
+    if (count > WS_MAX) count = WS_MAX;
+    st->n = count;
+    st->t = 0.0f;
+    st->flash = 0.0f;
+    st->rng = seed ? seed : 0x5EEDu;
+    for (i = 0; i < count; i++) ws_spawn(st, i, 1);
+    return 1;
+}
+
+static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
+{
+    int i;
+    ws_ctl z0 = { 0.0f, 0.0f, 0.0f, 0.0f };
+    if (!st) return;
+    if (!c) c = &z0;
+    dt = ws_clampf(dt, 0.0f, WS_DT_MAX);
+    st->t += dt;
+
+    const float kick  = ws_clampf(c->kick, 0.0f, 1.0f);
+    const float sway  = WS_SWAY * (1.0f + 1.4f * ws_clampf(c->sway, 0.0f, 1.0f));
+    const float fric  = 1.0f / (1.0f + WS_FRICTION * dt);
+    const float brown = WS_BROWN * dt;
+    st->flash = st->flash * (1.0f / (1.0f + dt / WS_FLASH_TAU));
+    if (kick > st->flash) st->flash = kick;
+
+    for (i = 0; i < st->n; i++) {
+        const float z    = st->z[i];
+        const float near = 1.0f - z;
+        // the drift: fall + wind + a slow sway, all with parallax
+        const float fall = WS_FALL_FAR + (WS_FALL_NEAR - WS_FALL_FAR) * near;
+        const float sw   = sway * (0.4f + 0.6f * near)
+                         * ws_sin2pi(st->ph[i] + st->t * WS_SWAY_HZ * (0.7f + 0.6f * st->hue[i]));
+        // the pushes: Brownian jostle and the sub-bass kick, both damped
+        st->vx[i] = st->vx[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
+        st->vy[i] = st->vy[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
+        if (kick > 0.0f) {
+            const float out = st->x[i] >= 0.0f ? 1.0f : -1.0f;
+            const float k   = kick * (0.35f + 0.65f * near);
+            st->vy[i] += WS_KICK_UP * k * (0.6f + 0.8f * ws_rand(&st->rng));
+            st->vx[i] += WS_KICK_OUT * k * out * (0.3f + 0.9f * ws_rand(&st->rng));
+        }
+        st->x[i] += (WS_WIND * (0.5f + 0.5f * near) + sw + st->vx[i]) * dt;
+        st->y[i] += (st->vy[i] - fall) * dt;
+        st->age[i] += dt;
+
+        // leave the bottom or run out of life: back in at the top; the sides wrap
+        if (st->y[i] < -WS_Y_EDGE || st->age[i] >= st->life[i]) ws_spawn(st, i, 0);
+        if (st->y[i] >  WS_Y_EDGE + 0.2f) st->y[i] = -WS_Y_EDGE + 0.01f;
+        if (st->x[i] >  WS_X_EDGE) st->x[i] -= 2.0f * WS_X_EDGE;
+        if (st->x[i] < -WS_X_EDGE) st->x[i] += 2.0f * WS_X_EDGE;
+    }
+}
+
+// Shade: one sprite per particle, in state order.  Returns how many are drawn.
+// `alpha` is the presence fade (0..1); colours are Jellyfin violet -> blue,
+// lifted toward white in focus.
+static inline int ws_shade(const ws_state *st, const ws_ctl *c, float alpha,
+                           ws_sprite *out, int cap)
+{
+    int i, n, vis = 0;
+    ws_ctl z0 = { 0.0f, 0.0f, 0.0f, 0.0f };
+    if (!st || !out || cap <= 0) return 0;
+    if (!c) c = &z0;
+    n = st->n < cap ? st->n : cap;
+    alpha = ws_clampf(alpha, 0.0f, 1.0f);
+    const float tw  = ws_clampf(c->twinkle, 0.0f, 1.0f);
+    const float brt = 1.0f + 0.25f * ws_clampf(c->bright, 0.0f, 1.0f) + 0.55f * st->flash;
+
+    for (i = 0; i < n; i++) {
+        const float z     = st->z[i];
+        const float nearb = ws_clampf((0.22f - z) / 0.22f, 0.0f, 1.0f);   // bokeh 0..1
+        const float farf  = ws_clampf((z - WS_FOCUS_Z) / (1.0f - WS_FOCUS_Z), 0.0f, 1.0f);
+        const float focus = 1.0f - ws_clampf((z < WS_FOCUS_Z ? WS_FOCUS_Z - z : z - WS_FOCUS_Z) / 0.35f, 0.0f, 1.0f);
+        float r = WS_R_SHARP + 1.2f * (1.0f - z) + WS_R_NEAR * nearb * nearb - (WS_R_SHARP - WS_R_FAR) * farf;
+        if (r < 0.8f) r = 0.8f;
+
+        // life fade in and out
+        float e = st->age[i] < st->life[i] - st->age[i] ? st->age[i] : st->life[i] - st->age[i];
+        e = ws_clampf(e / WS_FADE, 0.0f, 1.0f);
+        e = e * e * (3.0f - 2.0f * e);
+
+        // a big soft disc spreads its light: dim it by its area, or the near
+        // ones would read as fog
+        float a = (0.30f + 0.62f * focus) * (1.0f - 0.78f * nearb) * (1.0f - 0.55f * farf);
+        // highs: each particle twinkles on its own phase
+        const float sp = 0.5f + 0.5f * ws_sin2pi(st->ph[i] * 3.7f + st->t * (1.3f + 1.7f * st->hue[i]));
+        a *= 1.0f + tw * (0.9f * sp * sp - 0.2f);
+        a *= e * alpha * brt;
+        a = ws_clampf(a, 0.0f, 1.0f);
+
+        // colour: violet (170,120,235) -> blue (110,190,245), toward white in focus
+        const float h = st->hue[i];
+        float cr = 170.0f + (110.0f - 170.0f) * h;
+        float cg = 120.0f + (190.0f - 120.0f) * h;
+        float cb = 235.0f + (245.0f - 235.0f) * h;
+        const float wt = 0.55f * focus;
+        cr += (255.0f - cr) * wt; cg += (255.0f - cg) * wt; cb += (255.0f - cb) * wt;
+
+        out[i].x = st->x[i];
+        out[i].y = st->y[i];
+        out[i].r_px = r;
+        out[i].r = (unsigned char)cr;
+        out[i].g = (unsigned char)cg;
+        out[i].b = (unsigned char)cb;
+        out[i].a = (unsigned char)(a * 255.0f + 0.5f);
+        vis += out[i].a != 0;
+    }
+    return vis;
+}
+
+#endif // WAVE_SNOW_H

@@ -57,5 +57,9 @@ void wave_audio_lum3(float lum3[3]);
 const wm_params *wave_audio_params(void);
 float wave_audio_presence(void);
 
+// The distinct-band levels (lows, mids, highs; 0..1) and a pending sub-bass
+// kick (returned once, then cleared) -- for the snow field.
+void wave_audio_bands(float lvl[3], float *kick);
+
 // True when the analyser is running (gate on, initialised).  For logging only.
 bool wave_audio_active(void);

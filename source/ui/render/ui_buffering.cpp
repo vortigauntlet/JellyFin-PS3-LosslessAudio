@@ -30,6 +30,8 @@
 #include "ui_visuals.h"
 #include "rsxutil.h"
 #include "timing.h"
+#include <unistd.h>
+#include <sys/thread.h>
 
 static buf_anim    s_anim;
 static bool        s_on = false;
@@ -235,4 +237,76 @@ void buffering_finish(bool ready) {
         s_flip_pending = true;
     }
     s_on = false;
+}
+
+// --- loading_run -------------------------------------------------------------
+//
+// 2026-09-25: "add a loading screen for the pause when pressing X to open an
+// item details page".  The pause is the page's blocking fetches (details,
+// versions, poster, backdrop).  They run on a thread; this draws.
+static void (*volatile s_lw_fn)(void *) = NULL;
+static void *volatile  s_lw_arg = NULL;
+static volatile bool   s_lw_done = false;
+
+static void lw_thread(void *arg)
+{
+    (void)arg;
+    s_lw_fn(s_lw_arg);
+    __sync_synchronize();
+    s_lw_done = true;
+    sysThreadExit(0);
+}
+
+bool loading_run(void (*work)(void *), void *arg, const char *label,
+                 bool flip_pending)
+{
+    if (!work) return flip_pending;
+    s_lw_fn = work;
+    s_lw_arg = arg;
+    s_lw_done = false;
+    __sync_synchronize();
+    sys_ppu_thread_t tid;
+    static char name[] = "jf_loading";
+    if (sysThreadCreate(&tid, lw_thread, NULL, 1100, 128 * 1024,
+                        THREAD_JOINABLE, name) != 0) {
+        work(arg);                      // no thread: the old blocking way
+        return flip_pending;
+    }
+    const u64 t0 = timing_get_us();
+    while (!s_lw_done) {
+        const u64 now = timing_get_us();
+        if (now - t0 < 120000ULL || !running) { usleep(4000); continue; }
+        sysUtilCheckCallback();
+        if (flip_pending) waitflip();
+        const float t  = (float)(now - t0 - 120000ULL) * 1.0e-6f;
+        float a = t / 0.25f;
+        a = a > 1.0f ? 1.0f : a;
+        a = a * a * (3.0f - 2.0f * a);
+
+        clearScreen(XMB_BG);
+        wave_draw();
+        const int cx = (int)display_width / 2, cy = (int)((float)display_height * 0.46f);
+        const float R = (float)UIS_H(40), T = UIS_H(3) < 2 ? 2.0f : (float)UIS_H(3);
+        const float ang = t * 0.85f;
+        wave_draw_ring_arc_gpu(cx, cy, R, T * 0.66f, 0.0f, 1.0f, 64,
+                               0x00FFFFFF, a8(0.12f * a), 0x00FFFFFF, a8(0.12f * a));
+        wave_draw_ring_arc_gpu(cx, cy, R, T, ang - 0.32f, 0.32f, 28,
+                               JF_PURPLE, 0, JF_BLUE, a8(a));
+        wave_draw_jf_logo_gpu(cx, cy, (float)UIS_H(20), JF_PURPLE, JF_BLUE, a8(0.9f * a));
+        rsxSync();
+        ui_text_gpu_begin();
+        if (label && label[0]) {
+            const float q = (float)(int)(a * 16.0f + 0.5f) / 16.0f;
+            const int ew = xmb_eyebrow_width(label);
+            xmb_draw_eyebrow(((int)display_width - ew) / 2, cy + (int)R + UIS_H(22), label,
+                             art_mix(XMB_BG, XMB_TEXT_DIM, q));
+        }
+        ui_text_gpu_flush();
+        flip();
+        flip_pending = true;
+    }
+    __sync_synchronize();
+    u64 r;
+    sysThreadJoin(tid, &r);
+    return flip_pending;
 }
