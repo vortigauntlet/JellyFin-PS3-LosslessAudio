@@ -9,6 +9,15 @@ extern bool s_audio_ok;
 // audio_output_channels() for what was actually opened.
 void audio_open(int channels);
 bool audio_write_pcm(void);  // returns true if a DMA event was consumed
+
+// Paced mode (the music player): audio_write_pcm() never waits for the
+// source.  Each wake drains the whole event backlog, then tops the ring up to
+// a fixed runway ahead of the hardware's READ cursor -- PCM where the source
+// has a block, silence where it does not.  So a stall can never leave the
+// writer behind the hardware and then burn through queued events faster than
+// real time (the old path's "sped-up first second" and lost track openings).
+// Off by default; the video path is unchanged.
+void audio_set_paced(bool on);
 void audio_close(void);
 
 // Shared libaudio init: audioInit() on the first acquire, audioQuit() on the

@@ -712,8 +712,11 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
 
     // ---- transport row (d-pad moves focus, X activates — same model as
     //      the video player's HUD).  Focused control pops white with an
-    //      accent tick under it; the play disc gets a bright ring. ----
-    {
+    //      accent tick under it; the play disc gets a bright ring.
+    //      Shapes fade by mixing toward the background colour, so at zero
+    //      they would still be drawn -- as background-coloured shapes over
+    //      the wave.  Faded out means not drawn at all. ----
+    if (fade_q(ca) > 0.0f) {
         int cx = W / 2;
         int cy = (int)(H * 0.815f);
         bool paused = music_is_paused();
@@ -762,7 +765,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
 
     // ---- seek bar (shows the pending/committed seek target while a
     //      batched seek is in flight, so taps feel instant) ----
-    {
+    if (fade_q(ka) > 0.0f) {
         bool seeking  = (s_seek_pend != 0 || s_seek_hold >= 0);
         u32  shown    = (u32)seek_display_secs();
         u32  duration = music_duration_secs();

@@ -40,6 +40,11 @@ extern u32 running;
 static float        s_ring[MPCM_CAP * 2];
 static int          s_wr = 0, s_rd = 0;
 static volatile int s_n  = 0;
+static u64          s_pushed_total = 0;   // pairs ever pushed since the last flush
+static u64          s_read_total   = 0;   // pairs ever read since the last flush
+// Pre-roll: a freshly started track is held until the ring has ~200 ms, so it
+// starts clean instead of stuttering through its first network reads.
+static volatile bool s_hold = false;
 static sys_mutex_t  s_pcm_mtx;
 static bool         s_pcm_mtx_ok = false;
 
@@ -50,7 +55,8 @@ static bool         s_pcm_mtx_ok = false;
 static MusicTrack   s_queue[MUSIC_QUEUE_MAX];
 static int          s_order[MUSIC_QUEUE_MAX];
 static int          s_count  = 0;
-static volatile int s_pos    = 0;
+static volatile int s_pos    = 0;      // the track being DECODED
+static volatile int s_ui_pos = 0;      // the track being HEARD (what the UI shows)
 static volatile bool s_shuffle = false;
 static volatile bool s_run     = false;   // threads should keep going
 static volatile bool s_active  = false;   // queue not yet finished
@@ -71,6 +77,17 @@ static u32  s_duration = 0;
 static char s_src_info[40] = "";
 static char s_session_id[80] = "";
 
+// GAPLESS.  When a track's stream is fully downloaded and decoded, the next
+// track is set up and decoded straight into the same ring behind it, instead
+// of waiting for the ring to drain.  The handover is a boundary in the ring:
+// once playback consumes past s_bnd_at, the heard track becomes s_bnd_pos
+// (elapsed, duration and source line switch with it, sample-exact).
+static bool s_bnd_pending = false;
+static u64  s_bnd_at      = 0;
+static int  s_bnd_pos     = 0;
+static u32  s_bnd_dur     = 0;
+static char s_bnd_src[40] = "";
+
 static sys_ppu_thread_t s_stream_tid = 0;
 static sys_ppu_thread_t s_pump_tid   = 0;
 // music_stop() no longer waits for the stream thread (see there); the next
@@ -85,6 +102,8 @@ static void mring_flush(void) {
     sysMutexLock(s_pcm_mtx, 0);
     s_wr = s_rd = 0;
     s_n  = 0;
+    s_pushed_total = s_read_total = 0;
+    s_bnd_pending = false;
     sysMutexUnlock(s_pcm_mtx);
 }
 
@@ -98,11 +117,13 @@ static void mring_push(const float *lr, int n_pairs) {
         s_ring[s_wr * 2 + 1] = lr[i * 2 + 1];
         s_wr = (s_wr + 1) & (MPCM_CAP - 1);
         s_n++;
+        s_pushed_total++;
     }
     sysMutexUnlock(s_pcm_mtx);
 }
 
-static int music_pcm_avail(void) { return s_n; }
+// Paused or pre-rolling: report nothing, and the paced writer plays silence.
+static int music_pcm_avail(void) { return (s_paused || s_hold) ? 0 : s_n; }
 
 // Music is stereo by design — the pluggable source contract reports frames
 // of this fixed width (see audio_set_source in audio.h).
@@ -118,7 +139,18 @@ static int music_read_pcm(float *buf, int n_pairs) {
         s_n--;
         got++;
     }
-    s_consumed += (u64)got;
+    if (s_bnd_pending && s_read_total + (u64)got >= s_bnd_at) {
+        // Crossed into the next track: it is the one being heard now.
+        s_consumed    = s_read_total + (u64)got - s_bnd_at;
+        s_seek_base   = 0;
+        s_ui_pos      = s_bnd_pos;
+        s_duration    = s_bnd_dur;
+        memcpy(s_src_info, s_bnd_src, sizeof(s_src_info));
+        s_bnd_pending = false;
+    } else {
+        s_consumed += (u64)got;
+    }
+    s_read_total += (u64)got;
     sysMutexUnlock(s_pcm_mtx);
     // Visualizer tap lives here, not at decode time: these samples hit the
     // hardware DMA ring (~40 ms of latency) now, while the decode cursor can
@@ -189,10 +221,10 @@ static void upper_copy(char *dst, int cap, const char *src) {
 // PlaybackInfo for the track: session id, duration, and the SOURCE
 // container/bitrate (responseBuffer still holds the reply — MediaSources[0]
 // carries the first "Container"/"Bitrate" occurrences).
-static void track_session_setup(const MusicTrack *t) {
+static void track_session_setup(const MusicTrack *t, u32 *dur_out, char *src_out) {
+    char s_src_info[40] = "";           // shadows: filled here, committed by the caller
+    u32  s_duration     = t->duration_secs;
     s_session_id[0] = '\0';
-    s_src_info[0]   = '\0';
-    s_duration      = t->duration_secs;
 
     unsigned total = 0;
     if (jellyfin_get_play_session_id(t->id, s_session_id,
@@ -211,6 +243,8 @@ static void track_session_setup(const MusicTrack *t) {
         else if (cu[0])
             snprintf(s_src_info, sizeof(s_src_info), "%s", cu);
     }
+    *dur_out = s_duration;
+    memcpy(src_out, s_src_info, sizeof(s_src_info));
 }
 
 static void build_audio_url(char *url, int url_sz, const char *item_id,
@@ -254,23 +288,57 @@ static u64 elapsed_ticks(void) {
 // transcode (which began at offset 0) and StartTimeTicks is ignored: the
 // track audibly restarts from 0:00.  The kill via /Videos/ActiveEncodings
 // doesn't reliably take for audio jobs the way it does for video.
-static int play_one_track(u32 start_secs) {
+static bool s_natural_end = false;   // the last track ended by running out, fully decoded
+
+static int play_one_track(u32 start_secs, bool gapless) {
     if (!s_run) return MCMD_STOP;
     crash_log("m0 track start");
     const MusicTrack *t = &s_queue[s_order[s_pos]];
+    s_natural_end = false;
 
-    mring_flush();
-    music_viz_reset();
     mp3dec_init(&s_dec);
-    s_consumed  = 0;
-    s_seek_base = start_secs;
+    if (!gapless) {
+        mring_flush();
+        music_viz_reset();
+        sysMutexLock(s_pcm_mtx, 0);
+        s_consumed  = 0;
+        s_seek_base = start_secs;
+        s_ui_pos    = s_pos;
+        s_duration  = t->duration_secs;
+        s_src_info[0] = '\0';
+        sysMutexUnlock(s_pcm_mtx);
+        s_hold = true;
+    } else {
+        // Everything of the previous track is in the ring already: this one
+        // starts where it ends.
+        sysMutexLock(s_pcm_mtx, 0);
+        s_bnd_at      = s_pushed_total;
+        s_bnd_pos     = s_pos;
+        s_bnd_dur     = t->duration_secs;
+        s_bnd_src[0]  = '\0';
+        s_bnd_pending = true;
+        sysMutexUnlock(s_pcm_mtx);
+    }
 
     char buf[160];
-    snprintf(buf, sizeof(buf), "music: track %d/%d start=%us id=%.16s",
-             s_pos + 1, s_count, start_secs, t->id);
+    snprintf(buf, sizeof(buf), "music: track %d/%d start=%us id=%.16s%s",
+             s_pos + 1, s_count, start_secs, t->id, gapless ? " (gapless)" : "");
     plog(buf);
 
-    track_session_setup(t);
+    {
+        u32  dur = t->duration_secs;
+        char src[40] = "";
+        track_session_setup(t, &dur, src);
+        sysMutexLock(s_pcm_mtx, 0);
+        if (s_bnd_pending && s_bnd_pos == s_pos) {
+            s_bnd_dur = dur;
+            memcpy(s_bnd_src, src, sizeof(s_bnd_src));
+        } else if (s_ui_pos == s_pos) {
+            s_duration = dur;
+            memcpy(s_src_info, src, sizeof(s_src_info));
+        }
+        sysMutexUnlock(s_pcm_mtx);
+    }
     // Each of these is a blocking round trip.  A stop requested meanwhile
     // (the user left the screen) ends the track here rather than starting a
     // stream nobody will hear.
@@ -292,7 +360,9 @@ static int play_one_track(u32 start_secs) {
 
     // MP3 byte buffer: reads append at buf_len, decode consumes at buf_pos,
     // leftovers slide back to the front when the tail runs out of room.
-    static u8 mp3[65536];
+    // 256 KB, ~6.5 s at 320 kbps: when the download finishes this is what
+    // covers setting up the next track without a gap.
+    static u8 mp3[262144];
     int  buf_pos = 0, buf_len = 0;
     bool eof = false;
     u64  last_prog_us = timing_get_us();
@@ -353,6 +423,17 @@ static int play_one_track(u32 start_secs) {
             buf_pos  = 0;
         }
 
+        if (s_hold && (s_n >= 9600 || eof)) s_hold = false;   // ~200 ms pre-roll
+
+        if (eof && !progressed && buf_pos < buf_len && mring_space() >= 1300)
+            buf_pos = buf_len;                 // trailing bytes that are not a frame
+        if (eof && buf_pos >= buf_len && s_pos + 1 < s_count) {
+            // Fully decoded with a track after it: hand over now, while the
+            // ring still plays this one out (gapless).
+            s_natural_end = true;
+            ret = MCMD_NEXT;
+            break;
+        }
         if (eof) {
             // Drained when less than one DMA block (256 samples) remains:
             // the pump can never consume a final partial block (it writes
@@ -398,10 +479,23 @@ static int play_one_track(u32 start_secs) {
 static void music_stream_thread(void *arg) {
     (void)arg;
     u32 start_secs = 0;
+    bool gapless = false;
     while (running && s_run) {
-        int end = play_one_track(start_secs);
+        int end = play_one_track(start_secs, gapless);
         start_secs = 0;
+        gapless = false;
         if (!s_run || end == MCMD_STOP) break;
+        if (end == MCMD_NEXT && s_natural_end) {
+            if (s_pos + 1 < s_count) { s_pos = s_pos + 1; gapless = true; continue; }
+            break;
+        }
+        // A user command acts on the track being HEARD.  If the next one was
+        // already being decoded behind it, drop that and start from the heard
+        // track's position.
+        sysMutexLock(s_pcm_mtx, 0);
+        if (s_bnd_pending) s_bnd_pending = false;
+        s_pos = s_ui_pos;
+        sysMutexUnlock(s_pcm_mtx);
         if (end == MCMD_NEXT) {
             if (s_pos + 1 < s_count) s_pos = s_pos + 1;
             else break;                        // queue finished
@@ -432,7 +526,9 @@ static void music_stream_thread(void *arg) {
 static void music_pump_thread(void *arg) {
     (void)arg;
     while (running && s_run) {
-        if (s_paused || !s_active || !audio_write_pcm())
+        // Always serviced, even paused or finished: the paced writer then
+        // plays silence instead of the hardware looping its last 40 ms.
+        if (!audio_write_pcm())
             usleep(1000);
     }
     plog("music: pump thread exit");
@@ -468,6 +564,8 @@ bool music_start(const MusicTrack *tracks, int count, int start_idx) {
     s_count     = count;
     for (int i = 0; i < count; i++) s_order[i] = i;
     s_pos       = start_idx;
+    s_ui_pos    = start_idx;
+    s_hold      = true;
     s_shuffle   = false;
     srand((unsigned)timing_get_us());
     s_cmd       = MCMD_NONE;
@@ -481,6 +579,7 @@ bool music_start(const MusicTrack *tracks, int count, int start_idx) {
 
     audio_set_source(music_pcm_avail, music_read_pcm, music_channels);
     audio_open(2);   // music path is stereo by design
+    audio_set_paced(true);
 
     s_run     = true;
     s_active  = true;
@@ -523,6 +622,7 @@ void music_stop(void) {
     s_stream_unjoined = true;
     crash_log("m6 pump joined");
     audio_close();
+    audio_set_paced(false);
     audio_set_source(NULL, NULL, NULL);   // hand the port back to the video path
     // Let a queued progress report go out, then retire the worker.  Bounded at
     // one second: leaving the music screen must not wait on a server that has
@@ -550,8 +650,8 @@ void music_toggle_pause(void) {
     // input handler.  The blocking version froze every frame until the server
     // answered, which is a whole second of dead UI for a button press whose
     // own effect (the flag above) is instant.
-    if (s_pos < s_count)
-        jellyfin_report_progress_async(s_queue[s_order[s_pos]].id, s_session_id,
+    if (s_ui_pos < s_count)
+        jellyfin_report_progress_async(s_queue[s_order[s_ui_pos]].id, s_session_id,
                                        elapsed_ticks(), s_paused);
 }
 
@@ -564,7 +664,9 @@ void music_next(void) { s_cmd = MCMD_NEXT; }
 // through either rewrite, so playback is never interrupted.
 void music_set_shuffle(bool on) {
     if (s_count <= 1) { s_shuffle = on; return; }
-    int cur_idx = s_order[s_pos];
+    sysMutexLock(s_pcm_mtx, 0);
+    const int dec_idx = s_order[s_pos];
+    int cur_idx = s_order[s_ui_pos];
     if (on) {
         int n = 0;
         int rest[MUSIC_QUEUE_MAX];
@@ -576,17 +678,20 @@ void music_set_shuffle(bool on) {
         }
         s_order[0] = cur_idx;
         for (int i = 0; i < n; i++) s_order[i + 1] = rest[i];
-        s_pos = 0;
     } else {
         for (int i = 0; i < s_count; i++) s_order[i] = i;
-        s_pos = cur_idx;
     }
+    for (int i = 0; i < s_count; i++) {
+        if (s_order[i] == cur_idx) s_ui_pos = i;
+        if (s_order[i] == dec_idx) { s_pos = i; if (s_bnd_pending) s_bnd_pos = i; }
+    }
+    sysMutexUnlock(s_pcm_mtx);
     s_shuffle = on;
 }
 
 bool music_is_shuffle(void) { return s_shuffle; }
 
-int music_current_pos(void) { return s_pos; }
+int music_current_pos(void) { return s_ui_pos; }
 
 int music_track_at(int pos) {
     if (pos < 0 || pos >= s_count) return -1;
@@ -618,7 +723,7 @@ void music_jump(int queue_pos) {
 
 bool music_is_active(void)    { return s_started && s_active; }
 bool music_is_paused(void)    { return s_paused; }
-int  music_current_index(void){ return s_order[s_pos]; }
+int  music_current_index(void){ return s_order[s_ui_pos]; }
 
 u32 music_elapsed_secs(void) {
     return s_seek_base + (u32)(s_consumed / 48000ULL);

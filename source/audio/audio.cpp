@@ -273,8 +273,45 @@ void audio_open(int channels) {
 // After receiving an event, blocks until the ring has a full 256-sample block
 // ready, sleeping 1ms per iteration up to a 30ms timeout.  On timeout writes
 // silence and logs a stall diagnostic rather than playing partial-fill noise.
+static bool s_paced = false;
+void audio_set_paced(bool on) { s_paced = on; }
+
+#define PACED_RUNWAY 5      // blocks ahead of the read cursor (of 8): ~27 ms
+
+static bool audio_write_pcm_paced(void) {
+    sys_event_t ev;
+    if (sysEventQueueReceive(s_audio_eq, &ev, 0) != 0) return false;
+    while (sysEventQueueReceive(s_audio_eq, &ev, 0) == 0) { }   // the backlog is one wake
+    if (!s_data_start || !s_read_idx_ea || !s_num_blocks) return true;
+    const u32 nb = s_num_blocks;
+    const u32 rd = (u32)(*(volatile u64 *)(uintptr_t)s_read_idx_ea) % nb;
+    u32 ahead = (s_write_blk + nb - rd) % nb;
+    // The writer is on (or behind) the block being read: re-seat it just
+    // ahead of the hardware instead of writing into the past.
+    if (ahead == 0 || ahead > nb - 2) { s_write_blk = (rd + 1) % nb; ahead = 1; }
+    const u32 want = PACED_RUNWAY < nb - 1 ? PACED_RUNWAY : nb - 1;
+    while (ahead < want) {
+        float *blk = (float *)(uintptr_t)(s_data_start + s_write_blk * s_port_channels
+                                          * AUDIO_BLOCK_SAMPLES * sizeof(float));
+        if (s_port_channels == 2 && s_src_channels() == 2
+            && s_src_avail() >= AUDIO_BLOCK_SAMPLES) {
+            s_src_read(blk, AUDIO_BLOCK_SAMPLES);
+            apply_volume(blk, AUDIO_BLOCK_SAMPLES, 2);
+            s_pcm_blocks++;
+        } else {
+            memset(blk, 0, s_port_channels * AUDIO_BLOCK_SAMPLES * sizeof(float));
+            s_sil_blocks++;
+        }
+        s_write_blk = (s_write_blk + 1) % nb;
+        ahead++;
+        ++s_audio_blocks;
+    }
+    return true;
+}
+
 bool audio_write_pcm(void) {
     if (!s_audio_ok) return false;
+    if (s_paced) return audio_write_pcm_paced();
     sys_event_t ev;
     if (sysEventQueueReceive(s_audio_eq, &ev, 0) != 0) return false;
     if (s_data_start) {
