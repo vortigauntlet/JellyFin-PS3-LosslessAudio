@@ -981,3 +981,16 @@ names sit under them and still clear the selector row.
    - the extra `rsxSync` while it is open;
    - X into detail, and O not leaving the tab.
 7. **Album → back → Home:** posters load, and the `thumb: verify+flush` line.
+
+### spine9 — built and deployed 2026-09-24
+
+PS3 clean serial build of `9bb092f` + one fix: 119 objects, 48 warnings
+(unchanged census), header `0480`. The first build had 49: GCC newly flagged
+the existing `thumb_cache_init` "VRAM mirrors FAILED" snprintf (72–81 bytes into
+`buf[80]`), so the buffer is now 96. Host tests: all 10 listed in the handoff pass.
+
+EBOOT sha1 `78395337cf35b35737dbf5f1be7dc71beed3916c` (sha256 `0c4ec502…`),
+1,578,272 bytes. Staged as `outputs/EBOOT.BIN.spine9` + `JellyFin-PS3-spine9.pkg`.
+FTP'd to .202 and read back to verify; `jellyfin_spine.txt` = 1. The console
+had been running another session's EBOOT (1,474,960 bytes, 10:20), not spine8.
+It is kept as `outputs/EBOOT.BIN.pre-spine9-console`.

@@ -450,7 +450,7 @@ void thumb_cache_init(void) {
         plog(buf);
     }
     if (vram_failed) {
-        char buf[80];
+        char buf[96];
         snprintf(buf, sizeof(buf),
                  "thumb_cache: %d of %d VRAM mirrors FAILED (those cards use the CPU blit)",
                  vram_failed, THUMB_CACHE_SIZE);
