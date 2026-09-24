@@ -172,6 +172,25 @@ void init_screen(void *host_addr,u32 size)
 	crash_log("2.7 init_screen done");
 }
 
+bool waitflip_timeout(u32 timeout_us)
+{
+	u32 waited = 0;
+	while (gcmGetFlipStatus() != 0) {
+		if (waited >= timeout_us) return false;
+		usleep(50);
+		waited += 50;
+	}
+	gcmResetFlipStatus();
+	return true;
+}
+
+void rsx_rebind_display(void)
+{
+	gcmSetFlipMode(GCM_FLIP_VSYNC);
+	gcmSetDisplayBuffer(0,color_offset[0],color_pitch,display_width,display_height);
+	gcmSetDisplayBuffer(1,color_offset[1],color_pitch,display_width,display_height);
+}
+
 void waitflip()
 {
 	// Poll at 50 µs (was 200 µs) — tighter interval reduces post-vblank entry

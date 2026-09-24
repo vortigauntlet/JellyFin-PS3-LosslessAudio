@@ -50,7 +50,8 @@ void d24_boot_check(void);
 // confirmation wait, once a second -- so the player can log the state of the
 // playback session alongside it.  It must only log: no drawing, no GPU.
 typedef struct {
-	void (*draw_prompt)(const char *line1, const char *line2);
+	// Returns false if the flip did not complete within its deadline.
+	bool (*draw_prompt)(const char *line1, const char *line2);
 	int  (*poll_answer)(void);
 	void (*lifecycle)(const char *phase);
 } d24_ui;

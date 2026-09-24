@@ -91,7 +91,7 @@ static inline void player_status_screen(const char *name, const char *msg) {
 // -------------------------------------------------------
 static const char *s_d24_title = "";
 
-static void d24_draw_prompt(const char *line1, const char *line2) {
+static bool d24_draw_prompt(const char *line1, const char *line2) {
 #if !BUILD_FOR_RPCS3
     drawHeader();
     drawTextf(40, 100, "%.70s", s_d24_title);
@@ -102,7 +102,9 @@ static void d24_draw_prompt(const char *line1, const char *line2) {
 #endif
     gcmResetFlipStatus();
     flip();
-    waitflip();          // on screen before the mode changes
+    // Bounded: 500 ms is 12 frames even at 24Hz.  Never block forever on a
+    // vblank that may not come (the 2026-09-18 hang).
+    return waitflip_timeout(500000);
 }
 
 static int d24_poll_answer(void) {
@@ -132,7 +134,8 @@ static void lc_session_snapshot(const char *phase, bool probe_sock) {
 }
 
 static void d24_lifecycle(const char *phase) {
-    lc_session_snapshot(phase, true);
+    // The decode thread owns the socket during the switch now: never peek it.
+    lc_session_snapshot(phase, false);
 }
 
 // -------------------------------------------------------
@@ -504,28 +507,35 @@ void show_player(const JFItem *item, u32 resume_secs,
     plog("jbuf: pre-fill done — starting threads");
     timing_register_vblank();
 
-    // ---- Physical 24Hz output for 24fps film ----
-    // The frame rate is known by now (the prefill decoded frames) and no
-    // playback thread is running yet: the quietest moment there is to change
-    // the display mode.  Off unless jellyfin_24p.txt says 1; every gate and
-    // the measurement that verifies the switch are in display_24p.cpp, and on
-    // any doubt it leaves the output exactly as it found it.
+    s_lc_ps = &ps;
+    lc_session_snapshot("before_decode_spawn", true);
+
+    // ---- Spawn decode thread ----
+    bool dec_ok;
     {
+        dec_ok = player_spawn_decode(&ps);
+        lc_logf("playback: decode thread %s playing=%d",
+                dec_ok ? "STARTED" : "NOT started", (int)ps.playing);
+    }
+
+    // ---- Physical 24Hz output for 24fps film ----
+    // The frame rate is known (the prefill decoded frames) and nothing is
+    // presenting yet.  This runs AFTER the decode thread starts, on purpose:
+    // the first hardware run did it before, nothing read the socket for the
+    // ~20 s of switch + confirmation, and playback ended straight after the
+    // revert.  Now the stream keeps flowing into the read-ahead ring while
+    // the display changes.  The decode thread never touches the GPU or the
+    // display mode, so it is safe alongside the switch.  Off unless
+    // jellyfin_24p.txt says 1; every gate and the measurement that verifies
+    // the switch are in display_24p.cpp.
+    if (dec_ok && ps.playing) {
         s_d24_title = item->name;
-        s_lc_ps     = &ps;
-        lc_session_snapshot("before_24p", true);
+        lc_session_snapshot("before_24p", false);
         const d24_ui ui = { d24_draw_prompt, d24_poll_answer, d24_lifecycle };
         const bool d24_ok = d24_session_begin(&ui);
         lc_logf("24p: session_begin returned %s", d24_ok ? "SWITCHED" : "not switched");
-        lc_session_snapshot("after_24p", true);
+        lc_session_snapshot("after_24p", false);
         init_btns();
-    }
-
-    // ---- Spawn decode thread ----
-    {
-        const bool dec_ok = player_spawn_decode(&ps);
-        lc_logf("playback: decode thread %s playing=%d",
-                dec_ok ? "STARTED" : "NOT started", (int)ps.playing);
     }
 
     // ---- Pre-roll: fill the read-ahead ring before the picture starts ----

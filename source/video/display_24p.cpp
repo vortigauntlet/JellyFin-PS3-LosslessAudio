@@ -392,9 +392,22 @@ bool d24_session_begin(const d24_ui *ui)
 	// black, because after the mode change nothing is visible until a new
 	// frame is flipped, so the confirmation prompt could not be read.
 	phase(ui, "mode_switch_verified");
-	ui->draw_prompt(confirmed != 1
-	                ? "The TV is now at 1080p 24Hz. Press X if you can read this."
-	                : "1080p 24Hz", confirmed != 1 ? "O or 15 s = no, go back." : "");
+	// A mode change can drop the scan-out buffer registration, leaving the
+	// head scanning nothing (black) even though it ticks -- so register the
+	// buffers again exactly as init_screen() did, then flip.  The flip wait is
+	// bounded: a flip that does not land means the head is not presenting, and
+	// that is a revert, never a hang.
+	rsx_rebind_display();
+	if (!ui->draw_prompt(confirmed != 1
+	                     ? "The TV is now at 1080p 24Hz. Press X if you can read this."
+	                     : "1080p 24Hz", confirmed != 1 ? "O or 15 s = no, go back." : "")) {
+		phase(ui, "prompt_flip_timeout");
+		revert("flip did not complete in the new mode");
+		plog("24p: RESULT mode_switch=failure (flip timed out after the switch)");
+		sysModuleUnload((sysModuleId)JF_SYSMODULE_AVCONF_EXT);
+		S.module_loaded = false;
+		return false;
+	}
 	phase(ui, "prompt_redrawn_after_switch");
 
 	if (confirmed != 1) {
@@ -458,6 +471,7 @@ void d24_session_end(void)
 	if (S.active) {
 		rsxSync();
 		revert("playback ended");
+		rsx_rebind_display();
 	}
 	if (S.module_loaded) {
 		sysModuleUnload((sysModuleId)JF_SYSMODULE_AVCONF_EXT);
