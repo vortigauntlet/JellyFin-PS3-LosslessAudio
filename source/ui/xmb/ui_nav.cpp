@@ -272,7 +272,8 @@ static void xmb_input_tv_sub(void) {
     if (BTN_PRESSED(triangle) && g_tv_depth == 2 && g_tv_sub_count > 0 &&
         g_tv_sub_sel < g_tv_sub_count &&
         timing_get_us() >= g_info_cooldown_until) {
-        xmb_show_item_info(&g_tv_sub_items[g_tv_sub_sel]);
+        if (g_spine_on) peek_open_item(&g_tv_sub_items[g_tv_sub_sel], gg.card_w, gg.card_h);
+        else            xmb_show_item_info(&g_tv_sub_items[g_tv_sub_sel]);
         return;
     }
     if (BTN_PRESSED(cross) && g_tv_sub_count > 0 && g_tv_sub_sel < g_tv_sub_count) {
@@ -354,7 +355,8 @@ static void xmb_input_col_sub(void) {
     if (BTN_PRESSED(triangle) && g_col_sub_count > 0 &&
         g_col_sub_sel < g_col_sub_count &&
         timing_get_us() >= g_info_cooldown_until) {
-        xmb_show_item_info(&g_col_sub_items[g_col_sub_sel]);
+        if (g_spine_on) peek_open_item(&g_col_sub_items[g_col_sub_sel], gg.card_w, gg.card_h);
+        else            xmb_show_item_info(&g_col_sub_items[g_col_sub_sel]);
         return;
     }
     if (BTN_PRESSED(cross) && g_col_sub_count > 0 && g_col_sub_sel < g_col_sub_count) {
@@ -674,11 +676,11 @@ bool xmb_handle_input_browse(void) {
         plog(dbg);
     }
     u64 now_us = timing_get_us();
-    // Under the spine, Triangle on a Movies or TV grid is the quick-peek: the
+    // Under the spine, Triangle on a library grid is the quick-peek: the
     // poster turns over to show the synopsis and cast (xmb/ui_peek.cpp).  X
-    // from there opens full detail.  Other tabs keep Triangle = detail.
+    // from there opens full detail.
     if (g_spine_on && BTN_PRESSED(triangle) && count > 0 && g_sel < count &&
-        (xmb_kind(tab) == TABKIND_MOVIES || xmb_kind(tab) == TABKIND_TV) &&
+        xmb_kind(tab) != TABKIND_MUSIC &&
         now_us >= g_info_cooldown_until) {
         peek_open_item(&g_items[tab][g_sel], gg.card_w, gg.card_h);
         return false;

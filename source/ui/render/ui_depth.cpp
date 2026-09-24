@@ -64,11 +64,32 @@ int depth_floor_y(void)
 
 static int      s_fr_x, s_fr_y, s_fr_w, s_fr_h;
 static unsigned s_fr_frame = 0;
+static char     s_fc_id[64];
+static int      s_fc_w, s_fc_h;
+static ThumbImg s_fc_img = THUMB_IMG_PRIMARY;
+static unsigned s_fc_frame = 0;
 
 void depth_note_focus_rect(int x, int y, int w, int h)
 {
     s_fr_x = x; s_fr_y = y; s_fr_w = w; s_fr_h = h;
     s_fr_frame = spine_frame_id();
+    s_fc_frame = 0;
+}
+
+void depth_note_focus_card(const char *img_id, int src_w, int src_h, ThumbImg img)
+{
+    if (!img_id || !img_id[0] || src_w <= 0 || src_h <= 0) return;
+    snprintf(s_fc_id, sizeof(s_fc_id), "%s", img_id);
+    s_fc_w = src_w; s_fc_h = src_h; s_fc_img = img;
+    s_fc_frame = spine_frame_id();
+}
+
+bool depth_last_focus_card(char *img_id, int id_sz, int *src_w, int *src_h, ThumbImg *img)
+{
+    if (!s_fc_frame || s_fc_frame + 2 < spine_frame_id()) return false;
+    snprintf(img_id, (size_t)id_sz, "%s", s_fc_id);
+    *src_w = s_fc_w; *src_h = s_fc_h; *img = s_fc_img;
+    return true;
 }
 
 bool depth_last_focus_rect(int *x, int *y, int *w, int *h)
@@ -231,6 +252,8 @@ void depth_stage_gpu(const DepthStage *s)
         int x, y, w, h;
         card_rect(&L.c[L.nearest], &x, &y, &w, &h);
         depth_note_focus_rect(x, y, w, h);
+        const DepthCard *fc = &L.c[L.nearest];
+        depth_note_focus_card(fc->img_id, fc->src_w, fc->src_h, fc->img);
     }
 }
 

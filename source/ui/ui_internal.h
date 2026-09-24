@@ -119,6 +119,9 @@ bool xmb_home_at_top(void);
 // Spine gate: X on the base layer -- open the focused queue item (detail, a
 // series' seasons, an album).  False when there is nothing to open.
 bool xmb_home_open_focused(void);
+// Spine gate: Triangle -- the quick-peek of the focused queue item (an album
+// opens instead).  False when there is nothing focused.
+bool xmb_home_peek_focused(void);
 // Spine gate: Home drawn at every depth, its column swinging into the queue
 // (the canvas's "L2 · Category").  Replace the column and xmb_home_*_phase.
 void xmb_home_stage_gpu(void);
@@ -153,12 +156,15 @@ void ambient_gpu(void);
 void ambient_text(void);
 void ambient_cover_over_ui(void);
 
-// The Triangle quick-peek on the Movies / TV grids (xmb/ui_peek.cpp): the
-// focused poster turns over into a 4:3 panel with the synopsis and cast.
-// peek_open_item() starts it (src_w/h = the grid's thumbnail size);
+// The Triangle quick-peek (xmb/ui_peek.cpp): on any focused poster under the
+// spine -- Home, the base column, the library grids and sub-grids, Search --
+// the poster spins 180 degrees into a 4:3 panel with the synopsis and cast.
+// peek_open_item() starts it (src_w/h = the screen's thumbnail size, used when
+// the depth stage did not note the focused card's image); `open` is what X
+// does from the peek (NULL: a series opens its seasons, anything else detail);
 // peek_input() takes the frame's input while it is up (true = consumed);
 // peek_draw_over() draws it after the frame's text flush.  Spine gate only.
-void peek_open_item(const XMBItem *it, int src_w, int src_h);
+void peek_open_item(const XMBItem *it, int src_w, int src_h, void (*open)(void) = NULL);
 bool peek_input(void);
 bool peek_active(void);    // opening or open: owns input
 bool peek_visible(void);   // anything on screen, including the close

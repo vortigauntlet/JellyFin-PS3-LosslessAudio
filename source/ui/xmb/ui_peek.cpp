@@ -43,6 +43,9 @@ static peek_anim s_pk;
 static XMBItem   s_item;
 static int       s_src_w = 0, s_src_h = 0;   // the grid's thumbnail size
 static peek_rect s_from;                     // the card's rect in the grid
+static char      s_img_id[64];               // the poster: cache id + kind
+static ThumbImg  s_img = THUMB_IMG_PRIMARY;
+static void    (*s_open)(void) = NULL;       // what X does from the peek
 
 // Wrapped synopsis, computed once per item/size (never per frame).
 #define PK_LINES 14
@@ -55,11 +58,25 @@ static int   s_wrap_w  = 0;
 bool peek_active(void) { return s_pk.phase == PEEK_OPENING || s_pk.phase == PEEK_OPEN; }
 bool peek_visible(void) { return s_pk.phase != PEEK_OFF; }
 
-void peek_open_item(const XMBItem *it, int src_w, int src_h) {
+void peek_open_item(const XMBItem *it, int src_w, int src_h, void (*open)(void)) {
     if (!it || !it->id[0]) return;
     s_item  = *it;
+    s_open  = open;
     s_src_w = src_w;
     s_src_h = src_h;
+    s_img   = THUMB_IMG_PRIMARY;
+    snprintf(s_img_id, sizeof(s_img_id), "%s", it->id);
+    // The stage's own image for the focused card, when it drew one: Home's
+    // rows and the column cache at their own sizes (an episode may even show
+    // its series' poster), and asking for the item's primary at another size
+    // would be a miss and a refetch mid-spin.
+    {
+        char id[64]; int w = 0, h = 0; ThumbImg img = THUMB_IMG_PRIMARY;
+        if (depth_last_focus_card(id, sizeof(id), &w, &h, &img)) {
+            snprintf(s_img_id, sizeof(s_img_id), "%s", id);
+            s_src_w = w; s_src_h = h; s_img = img;
+        }
+    }
     int x = 0, y = 0, w = 0, h = 0;
     if (depth_last_focus_rect(&x, &y, &w, &h) && w > 0 && h > 0) {
         s_from.x = (float)x; s_from.y = (float)y; s_from.w = (float)w; s_from.h = (float)h;
@@ -72,6 +89,10 @@ void peek_open_item(const XMBItem *it, int src_w, int src_h) {
     facts_request(it->id);                    // lands while the card turns
     peek_open(&s_pk, timing_get_us());
     slog_state("PEEK_OPEN item_id=%s", it->id);
+    char msg[160];
+    snprintf(msg, sizeof(msg), "peek: open %s type=%s img=%s %dx%d/%d",
+             it->id, it->type, s_img_id, s_src_w, s_src_h, (int)s_img);
+    plog(msg);
 }
 
 static void peek_close_now(void) { peek_close(&s_pk, timing_get_us()); }
@@ -91,8 +112,9 @@ bool peek_input(void) {
         // dropped at once -- detail flies its own poster out of the grid.
         s_pk.phase = PEEK_OFF;
         XMBItem copy = s_item;
-        if (strcmp(copy.type, "Series") == 0) xmb_open_series(&copy);
-        else                                  xmb_show_item_info(&copy);
+        if (s_open)                                s_open();
+        else if (strcmp(copy.type, "Series") == 0) xmb_open_series(&copy);
+        else                                       xmb_show_item_info(&copy);
         init_btns();
         return true;
     }
@@ -167,8 +189,9 @@ void peek_draw_over(void) {
     const int rx = (int)(f.r.x + 0.5f), ry = (int)(f.r.y + 0.5f);
     const int rw = (int)(f.r.w + 0.5f), rh = (int)(f.r.h + 0.5f);
 
-    thumb_request(s_item.id, s_src_w, s_src_h);
-    const art_palette pal = ui_art_palette(s_item.id, thumb_get(s_item.id, s_src_w, s_src_h));
+    if (s_src_w > 0 && s_src_h > 0) thumb_request(s_img_id, s_src_w, s_src_h, s_img);
+    const art_palette pal = ui_art_palette(s_item.id,
+        s_src_w > 0 ? thumb_get(s_img_id, s_src_w, s_src_h, s_img) : NULL);
 
     // ---- GPU: the room dims, the card turns ------------------------------
     ui_rect_gpu_draw(0, 0, W, H, 0x00000000, a8(0.66f * f.lift));
@@ -179,7 +202,7 @@ void peek_draw_over(void) {
                            a8(0.30f * f.lift));
     }
     u32 off = 0, pitch = 0;
-    const bool tex = s_src_w > 0 && thumb_gpu_texture(s_item.id, s_src_w, s_src_h, &off, &pitch);
+    const bool tex = s_src_w > 0 && thumb_gpu_texture(s_img_id, s_src_w, s_src_h, &off, &pitch, s_img);
     if (rw >= 1 && rh >= 1) {
         if (!f.back) {
             if (tex) ui_card_gpu_draw_ex(off, (u32)s_src_w, (u32)s_src_h, pitch,

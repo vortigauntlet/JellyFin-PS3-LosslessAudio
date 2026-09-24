@@ -79,6 +79,11 @@ void depth_stage_request(const DepthStage *s);
 // noted in the last couple of frames.
 void depth_note_focus_rect(int x, int y, int w, int h);
 bool depth_last_focus_rect(int *x, int *y, int *w, int *h);
+// The image the stage drew that focused card with (cache id, cached size,
+// kind), so the Triangle peek turns over the very poster on screen.  Noted
+// by the stage only; a rect noted without one (the gliding ring) clears it.
+void depth_note_focus_card(const char *img_id, int src_w, int src_h, ThumbImg img);
+bool depth_last_focus_card(char *img_id, int id_sz, int *src_w, int *src_h, ThumbImg *img);
 
 // --- text -------------------------------------------------------------------
 

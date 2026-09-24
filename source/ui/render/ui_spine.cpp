@@ -243,11 +243,29 @@ static void spine_open_column_item(int tab) {
     }
 }
 
+static void spine_open_column_active(void) { spine_open_column_item(g_active_tab); }
+
+// Triangle at base: the quick-peek of the item the column is showing.
+static void spine_peek_column_item(int tab) {
+    const int k = xmb_kind(tab);
+    if (k == TABKIND_HOME) { xmb_home_peek_focused(); return; }
+    if (k == TABKIND_SEARCH || k == TABKIND_SETTINGS || k == TABKIND_MUSIC ||
+        !g_items_loaded[tab] || g_item_count[tab] <= 0 ||
+        g_sel < 0 || g_sel >= g_item_count[tab])
+        return;
+    const XMBItem *it = &g_items[tab][g_sel];
+    if (strcmp(it->type, "MusicAlbum") == 0) return;
+    GridGeom gg;
+    xmb_grid_geom(tab, &gg);
+    peek_open_item(it, gg.card_w, gg.card_h, spine_open_column_active);
+}
+
 bool spine_input_base(void) {
     if (BTN_REPEAT(left)  || BTN_PRESSED(l1)) { spine_step_tab(-1); return false; }
     if (BTN_REPEAT(right) || BTN_PRESSED(r1)) { spine_step_tab(+1); return false; }
     if (BTN_PRESSED(down))  { spine_go(SPINE_L2); return false; }
     if (BTN_PRESSED(cross)) spine_open_column_item(g_active_tab);
+    else if (BTN_PRESSED(triangle)) spine_peek_column_item(g_active_tab);
     return false;
 }
 

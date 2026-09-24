@@ -297,6 +297,20 @@ void xmb_search_shutdown(void) {
     s_search_done    = false;
 }
 
+// X from a search hit's quick-peek: the same as Triangle did before it.
+static void search_peek_open(void) {
+    if (g_search_sel < 0 || g_search_sel >= g_search_results_count) return;
+    const XMBItem *it = &g_search_results[g_search_sel];
+    if (strcmp(it->type, "Series") == 0) {
+        if (xmb_open_series(it)) {
+            g_search_focus_results = false;
+            init_btns();
+        }
+    } else {
+        xmb_show_item_info(it);
+    }
+}
+
 bool xmb_handle_input_search(void) {
     // Pick up a finished query first, so a result that landed since the last
     // frame is on screen before this frame's input is considered.
@@ -403,6 +417,10 @@ bool xmb_handle_input_search(void) {
         if (BTN_PRESSED(triangle) && g_search_sel < g_search_results_count &&
             timing_get_us() >= g_info_cooldown_until) {
             const XMBItem *it = &g_search_results[g_search_sel];
+            if (g_spine_on) {
+                peek_open_item(it, XMB_THUMB_W, XMB_THUMB_H, search_peek_open);
+                return false;
+            }
             if (strcmp(it->type, "Series") == 0) {
                 // Same rule as everywhere else: browse a show rather than
                 // offer it a version overlay it has no versions for.

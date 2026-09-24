@@ -560,6 +560,19 @@ bool xmb_home_open_focused(void) {
     return true;
 }
 
+static void home_peek_open(void) { xmb_home_open_focused(); }
+
+bool xmb_home_peek_focused(void) {
+    home_init_once();
+    const HomeRow *row = &s_rows[s_focus_row];
+    const int c = g_spine_on ? s_row_col[s_focus_row] : s_focus_col;
+    if (row->count <= 0 || c < 0 || c >= row->count) return false;
+    const XMBItem *it = &row->items[c];
+    if (strcmp(it->type, "MusicAlbum") == 0) return xmb_home_open_focused();
+    peek_open_item(it, 0, 0, home_peek_open);   // the stage notes the image
+    return true;
+}
+
 static bool home_queue_input(void) {
     if (BTN_PRESSED(l1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
@@ -574,8 +587,8 @@ static bool home_queue_input(void) {
     if (BTN_REPEAT(left)  && *col > 0)     (*col)--;
     s_focus_col = *col;
 
-    // X opens; so does Triangle, which used to mean "info" -- detail IS the
-    // info now.
-    if (BTN_PRESSED(cross) || BTN_PRESSED(triangle)) xmb_home_open_focused();
+    // X opens (detail); Triangle is the quick-peek.
+    if (BTN_PRESSED(cross))         xmb_home_open_focused();
+    else if (BTN_PRESSED(triangle)) xmb_home_peek_focused();
     return false;
 }
