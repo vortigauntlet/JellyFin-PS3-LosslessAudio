@@ -1104,3 +1104,7 @@ three layers moving independently during music.
 ### spine16 — motes, bass, layout, deployed 2026-09-25 (cb33124)
 
 spine15 verdict: audio reaction "at its best" -- keep wrm_distinct.  Added: motes (stage 9) while music plays (320 additive hex glints, own buffers, behind the JellyWave fence); lows floor 0.18 x1.4 (caps unchanged); music cover/text at 0.225 H; jwspeed file 14.  `outputs/EBOOT.BIN.spine16`, 1,743,328 bytes.  Log: `wave: motes ready` at boot.
+
+### spine17 — snow field, sub-bass shocks, loading screen, deployed 2026-09-25 (97b6fa6)
+
+spine16 verdict: audio "pretty much perfect"; asks: sub-bass shocks through the whole wave, loading screen on X-to-details, album open animation, Up Next art visible when selected, particles screen-wide like snow (reference lines.qrc relationships).  Done: wave_snow.h (700, DOF, sub-bass kick), wrm_distinct shock (to caps, accent total capped), loading_run (details + album), music intro fade, highlight around GPU art.  `outputs/EBOOT.BIN.spine17`, 1,743,552 bytes; 17 host tests.
