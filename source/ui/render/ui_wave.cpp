@@ -118,11 +118,35 @@ static float    s_lum    = 1.0f;
 
 // JellyWave 2.0: body swell and travelling accents, same rules.  Zero-filled
 // s_acc means no live pulse, i.e. no accent, so the static initialiser is
-// already the rest state.  s_jw_disp is one layer's accented copy of the
-// solver curve, rebuilt per layer just before the loft reads it.
+// already the rest state.
 static float          s_thick = 1.0f;
 static wrm_accent_set s_acc;
-static float          s_jw_disp[WF_SAMPLES];
+
+// Everything jw_generate() takes from the audio, as one value.  The build
+// runs on the generation worker, so it must never read the render thread's
+// s_amp / s_lum / s_thick / s_acc directly -- they change every frame, under
+// its feet.  jw_worker_queue() copies them into the job beside the field
+// snapshot, before the same barrier, so a build always sees one frame's
+// curve with that same frame's look.
+struct jw_look {
+    float          amp[3];
+    float          lum;
+    float          thick;
+    wrm_accent_set acc;
+};
+
+static void jw_look_now(jw_look *k)
+{
+    k->amp[0] = s_amp[0]; k->amp[1] = s_amp[1]; k->amp[2] = s_amp[2];
+    k->lum    = s_lum;
+    k->thick  = s_thick;
+    k->acc    = s_acc;
+}
+
+// One layer's accented copy of the solver curve, rebuilt per layer just
+// before the loft reads it.  One per thread that can run jw_generate().
+static float          s_jw_disp[WF_SAMPLES];      // render thread
+static float          s_jw_wdisp[WF_SAMPLES];     // generation worker
 
 // Two corrections turn a unitless displacement into the pixel excursion the
 // sine used to have.  Both are needed, and the second one is not obvious.
@@ -391,6 +415,7 @@ static int s_jw_have_geom = 0;     // 0 until the first build lands
 // on the generation worker (every build after it).  Nothing here touches the
 // RSX-local buffers.
 static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
+                       const jw_look *look, float *disp,
                        float aspect, jw_vert *scratch,
                        u32 off[JW_LAYERS][2], u32 cnt[JW_LAYERS][2],
                        u32 *repaired_out, u32 *dropped_out)
@@ -409,14 +434,26 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
 
     for (int slot = 0; slot < JW_LAYERS; slot++) {
         const int       li = JW_LAYERS - 1 - slot;
-        const jw_layer *L  = &JW_LAYER[li];
+        // The audio look for this layer, on a copy: disp_gain scales the
+        // solver's displacement, bright the body and rim colour, scale the
+        // width and thickness -- all before the loft computes a vertex, so
+        // jw_build_layer, the sanitizer, the strip order and the emit below
+        // see an ordinary layer.  The accent goes into a copy of the curve,
+        // never the solver.  At rest every multiplier is exactly 1.0 and the
+        // accent adds exactly 0.0f, so the build is bit-identical to spine14.
+        jw_layer        Lk = JW_LAYER[li];
+        Lk.disp_gain *= look->amp[li];
+        Lk.bright    *= look->lum;
+        Lk.scale     *= look->thick;
+        const jw_layer *L  = &Lk;
         int order[JW_SECTION];
         int pass, s, i;
 
         cnt[slot][0] = cnt[slot][1] = 0;
         off[slot][0] = off[slot][1] = 0;
 
-        if (!jw_build_layer(L, sy[li], WF_SAMPLES, aspect, scratch, JW_VERTS))
+        wrm_accent(&look->acc, li, sy[li], disp, WF_SAMPLES);
+        if (!jw_build_layer(L, disp, WF_SAMPLES, aspect, scratch, JW_VERTS))
             continue;
 
         {
@@ -499,6 +536,7 @@ static WaveVert         s_jw_back[WAVE_MAX_VERTS] __attribute__((aligned(16)));
 static jw_vert          s_jw_wscratch[JW_VERTS];
 static float            s_jw_job_sy[WF_LAYERS][WF_SAMPLES];
 static float            s_jw_job_aspect = 1.0f;
+static jw_look          s_jw_job_look;
 static u32              s_jw_back_off[JW_LAYERS][2];
 static u32              s_jw_back_cnt[JW_LAYERS][2];
 static int              s_jw_back_n = 0;
@@ -518,7 +556,8 @@ static void jw_worker_fn(void *arg)
         __sync_synchronize();                  // the snapshot, before reading it
         const u64 t0 = timing_get_us();
         u32 rep = 0, drop = 0;
-        const int m = jw_generate(s_jw_back, 4, s_jw_job_sy, s_jw_job_aspect,
+        const int m = jw_generate(s_jw_back, 4, s_jw_job_sy,
+                                  &s_jw_job_look, s_jw_wdisp, s_jw_job_aspect,
                                   s_jw_wscratch, s_jw_back_off, s_jw_back_cnt,
                                   &rep, &drop);
         s_jw_back_n        = m;
@@ -580,6 +619,7 @@ static void jw_worker_queue(float aspect)
 {
     if (s_jw_job != JW_JOB_IDLE) return;
     memcpy(s_jw_job_sy, s_field.sy, sizeof s_jw_job_sy);
+    jw_look_now(&s_jw_job_look);               // this frame's look, same snapshot
     s_jw_job_aspect = aspect;
     __sync_synchronize();                      // the snapshot lands before the flag
     s_jw_job = JW_JOB_QUEUED;
@@ -1189,7 +1229,10 @@ void wave_draw(void) {
                 jw_worker_queue(W / H);
             } else {
                 u64 jw_t0 = timing_get_us();
-                n = jw_generate(s_jw_stage, n, s_field.sy, W / H, s_jw,
+                jw_look look;
+                jw_look_now(&look);
+                n = jw_generate(s_jw_stage, n, s_field.sy, &look, s_jw_disp,
+                                W / H, s_jw,
                                 s_jw_off, s_jw_cnt, &s_jw_repaired, &s_jw_dropped);
                 s_jw_gen_us += timing_get_us() - jw_t0;
                 s_jw_rebuilds++;
