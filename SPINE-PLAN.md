@@ -1100,3 +1100,7 @@ merged first (9ceb0ca), so spine15 contains it.  On top of it:
 121 objects, 47 warnings, `0480`; 16 host tests pass.  `outputs/EBOOT.BIN.spine15`,
 1,735,712 bytes.  Next log: `wave: ... amp=a/b/c ... L=x/y/z` should show the
 three layers moving independently during music.
+
+### spine16 — motes, bass, layout, deployed 2026-09-25 (cb33124)
+
+spine15 verdict: audio reaction "at its best" -- keep wrm_distinct.  Added: motes (stage 9) while music plays (320 additive hex glints, own buffers, behind the JellyWave fence); lows floor 0.18 x1.4 (caps unchanged); music cover/text at 0.225 H; jwspeed file 14.  `outputs/EBOOT.BIN.spine16`, 1,743,328 bytes.  Log: `wave: motes ready` at boot.
