@@ -1055,3 +1055,24 @@ Requested in 03a9a53:
 Clean serial build: 121 objects, 47 warnings (the version picker's
 format-truncation site is gone with it), `0480`; 12 host tests pass.
 `outputs/EBOOT.BIN.spine13`, 1,725,344 bytes.
+
+### spine14 — lag pass from the spine13 log, deployed 2026-09-24 (acb8ee5)
+
+What the spine13 log showed, and what changed:
+
+| symptom | cause in the log | fix |
+| --- | --- | --- |
+| 6-10 s freeze backing out of a film | `Stopped http=-1` after 5 s, then `stop_transcode` 5 s; the stream socket was still open (512 KB rcvbuf on a 128 KB libnet pool) | socket closed first; reports on a worker; **Returning** screen (buffering look) covers the teardown, 2.5 s cap; skipped on episode auto-advance; next playback joins a live report first |
+| all posters gone after playback | `thumb_cache_shutdown` dropped every slot | slots with a valid VRAM mirror survive, stamp-checked (top/middle/bottom rows) on return; pixels refilled in the background (`px_valid`); log `thumb: kept N posters through playback (damaged K)` |
+| 0.5-1.1 s first Home frame back | `xmb: frame=556ms / 1136ms other=...`: Home rows fetched with blocking HTTP on the render thread, behind http_request's global mutex | Home rows fetched by a worker (`jf_homerow`); a fetch that predates a playback is discarded for the dynamic rows |
+| steady 22.2 ms frames on busy screens | 16.7+16.7+33.3: the 6.3 ms JellyWave build on every rebuild call missed vsync | build moved to `jf_jwgen` on the PPU's other hardware thread; stage/fence/upload untouched; rebuild default 2 (console file set to 2) |
+| music screen ~25 fps, wave lagging with audio | all text CPU-composited (VRAM reads) + 453 px CPU cover blit | text through the RSX (`ui_text_gpu_begin/flush`), cover from its VRAM mirror; heartbeat logs `gpu/sync/draw us/frame` |
+| hitch every few seconds | `run cache flushed (atlas full)` / `glyph cache flushed` every 2-5 s | atlas 12 MB (falls back to 4) / 1024 slots; glyph arena 640 KB / 4096 slots |
+| posters dropped after music | verify+flush always flushed (5 runs: 0 damage) | only stamp-failing images are dropped |
+
+Clean serial build: 121 objects, 47 warnings, `0480`; 12 host tests pass.
+`outputs/EBOOT.BIN.spine14`, 1,729,280 bytes (sha256 `f9b84ca6…`).
+
+To check in the next log: `jellywave: ... worker=1 late=0`, `xmb: frame=16.7ms`
+on Home, `show_player: exit took N ms (reports done)`, `thumb: kept N posters`,
+`music_screen: ... draw=` well under 10 ms.
