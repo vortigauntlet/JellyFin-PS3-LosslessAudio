@@ -20,6 +20,7 @@
 #include "surround.h"
 #include "stream.h"
 #include "audio.h"
+#include "ui_sfx.h"
 #include "adec.h"
 #include "adec_dts.h"
 #include "adec_truehd.h"
@@ -371,6 +372,9 @@ void show_player(const JFItem *item, u32 resume_secs,
     // A new title gets a fresh shot at DTS: any session veto from the
     // previous one (a coreless track, below) does not carry over.
     surround_hd_session_reset();
+    // The menu sounds keep a stereo port of their own; a bitstream or an
+    // 8-channel program gets the output to itself.  audio_close() resumes them.
+    ui_sfx_suspend();
     audio_open(surround_enabled() ? 8 : 2);
     adec_init();
     adec_start();
