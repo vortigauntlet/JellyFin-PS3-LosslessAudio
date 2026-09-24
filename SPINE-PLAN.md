@@ -844,3 +844,140 @@ chosen. Items with a single version still show no selector.
    - `xmb:` cost while ambient: `bpx` must not move.
 7. **Version selector with 2+ versions:** the layout, the 6-row window, and
    that X plays the one chosen.
+
+---
+
+## 2026-09-24 (later) — hardware feedback round, BUILT (host-checked), NOT DEPLOYED
+
+This round answers the first TV look at the spine build. Merged into
+`feature/xmb-spine` alongside the experience pass.
+
+### JellyWave: slower, floatier, translucent, neon (`ui_wave.cpp`, `wave_gel.h`, `wave_light.h`)
+
+**Parameters only.** No vertex buffer, `jw_upload()`, fence, topology, draw
+count or blend-state change; the strobe fixes stand.
+
+- **Speed:** `JW_SPEED_DEF` 50 → **20**. It is still overridable with
+  `jellyfin_jwspeed.txt`. Moving slower also shrinks the step between rebuilds
+  (every 3rd call), which is what read as choppy.
+- **Floatier:** JellyWave takes 0.55× of the solver's broadband perturbation.
+  The fine ripple is what made a slow wave look agitated.
+- **Translucency:** layer opacity 255/235/179 → **150/120/90**. The additive rim
+  pass is unchanged in kind, so the edges keep their glow while the bodies
+  become coloured glass.
+- **Neon, not white:**
+  - The rim colour went from near-white D8F4FF to Jellyfin cyan (0.18, 0.84,
+    1.0), and the fringe now runs to violet (0.76, 0.36, 1.0) instead of pale
+    blue.
+  - `JW_RIM_MIX` 0.20 → 0.14 and `JW_RIMPASS_I` 0.62 → 0.55.
+  - The specular and Fresnel sheen now take a neon cyan (`JW_GLOW_*`) instead
+    of the key light's near-white, and `JW_SPEC_I` went 0.62 → 0.34.
+- **Tests:** all ten wave suites pass unchanged, and the calibration bands in
+  `test_wave_light` still hold.
+
+### Player HUD (`hud_v3.inc`, `player.cpp`, `player_menu.cpp`)
+
+- The top-right audio-path pill is gone; it only ever read AUDIO.
+- The audio chip now names the track in the version selector's words
+  ("English · TrueHD Atmos · 7.1"). It is set at start and on every track
+  change; with the gate off, the old HUD still reads AUDIO.
+- The chips are restyled as XMB glass:
+  - dark translucent body, hairline border, a one-pixel light catch along the
+    top;
+  - a small spaced key (AUDIO / VOLUME / SUBTITLES) over the value;
+  - a volume meter along the chip floor, and an accent dot when subtitles are
+    on;
+  - an accent_alt border and a soft accent halo on focus.
+  - They are composed on change like the rest of the HUD, so there is no
+    per-frame cost.
+
+### Text: escapes, not fonts (`api/json_unescape.h`, test `test_json_unescape`)
+
+- **Cause:** Jellyfin's serialiser writes an apostrophe as `'`, `+` as
+  `+`, and non-ASCII as `\uXXXX`. The client's string readers copied the
+  raw bytes, so synopses showed `don't`, codec words picked up escape
+  digits between their letters, and an escaped `\"` ended a string early.
+- **Fix:** one decoder handles every escape, including surrogate pairs, and
+  writes UTF-8, which the renderer already draws. It never splits a character
+  when it truncates. It is used by `json_get_string`, `json_get_in_range`
+  (jellyfin_api.cpp), `xmb_json_str_range` and `xmb_json_first_arr_str`
+  (ui_json.cpp), the array readers in api_detail.cpp, and the facts parser.
+  The font is unchanged.
+- **Tests:** `test_json_unescape` (19 checks); `test_facts` and
+  `test_media_sources` pass.
+
+### Golden Age keeps the Jellyfin lockup (`theme.cpp`, `themes/golden-age.ini`)
+
+The built-in Golden Age table and the ini use XMB wave's `wordmark` and
+`lk_*`, so it gets the cool mark and the Jellyfin wordmark ramp. The gold mark
+raster is no longer selected by any shipped theme. `test_theme` is updated,
+with the reason, from README 2.1's gold values.
+
+### Cast portraits: 2:3 cards (`ui_info.cpp`)
+
+The circles are replaced by 58×87 portraits with a hairline frame, the XMB's
+card shape. 2:3 is a headshot's native aspect, so no face is cropped. The
+names sit under them and still clear the selector row.
+
+### Triangle quick-peek on Movies / TV (`render/peek.h`, `xmb/ui_peek.cpp`)
+
+- **What it does:** Triangle on a grid poster turns it over. The card spins
+  about its vertical axis (width × |cos θ|, one face swap edge-on, a 6% swell
+  at mid-turn) while it lifts out of the grid and grows into a centred 4:3
+  panel, 450 authored tall.
+- **The back:** dark glass with a hairline in the artwork's accent, the
+  poster, the cast (the first 4 actors), the title, a meta line, the tech line
+  (lossless audio in accent_alt), and the synopsis wrapped once per item.
+- **Controls:** X opens full detail (or a series' seasons). Triangle, O or the
+  d-pad turns it back into its grid slot. Open takes 520 ms and close 380 ms;
+  an interrupted open or close reverses continuously.
+- **Data:** the facts worker now also asks for `Overview,People,OfficialRating`
+  (`ItemFacts.overview/rating/cast/cast_id`, tested in `test_facts` 6–7), so
+  opening a peek never blocks a frame and the text fades in when it lands. No
+  backdrop is loaded, and the poster is the grid's cached thumbnail.
+- **Draw order:** it draws after the frame's text flush (GPU, then one
+  `rsxSync`, then its own text window). The fence exists only while a peek is
+  on screen. It takes input before `spine_try_back`, so O closes the peek
+  instead of leaving the tab.
+- **Tests:** `test_experience` +337 checks (one face swap, edge-on at the turn,
+  exact landing, continuity when interrupted).
+- **Other tabs:** they keep Triangle = detail.
+
+### Home posters blank after playing an album (`thumbnail_cache.cpp`, `music_screen.cpp`)
+
+- **Not reproduced here.** One mechanism fits every symptom. Home keeps
+  re-touching its own cache entries at the queue size, so an entry damaged
+  while the music screen ran is never refetched. The TV tab asks at the grid
+  size and gets fresh copies.
+- **Changes:**
+  1. **A real VRAM overflow, fixed.** At 720p Home's square music row (244×244)
+     needs 249,856 mirror bytes against the 249,600 each slot had, so its copy
+     ran 256 bytes into the next slot's texture. Slots are now sized for the
+     largest square any request can make.
+  2. **Integrity stamps.** Each slot hashes the first 16 words of its decoded
+     pixels and of its VRAM mirror when they are written.
+  3. **On leaving the music screen**, `thumb_cache_verify_and_flush()` checks
+     every READY slot against its stamps, logs `thumb: verify+flush after
+     music: ready=N damaged px=A vram=B`, and empties the cache so what is on
+     screen next is fetched fresh.
+- **Hardware check:** play an album, back out, and read that line. Non-zero
+  `px` or `vram` points at corruption in that memory. Zeros with the bug gone
+  mean the flush alone was enough.
+
+### Needs the console / TV
+
+1. **JellyWave at speed 20:** fluid, no visible stepping at rebuild-every-3.
+   If it still steps, try `jellyfin_jwrebuild.txt` = 2 and read the frame cost.
+   Judge the translucency and whether the neon rim reads as glow, not shine.
+2. **The HUD chips at TV distance:** the 8.5 px keys, and the long audio
+   label's clip at 300 px.
+3. **Synopses and codec words:** apostrophes, accents and "DTS-HD MA" in
+   Continue Watching and on detail.
+4. **Golden Age:** the cool mark and the Jellyfin wordmark.
+5. **The cast cards'** layout on detail.
+6. **The peek:**
+   - smoothness of the turn (mid-turn the card is drawn LINEAR-scaled from the
+     grid thumbnail);
+   - the extra `rsxSync` while it is open;
+   - X into detail, and O not leaving the tab.
+7. **Album → back → Home:** posters load, and the `thumb: verify+flush` line.

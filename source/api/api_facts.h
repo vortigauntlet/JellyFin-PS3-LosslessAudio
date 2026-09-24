@@ -23,6 +23,15 @@ typedef struct {
     int  n_subs;
     bool lossless;         // the default audio track is lossless
     u32  runtime_secs;
+
+    // For the Triangle quick-peek (xmb/ui_peek.cpp): what the item is about,
+    // from the same one request.  Series are asked about too (they have no
+    // streams, so only these fields fill).
+    char overview[520];    // synopsis, decoded, cut at a word boundary
+    char rating[12];       // OfficialRating, "PG-13"
+    char cast[4][40];      // the first four actors, billing order
+    char cast_id[4][40];   // their person ids (portrait thumbnails)
+    int  n_cast;
 } ItemFacts;
 
 // Queue item_id for fetching (render thread only).  Cheap when it is cached

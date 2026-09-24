@@ -131,41 +131,85 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         drawTTF((u32)v3x(57), (u32)v3y(536), tb, tpx, WHITE, true);
     }
 
-    // ---- chips, right-aligned to x=1223 at y=581: audio, volume, subs ----
-    // Each is also a focus slot; the focused one takes the accent_alt border
-    // and full-white text, the rest the canvas's white@14% / white@86%.
+    // ---- chips, right-aligned to x=1223: audio, volume, subtitles ----
+    // Each is also a focus slot.  Styled as XMB glass rather than flat
+    // pills: a dark translucent body, a hairline border, a one-pixel light
+    // catch along the top edge, and two lines of type -- the control's name
+    // small and spaced in the eyebrow face, its value under it.  The volume
+    // chip carries a level meter along its floor; subtitles light an accent
+    // dot when on.  Focus is the accent_alt border with a soft accent halo.
+    // All of it is composed into the staging buffer on change, like the rest
+    // of the HUD -- no per-frame cost.
     {
-        const float cpx = UIS_TF(11.0f);
-        const int  ch = UIS_H(29), cy = v3y(581), gap = UIS_W(8), pad = UIS_W(12);
-        char a_lab[80], v_lab[24], s_lab[24];
-        snprintf(a_lab, sizeof a_lab, "audio \xC2\xB7 %s",
-                 g_hud.audio_label[0] ? g_hud.audio_label : "default");
-        snprintf(v_lab, sizeof v_lab, "vol \xC2\xB7 %d", audio_get_volume());
-        snprintf(s_lab, sizeof s_lab, "subs \xC2\xB7 %s", g_hud.cc_active ? "on" : "off");
-        const char *labs[3] = { a_lab, v_lab, s_lab };
+        const float kpx = UIS_TF(8.5f), vpx = UIS_TF(12.0f);
+        const int  ch = UIS_H(38), cy = v3y(574), gap = UIS_W(10), pad = UIS_W(14);
+        const int  r  = UIS_H(9);
+        char a_val[72], v_val[16];
+        const char *al = g_hud.audio_label;
+        snprintf(a_val, sizeof a_val, "%s",
+                 (al[0] && strcmp(al, "AUDIO") != 0) ? al : "Default");
+        snprintf(v_val, sizeof v_val, "%d%%", audio_get_volume());
+        const char *keys[3] = { "AUDIO", "VOLUME", "SUBTITLES" };
+        const char *vals[3] = { a_val, v_val, g_hud.cc_active ? "On" : "Off" };
         const int   slot[3] = { FOCUS_AUDIO, FOCUS_VOLUME, FOCUS_CC };
+        // The audio value is the long one: clip it so the row never runs
+        // into the title.
+        {
+            const int maxw = UIS_W(300);
+            int len = (int)strlen(a_val);
+            while (len > 1 && ttf_text_width(a_val, vpx) > maxw) a_val[--len] = 0;
+        }
         int w[3], x = chips_right;
         for (int i = 2; i >= 0; i--) {
-            w[i] = ttf_text_width(labs[i], cpx) + 2 * pad;
+            const int kw = ttf_text_width_face(keys[i], kpx, UI_FACE_EYEBROW);
+            const int vw = ttf_text_width(vals[i], vpx);
+            const int dot = (slot[i] == FOCUS_CC) ? UIS_W(12) : 0;
+            w[i] = (kw > vw ? kw : vw) + dot + 2 * pad;
+            if (slot[i] == FOCUS_VOLUME && w[i] < UIS_W(76)) w[i] = UIS_W(76);
             x -= w[i];
             const bool foc = g_hud.focus == slot[i];
-            v3_rrect(x, cy, w[i], ch, ch / 2, 1, WHITE, 20,
-                     foc ? XMB_ACCENT_ALT : WHITE, foc ? 255 : 36);
-            drawTTF((u32)(x + pad), (u32)(cy + (ch - (int)cpx) / 2 - 1), labs[i], cpx,
-                    foc ? WHITE : 0x00DBDBDB);
+            // halo (focused only), body, border
+            if (foc)
+                v3_rrect(x - UIS_W(4), cy - UIS_H(4), w[i] + UIS_W(8), ch + UIS_H(8),
+                         r + UIS_H(4), 0, XMB_ACCENT, 46, 0, 0);
+            v3_rrect(x, cy, w[i], ch, r, 1, 0x000A0C18, 184,
+                     foc ? XMB_ACCENT_ALT : WHITE, foc ? 255 : 52);
+            // the light catch along the top straight edge
+            v3_fill(x + r, cy + 1, w[i] - 2 * r, 1, WHITE, foc ? 70 : 34);
+            // type
+            const int tx = x + pad + dot;
+            drawTTF_face((u32)tx, (u32)(cy + UIS_H(7)), keys[i], kpx,
+                         foc ? 0x00C9C3F2 : 0x008A90B4, UI_FACE_EYEBROW);
+            drawTTF((u32)tx, (u32)(cy + UIS_H(18)), vals[i], vpx,
+                    foc ? WHITE : 0x00E4E6F0);
+            if (slot[i] == FOCUS_CC) {
+                const int d = UIS_H(6);
+                v3_rrect(x + pad, cy + ch / 2 - d / 2, d, d, d / 2, 0,
+                         g_hud.cc_active ? XMB_ACCENT_ALT : WHITE,
+                         g_hud.cc_active ? 255 : 60, 0, 0);
+            }
+            if (slot[i] == FOCUS_VOLUME) {
+                // level meter on the chip's floor
+                const int mx = x + pad, mw = w[i] - 2 * pad, my = cy + ch - UIS_H(6);
+                const int mh = UIS_H(2) > 1 ? UIS_H(2) : 2;
+                v3_fill(mx, my, mw, mh, WHITE, 40);
+                const int fw = mw * audio_get_volume() / 100;
+                if (fw > 0) v3_fill(mx, my, fw, mh, XMB_ACCENT, 255);
+            }
             // The volume slider opens above its chip while adjusting.
             if (slot[i] == FOCUS_VOLUME && g_hud.vol_active) {
+                const float cpx = UIS_TF(11.0f);
                 const int vol = audio_get_volume();
                 const int sx  = x + w[i] / 2, bot = cy - UIS_H(14);
                 const int th  = UIS_H(90), tw = UIS_W(6);
                 v3_rrect(sx - UIS_W(22), bot - th - UIS_H(34), UIS_W(44), th + UIS_H(44),
-                         UIS_H(6), 1, 0, 140, WHITE, 26);
+                         UIS_H(9), 1, 0x000A0C18, 200, WHITE, 40);
                 v3_fill(sx - tw / 2, bot - th, tw, th, WHITE, 60);
                 const int fh = th * vol / 100;
                 v3_fill(sx - tw / 2, bot - fh, tw, fh, XMB_ACCENT, 255);
                 char vb[8]; snprintf(vb, sizeof vb, "%d", vol);
-                const int vw = ttf_text_width(vb, cpx);
-                drawTTF((u32)(sx - vw / 2), (u32)(bot - th - UIS_H(26)), vb, cpx, WHITE);
+                const int vw2 = ttf_text_width(vb, cpx);
+                drawTTF((u32)(sx - vw2 / 2), (u32)(bot - th - UIS_H(26)), vb, cpx, WHITE);
             }
             x -= gap;
         }
@@ -227,15 +271,8 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         }
     }
 
-    // ---- audio path, top right: accent_alt pill on black@55% ----
-    if (g_hud.audio_label[0]) {
-        const float apx = UIS_TF(11.0f);
-        const int aw = ttf_text_width(g_hud.audio_label, apx) + UIS_W(28);
-        const int ah = UIS_H(31), ax = v3x(1239) - aw, ay = v3y(41);
-        v3_rrect(ax, ay, aw, ah, ah / 2, 1, 0, 140, XMB_ACCENT_ALT, 255);
-        drawTTF((u32)(ax + UIS_W(14)), (u32)(ay + (ah - (int)apx) / 2 - 1),
-                g_hud.audio_label, apx, XMB_ACCENT_ALT);
-    }
+    // (The canvas's audio-path pill at the top right is gone: it only ever
+    // read AUDIO.  The track is named in the audio chip instead.)
 
     // ---- hints: what X does, then the canvas's Tracks / Stop / Stats ----
     {

@@ -13,6 +13,7 @@
 #include "../source/ui/render/art_colour.h"
 #include "../source/ui/render/buffer_anim.h"
 #include "../source/ui/render/experience.h"
+#include "../source/ui/render/peek.h"
 
 static int g_fail = 0, g_checks = 0;
 #define CHECK(c, ...) do { g_checks++; if (!(c)) { g_fail++; \
@@ -408,6 +409,68 @@ static void test_ambient(void) {
     }
 }
 
+// ------------------------------------------------------------------- peek ---
+
+static void test_peek(void) {
+    peek_anim a; memset(&a, 0, sizeof a);
+    const peek_rect card = { 100, 200, 150, 225 };
+    const peek_rect pan  = peek_panel(640, 360, 450);
+    CHECK(fabsf(pan.w / pan.h - 4.0f / 3.0f) < 1e-4f, "panel is 4:3");
+    CHECK(peek_progress(&a, 0) == 0.0f && peek_tick(&a, 0) == PEEK_OFF, "starts off");
+
+    for (int i = 0; i <= 100; i++) {
+        const float e = i / 100.0f;
+        CHECK(fabsf(peek_sinpi(e) - sinf(3.14159265f * e)) < 0.002f, "sinpi %.2f", e);
+        CHECK(fabsf(peek_abscospi(e) - fabsf(cosf(3.14159265f * e))) < 0.002f, "abscospi %.2f", e);
+    }
+
+    uint64_t t = 1000000;
+    peek_open(&a, t);
+    peek_frame f = peek_eval(peek_progress(&a, t), card, pan);
+    CHECK(fabsf(f.r.x - card.x) < 0.5f && fabsf(f.r.w - card.w) < 0.5f && !f.back,
+          "opens from the card, front up");
+    int swaps = 0, last_back = 0; float min_w = 1e9f, last_lift = -1;
+    for (int i = 1; i <= 60; i++) {
+        t += 10000;
+        peek_tick(&a, t);
+        f = peek_eval(peek_progress(&a, t), card, pan);
+        if (f.back != last_back) { swaps++; last_back = f.back; }
+        if (f.r.w < min_w) min_w = f.r.w;
+        CHECK(f.lift >= last_lift, "lift monotonic");
+        last_lift = f.lift;
+        CHECK(f.r.w >= 0.0f && f.r.h > 0.0f, "sane rect");
+    }
+    CHECK(swaps == 1, "exactly one face swap (%d)", swaps);
+    CHECK(min_w < 20.0f, "edge-on at the turn (%.1f)", min_w);
+    CHECK(a.phase == PEEK_OPEN, "open after the open time");
+    CHECK(fabsf(f.r.x - pan.x) < 0.5f && fabsf(f.r.w - pan.w) < 0.5f && fabsf(f.r.h - pan.h) < 0.5f,
+          "lands exactly on the panel");
+    CHECK(f.back && f.content_a > 0.99f, "back face, text in");
+    CHECK(peek_eval(0.6f, card, pan).content_a == 0.0f, "no text mid-turn");
+
+    peek_close(&a, t);
+    t += 60000;
+    f = peek_eval(peek_progress(&a, t), card, pan);
+    CHECK(f.content_a < 1.0f, "text leaves as it closes");
+    for (int i = 0; i < 60; i++) { t += 10000; peek_tick(&a, t); }
+    CHECK(a.phase == PEEK_OFF, "closed");
+    f = peek_eval(peek_progress(&a, t), card, pan);
+    CHECK(fabsf(f.r.x - card.x) < 0.5f && !f.back, "lands back in the grid");
+
+    peek_open(&a, 5000000);
+    const float u_mid = peek_progress(&a, 5000000 + 200000);
+    const peek_frame before = peek_eval(u_mid, card, pan);
+    peek_close(&a, 5000000 + 200000);
+    const peek_frame after = peek_eval(peek_progress(&a, 5000000 + 200000), card, pan);
+    CHECK(fabsf(before.r.x - after.r.x) < 0.01f && fabsf(before.r.w - after.r.w) < 0.01f,
+          "close mid-open is continuous");
+    const uint64_t t2 = 5000000 + 300000;
+    const float u2 = peek_progress(&a, t2);
+    peek_open(&a, t2);
+    CHECK(fabsf(peek_progress(&a, t2) - u2) < 1e-6f, "open mid-close is continuous");
+    peek_anim z; memset(&z, 0, sizeof z); peek_close(&z, 1); CHECK(z.phase == PEEK_OFF, "close when off");
+}
+
 int main(void) {
     test_art_dominant();
     test_art_deterministic();
@@ -420,6 +483,7 @@ int main(void) {
     test_buf_deterministic();
     test_vpick();
     test_ambient();
+    test_peek();
     printf("test_experience: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

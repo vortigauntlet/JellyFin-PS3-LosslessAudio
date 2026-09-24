@@ -61,3 +61,8 @@ bool thumb_gpu_texture(const char *item_id, int w, int h,
 // init).  thumb_request silently drops anything bigger, so callers wanting
 // larger on-screen art must request at this cap and upscale when blitting.
 int thumb_max_square(void);
+
+// After a long-running screen of its own (the music player): check every
+// cached image against the stamps taken when it was written, log how many
+// changed, and empty the cache so what is on screen next is fetched fresh.
+void thumb_cache_verify_and_flush(const char *why);

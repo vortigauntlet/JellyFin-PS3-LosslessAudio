@@ -118,7 +118,13 @@ static void test_builtin_golden_age(void) {
     ck_u32("accent",        g_theme.accent,        0xE0A13C);
     ck_u32("accent_alt",    g_theme.accent_alt,    0xC8332E);
     ck_u32("accent_deep",   g_theme.accent_deep,   0x8A5F1E);
-    ck_u32("wordmark",      g_theme.wordmark,      0xE8B45C);
+    // The lockup keeps Jellyfin's own colours in every theme (decided on
+    // hardware 2026-09-24, overriding README 2.1's gold wordmark E8B45C and
+    // the gold mark): the same values as built-in 0.
+    ck_u32("wordmark",      g_theme.wordmark,      0x00A4DC);
+    ck_u32("lk_mark_a",     g_theme.lk_mark_a,     0xAA5CC3);
+    ck_u32("lk_word_a",     g_theme.lk_word_a,     0x00A4DC);
+    ck_u32("lk_word_d",     g_theme.lk_word_d,     0xAA5CC3);
     ck_u32("text",          g_theme.text,          0xF4EDE1);
     ck_u32("text_dim",      g_theme.text_dim,      0xB3A695);
     ck_u32("text_faint",    g_theme.text_faint,    0x6D6353);

@@ -6,6 +6,7 @@
 #include <ctype.h>
 
 #include "jellyfin_api.h"
+#include "json_unescape.h"   // \u0027 & co. -> UTF-8
 #include "plog.h"
 #include "hd1080.h"
 #include "surround.h"
@@ -39,9 +40,7 @@ static void json_array_first_string(const char *json, const char *key,
     while (*p == ' ') p++;
     if (*p != '"') return;
     p++;
-    int i = 0;
-    while (*p && *p != '"' && i < out_size - 1) out[i++] = *p++;
-    out[i] = '\0';
+    json_unescape(p, p + strlen(p), out, out_size);
 }
 
 static void json_array_strings_join(const char *json, const char *key,
@@ -63,10 +62,8 @@ static void json_array_strings_join(const char *json, const char *key,
         if (written > 0 && written < out_size - 3) {
             out[written++] = ','; out[written++] = ' '; out[written] = '\0';
         }
-        while (*p && *p != '"' && written < out_size - 1)
-            out[written++] = *p++;
-        out[written] = '\0';
-        if (*p == '"') p++;
+        p = json_unescape(p, p + strlen(p), out + written, out_size - written);
+        written += (int)strlen(out + written);
     }
 }
 

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ui_internal.h"
+#include "json_unescape.h"   // \u0027 & co. -> UTF-8
 
 int xmb_json_str_range(const char *start, int len,
                         const char *key, char *out, int out_size) {
@@ -15,9 +16,7 @@ int xmb_json_str_range(const char *start, int len,
     while (p + slen <= end) {
         if (memcmp(p, search, slen) == 0) {
             p += slen;
-            int i = 0;
-            while (p < end && *p != '"' && i < out_size-1) out[i++] = *p++;
-            out[i] = '\0';
+            json_unescape(p, end, out, out_size);
             return 1;
         }
         p++;
@@ -73,9 +72,7 @@ int xmb_json_first_arr_str(const char *start, int len,
     while (p + slen <= end) {
         if (memcmp(p, search, slen) == 0) {
             p += slen;
-            int i = 0;
-            while (p < end && *p != '"' && i < out_size-1) out[i++] = *p++;
-            out[i] = '\0';
+            json_unescape(p, end, out, out_size);
             return 1;
         }
         p++;

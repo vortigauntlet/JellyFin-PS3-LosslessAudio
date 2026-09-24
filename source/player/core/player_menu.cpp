@@ -11,6 +11,8 @@
 #include "plog.h"
 #include "subtitles.h"
 #include "slog.h"
+#include "experience.h"
+#include "ui_visuals.h"      // g_spine_on   // vpick_audio_words
 
 // ---- Remembered track preference (see player_internal.h) ------------------
 static char s_pref_audio_label[64] = "";
@@ -79,6 +81,12 @@ HudAction player_handle_menu_action(PlayerState *ps, HudAction act) {
             sel >= 0 && sel < ps->tracks.n_audio && sel != ps->cur_audio) {
             ps->cur_audio = sel;
             track_pref_note_audio(&ps->tracks.audio[ps->cur_audio]);
+            if (g_spine_on) {
+                // The audio chip names the track, in the selector's words.
+                char w[64];
+                vpick_audio_words(ps->tracks.audio[ps->cur_audio].label, w, sizeof w);
+                hud_set_audio_label(w[0] ? w : "Default");
+            }
             act = HUD_ACTION_SEEK;     // 0-delta reopen applies the track
             char buf[96];
             snprintf(buf, sizeof(buf), "hud: audio -> [%d] %s",

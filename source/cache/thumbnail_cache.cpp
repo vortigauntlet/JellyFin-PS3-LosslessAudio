@@ -83,7 +83,18 @@ typedef struct {
     u32       vram_off;       // RSX offset for rsxLoadTexture
     u32       vram_pitch;     // BYTES per row -- 64-byte aligned, see below
     bool      vram_valid;     // mirror matches bmp for the CURRENT contents
+
+    // Integrity stamps (thumb_cache_verify): a sum of the first 16 words of
+    // the decoded pixels and of the VRAM mirror, taken when each was written.
+    u32       px_sum;
+    u32       vram_sum;
 } ThumbSlot;
+
+static inline u32 head_sum(const u32 *p) {
+    u32 h = 0x9E3779B9u;
+    for (int i = 0; i < 16; i++) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
 
 // Path segment for each ThumbImg.
 static const char *img_name(u8 img) {
@@ -323,6 +334,7 @@ static void fetch_thread_fn(void *arg) {
                           s_slots[si].img == img);
         if (published) {
             s_slots[si].state = SLOT_READY;
+            if (bmp->width * bmp->height >= 16) s_slots[si].px_sum = head_sum(bmp->pixels);
             // The decode just rewrote bmp; the mirror is stale until
             // thumb_gpu_sync() copies it on the render thread.  Uploading
             // here would be a main->VRAM write from the FETCH thread while
@@ -394,6 +406,17 @@ void thumb_cache_init(void) {
         size_t bq = qw > 0 ? (size_t)VRAM_PITCH(qw) * qh : 0;
         s_vram_bytes = (bp > bl) ? bp : bl;
         if (bq > s_vram_bytes) s_vram_bytes = bq;
+        // Home's square row (music) takes the queue's AREA as a square
+        // (q_src in ui_home_stage.inc), and a square's padded pitch can be
+        // larger: at 720p 244x244 needs 249,856 bytes against 200x300's
+        // 249,600, so its mirror copy ran 256 bytes into the next slot's.
+        // Size for the largest square any request can make.
+        {
+            int e = 1;
+            while ((size_t)(e + 1) * (size_t)(e + 1) <= s_max_px) e++;
+            size_t bs = (size_t)VRAM_PITCH(e) * e;
+            if (bs > s_vram_bytes) s_vram_bytes = bs;
+        }
     }
     // Pixels live in MAIN memory (not RSX local): the UI blits cards with
     // the CPU every frame, and CPU reads of RSX-local memory are far too
@@ -587,15 +610,55 @@ bool thumb_gpu_texture(const char *item_id, int w, int h,
         u8       *dp = (u8 *)dst;
         for (u32 row = 0; row < bh; row++)
             memcpy(dp + (size_t)row * pitch, sp + (size_t)row * bw * 4, bw * 4);
+        __asm__ __volatile__ ("sync" ::: "memory");
+        // 16 words read back from VRAM (~64 bytes): the integrity stamp.
+        const u32 vs = bw * bh >= 16 ? head_sum(dst) : 0;
         lock_acquire();
-        if (find_slot(item_id, w, h, (u8)img) == si)
+        if (find_slot(item_id, w, h, (u8)img) == si) {
             s_slots[si].vram_valid = true;
+            s_slots[si].vram_sum   = vs;
+        }
         lock_release();
     }
 
     *out_offset = off;
     *out_pitch  = pitch;
     return true;
+}
+
+// After a screen that ran its own loop for a long time (the music player):
+// check every cached image against the stamps taken when it was written, log
+// what changed, and drop the whole cache so everything on screen next is
+// fetched and uploaded fresh.
+//
+// Why: after playing an album, Home's posters were reported blank while the
+// same titles showed in the TV tab.  Home keeps re-touching its own cache
+// entries (at the queue's size), so a damaged entry is never refetched; the
+// TV tab asks at the grid size and gets fresh ones.  Dropping the cache here
+// means nothing damaged can outlive the music screen, and the log line says
+// whether anything was (px = the decoded pixels in main memory, vram = the
+// mirror the RSX draws).  Costs ~2 KB of VRAM reads and a refetch of what is
+// on screen.
+void thumb_cache_verify_and_flush(const char *why) {
+    int bad_px = 0, bad_vram = 0, ready = 0;
+    lock_acquire();
+    for (int i = 0; i < THUMB_CACHE_SIZE; i++) {
+        ThumbSlot *sl = &s_slots[i];
+        if (sl->state == SLOT_READY && sl->bmp.pixels &&
+            sl->bmp.width * sl->bmp.height >= 16) {
+            ready++;
+            if (head_sum(sl->bmp.pixels) != sl->px_sum) bad_px++;
+            if (sl->vram && sl->vram_valid && head_sum(sl->vram) != sl->vram_sum) bad_vram++;
+        }
+        sl->state = SLOT_EMPTY;
+        sl->item_id[0] = '\0';
+        sl->vram_valid = false;
+    }
+    lock_release();
+    char b[128];
+    snprintf(b, sizeof b, "thumb: verify+flush after %s: ready=%d damaged px=%d vram=%d",
+             why ? why : "?", ready, bad_px, bad_vram);
+    plog(b);
 }
 
 void thumb_cache_tick(void) {

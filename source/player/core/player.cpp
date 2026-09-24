@@ -38,6 +38,7 @@
 #include "slog.h"
 #include "trickplay.h"
 #include "ui_buffering.h"
+#include "experience.h"      // vpick_audio_words: the audio chip's words
 
 extern void crash_log(const char *msg);
 
@@ -458,7 +459,14 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     // The button always reads "AUDIO" — track names are too long for the HUD
     // row; the selected track is plogged when cycled.
-    hud_init(ps.total_secs, NULL);
+    // The audio chip names the track ("English \xC2\xB7 DTS-HD MA \xC2\xB7 5.1"),
+    // in the version selector's words; it used to read AUDIO forever.
+    {
+        char w[64] = "";
+        if (ps.have_tracks && ps.cur_audio >= 0 && ps.cur_audio < ps.tracks.n_audio)
+            vpick_audio_words(ps.tracks.audio[ps.cur_audio].label, w, sizeof w);
+        hud_init(ps.total_secs, (g_spine_on && w[0]) ? w : NULL);   // the old HUD keeps AUDIO
+    }
     hud_set_title(item->name);
     plog("hud: prewarm start");
     ttf_prewarm_hud();

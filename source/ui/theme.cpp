@@ -93,7 +93,7 @@ static const Theme THEME_BUILTIN[THEME_BUILTIN_COUNT] = {
         0x00E0A13CUL,   // accent
         0x00C8332EUL,   // accent_alt
         0x008A5F1EUL,   // accent_deep
-        0x00E8B45CUL,   // wordmark
+        0x0000A4DCUL,   // wordmark      = Jellyfin's, as in XMB wave (the brand does not re-theme)
         0x00F4EDE1UL,   // text
         0x00B3A695UL,   // text_dim
         0x006D6353UL,   // text_faint
@@ -108,12 +108,15 @@ static const Theme THEME_BUILTIN[THEME_BUILTIN_COUNT] = {
         0x001A1410UL,   // key_normal    = panel
         0x00FFFAF2UL,   // key_sel       = white
         0x00221A13UL,   // key_label_sel = track
-        0x00E8B45CUL,   // lk_mark_a
-        0x00C8742EUL,   // lk_mark_b
-        0x00C8742EUL,   // lk_word_a
-        0x00D68C3FUL,   // lk_word_b
-        0x00DFA34DUL,   // lk_word_c
-        0x00E8B45CUL,   // lk_word_d
+        // The lockup keeps Jellyfin's own colours in every theme: the same
+        // mark (the cool raster -- mark_variant() reads lk_mark_a) and the
+        // same wordmark ramp as XMB wave.  The gold mark is retired.
+        0x00AA5CC3UL,   // lk_mark_a
+        0x0000A4DCUL,   // lk_mark_b
+        0x0000A4DCUL,   // lk_word_a
+        0x004189D3UL,   // lk_word_b
+        0x007A70CAUL,   // lk_word_c
+        0x00AA5CC3UL,   // lk_word_d
         0x00FFFAF2UL,   // focus_ring    = white; golden-age.ini sets no ring
         0x005A3A16UL,   // detail_band   deep brass, sits in the gold ramp
         0x00040303UL,   // scrim         = bg_bot

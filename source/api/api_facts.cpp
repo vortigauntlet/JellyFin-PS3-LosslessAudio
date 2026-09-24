@@ -83,7 +83,7 @@ static void facts_thread(void *arg) {
 
         char url[512];
         snprintf(url, sizeof url,
-                 "%s/Users/%s/Items?Ids=%s&Fields=MediaStreams"
+                 "%s/Users/%s/Items?Ids=%s&Fields=MediaStreams,Overview,People,OfficialRating"
                  "&EnableImages=false&EnableUserData=false",
                  g_server, g_userid, id);
         s_buf[0] = '\0';

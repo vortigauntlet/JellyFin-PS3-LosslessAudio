@@ -721,7 +721,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             drawRect((u32)(PXa + PWa), (u32)(PYa - 1), 1, (u32)(PHa + 2), XMB_HAIRLINE);
         }
 
-        // Cast: 64 px portraits on a 104 px pitch from x=313, y=499.  The
+        // Cast: 58x87 (2:3) portraits on a 104 px pitch from x=313, y=493.  The
         // canvas has no crew here except the director, who gets the line
         // above, so crew entries are skipped.
         const char *director = NULL;
@@ -733,10 +733,18 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             }
             if (n_cast < 5) cast_idx[n_cast++] = i;
         }
-        const int KY = IY(499), KD = UIS_H(64), KP = UIS_W(104);
-        for (int k = 0; k < n_cast; k++)
-            xmb_cpu_blit_thumb_circle(detail.people[cast_idx[k]].id,
-                                      TX + k * KP, KY, KD, XMB_HAIRLINE);
+        // Portraits in the XMB's own shape: 2:3 cards (a headshot's native
+        // aspect, so no face is cropped) with a hairline frame, not circles.
+        const int KY = IY(493), KW = UIS_W(58), KD = UIS_H(87), KP = UIS_W(104);
+        for (int k = 0; k < n_cast; k++) {
+            const int kx = TX + k * KP;
+            if (!xmb_cpu_blit_thumb(detail.people[cast_idx[k]].id, kx, KY, KW, KD))
+                drawRect((u32)kx, (u32)KY, (u32)KW, (u32)KD, XMB_THUMB_DIM);
+            drawRect((u32)(kx - 1), (u32)(KY - 1), (u32)(KW + 2), 1, XMB_HAIRLINE);
+            drawRect((u32)(kx - 1), (u32)(KY + KD), (u32)(KW + 2), 1, XMB_HAIRLINE);
+            drawRect((u32)(kx - 1), (u32)(KY - 1), 1, (u32)(KD + 2), XMB_HAIRLINE);
+            drawRect((u32)(kx + KW), (u32)(KY - 1), 1, (u32)(KD + 2), XMB_HAIRLINE);
+        }
 
         // ---- text --------------------------------------------------------
         xmb_draw_topbar();
@@ -834,10 +842,10 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         for (int k = 0; k < n_cast; k++) {
             const JFPerson *pp = &detail.people[cast_idx[k]];
             const int x = TX + k * KP;
-            info_clip_text(x, KY + KD + UIS_H(8), pp->name, UIS_TF(12.0f), XMB_TEXT,
+            info_clip_text(x, KY + KD + UIS_H(6), pp->name, UIS_TF(12.0f), XMB_TEXT,
                            KP - UIS_W(8), false, UI_FACE_TAB_REG);
             if (pp->role[0])
-                info_clip_text(x, KY + KD + UIS_H(26), pp->role, UIS_TF(11.5f),
+                info_clip_text(x, KY + KD + UIS_H(22), pp->role, UIS_TF(11.5f),
                                XMB_TEXT_DIM, KP - UIS_W(8), false, UI_FACE_TAB_REG);
         }
 

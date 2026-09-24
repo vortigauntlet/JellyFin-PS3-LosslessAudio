@@ -110,6 +110,47 @@ int main(void) {
         eq("5 null", f.container, "");
     }
 
+    // 6. The peek's back face: synopsis (with Jellyfin's escapes), rating,
+    //    the first four ACTORS only, in billing order.  A Series: no streams.
+    {
+        const char *j =
+            "{\"Items\":[{\"Name\":\"Dark\",\"Id\":\"s1\",\"Type\":\"Series\","
+            "\"Overview\":\"A missing child sets four families on a frantic hunt. "
+            "It\\u0027s \\u0022time\\u0022 \\u002B more.\","
+            "\"OfficialRating\":\"TV-MA\",\"People\":["
+            "{\"Name\":\"Baran bo Odar\",\"Id\":\"d1\",\"Type\":\"Director\"},"
+            "{\"Name\":\"Louis Hofmann\",\"Id\":\"p1\",\"Role\":\"Jonas\",\"Type\":\"Actor\"},"
+            "{\"Name\":\"Lisa Vicari\",\"Id\":\"p2\",\"Type\":\"Actor\"},"
+            "{\"Name\":\"Maja Sch\\u00F6ne\",\"Id\":\"p3\",\"Type\":\"Actor\"},"
+            "{\"Name\":\"Oliver Masucci\",\"Id\":\"p4\",\"Type\":\"Actor\"},"
+            "{\"Name\":\"Karoline Eichhorn\",\"Id\":\"p5\",\"Type\":\"Actor\"}]}]}";
+        ItemFacts f;
+        facts_parse(j, &f);
+        eq("6 overview", f.overview,
+           "A missing child sets four families on a frantic hunt. It's \"time\" + more.");
+        eq("6 rating", f.rating, "TV-MA");
+        yes("6 four actors", f.n_cast == 4);
+        eq("6 cast0", f.cast[0], "Louis Hofmann");
+        eq("6 cast0 id", f.cast_id[0], "p1");
+        eq("6 cast2 utf8", f.cast[2], "Maja Sch\xC3\xB6ne");
+        eq("6 cast3", f.cast[3], "Oliver Masucci");
+        eq("6 no audio", f.audio, "");
+    }
+    // 7. A long synopsis is cut at a word boundary with an ellipsis.
+    {
+        static char j[2048];
+        char ov[1000]; int n = 0;
+        while (n < 900) n += snprintf(ov + n, sizeof ov - n, "word%d ", n);
+        snprintf(j, sizeof j, "{\"Overview\":\"%s\"}", ov);
+        ItemFacts f;
+        facts_parse(j, &f);
+        const size_t L = strlen(f.overview);
+        yes("7 fits", L < sizeof f.overview);
+        yes("7 ellipsis", L >= 3 && !strcmp(f.overview + L - 3, "..."));
+        yes("7 word boundary", L >= 4 && f.overview[L - 4] != ' ' &&
+                               strstr(ov, f.overview) == NULL);
+    }
+
     if (s_fail) { printf("test_facts: %d FAILED\n", s_fail); return 1; }
     printf("test_facts: all passed\n");
     return 0;

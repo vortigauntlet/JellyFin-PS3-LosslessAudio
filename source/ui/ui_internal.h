@@ -153,6 +153,17 @@ void ambient_gpu(void);
 void ambient_text(void);
 void ambient_cover_over_ui(void);
 
+// The Triangle quick-peek on the Movies / TV grids (xmb/ui_peek.cpp): the
+// focused poster turns over into a 4:3 panel with the synopsis and cast.
+// peek_open_item() starts it (src_w/h = the grid's thumbnail size);
+// peek_input() takes the frame's input while it is up (true = consumed);
+// peek_draw_over() draws it after the frame's text flush.  Spine gate only.
+void peek_open_item(const XMBItem *it, int src_w, int src_h);
+bool peek_input(void);
+bool peek_active(void);    // opening or open: owns input
+bool peek_visible(void);   // anything on screen, including the close
+void peek_draw_over(void);
+
 // -------------------------------------------------------
 // Library categories on the depth engine (xmb/ui_depth_lib.cpp)
 // -------------------------------------------------------

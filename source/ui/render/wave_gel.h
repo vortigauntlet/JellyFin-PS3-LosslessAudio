@@ -143,14 +143,19 @@
 #define JW_BLUE_R      0.000000f
 #define JW_BLUE_G      0.643137f
 #define JW_BLUE_B      0.862745f
-#define JW_RIMC_R      0.847059f
-#define JW_RIMC_G      0.956863f
+// 2026-09-24, on hardware: "too much of a white shine; it needs a more neon,
+// translucent glow".  The rim was near-white (D8F4FF).  It is now a saturated
+// Jellyfin cyan, and the outer fringe runs to violet rather than to pale blue,
+// so the edge glows in the brand's two colours instead of reading as a
+// specular white line.
+#define JW_RIMC_R      0.180000f
+#define JW_RIMC_G      0.840000f
 #define JW_RIMC_B      1.000000f
 #define JW_DEEP_R      0.082353f
 #define JW_DEEP_G      0.039216f
 #define JW_DEEP_B      0.133333f
-#define JW_FRINGE_R    0.498039f
-#define JW_FRINGE_G    0.815686f
+#define JW_FRINGE_R    0.760000f
+#define JW_FRINGE_G    0.360000f
 #define JW_FRINGE_B    1.000000f
 
 // The brand gradient axis: 30 degrees below horizontal, purple upper-left to
@@ -173,12 +178,12 @@
 #define JW_SHADE_BASE   0.38f
 #define JW_SHADE_GAIN   0.78f
 #define JW_DEEP_MIX     0.34f
-#define JW_RIM_MIX      0.20f
+#define JW_RIM_MIX      0.14f      /* was 0.20: less of the body goes to the rim tint */
 
 // Additive rim pass.
 #define JW_RIMPASS_BASE 0.10f
 #define JW_RIMPASS_LIT  0.90f
-#define JW_RIMPASS_I    0.62f
+#define JW_RIMPASS_I    0.55f      /* was 0.62: the glow, coloured now, a touch softer */
 #define JW_FRINGE_BASE  0.30f
 #define JW_FRINGE_GAIN  0.35f
 
@@ -248,9 +253,13 @@ typedef struct {
 #define JW_LAYERS 3
 
 static const jw_layer JW_LAYER[JW_LAYERS] = {
-    /* near */ { 0.00f,  0.00f,  0.0f, 1.00f, 1.00f, -0.2776f, 1.2785f, 1.8177f, 255 },
-    /* mid  */ { 0.42f, -0.78f, -3.2f, 0.90f, 0.66f, -0.5976f, 1.3862f, 2.1385f, 235 },
-    /* far  */ { 0.85f, -1.55f, -6.2f, 0.78f, 0.42f, -0.8000f, 1.4890f, 2.5967f, 179 },
+    // Opacity 150 / 120 / 90 (was 255 / 235 / 179): "a LOT more translucent",
+    // on hardware 2026-09-24.  The background shows through every layer and
+    // the layers through each other; the additive rim pass is unaffected, so
+    // the edges keep their glow while the bodies turn to coloured glass.
+    /* near */ { 0.00f,  0.00f,  0.0f, 1.00f, 1.00f, -0.2776f, 1.2785f, 1.8177f, 150 },
+    /* mid  */ { 0.42f, -0.78f, -3.2f, 0.90f, 0.66f, -0.5976f, 1.3862f, 2.1385f, 120 },
+    /* far  */ { 0.85f, -1.55f, -6.2f, 0.78f, 0.42f, -0.8000f, 1.4890f, 2.5967f,  90 },
 };
 
 // --- the section ----------------------------------------------------------

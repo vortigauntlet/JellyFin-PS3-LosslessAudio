@@ -12,6 +12,7 @@
 #include <ctype.h>
 
 #include "api_facts.h"
+#include "json_unescape.h"
 
 // --- a flat-object field reader ------------------------------------------------
 // Jellyfin's JSON is compact ("key":value, no spaces), which every other
@@ -24,12 +25,7 @@ static bool get_str(const char *o, int n, const char *key, char *out, int cap) {
     for (const char *p = o, *end = o + n; p + pl <= end; p++) {
         if (memcmp(p, pat, (size_t)pl) != 0) continue;
         p += pl;
-        int i = 0;
-        while (p < end && *p != '"' && i < cap - 1) {
-            if (*p == '\\' && p + 1 < end) p++;
-            out[i++] = *p++;
-        }
-        out[i] = '\0';
+        json_unescape(p, end, out, cap);
         return true;
     }
     return false;
@@ -191,10 +187,62 @@ static void subs_label(const char *o, int n, char *out, int cap) {
 
 // --- the walk -------------------------------------------------------------------
 
+// The synopsis and the first four actors (the peek's back face).  People
+// objects are walked like MediaStreams; only Type "Actor" counts, in the
+// order the server bills them.
+static void about_parse(const char *json, int jl, ItemFacts *out) {
+    char ov[1024];
+    if (get_str(json, jl, "Overview", ov, sizeof ov) && ov[0]) {
+        // Cut at a word boundary with an ellipsis if it will not fit, never
+        // mid-character (json_unescape already kept characters whole).
+        const int cap = (int)sizeof out->overview;
+        if ((int)strlen(ov) < cap) {
+            snprintf(out->overview, sizeof out->overview, "%s", ov);
+        } else {
+            int cut = cap - 4;
+            while (cut > 0 && ov[cut] != ' ') cut--;
+            if (cut <= 0) cut = cap - 4;
+            while (cut > 0 && ((unsigned char)ov[cut] & 0xC0) == 0x80) cut--;
+            memcpy(out->overview, ov, (size_t)cut);
+            memcpy(out->overview + cut, "...", 4);
+        }
+    }
+    get_str(json, jl, "OfficialRating", out->rating, sizeof out->rating);
+
+    const char *arr = strstr(json, "\"People\":[");
+    if (!arr) return;
+    const char *p = arr + 10;
+    while (*p && *p != ']' && out->n_cast < 4) {
+        while (*p && *p != '{' && *p != ']') p++;
+        if (*p != '{') break;
+        const char *o = p;
+        int depth = 0;
+        bool in_str = false, esc = false;
+        while (*p) {
+            const char c = *p;
+            if (esc) esc = false;
+            else if (in_str) { if (c == '\\') esc = true; else if (c == '"') in_str = false; }
+            else if (c == '"') in_str = true;
+            else if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) { p++; break; }
+            p++;
+        }
+        const int n = (int)(p - o);
+        char type[16];
+        get_str(o, n, "Type", type, sizeof type);
+        if (strcmp(type, "Actor") != 0) continue;
+        const int k = out->n_cast;
+        get_str(o, n, "Name", out->cast[k], sizeof out->cast[k]);
+        get_str(o, n, "Id",   out->cast_id[k], sizeof out->cast_id[k]);
+        if (out->cast[k][0]) out->n_cast++;
+    }
+}
+
 void facts_parse(const char *json, ItemFacts *out) {
     memset(out, 0, sizeof *out);
     if (!json) return;
     const int jl = (int)strlen(json);
+    about_parse(json, jl, out);
 
     char cont[64];
     if (get_str(json, jl, "Container", cont, sizeof cont)) {

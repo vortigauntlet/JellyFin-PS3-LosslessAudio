@@ -486,6 +486,9 @@ bool xmb_handle_input_browse(void) {
 
     if (tab == XMB_TAB_SETTINGS) return xmb_input_settings();
 
+    // A quick-peek owns the input while it is up (spine gate only).
+    if (peek_input()) return false;
+
     if (BTN_PRESSED(l1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
 
@@ -671,6 +674,15 @@ bool xmb_handle_input_browse(void) {
         plog(dbg);
     }
     u64 now_us = timing_get_us();
+    // Under the spine, Triangle on a Movies or TV grid is the quick-peek: the
+    // poster turns over to show the synopsis and cast (xmb/ui_peek.cpp).  X
+    // from there opens full detail.  Other tabs keep Triangle = detail.
+    if (g_spine_on && BTN_PRESSED(triangle) && count > 0 && g_sel < count &&
+        (xmb_kind(tab) == TABKIND_MOVIES || xmb_kind(tab) == TABKIND_TV) &&
+        now_us >= g_info_cooldown_until) {
+        peek_open_item(&g_items[tab][g_sel], gg.card_w, gg.card_h);
+        return false;
+    }
     if (BTN_PRESSED(triangle) && count > 0 && g_sel < count
         && now_us >= g_info_cooldown_until) {
         const XMBItem *sel = &g_items[tab][g_sel];

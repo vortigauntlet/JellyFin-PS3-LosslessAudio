@@ -914,6 +914,10 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
     }
 
     music_stop();
+    // Home's posters went blank after an album was played (they stayed fine
+    // in the TV tab): nothing cached before or during this screen is trusted
+    // on the way out.  See thumb_cache_verify_and_flush().
+    thumb_cache_verify_and_flush("music");
     plog("music_screen: exit");
 }
 

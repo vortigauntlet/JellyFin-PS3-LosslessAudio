@@ -402,7 +402,11 @@ static int s_jw_have_geom = 0;     // 0 until the first build lands
 // rebuild -- the whole point of the file is that "elegant" is a judgement made
 // on a TV, not at a compiler.
 #define JWSPEED_FILE  "jellyfin_jwspeed.txt"
-#define JW_SPEED_DEF  50
+// 2026-09-24: 20, was 50 -- "move a lot slower, fluid and floaty, not
+// choppy".  Slower also shrinks what the wave moves between rebuilds (every
+// JW_REBUILD_DEF calls), which is what reads as choppiness, so the same
+// cadence now samples a far smaller step.
+#define JW_SPEED_DEF  20
 static float s_jw_speed = JW_SPEED_DEF / 100.0f;
 
 static int jwspeed_setting(void) {
@@ -841,9 +845,12 @@ void wave_draw(void) {
     {
         float ts, pert, drv;
         wave_audio_frame(&ts, &pert, &drv);
+        // JellyWave also takes less of the broadband perturbation (0.55x):
+        // the fine ripple is what makes a slow wave look agitated rather
+        // than floating.  Legacy modes are untouched.
         wf_step(&s_field,
                 WAVE_FIELD_DT * ts * (jellywave ? s_jw_speed : 1.0f),
-                pert, drv);
+                jellywave ? pert * 0.55f : pert, drv);
     }
 
     // Column positions across the screen (x in px, clamped to WAVE_MAX_COLS).

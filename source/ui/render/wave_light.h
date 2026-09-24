@@ -124,7 +124,14 @@
 // Specular tint and strength.  Wet gel's highlight takes the light's colour,
 // not the body's, which is what separates it from a merely bright patch of
 // material.
-#define JW_SPEC_I      0.620000f
+#define JW_SPEC_I      0.340000f      /* was 0.62: "too much white shine" */
+
+// The highlight's colour.  It used to be the key light's own (DCEFFF, near
+// white), which on hardware read as a white shine across the body.  It is now
+// a neon Jellyfin cyan, so the sheen reads as glow rather than gloss.
+#define JW_GLOW_R      0.220000f
+#define JW_GLOW_G      0.780000f
+#define JW_GLOW_B      1.000000f
 
 // --- Fresnel, and the mistake that is easy to make here -------------------
 //
@@ -359,9 +366,9 @@ static inline jw_rgb jw_shade(jw_rgb albedo, jw_vec3 n, jw_vec3 eyev, float rim)
     // Specular and Fresnel both take the KEY's colour rather than the body's:
     // a highlight is the light, reflected, and tinting it with the material is
     // what makes gel look like coloured plastic.
-    o.r = jw_tonemap((albedo.r * irr.r + (sp + fr) * JW_KEY_R) * JW_EXPOSURE);
-    o.g = jw_tonemap((albedo.g * irr.g + (sp + fr) * JW_KEY_G) * JW_EXPOSURE);
-    o.b = jw_tonemap((albedo.b * irr.b + (sp + fr) * JW_KEY_B) * JW_EXPOSURE);
+    o.r = jw_tonemap((albedo.r * irr.r + (sp + fr) * JW_GLOW_R) * JW_EXPOSURE);
+    o.g = jw_tonemap((albedo.g * irr.g + (sp + fr) * JW_GLOW_G) * JW_EXPOSURE);
+    o.b = jw_tonemap((albedo.b * irr.b + (sp + fr) * JW_GLOW_B) * JW_EXPOSURE);
     return o;
 }
 

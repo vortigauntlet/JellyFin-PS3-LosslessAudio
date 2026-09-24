@@ -581,6 +581,8 @@ void ui_run_xmb(void) {
             ;                           // it only brought the UI back
         else if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
+        else if (peek_active())
+            peek_input();               // the quick-peek owns the pad while up
         else if (spine_at_base())
             should_exit = spine_input_base();
         else if (spine_try_back(tab))
@@ -630,7 +632,8 @@ void ui_run_xmb(void) {
             s_fc.text += t_text - t_cards;
             if (first_iter) crash_log("13.8c hints");
             bool popup = xmb_update_popup_active();
-            if (!popup) xmb_draw_hints(tab);   // the popup swaps in its own hint
+            // The popup and the quick-peek draw their own hints.
+            if (!popup && !peek_visible()) xmb_draw_hints(tab);
             if (first_iter) crash_log("13.8d tabs");
             if (g_spine_on) spine_draw();
             else            xmb_draw_tabs();
@@ -653,6 +656,7 @@ void ui_run_xmb(void) {
         // is the wait, so the RSX gets the rest of the vblank to draw them.
         u64 t_tg0 = timing_get_us();
         ui_text_gpu_flush();
+        peek_draw_over();              // the quick-peek, over the grid's text
         ambient_cover_over_ui();       // the dissolve, over everything
         s_fc.textgpu += timing_get_us() - t_tg0;
 
