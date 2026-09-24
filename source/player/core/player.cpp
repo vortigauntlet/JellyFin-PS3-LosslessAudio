@@ -196,9 +196,76 @@ static bool player_stream_wait(unsigned elapsed_ms)
     return true;
 }
 
+// --- leaving playback --------------------------------------------------------
+//
+// Measured 2026-09-24: backing out of a film froze the screen for 6-10 s.  The
+// Stopped report and the transcode stop ran on this thread, AFTER the threads
+// were joined but BEFORE the stream socket was closed -- so the server was
+// still pushing video into a 512 KB receive buffer nobody read, on a 128 KB
+// libnet pool, and both requests timed out at 5 s (`http=-1`).  Now the socket
+// is closed first, the two requests run on a thread of their own, and the
+// Returning screen is up while they and the teardown run.
+static struct { char item[64]; char sess[128]; u64 ticks; } s_exit_rep;
+static volatile bool    s_exit_rep_done = true;
+static bool             s_exit_rep_live = false;    // a thread still to join
+static sys_ppu_thread_t s_exit_rep_tid;
+
+static void exit_reports_run(void) {
+    jellyfin_report_stopped(s_exit_rep.item, s_exit_rep.sess, s_exit_rep.ticks);
+    // Kill the server-side transcode for this session.  Without this the job
+    // is left running when playback ends, and starting the SAME item and
+    // version again collides with the orphan -- the new stream request comes
+    // back HTTP 500.  Seeks already do this (player_seek.cpp) for the same
+    // reason.
+    if (s_exit_rep.sess[0]) jellyfin_stop_transcode(s_exit_rep.sess);
+}
+
+static void exit_reports_fn(void *arg) {
+    (void)arg;
+    exit_reports_run();
+    __sync_synchronize();
+    s_exit_rep_done = true;
+    sysThreadExit(0);
+}
+
+// A previous exit's reports, if a sick network ran them past the Returning
+// screen: the next stream must not be asked for before its predecessor's
+// transcode has been stopped (see exit_reports_run).
+static void exit_reports_join(void) {
+    if (!s_exit_rep_live) return;
+    u64 r;
+    sysThreadJoin(s_exit_rep_tid, &r);
+    s_exit_rep_live = false;
+}
+
+static void exit_reports_start(const char *item_id, const char *sess, u64 ticks) {
+    exit_reports_join();
+    snprintf(s_exit_rep.item, sizeof s_exit_rep.item, "%s", item_id ? item_id : "");
+    snprintf(s_exit_rep.sess, sizeof s_exit_rep.sess, "%s", sess ? sess : "");
+    s_exit_rep.ticks = ticks;
+    s_exit_rep_done = false;
+    __sync_synchronize();
+    static char name[] = "jf_exitrep";
+    if (sysThreadCreate(&s_exit_rep_tid, exit_reports_fn, NULL, 1100, 64 * 1024,
+                        THREAD_JOINABLE, name) != 0) {
+        exit_reports_run();              // no thread: the old way, inline
+        s_exit_rep_done = true;
+        return;
+    }
+    s_exit_rep_live = true;
+}
+
+// One frame of the Returning screen, when it is up.
+static inline void returning_pump(bool on) {
+    if (!on) return;
+    sysUtilCheckCallback();
+    buffering_frame();
+}
+
 void show_player(const JFItem *item, u32 resume_secs,
                  const char *media_source_id) {
     crash_log("p1 enter");
+    exit_reports_join();
     plog("show_player: enter");
     plog("show_player: BUILD=seek-diag-1");
     init_btns();
@@ -846,33 +913,49 @@ void show_player(const JFItem *item, u32 resume_secs,
     }
     crash_log("p12 threads joined");
 
-    // Tell the server where we stopped (also finalizes Continue Watching).
-    jellyfin_report_stopped(item->id, ps.session_id, final_pos_ticks);
+    // The stream first: nothing reads it any more, and while it is open the
+    // server keeps filling its receive buffer -- the two requests below then
+    // starve on the network pool (see exit_reports_start).
+    netClose(ps.sock);
 
-    // Kill the server-side transcode for this session.  Without this the job
-    // is left running when playback ends, and starting the SAME item and
-    // version again collides with the orphan — the new stream request comes
-    // back HTTP 500.  Picking a different version appeared to "fix" it only
-    // because a different MediaSourceId is a different job.  Seeks already do
-    // this (player_seek.cpp) for the same reason; ending playback did not.
-    if (ps.session_id[0])
-        jellyfin_stop_transcode(ps.session_id);
+    // The Returning screen (spine gate): the buffering screen's look -- the
+    // item's backdrop under a veil, the Jellyfin mark and ring -- saying
+    // RETURNING while the reports and the teardown run.  It takes over from
+    // the player's last frame, whose flip is still pending.
+    // Not between episodes: an auto-advance goes straight on to the next
+    // one's buffering screen (and that playback joins these reports first).
+    const bool ret_screen = g_spine_on && running && !s_next_requested;
+    if (ret_screen) {
+        if (flip_queued) { waitflip(); flip_queued = false; }
+        ui_restore_rsx_state();
+        buffering_begin(item->id, item->name);
+        buffering_step("Returning", false, NULL);
+        buffering_frame();
+    }
+    const u64 ret_t0 = timing_get_us();
+
+    // Tell the server where we stopped (also finalizes Continue Watching) and
+    // stop its transcode -- on a thread, so a slow server never freezes this.
+    exit_reports_start(item->id, ps.session_id, final_pos_ticks);
 
     // Free video GPU blit resources before releasing the jitter buffer
     vid_gpu_free();
+    returning_pump(ret_screen);
 
     crash_log("p17 jbuf_free begin");
     decode_ring_free();
     jbuf_free();
     crash_log("p18 jbuf_free OK");
-    netClose(ps.sock);
+    returning_pump(ret_screen);
     adec_stop();
     crash_log("p15 audio_close begin");
     audio_close();
     crash_log("p16 audio_close OK");
+    returning_pump(ret_screen);
     crash_log("p13 vdec_close begin");
     vdec_close();
     crash_log("p14 vdec_close OK");
+    returning_pump(ret_screen);
 
     thumb_cache_init();
     ui_restore_rsx_state();
@@ -880,6 +963,29 @@ void show_player(const JFItem *item, u32 resume_secs,
     // for the next one (see subtitles.cpp) but its contents must not outlive
     // this playback.
     subs_clear();
+
+    // Wait for the reports -- Continue Watching is only right once Stopped
+    // has landed -- but never for long: a sick network gets 2.5 s, then the
+    // UI comes back and the thread finishes on its own (the next playback
+    // joins it first).
+    {
+        const u64 cap = s_next_requested ? 0ULL
+                      : ret_screen       ? 2500000ULL : 6000000ULL;
+        while (!s_exit_rep_done && timing_get_us() - ret_t0 < cap) {
+            if (ret_screen) returning_pump(true);
+            else            usleep(10000);
+        }
+        if (s_exit_rep_done) exit_reports_join();
+        char b[96];
+        snprintf(b, sizeof b, "show_player: exit took %llu ms (reports %s)",
+                 (unsigned long long)((timing_get_us() - ret_t0) / 1000),
+                 s_exit_rep_done ? "done" : "still running");
+        plog(b);
+    }
+    if (ret_screen) {
+        buffering_finish(false);     // quick fade; leaves its last flip pending
+        flip_queued = true;
+    }
     crash_log("p19 done");
     plog("show_player: done");
     slog_state("PLAYBACK_STOPPED reason=%s frames=%d vdec_err=%d",

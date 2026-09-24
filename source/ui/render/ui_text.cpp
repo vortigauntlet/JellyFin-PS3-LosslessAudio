@@ -122,8 +122,10 @@ static inline u8 aa_blend(u8 a, u8 fg, u8 bg) {
 // flush mid-frame and thrash.  One dense screen is on the order of 300 distinct
 // glyphs (~100 KB); 384 KB leaves roughly 3x headroom over that.  Watch for
 // repeated "glyph cache flushed" lines in the log if this ever needs raising.
-#define GC_ARENA_BYTES  (384 * 1024)   // ~1% of free heap; ~1100 glyphs
-#define GC_SLOTS        2048           // power of two, open-addressed
+// 2026-09-24: 640 KB / 4096 slots (were 384 KB / 2048): the log showed a
+// flush every few seconds under the spine, each one a burst of re-rasterising.
+#define GC_ARENA_BYTES  (640 * 1024)   // ~1.5% of free heap; ~1800 glyphs
+#define GC_SLOTS        4096           // power of two, open-addressed
 #define GC_FONT_REG     0
 #define GC_FONT_BOLD    1
 #define GC_FONT_ICONS   2

@@ -28,8 +28,17 @@ extern void crash_log(const char *msg);
 // RUN_MAX_W/H bound the staging buffer.  Anything larger falls back to the
 // per-glyph CPU path, so an unexpectedly huge string degrades to today's
 // behaviour instead of failing.
-#define ATLAS_BYTES   (4u * 1024u * 1024u)
-#define RUN_SLOTS     512            // power of two, open-addressed
+//
+// 2026-09-24: 12 MB and 1024 slots (were 4 MB and 512).  Under the spine the
+// log showed "run cache flushed (atlas full)" every 2-5 s on busy screens --
+// the quantised fades give every animating label up to 16 colour variants --
+// and each flush makes the next frames re-rasterise and re-upload everything
+// on screen (tm=293 tkb=3567 in one second), a visible hitch every time.
+// VRAM is not what is short on this console; if 12 MB cannot be had, the old
+// 4 MB is used instead (losing the GPU text path would be far worse).
+#define ATLAS_BYTES_WANT (12u * 1024u * 1024u)
+#define ATLAS_BYTES_MIN  (4u * 1024u * 1024u)
+#define RUN_SLOTS     1024           // power of two, open-addressed
 #define RUN_KEY_MAX   120            // longer strings use the CPU path
 #define RUN_MAX_W     1920
 #define RUN_MAX_H     96             // biggest UI face is ~30 px; 96 is slack
@@ -65,6 +74,7 @@ static u32      s_run_count = 0;
 static u8      *s_atlas      = NULL;   // rsxMemalign'd VRAM
 static u32      s_atlas_off  = 0;
 static u32      s_atlas_used = 0;
+static u32      s_atlas_bytes = 0;     // what was allocated: WANT, else MIN
 // A queued draw holds only a RunSlot index, and that slot's texture points
 // into this atlas.  Resetting either while a frame still has queued draws
 // would make an earlier label disappear or (worse) draw a later label at its
@@ -116,7 +126,12 @@ void ui_text_gpu_init(void)
         return;
     }
 
-    s_atlas = (u8 *)rsxMemalign(128, ATLAS_BYTES);
+    s_atlas_bytes = ATLAS_BYTES_WANT;
+    s_atlas = (u8 *)rsxMemalign(128, s_atlas_bytes);
+    if (!s_atlas) {
+        s_atlas_bytes = ATLAS_BYTES_MIN;
+        s_atlas = (u8 *)rsxMemalign(128, s_atlas_bytes);
+    }
     if (!s_atlas) {
         free(s_stage); s_stage = NULL;
         plog("text_gpu: VRAM atlas alloc FAILED -- staying on the CPU path");
@@ -144,7 +159,7 @@ void ui_text_gpu_init(void)
         char line[96];
         snprintf(line, sizeof(line),
                  "text_gpu: ready -- %u KB atlas, text runs go through the RSX",
-                 (unsigned)(ATLAS_BYTES / 1024u));
+                 (unsigned)(s_atlas_bytes / 1024u));
         plog(line);
     }
     // crash_log is synchronous and survives a power cycle; plog's buffered
@@ -203,8 +218,8 @@ static bool atlas_upload(const u32 *src, int w, int h, u32 *out_off, u32 *out_pi
     const u32 need  = pitch * (u32)h;
     const u32 padded_need = (need + 127u) & ~127u;
 
-    if (padded_need > ATLAS_BYTES) return false;        // absurd: use the CPU path
-    if (s_atlas_used + padded_need > ATLAS_BYTES) {
+    if (padded_need > s_atlas_bytes) return false;      // absurd: use the CPU path
+    if (s_atlas_used + padded_need > s_atlas_bytes) {
         if (s_queued) {
             // The queue still references this generation of the atlas.  Let
             // this one run use the established CPU fallback and reset before

@@ -6,6 +6,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/thread.h>
 
 #include "ui_internal.h"
 #include "ui_render_internal.h"
@@ -13,6 +16,7 @@
 #include "ui_spine.h"       // frame clock + gliding focus ring
 #include "jellyfin_api.h"
 #include "music_screen.h"
+#include "plog.h"
 
 // -------------------------------------------------------
 // Model
@@ -196,46 +200,54 @@ static void home_mark_dynamic_stale(void) {
     home_stage_dynamic_reset();
 }
 
-static void home_fetch_row(int r) {
+// The request for row r.  False when the row has nothing to ask for (a stub,
+// or no library of that kind): it is then marked loaded and empty here.
+static bool home_row_url(int r, char *url, size_t cap) {
     HomeRow *row = &s_rows[r];
-    char url[512];
     const char *fields = "Genres,RunTimeTicks,ProductionYear,Container";
 
     if (r == HR_CONTINUE) {
-        snprintf(url, sizeof(url),
+        snprintf(url, cap,
             "%s/Users/%s/Items/Resume?Limit=%d&Recursive=true&MediaTypes=Video&Fields=%s",
             g_server, g_userid, HOME_ROW_MAX, fields);
     } else if (r == HR_NEXTUP) {
-        snprintf(url, sizeof(url),
+        snprintf(url, cap,
             "%s/Shows/NextUp?userId=%s&Limit=%d&Fields=%s",
             g_server, g_userid, HOME_ROW_MAX, fields);
     } else if (r == HR_MUSIC) {
         // Home samples the FIRST music library; the others are still reachable
         // as their own tabs.
         int mt = xmb_tab_of_kind(TABKIND_MUSIC);
-        if (mt < 0) { row->count = 0; row->loaded = true; return; }
+        if (mt < 0) { row->count = 0; row->loaded = true; return false; }
         const char *lib = g_tabs[mt].library_id;
-        if (!lib[0]) { row->count = 0; row->loaded = true; return; }
-        snprintf(url, sizeof(url),
+        if (!lib[0]) { row->count = 0; row->loaded = true; return false; }
+        snprintf(url, cap,
             "%s/Users/%s/Items?ParentId=%s&IncludeItemTypes=MusicAlbum"
             "&Recursive=true&SortBy=DateCreated&SortOrder=Descending"
             "&Limit=%d&Fields=%s",
             g_server, g_userid, lib, HOME_ROW_MAX, fields);
     } else if (r == HR_MOVIES || r == HR_SHOWS) {
         int tab = xmb_tab_of_kind((r == HR_MOVIES) ? TABKIND_MOVIES : TABKIND_TV);
-        if (tab < 0) { row->count = 0; row->loaded = true; return; }
+        if (tab < 0) { row->count = 0; row->loaded = true; return false; }
         const char *lib  = g_tabs[tab].library_id;
         const char *type = (r == HR_MOVIES) ? "Movie" : "Series";
-        if (!lib[0]) { row->count = 0; row->loaded = true; return; }
-        snprintf(url, sizeof(url),
+        if (!lib[0]) { row->count = 0; row->loaded = true; return false; }
+        snprintf(url, cap,
             "%s/Users/%s/Items?ParentId=%s&IncludeItemTypes=%s&Recursive=true"
             "&SortBy=DateCreated&SortOrder=Descending&Limit=%d&Fields=%s",
             g_server, g_userid, lib, type, HOME_ROW_MAX, fields);
     } else {
         row->loaded = true;   // stub
-        return;
+        return false;
     }
+    return true;
+}
 
+// Synchronous: the boot worker's prefetch (nothing else is drawing then).
+static void home_fetch_row(int r) {
+    HomeRow *row = &s_rows[r];
+    char url[512];
+    if (!home_row_url(r, url, sizeof url)) return;
     int status = http_request(0, url, NULL, g_token, responseBuffer, RESPONSE_SIZE);
     memset(s_extra[r], 0, sizeof s_extra[r]);
     row->count = (status == 200)
@@ -245,12 +257,113 @@ static void home_fetch_row(int r) {
     if (row->scroll > row->count) row->scroll = 0;
 }
 
-// Fetch at most one pending row per frame so the UI fills in progressively
-// instead of stalling on several blocking HTTP calls up front.
+// --- rows off the render thread -------------------------------------------
+//
+// Measured 2026-09-24: back from a film, Home's first frame took 556 ms, and
+// 1,136 ms the second time (`xmb: frame=... other=1114320`).  That was
+// home_step_load() -- a blocking HTTP request on the RENDER thread, one row a
+// frame, for Continue Watching and Next Up (every playback makes them stale).
+// Worse, http_request() holds one mutex for every caller, so that frame also
+// waited behind whatever the thumbnail thread was fetching at the time.
+//
+// So the rows are fetched by a worker of their own, one at a time, into its
+// own buffer, and the render thread only copies a finished row in (a few KB).
+// Until the new row lands the old one stays on screen.  A fetch that started
+// before a playback bumped g_play_gen is thrown away for the dynamic rows and
+// asked for again, so a stale Continue Watching can never be published.
+#define HOME_WORK_BUF (256 * 1024)     // a 25-item row is ~40-80 KB of JSON
+static char            *s_hw_buf = NULL;
+static XMBItem          s_hw_items[HOME_ROW_MAX];
+static HomeExtra        s_hw_extra[HOME_ROW_MAX];
+static char             s_hw_url[512];
+static int              s_hw_count = 0;
+static int              s_hw_status = 0;
+static int              s_hw_row = -1;          // the row in flight
+static unsigned         s_hw_gen = 0;           // g_play_gen when it was asked for
+static volatile int     s_hw_state = 0;         // 0 idle, 1 queued, 2 done
+static volatile bool    s_hw_run = false;
+static int              s_hw_ok = -1;           // -1 not tried, 0 failed, 1 up
+static sys_ppu_thread_t s_hw_tid;
+
+static void home_worker_fn(void *arg) {
+    (void)arg;
+    while (s_hw_run) {
+        if (s_hw_state != 1) { usleep(4000); continue; }
+        __sync_synchronize();
+        memset(s_hw_extra, 0, sizeof s_hw_extra);
+        const int status = http_request(0, s_hw_url, NULL, g_token, s_hw_buf, HOME_WORK_BUF);
+        s_hw_status = status;
+        s_hw_count  = (status == 200)
+                    ? parse_xmb_items_each(s_hw_buf, s_hw_items, HOME_ROW_MAX,
+                                           home_each_extra, s_hw_extra) : 0;
+        __sync_synchronize();
+        s_hw_state = 2;
+    }
+    sysThreadExit(0);
+}
+
+static bool home_worker_up(void) {
+    if (s_hw_ok >= 0) return s_hw_ok == 1;
+    s_hw_ok = 0;
+    s_hw_buf = (char *)malloc(HOME_WORK_BUF);
+    if (!s_hw_buf) { plog("home: row worker buffer FAILED -- rows load inline"); return false; }
+    s_hw_run = true;
+    static char name[] = "jf_homerow";
+    if (sysThreadCreate(&s_hw_tid, home_worker_fn, NULL, 1300, 64 * 1024,
+                        THREAD_JOINABLE, name) != 0) {
+        s_hw_run = false;
+        free(s_hw_buf); s_hw_buf = NULL;
+        plog("home: row worker FAILED -- rows load inline");
+        return false;
+    }
+    s_hw_ok = 1;
+    return true;
+}
+
+// Render thread: publish a finished row.
+static void home_worker_collect(void) {
+    if (s_hw_state != 2) return;
+    __sync_synchronize();
+    const int r = s_hw_row;
+    const bool dynamic = r == HR_CONTINUE || r == HR_NEXTUP;
+    if (r >= 0 && r < HOME_ROWS_N && !(dynamic && s_hw_gen != g_play_gen)) {
+        HomeRow *row = &s_rows[r];
+        const int n = s_hw_count < 0 ? 0 : (s_hw_count > HOME_ROW_MAX ? HOME_ROW_MAX : s_hw_count);
+        // A failed request keeps what the row had rather than emptying it.
+        if (s_hw_status == 200 || row->count == 0) {
+            memcpy(row->items, s_hw_items, (size_t)n * sizeof(XMBItem));
+            memcpy(s_extra[r], s_hw_extra, sizeof s_extra[r]);
+            row->count = n;
+        }
+        row->loaded = true;
+        if (row->scroll > row->count) row->scroll = 0;
+    }
+    s_hw_row = -1;
+    __sync_synchronize();
+    s_hw_state = 0;
+}
+
+// Once per frame (render thread): publish what has landed, then ask for the
+// next unloaded row.  Never blocks.
 static void home_step_load(void) {
+    if (!home_worker_up()) {
+        // No worker: the old way, one blocking row a frame.
+        for (int r = 0; r < HOME_ROWS_N; r++) {
+            if (s_rows[r].kind == HROW_STUB) continue;
+            if (!s_rows[r].loaded) { home_fetch_row(r); return; }
+        }
+        return;
+    }
+    home_worker_collect();
+    if (s_hw_state != 0) return;              // one in flight
     for (int r = 0; r < HOME_ROWS_N; r++) {
-        if (s_rows[r].kind == HROW_STUB) continue;
-        if (!s_rows[r].loaded) { home_fetch_row(r); return; }
+        if (s_rows[r].kind == HROW_STUB || s_rows[r].loaded) continue;
+        if (!home_row_url(r, s_hw_url, sizeof s_hw_url)) continue;
+        s_hw_row = r;
+        s_hw_gen = g_play_gen;
+        __sync_synchronize();
+        s_hw_state = 1;
+        return;
     }
 }
 

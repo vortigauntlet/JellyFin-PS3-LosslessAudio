@@ -396,6 +396,13 @@ void xmb_draw_card_src(const char *item_id, int src_w, int src_h,
                        ThumbImg img) {
     thumb_request(item_id, src_w, src_h, img);
     const Bitmap *bm = thumb_get(item_id, src_w, src_h, img);
+    // A poster kept through a playback on its VRAM mirror alone has no
+    // pixels for thumb_get() until the background refill lands, but the GPU
+    // pass has drawn it: no placeholder over the top of it.
+    if (!bm && ui_card_gpu_ready()) {
+        u32 o, pt;
+        if (thumb_gpu_texture(item_id, src_w, src_h, &o, &pt, img)) return;
+    }
     if (bm) {
         // The GPU pass (xmb_card_gpu_one, run before this frame's rsxSync)
         // has already drawn this image straight from the slot's VRAM mirror.

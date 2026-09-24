@@ -24,6 +24,7 @@
 #include "thumbnail_cache.h"
 #include "ui_art.h"
 #include "ui_card_gpu.h"   // ui_card_gpu_ready
+#include "ui_text_gpu.h"
 
 // The album art's accent (render/art_colour.h, sampled once per album from the
 // thumbnail already in main memory) tints the visualiser, the artist line and
@@ -39,6 +40,28 @@ static const Bitmap *music_art_bitmap(const char *art_id, int A) {
         rh = rh < cap ? rh : cap;
     }
     return thumb_get(art_id, rw, rh);
+}
+
+// The cover on the RSX, in the GPU phase (after the wave, before the fence),
+// from the thumbnail's VRAM mirror.  2026-09-24: the screen ran at ~25 fps --
+// everything on it was drawn by the PPU, and the 453 px cover alone is a
+// scaled blit of ~205k pixels into video memory every frame.  False (and the
+// CPU blit in draw_now_playing takes over) until the texture is up.
+static bool s_cover_gpu = false;
+static void music_cover_gpu(const char *art_id, int ax, int ay, int A) {
+    s_cover_gpu = false;
+    if (!art_id || !art_id[0] || !ui_card_gpu_ready()) return;
+    int rw = A, rh = A, cap = thumb_max_square();
+    if (rw > cap || rh > cap || (size_t)rw * rh > (size_t)cap * cap) {
+        rw = rw < cap ? rw : cap;
+        rh = rh < cap ? rh : cap;
+    }
+    thumb_request(art_id, rw, rh);
+    u32 off = 0, pitch = 0;
+    if (!thumb_gpu_texture(art_id, rw, rh, &off, &pitch)) return;
+    ui_card_gpu_draw_ex(off, (u32)rw, (u32)rh, pitch, ax, ay, A, A, 0.0f, 1.0f, 255);
+    ui_card_gpu_end();
+    s_cover_gpu = true;
 }
 
 static void music_accent_update(const char *art_id, int A) {
@@ -431,7 +454,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     int A  = (int)(H * 0.42f);
     int ax = UIS_W(40);
     int ay = (int)(H * 0.27f);
-    if (!xmb_cpu_blit_thumb(t->art_id, ax, ay, A, A))
+    if (!s_cover_gpu && !xmb_cpu_blit_thumb(t->art_id, ax, ay, A, A))
         xmb_draw_letter_tile(t->art_id,
                              ctx->title[0] ? ctx->title : t->name,
                              ax, ay, A);
@@ -820,10 +843,14 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
     // last frame the music screen ever drew.
     u64 hb_us    = 0;
     u32 hb_frame = 0;
+    // Per-frame cost since the last heartbeat (us): the GPU phase (wave +
+    // cover), the fence, and the draw (CPU shapes + queued text).
+    u64 c_gpu = 0, c_sync = 0, c_draw = 0; u32 c_n = 0;
 
     while (running) {
         waitflip();
         sysUtilCheckCallback();
+        const u64 t_gpu0 = timing_get_us();
         clearScreen(XMB_BG);
         wave_draw();
         {
@@ -832,20 +859,27 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             int cur = music_current_index();
             if (cur >= count) cur = count - 1;
             if (cur < 0) cur = 0;
-            music_accent_update(s_tracks[cur].art_id, (int)(display_height * 0.42f));
+            const int A = (int)(display_height * 0.42f);
+            music_accent_update(s_tracks[cur].art_id, A);
+            music_cover_gpu(s_tracks[cur].art_id, UIS_W(40), (int)(display_height * 0.27f), A);
         }
+        c_gpu += timing_get_us() - t_gpu0;
 
         hb_frame++;
         {
             u64 now = timing_get_us();
             if (hb_us == 0 || now - hb_us >= 5000000ULL) {
                 hb_us = now;
-                char b[80];
-                snprintf(b, sizeof b, "music_screen: f=%u %s pos=%us",
+                char b[160];
+                const u32 n = c_n ? c_n : 1;
+                snprintf(b, sizeof b, "music_screen: f=%u %s pos=%us gpu=%llu sync=%llu draw=%llu us/frame",
                          (unsigned)hb_frame,
                          music_is_paused() ? "PAUSED" : "playing",
-                         (unsigned)music_elapsed_secs());
+                         (unsigned)music_elapsed_secs(),
+                         (unsigned long long)(c_gpu / n), (unsigned long long)(c_sync / n),
+                         (unsigned long long)(c_draw / n));
                 plog(b);
+                c_gpu = c_sync = c_draw = 0; c_n = 0;
             }
         }
 
@@ -853,11 +887,25 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         if (music_screen_input(s_tracks, count)) break;
         if (!music_is_active()) break;   // queue finished
 
+        const u64 t_s0 = timing_get_us();
         rsxSync();
+        const u64 t_d0 = timing_get_us();
+        c_sync += t_d0 - t_s0;
 
+        // Text through the RSX, as the XMB does (render/ui_text_gpu.h): the
+        // CPU path composites every glyph by READING video memory, ~100x
+        // slower than writing it.
+        ui_text_gpu_begin();
         draw_now_playing(ctx, s_tracks, count);
-        if (s_q_open)
+        if (s_q_open) {
+            // The overlay dims the screen and lays a panel over it: the
+            // now-playing text has to be on the framebuffer first.
+            ui_text_gpu_flush_fenced();
             draw_queue_overlay(s_tracks, count, ctx->title);
+        }
+        ui_text_gpu_flush();
+        c_draw += timing_get_us() - t_d0;
+        c_n++;
 
         flip();
         sysUtilCheckCallback();

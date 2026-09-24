@@ -17,6 +17,8 @@
 #include "ui_strobe_test.h"
 #include "plog.h"
 #include "jf_paths.h"
+#include <unistd.h>
+#include <sys/thread.h>
 
 extern void crash_log(const char *msg);
 
@@ -366,6 +368,208 @@ static u32 s_jw_off[JW_LAYERS][2];
 static u32 s_jw_cnt[JW_LAYERS][2];
 static int s_jw_have_geom = 0;     // 0 until the first build lands
 
+// Build the complete JellyWave stream into dst, starting at index n (the
+// gradient quad owns [0,4)), from one snapshot of the field's sampled
+// displacement.  Writes every layer's draw ranges into off/cnt and returns the
+// new vertex count.  Pure: it reads only its arguments and wave_gel.h's
+// constants, so it runs unchanged on the render thread (the first build) or
+// on the generation worker (every build after it).  Nothing here touches the
+// RSX-local buffers.
+static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
+                       float aspect, jw_vert *scratch,
+                       u32 off[JW_LAYERS][2], u32 cnt[JW_LAYERS][2],
+                       u32 *repaired_out, u32 *dropped_out)
+{
+    #define JW_EMIT(Q, A, USE_RIM) do {                         \
+        const jw_vert *q_ = (Q);                                \
+        dst[n].x = q_->x;                                       \
+        dst[n].y = q_->y;                                       \
+        dst[n].z = 0.0f;                                        \
+        dst[n].w = 1.0f;                                        \
+        dst[n].rgba = (USE_RIM)                                 \
+            ? WAVE_RGBA(q_->rr, q_->rg, q_->rb, 255)            \
+            : WAVE_RGBA(q_->r, q_->g, q_->b, (A));              \
+        n++;                                                    \
+    } while (0)
+
+    for (int slot = 0; slot < JW_LAYERS; slot++) {
+        const int       li = JW_LAYERS - 1 - slot;
+        const jw_layer *L  = &JW_LAYER[li];
+        int order[JW_SECTION];
+        int pass, s, i;
+
+        cnt[slot][0] = cnt[slot][1] = 0;
+        off[slot][0] = off[slot][1] = 0;
+
+        if (!jw_build_layer(L, sy[li], WF_SAMPLES, aspect, scratch, JW_VERTS))
+            continue;
+
+        {
+            int repaired = 0;
+            if (!jw_sanitize_layer(scratch, &repaired)) {
+                (*dropped_out)++;
+                continue;
+            }
+            *repaired_out += (u32)repaired;
+        }
+
+        jw_strip_order(scratch, order);
+
+        for (pass = 0; pass < 2; pass++) {
+            int started = 0;
+            const jw_vert *tail = NULL;
+
+            off[slot][pass] = (u32)n;
+
+            for (s = 0; s < JW_SECTION; s++) {
+                const int j  = order[s];
+                const int j2 = (j + 1) % JW_SECTION;
+
+                if (pass == 1 && !jw_strip_has_rim(j))
+                    continue;
+
+                if (n + 2 * JW_STATIONS + 2 > WAVE_MAX_VERTS)
+                    break;
+
+                if (started) {
+                    /*
+                     * Degenerate join, entirely from CPU/main memory.
+                     * NEVER read back from the RSX-local destination.
+                     */
+                    JW_EMIT(tail, L->alpha, pass);
+                    JW_EMIT(&scratch[0 * JW_SECTION + j], L->alpha, pass);
+                }
+
+                started = 1;
+
+                for (i = 0; i < JW_STATIONS; i++) {
+                    JW_EMIT(&scratch[i * JW_SECTION + j],  L->alpha, pass);
+                    JW_EMIT(&scratch[i * JW_SECTION + j2], L->alpha, pass);
+                }
+
+                tail = &scratch[(JW_STATIONS - 1) * JW_SECTION + j2];
+            }
+
+            cnt[slot][pass] = (u32)n - off[slot][pass];
+        }
+    }
+    #undef JW_EMIT
+    return n;
+}
+
+// --- the generation worker ------------------------------------------------
+//
+// Measured 2026-09-24 (spine13): a build costs ~6.3 ms of PPU, and on the
+// rebuild call it landed on the render thread.  Any screen with ~10 ms of
+// other work (Home, a grid, detail) then missed vsync on EVERY rebuild frame:
+// `xmb: frame=22.2ms` is exactly 16.7 + 16.7 + 33.3 over three, i.e. the whole
+// UI running at a 60-60-30 cadence -- the "still laggy in places".
+//
+// The Cell's PPU has two hardware threads and the render thread uses one.  So
+// the build moves to the other: on a rebuild call the render thread snapshots
+// the field's sampled displacement (3 x WF_SAMPLES floats) and hands it over;
+// the worker builds the complete stream into its OWN buffer; the next rebuild
+// call copies the finished stream into the stage (~0.1 ms) and queues the
+// next.  The geometry is therefore one rebuild interval old when drawn, which
+// on a wave this slow is invisible.
+//
+// What does NOT change, deliberately: the stage is still written only on a
+// rebuild call, on the render thread; a reuse call still writes nothing; the
+// fence, the buffer rotation and jw_upload() are untouched.  The worker never
+// sees the stage or the RSX buffers.  If a build is not finished when the next
+// rebuild call comes round, that call keeps the previous geometry (the stage
+// is simply not rewritten) -- it never waits.
+enum { JW_JOB_IDLE = 0, JW_JOB_QUEUED = 1, JW_JOB_DONE = 2 };
+static WaveVert         s_jw_back[WAVE_MAX_VERTS] __attribute__((aligned(16)));
+static jw_vert          s_jw_wscratch[JW_VERTS];
+static float            s_jw_job_sy[WF_LAYERS][WF_SAMPLES];
+static float            s_jw_job_aspect = 1.0f;
+static u32              s_jw_back_off[JW_LAYERS][2];
+static u32              s_jw_back_cnt[JW_LAYERS][2];
+static int              s_jw_back_n = 0;
+static u32              s_jw_back_repaired = 0, s_jw_back_dropped = 0;
+static u64              s_jw_back_us = 0;
+static volatile int     s_jw_job = JW_JOB_IDLE;
+static volatile bool    s_jw_worker_run = false;
+static bool             s_jw_worker = false;
+static sys_ppu_thread_t s_jw_tid;
+static u32              s_jw_late = 0;     // rebuild calls that found no build ready
+
+static void jw_worker_fn(void *arg)
+{
+    (void)arg;
+    while (s_jw_worker_run) {
+        if (s_jw_job != JW_JOB_QUEUED) { usleep(1000); continue; }
+        __sync_synchronize();                  // the snapshot, before reading it
+        const u64 t0 = timing_get_us();
+        u32 rep = 0, drop = 0;
+        const int m = jw_generate(s_jw_back, 4, s_jw_job_sy, s_jw_job_aspect,
+                                  s_jw_wscratch, s_jw_back_off, s_jw_back_cnt,
+                                  &rep, &drop);
+        s_jw_back_n        = m;
+        s_jw_back_repaired = rep;
+        s_jw_back_dropped  = drop;
+        s_jw_back_us       = timing_get_us() - t0;
+        __sync_synchronize();                  // the build lands before the flag
+        s_jw_job = JW_JOB_DONE;
+    }
+    sysThreadExit(0);
+}
+
+static void jw_worker_start(void)
+{
+    if (s_jw_worker) return;
+    s_jw_job = JW_JOB_IDLE;
+    s_jw_worker_run = true;
+    static char name[] = "jf_jwgen";
+    // Below the render thread's priority: it runs on the PPU's other hardware
+    // thread, and must never be what delays a frame.
+    s32 rc = sysThreadCreate(&s_jw_tid, jw_worker_fn, NULL, 1200, 64 * 1024,
+                             THREAD_JOINABLE, name);
+    if (rc != 0) {
+        s_jw_worker_run = false;
+        char b[96];
+        snprintf(b, sizeof b, "wave: JellyWave worker FAILED 0x%08x -- builds inline",
+                 (u32)rc);
+        plog(b);
+        return;
+    }
+    s_jw_worker = true;
+}
+
+// Rebuild call, worker mode: copy the finished build into the stage from index
+// n (4, just past the gradient) and return the new vertex count -- or, when no
+// build is ready yet, leave the stage as it is and return the current count.
+static int jw_worker_publish(int n)
+{
+    if (s_jw_job != JW_JOB_DONE) {
+        s_jw_late++;
+        return (int)s_jw_verts;
+    }
+    __sync_synchronize();                      // see the worker's writes
+    const int m = s_jw_back_n > n ? s_jw_back_n : n;
+    memcpy(&s_jw_stage[n], &s_jw_back[n], (size_t)(m - n) * sizeof(WaveVert));
+    memcpy(s_jw_off, s_jw_back_off, sizeof s_jw_off);
+    memcpy(s_jw_cnt, s_jw_back_cnt, sizeof s_jw_cnt);
+    s_jw_gen_us   += s_jw_back_us;
+    s_jw_repaired += s_jw_back_repaired;
+    s_jw_dropped  += s_jw_back_dropped;
+    s_jw_rebuilds++;
+    __sync_synchronize();
+    s_jw_job = JW_JOB_IDLE;
+    return m;
+}
+
+// Hand the worker the field as it is now.  One build in flight at most.
+static void jw_worker_queue(float aspect)
+{
+    if (s_jw_job != JW_JOB_IDLE) return;
+    memcpy(s_jw_job_sy, s_field.sy, sizeof s_jw_job_sy);
+    s_jw_job_aspect = aspect;
+    __sync_synchronize();                      // the snapshot lands before the flag
+    s_jw_job = JW_JOB_QUEUED;
+}
+
 // --- measured on hardware, 2026-09-21 -------------------------------------
 //
 // The first hardware run said the geometry costs 7,411 us of PPU per call to
@@ -442,7 +646,10 @@ static int jwspeed_setting(void) {
 // theme change takes up to N calls to appear -- 50 ms at N = 3. That is the
 // one visible cost and it is well under a frame of human latency.
 #define JWREBUILD_FILE  "jellyfin_jwrebuild.txt"
-#define JW_REBUILD_DEF  3
+// 2026-09-24: 2 (was 3).  The build now runs on the generation worker, so a
+// rebuild costs the render thread ~0.1 ms either way; sampling the curve at
+// 30 Hz instead of 20 is pure smoothness.
+#define JW_REBUILD_DEF  2
 static int s_jw_rebuild_every = JW_REBUILD_DEF;
 static int s_jw_rebuild_phase = 0;
 
@@ -614,6 +821,7 @@ void wave_init(void) {
         s_jw_rebuild_every = jwrebuild_setting();
         s_jw_rebuild_phase = 0;
         s_jw_have_geom     = 0;
+        jw_worker_start();
         snprintf(msg, sizeof(msg),
                  "wave: JellyWave %d stations x %d section, %d verts/layer, "
                  "%d layers, %d draws",
@@ -948,103 +1156,25 @@ void wave_draw(void) {
         }
 
         if (jellywave && jw_rebuild) {
-            // STROBE ISOLATION TEST 4: build the real JellyWave geometry,
-            // but the submission below will draw only the first body strip
-            // of the furthest layer. This isolates basic JellyWave geometry
-            // from the merged multi-strip/degen-join path.
-            u64 jw_t0 = timing_get_us();
-
             /*
-             * Build the COMPLETE JellyWave stream in main memory.
-             *
+             * Build the COMPLETE JellyWave stream in main memory (the stage).
              * Nothing below reads from the RSX-local destination buffer.
-             * This is deliberately separated from the upload step below.
+             *
+             * After the first build the generation worker does the work (see
+             * jw_worker_fn): this call only copies its finished build into the
+             * stage and hands it the field for the next one.  The very first
+             * build is made here, so the first frame is never empty.
              */
-            #define JW_EMIT(Q, A, USE_RIM) do {                         \
-                const jw_vert *q_ = (Q);                                \
-                s_jw_stage[n].x = q_->x;                                \
-                s_jw_stage[n].y = q_->y;                                \
-                s_jw_stage[n].z = 0.0f;                                 \
-                s_jw_stage[n].w = 1.0f;                                 \
-                s_jw_stage[n].rgba = (USE_RIM)                         \
-                    ? WAVE_RGBA(q_->rr, q_->rg, q_->rb, 255)            \
-                    : WAVE_RGBA(q_->r, q_->g, q_->b, (A));              \
-                n++;                                                    \
-            } while (0)
-
-            for (int slot = 0; slot < JW_LAYERS; slot++) {
-                const int       li = JW_LAYERS - 1 - slot;
-                const jw_layer *L  = &JW_LAYER[li];
-                int order[JW_SECTION];
-                int pass, s, i;
-
-                s_jw_cnt[slot][0] = s_jw_cnt[slot][1] = 0;
-                s_jw_off[slot][0] = s_jw_off[slot][1] = 0;
-
-                if (!jw_build_layer(L, s_field.sy[li], WF_SAMPLES,
-                                    W / H, s_jw, JW_VERTS))
-                    continue;
-
-                {
-                    int repaired = 0;
-                    if (!jw_sanitize_layer(s_jw, &repaired)) {
-                        s_jw_dropped++;
-                        continue;
-                    }
-                    s_jw_repaired += (u32)repaired;
-                }
-
-                jw_strip_order(s_jw, order);
-
-                for (pass = 0; pass < 2; pass++) {
-                    int started = 0;
-                    const jw_vert *tail = NULL;
-
-                    s_jw_off[slot][pass] = (u32)n;
-
-                    for (s = 0; s < JW_SECTION; s++) {
-                        const int j  = order[s];
-                        const int j2 = (j + 1) % JW_SECTION;
-
-                        if (pass == 1 && !jw_strip_has_rim(j))
-                            continue;
-
-                        if (n + 2 * JW_STATIONS + 2 > WAVE_MAX_VERTS)
-                            break;
-
-                        if (started) {
-                            /*
-                             * Degenerate join, entirely from CPU/main memory.
-                             * NEVER do v[n] = v[n-1] here: v is the RSX-local
-                             * destination and PPU readback from it is unsafe.
-                             */
-                            JW_EMIT(tail, L->alpha, pass);
-                            JW_EMIT(&s_jw[0 * JW_SECTION + j],
-                                    L->alpha, pass);
-                        }
-
-                        started = 1;
-
-                        for (i = 0; i < JW_STATIONS; i++) {
-                            JW_EMIT(&s_jw[i * JW_SECTION + j],
-                                    L->alpha, pass);
-                            JW_EMIT(&s_jw[i * JW_SECTION + j2],
-                                    L->alpha, pass);
-                        }
-
-                        tail = &s_jw[(JW_STATIONS - 1) * JW_SECTION + j2];
-                    }
-
-                    s_jw_cnt[slot][pass] =
-                        (u32)n - s_jw_off[slot][pass];
-                }
+            if (s_jw_worker && s_jw_have_geom) {
+                n = jw_worker_publish(n);
+                jw_worker_queue(W / H);
+            } else {
+                u64 jw_t0 = timing_get_us();
+                n = jw_generate(s_jw_stage, n, s_field.sy, W / H, s_jw,
+                                s_jw_off, s_jw_cnt, &s_jw_repaired, &s_jw_dropped);
+                s_jw_gen_us += timing_get_us() - jw_t0;
+                s_jw_rebuilds++;
             }
-
-            #undef JW_EMIT
-
-
-            s_jw_gen_us += timing_get_us() - jw_t0;
-            s_jw_rebuilds++;
             s_jw_verts = (u32)n;
             s_jw_have_geom = 1;
         } else if (jellywave) {
@@ -1323,20 +1453,23 @@ void wave_draw(void) {
     // too -- but it is worth knowing when reading the number against a frame
     // budget.
     if (jellywave && ++s_jw_frames >= 60) {
-        char msg[192];
+        char msg[224];
         u32  nb = s_jw_rebuilds ? s_jw_rebuilds : 1;
         snprintf(msg, sizeof(msg),
                  "jellywave: gen=%lluus/build amort=%lluus/call "
                  "up=%lluus/call verts=%u draws=%u rebuild=1/%d "
-                 "speed=%d%% repaired=%u dropped=%u (%d calls, %d builds)",
+                 "speed=%d%% repaired=%u dropped=%u (%d calls, %d builds) "
+                 "worker=%d late=%u",
                  (unsigned long long)(s_jw_gen_us / nb),
                  (unsigned long long)(s_jw_gen_us / s_jw_frames),
                  (unsigned long long)(s_jw_upload_us / s_jw_frames),
                  s_jw_verts, s_jw_draws, s_jw_rebuild_every,
                  (int)(s_jw_speed * 100.0f + 0.5f),
                  (unsigned)s_jw_repaired, (unsigned)s_jw_dropped,
-                 (int)s_jw_frames, (int)s_jw_rebuilds);
+                 (int)s_jw_frames, (int)s_jw_rebuilds,
+                 s_jw_worker ? 1 : 0, (unsigned)s_jw_late);
         plog(msg);
+        s_jw_late       = 0;
         s_jw_gen_us     = 0;
         s_jw_upload_us  = 0;
         s_jw_frames     = 0;
