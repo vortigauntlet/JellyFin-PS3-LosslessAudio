@@ -693,16 +693,9 @@ the gate on, it is now one continuous presentation from Play to the first frame:
   accent's deep shade. Then a black veil ramp, a breathing glow, a thin ring
   track, and a gradient arc turning slowly (one turn per 2.6 s) in
   Jellyfin's own colours: #AA5CC3 purple at the transparent tail to #00A4DC
-  blue at the head. Closed, the ring is purple → blue → purple round its two
-  halves, so there is no seam. At the centre is the **legacy JellyFin-PS3
-  logo**: MontyMcK's original app icon (`ICON0.PNG`, the PlayStation mark in
-  Jellyfin's gradient), cropped to the logo by `tools/gen_legacy_icon.py`
-  into `gfx/jf_legacy_icon_png.h` (121×116). It is decoded once per run into
-  a third VRAM slot (`GPU_TEX_BRAND`, ~59 KB, never freed) and drawn with its
-  own alpha using the HUD overlay's blend (same program, format and blend
-  func). If that fails, the vector Jellyfin mark (`jf_logo_geom.h`) stands in.
-  The whole screen fades under one near-black quad at 1 − ui_a, because a
-  texture blended by its own alpha cannot also take a per-frame opacity. The eyebrow reads PREPARING, CONNECTING,
+  blue at the head. Closed, it is purple → blue → purple round its two
+  halves, so there is no seam. At the centre is the Jellyfin mark, graphic
+  only. The eyebrow reads PREPARING, CONNECTING,
   "Waiting for the server · 12s", then BUFFERING with the percentage under it.
   The title sits bottom-left, and the O hint shows Start now or Cancel.
 - **Motion:**
@@ -720,7 +713,7 @@ the gate on, it is now one continuous presentation from Play to the first frame:
   background, never the wrong picture.
 - **Cost:** GPU only, from what is already in VRAM. Per frame that is one
   textured quad, three ramp stops, two glow fans, two ring strips (≤ 340
-  vertices), the logo (one textured quad) and the fade quad, then one `rsxSync`
+  vertices) and the mark (244 vertices, immediate mode), then one `rsxSync`
   for the text. There is no decode, allocation, framebuffer read or vertex
   buffer. Pre-roll draws at ≤ 30 fps (`buffering_frame_paced(33 ms)`) and
   waits only for its own previous flip. The blocking steps before pre-roll
@@ -835,11 +828,8 @@ chosen. Items with a single version still show no selector.
    - Errors: stream_open cancel and a vdec failure fade quickly into the error
      screen.
    - Next-episode auto-advance shows the plain background.
-3. **Logo and ring legibility at TV distance:** the logo is 76 px tall and the
-   ring 128 px, both authored at 720p. Check the ring's 3 px stroke at
-   480p/576i, the logo's edges (LINEAR downscale from 121×116 at 720p), and
-   that the one-time 59 KB VRAM allocation at the first Play does not disturb
-   `vid_gpu_init` / the HUD overlay allocation on that first session.
+3. **Mark and ring legibility at TV distance:** the mark is 68 px wide and the
+   ring 128 px, both authored at 720p. Check the ring's 3 px stroke at 480p/576i.
 4. **Accent choice on real posters:** check that it reads well and is never
    muddy. The fallback is the theme accent.
 5. **Music:** the halo and floor breathe with the music without pumping. Check
