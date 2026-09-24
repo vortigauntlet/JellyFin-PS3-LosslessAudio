@@ -55,7 +55,7 @@ static bool s_cover_gpu = false;
 // s_scr_a   the whole screen's content; 1 -> 0 over the outro when leaving,
 //           so the screen dissolves to the wave instead of cutting.
 // s_up_a    Up Next; fades out in focus mode.
-// s_ctl_a   transport (gone in focus mode); the seek bar and times go translucent.
+// s_ctl_a   transport, seek bar and times; all fade away in focus mode.
 //
 // Focus mode: after FOCUS_AFTER_US of playback with no button pressed, the
 // screen settles -- Up Next fades away and the controls go translucent --
@@ -569,7 +569,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     const float sa = s_scr_a;                       // whole screen
     const float ua = s_scr_a * s_up_a;              // Up Next
     const float ca = s_scr_a * s_ctl_a;             // transport
-    const float ka = s_scr_a * (0.28f + 0.72f * s_ctl_a); // seek bar + times: translucent
+    const float ka = s_scr_a * s_ctl_a;             // seek bar + times: fade with the controls
 
     int cur = music_current_index();
     if (cur >= count) cur = count - 1;
