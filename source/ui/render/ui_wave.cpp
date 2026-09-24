@@ -286,8 +286,57 @@ typedef struct { float x, y, z, w; u32 rgba; }
 #define JW_RIM_VERTS    (JW_RIM_STRIPS * 2 * JW_STATIONS + (JW_RIM_STRIPS - 1) * 2)
 #define JW_TOTAL_VERTS  (4 + JW_LAYERS * (JW_BODY_VERTS + JW_RIM_VERTS))
 
-#define WAVE_MAX_VERTS  ((WAVE_LEGACY_VERTS > JW_TOTAL_VERTS) \
-                         ? WAVE_LEGACY_VERTS : JW_TOTAL_VERTS)
+// --- JellyWave never uses a low vertex index -----------------------------
+//
+// The JellyWave stream (gradient included) starts at vertex JW_INDEX_BASE of
+// the buffer, not at 0.  Vertices [0, JW_INDEX_BASE) are allocated and never
+// written or drawn.
+//
+// MEASURED REASON (hardware, 2026-09-23 -- the "JellyWave strobe").  On this
+// console the RSX draws array vertices at LOW INDICES from stale data instead
+// of what the PPU uploaded.  RSX backend labels around each draw showed:
+//
+//   * the whole ~13 ms of the strobing frames was the FIRST body draw, and
+//     inside it only the strips at indices 4..649 (2.7 / 4.1 / 4.1 / 1.9 ms
+//     against 6-30 us for every later strip of the same draw);
+//   * it follows the index, not the layer: putting the NEAR layer first moved
+//     all 14 ms onto it and made the far layer cheap;
+//   * it follows the index, not the address: the same indices uploaded 24 KB
+//     further into the buffer (binding base moved with them) still cost
+//     13.2 ms and still strobed; the same data at index 1024 cost 279 us and
+//     did not strobe;
+//   * the PPU's stream was verified correct -- dumped from the console and
+//     rasterised on the host it is ~0.2 M px with no triangle over 58x32 px --
+//     and the cost was constant while the wave moved, so the RSX was drawing
+//     something other than this geometry.  Half the cost went with blending
+//     off, i.e. it was fill: huge foreign triangles, which is the strobe.
+//   * rsxInvalidateVertexCache() does not clear it, and disabling the POS /
+//     COLOR0 arrays after the wave does not prevent it.
+//
+// The rest of the frame -- cards, text, icons, glow, divider -- is drawn in
+// immediate mode, a few hundred vertices per frame, which is the most likely
+// source of the stale low-index state; the exact RSX unit is not identified.
+// 4096 is ~6x the measured extent of the damage, so a busier screen (Settings,
+// the search OSK) has room.  It costs 96 KB of VRAM per buffer and nothing
+// per frame: the gap is never uploaded.
+//
+// Do NOT "reclaim" the gap.  Anything drawn from a vertex array on this
+// console should stay clear of low indices for the same reason.
+#define JW_INDEX_BASE   4096
+
+// STROBE DIAGNOSTIC (run 6).  The 4096 base ALONE did not fix it on hardware
+// (sync still 13.8 ms, still strobing).  The one layout that did -- run 4's
+// "index gap" -- also wrote ~24 KB of never-drawn filler at the START of every
+// upload.  Run 6 tests whether what matters is that the first ~16 KB of each
+// upload is sacrificial.  Layout per profile (ui_strobe_test.cpp):
+//   base    index of the gradient; the JellyWave geometry follows it
+//   upfrom  first index uploaded; [upfrom, base) is filler, never drawn
+//   trail   filler vertices appended after the geometry, never drawn
+//   rev     upload the words back-to-front
+#define JW_FILL         1024
+
+#define WAVE_MAX_VERTS  ((WAVE_LEGACY_VERTS > JW_INDEX_BASE + JW_TOTAL_VERTS + JW_FILL) \
+                         ? WAVE_LEGACY_VERTS : JW_INDEX_BASE + JW_TOTAL_VERTS + JW_FILL)
 
 // Two buffers, alternated on every call.  The RSX fetches the array
 // asynchronously, so rebuilding the memory a queued draw has not consumed yet
@@ -346,6 +395,24 @@ static inline void jw_upload(WaveVert *dst, const WaveVert *src, u32 count)
 
     __asm__ __volatile__("sync" ::: "memory");
 }
+
+// STROBE DIAGNOSTIC: identical stores, issued last word first.
+static inline void jw_upload_rev(WaveVert *dst, const WaveVert *src, u32 count)
+{
+    volatile jw_upload_word *d = (volatile jw_upload_word *)dst;
+    const jw_upload_word *s = (const jw_upload_word *)src;
+    u32 i = (count * (u32)sizeof(WaveVert)) / 8u;
+
+    while (i--)
+        d[i] = s[i];
+
+    __asm__ __volatile__("sync" ::: "memory");
+}
+
+// The layout the stream in s_jw_stage was last BUILT with.  A reuse call
+// uploads and draws with these, not with whatever profile is current.
+static int s_jw_base_used   = JW_INDEX_BASE;
+static int s_jw_upfrom_used = JW_INDEX_BASE;
 
 // Rolling cost, logged once a second.  The xmb: frame line's `gpu` bucket
 // measures SUBMISSION, not RSX work, so the only honest things to report from
@@ -920,9 +987,24 @@ void wave_draw(void) {
                      ? s_jw_stage
                      : s_wave_vbuf[s_wave_vbuf_turn];
         u32       vo = s_wave_vbuf_off[s_wave_vbuf_turn];
-        int       n  = 0;
+        // JellyWave's stream starts at JW_INDEX_BASE -- see its comment for
+        // the hardware measurement.  The legacy modes keep starting at 0.
+        int base = 0;
+        if (jellywave)
+            base = jw_rebuild ? strobe_test_jw_base() : s_jw_base_used;
+        int       n  = base;
 
-        // Gradient quad first, so it occupies vertices [0,4).
+        // STROBE DIAGNOSTIC: filler below the gradient, written on a rebuild.
+        if (jellywave && jw_rebuild) {
+            const WaveVert fill = { 0.0f, 0.0f, 0.0f, 1.0f, 0u };
+            const int up = strobe_test_jw_upfrom();
+            for (int k = up; k < base; k++)
+                s_jw_stage[k] = fill;
+            s_jw_upfrom_used = up;
+            s_jw_base_used   = base;
+        }
+
+        // Gradient quad first, so it occupies vertices [base, base+4).
         #define WV_PUT(px, py, pr, pg, pb, pa) do {             \
             v[n].x = (px); v[n].y = (py); v[n].z = 0.0f;        \
             v[n].w = 1.0f;                                      \
@@ -933,7 +1015,11 @@ void wave_draw(void) {
         // The gradient shares the buffer with the ribbons, so on a reuse frame
         // it is held along with them.  That is what costs a theme change up to
         // one rebuild interval to appear -- 50 ms at the default cadence.
-        if (jw_rebuild) {
+        // STROBE DIAGNOSTIC (run 7): grad_end moves the gradient's four
+        // vertices to AFTER the JellyWave geometry (written below).
+        const bool grad_end = jellywave && strobe_test_jw_grad_end();
+        if (jw_rebuild && !grad_end) {
+            if (jellywave) s_jw_base_used = n;             // gradient index
             WV_PUT(-1.0f,  1.0f, gtlr, gtlg, gtlb, 255);   // top-left
             WV_PUT(-1.0f, -1.0f, gblr, gblg, gblb, 255);   // bottom-left
             WV_PUT( 1.0f,  1.0f, gtrr, gtrg, gtrb, 255);   // top-right
@@ -941,6 +1027,14 @@ void wave_draw(void) {
         }
 
         if (jellywave && jw_rebuild) {
+            // STROBE DIAGNOSTIC (run 7): geom0 leaves a never-drawn gap
+            // between the gradient and the geometry.
+            {
+                const WaveVert fill = { 0.0f, 0.0f, 0.0f, 1.0f, 0u };
+                const int g0 = strobe_test_jw_geom0();
+                while (n < g0)
+                    s_jw_stage[n++] = fill;
+            }
             // STROBE ISOLATION TEST 4: build the real JellyWave geometry,
             // but the submission below will draw only the first body strip
             // of the furthest layer. This isolates basic JellyWave geometry
@@ -1038,7 +1132,22 @@ void wave_draw(void) {
 
             s_jw_gen_us += timing_get_us() - jw_t0;
             s_jw_rebuilds++;
-            s_jw_verts = (u32)n;
+            if (grad_end) {
+                s_jw_base_used = n;                            // gradient index
+                WV_PUT(-1.0f,  1.0f, gtlr, gtlg, gtlb, 255);   // top-left
+                WV_PUT(-1.0f, -1.0f, gblr, gblg, gblb, 255);   // bottom-left
+                WV_PUT( 1.0f,  1.0f, gtrr, gtrg, gtrb, 255);   // top-right
+                WV_PUT( 1.0f, -1.0f, gbrr, gbrg, gbrb, 255);   // bottom-right
+            }
+
+            // STROBE DIAGNOSTIC: trailing filler, never drawn.
+            {
+                const WaveVert fill = { 0.0f, 0.0f, 0.0f, 1.0f, 0u };
+                const int trail = strobe_test_jw_trail();
+                for (int k = 0; k < trail && n < WAVE_MAX_VERTS; k++)
+                    s_jw_stage[n++] = fill;
+            }
+            s_jw_verts = (u32)(n - s_jw_upfrom_used);   // uploaded count
             s_jw_have_geom = 1;
         } else if (s_wave_blend) {
             // One quad per ribbon: constant tint, alpha ramping from the
@@ -1106,7 +1215,14 @@ void wave_draw(void) {
             v  = s_wave_vbuf[s_wave_vbuf_turn];
             vo = s_wave_vbuf_off[s_wave_vbuf_turn];
 
-            jw_upload(v, s_jw_stage, s_jw_verts);
+            // Only [JW_INDEX_BASE, +s_jw_verts) is live; the gap below it is
+            // never written, uploaded or drawn.
+            if (strobe_test_jw_reverse())
+                jw_upload_rev(v + s_jw_upfrom_used,
+                              s_jw_stage + s_jw_upfrom_used, s_jw_verts);
+            else
+                jw_upload(v + s_jw_upfrom_used,
+                          s_jw_stage + s_jw_upfrom_used, s_jw_verts);
             s_jw_upload_us += timing_get_us() - jw_up0;
         }
 
@@ -1159,7 +1275,8 @@ void wave_draw(void) {
             0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
 
         rsxInvalidateVertexCache(context);
-        rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, 0, 4);
+        rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP,
+                           (u32)(jellywave ? s_jw_base_used : 0), 4);
 
         if (s_wave_blend) {
             // src*a + dst*(1-a), ribbons back to front -- algebraically the

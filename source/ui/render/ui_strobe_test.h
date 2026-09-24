@@ -18,3 +18,11 @@ bool strobe_test_disable_gpu_glow(void);
 bool strobe_test_disable_jellywave(void);
 bool strobe_test_disable_jellywave_body(void);
 bool strobe_test_disable_jellywave_rim(void);
+
+// Run 6: JellyWave upload layout, see JW_FILL in ui_wave.cpp.
+int  strobe_test_jw_base(void);     // index of the gradient
+int  strobe_test_jw_upfrom(void);   // first index uploaded (filler below base)
+int  strobe_test_jw_trail(void);    // filler vertices after the geometry
+bool strobe_test_jw_reverse(void);  // upload back-to-front
+int  strobe_test_jw_geom0(void);    // run 7: first index of the geometry
+bool strobe_test_jw_grad_end(void); // run 7: gradient AFTER the geometry
