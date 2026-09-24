@@ -209,9 +209,31 @@ static inline float wrm_clamp(float v, float lo, float hi)
 // The whole mapping.  p may be NULL, which yields the rest values -- so a
 // caller whose analyser is disabled or failed to start gets the idle look from
 // this one call and needs no second code path.
+// RESPONSE GAIN.  wrm_map_gain() multiplies every response's DEVIATION FROM
+// REST by `gain` before the same clamps apply -- so a higher gain reaches the
+// caps at lower music levels (a steeper, more visible response) but can never
+// pass them.  Every ceiling above was measured against the framing box, and
+// none of them moves; rest is still exactly rest at any gain, because the
+// deviation there is zero.  gain 1 is wrm_map exactly.
+//
+// Added after the first hardware look: "barely noticed".  The mapping was
+// tuned to a brief that asked for "restrained"; which of the two is right is a
+// question for a TV, so it is a runtime knob (ui_wave_audio.cpp's gate file)
+// instead of a rebuild.
+#define WRM_GAIN_MIN    0.25f
+#define WRM_GAIN_MAX    4.00f
+
+static inline void wrm_map_gain(const wm_params *p, float gain, wrm_out *out);
+
 static inline void wrm_map(const wm_params *p, wrm_out *out)
 {
+    wrm_map_gain(p, 1.0f, out);
+}
+
+static inline void wrm_map_gain(const wm_params *p, float g, wrm_out *out)
+{
     if (!out) return;
+    g = (g == g) ? wrm_clamp(g, WRM_GAIN_MIN, WRM_GAIN_MAX) : 1.0f;
     if (!p) {
         out->dt_scale = WRM_TS_IDLE;
         out->perturb  = WM_IDLE_PERTURB;
@@ -223,11 +245,13 @@ static inline void wrm_map(const wm_params *p, wrm_out *out)
         return;
     }
     out->dt_scale = wrm_clamp(
-        WRM_TS_IDLE + (p->timescale - WM_IDLE_TIME) * WRM_TS_GAIN,
+        WRM_TS_IDLE + (p->timescale - WM_IDLE_TIME) * WRM_TS_GAIN * g,
         WRM_TS_MIN, WRM_TS_MAX);
-    out->perturb  = wrm_clamp(p->perturb, 0.0f, WM_MAX_PERTURB);
+    out->perturb  = wrm_clamp(
+        WM_IDLE_PERTURB + (p->perturb - WM_IDLE_PERTURB) * g,
+        0.0f, WM_MAX_PERTURB);
     out->drive    = wrm_clamp(
-        WRM_DRIVE_IDLE + (p->drive - WM_IDLE_DRIVE) * WRM_DRIVE_GAIN,
+        WRM_DRIVE_IDLE + (p->drive - WM_IDLE_DRIVE) * WRM_DRIVE_GAIN * g,
         WRM_DRIVE_IDLE, WRM_DRIVE_MAX);
 
     // The clamp comes AFTER the sum so one NaN anywhere lands on the floor
@@ -240,13 +264,13 @@ static inline void wrm_map(const wm_params *p, wrm_out *out)
         };
         int i;
         for (i = 0; i < 3; i++)
-            out->amp[i] = wrm_clamp(1.0f + (a[i] - WM_IDLE_AMP) * WRM_AMP_GAIN,
+            out->amp[i] = wrm_clamp(1.0f + (a[i] - WM_IDLE_AMP) * WRM_AMP_GAIN * g,
                                     WRM_AMP_MIN, WRM_AMP_MAX);
     }
-    out->lum = wrm_clamp(1.0f + (p->bright - WM_IDLE_BRIGHT) * WRM_LUM_BRIGHT
-                              + p->glow * WRM_LUM_GLOW,
+    out->lum = wrm_clamp(1.0f + ((p->bright - WM_IDLE_BRIGHT) * WRM_LUM_BRIGHT
+                              + p->glow * WRM_LUM_GLOW) * g,
                          WRM_LUM_MIN, WRM_LUM_MAX);
-    out->thick = wrm_clamp(1.0f + (p->amp[1] - WM_IDLE_AMP) * WRM_THICK_GAIN,
+    out->thick = wrm_clamp(1.0f + (p->amp[1] - WM_IDLE_AMP) * WRM_THICK_GAIN * g,
                            WRM_THICK_MIN, WRM_THICK_MAX);
     {
         int j;
@@ -255,7 +279,7 @@ static inline void wrm_map(const wm_params *p, wrm_out *out)
             float w = WRM_ACC_WIDEN * wrm_clamp(q->width, 0.02f, 0.5f);
             out->acc.x[j]   = wrm_clamp(q->x, -0.5f, 1.5f);
             out->acc.inv[j] = 1.0f / w;
-            out->acc.a[j]   = q->live ? wrm_clamp(q->amp, 0.0f, 1.0f) : 0.0f;
+            out->acc.a[j]   = q->live ? wrm_clamp(q->amp * g, 0.0f, 1.0f) : 0.0f;
         }
     }
 }

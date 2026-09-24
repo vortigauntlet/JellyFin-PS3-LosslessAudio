@@ -1107,6 +1107,84 @@ static void test_look_framing(void)
     CHECK(bad == 0, "%d vertices were non-finite or behind the camera", bad);
 }
 
+// --- the response gain (jellyfin_wavereact.txt level) ---------------------
+//
+// Steeper, never higher: at every gain the outputs stay inside the same caps
+// the framing test measures, rest stays exactly rest, gain 1 IS wrm_map, and
+// a mid-level passage reads more strongly as the gain rises.
+static void test_gain(void)
+{
+    static const float G[] = { 1.0f, 1.8f, 2.6f };
+    wrm_out  a, b;
+    wm_state m;
+    int      gi, i, k;
+    uint32_t r = 99u;
+
+    for (i = 0; i < 2000; i++) {
+        wm_params p;
+        memset(&p, 0, sizeof p);
+        r = r * 1664525u + 1013904223u; p.drive = WM_IDLE_DRIVE + (WM_MAX_DRIVE - WM_IDLE_DRIVE) * (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.timescale = WM_MIN_TIME + (WM_MAX_TIME - WM_MIN_TIME) * (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.perturb = WM_MAX_PERTURB * (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.bright = (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.glow = (float)(r >> 8) / 16777216.0f;
+        for (k = 0; k < WM_LAYERS; k++) {
+            r = r * 1664525u + 1013904223u; p.amp[k] = (float)(r >> 8) / 16777216.0f;
+        }
+        for (k = 0; k < WM_PULSES; k++) {
+            p.pulse[k].x = 0.3f * (float)k; p.pulse[k].width = 0.1f;
+            p.pulse[k].amp = 0.25f * (float)k; p.pulse[k].live = k & 1;
+        }
+        wrm_map(&p, &a);
+        wrm_map_gain(&p, 1.0f, &b);
+        CHECK(memcmp(&a, &b, sizeof a) == 0, "gain 1 is not wrm_map");
+        for (gi = 0; gi < 3; gi++) {
+            wrm_map_gain(&p, G[gi] * 1.5f, &b);   /* past the levels on purpose */
+            CHECK(b.drive >= WRM_DRIVE_IDLE && b.drive <= WRM_DRIVE_MAX &&
+                  b.dt_scale >= WRM_TS_MIN && b.dt_scale <= WRM_TS_MAX &&
+                  b.perturb >= 0.0f && b.perturb <= WM_MAX_PERTURB &&
+                  b.amp[0] <= WRM_AMP_MAX && b.amp[2] >= WRM_AMP_MIN &&
+                  b.lum <= WRM_LUM_MAX && b.lum >= WRM_LUM_MIN &&
+                  b.thick <= WRM_THICK_MAX && b.thick >= WRM_THICK_MIN &&
+                  b.acc.a[3] <= 1.0f,
+                  "gain %.1f escaped a cap", G[gi] * 1.5f);
+        }
+        if (failures) return;
+    }
+
+    wm_init(&m);
+    wrm_map(NULL, &a);
+    for (gi = 0; gi < 3; gi++) {
+        wrm_map_gain(&m.p, G[gi], &b);
+        CHECK(a.drive == b.drive && a.dt_scale == b.dt_scale &&
+              a.perturb == b.perturb && a.lum == b.lum && a.thick == b.thick &&
+              memcmp(a.amp, b.amp, sizeof a.amp) == 0 &&
+              b.acc.a[0] == 0.0f && b.acc.a[1] == 0.0f &&
+              b.acc.a[2] == 0.0f && b.acc.a[3] == 0.0f,
+              "rest is not exact at gain %.1f", G[gi]);
+    }
+
+    {
+        wm_params p = m.p;
+        float prev_amp = 0.0f, prev_lum = 0.0f, prev_drv = 0.0f;
+        p.amp[0] = 0.55f; p.bright = 0.75f; p.drive = 0.60f;
+        for (gi = 0; gi < 3; gi++) {
+            wrm_map_gain(&p, G[gi], &b);
+            printf("  mid-level passage at x%.1f: amp0 %.3f  lum %.3f  drive %.3f\n",
+                   G[gi], b.amp[0], b.lum, b.drive);
+            CHECK(b.amp[0] > prev_amp && b.lum > prev_lum && b.drive > prev_drv,
+                  "gain %.1f does not strengthen a mid-level passage", G[gi]);
+            prev_amp = b.amp[0]; prev_lum = b.lum; prev_drv = b.drive;
+        }
+    }
+    {
+        wm_params p = m.p;
+        p.drive = NAN;
+        wrm_map_gain(&p, NAN, &b);
+        CHECK(b.drive == b.drive && b.drive >= WRM_DRIVE_IDLE, "a NaN gain leaked");
+    }
+}
+
 // --- JellyWave 2.0: the body swell and the travelling accent -------------
 
 static float accent_peak(const wrm_out *o, int layer, int *at)
@@ -1264,6 +1342,8 @@ int main(void)
                                                    test_mapped_drive_clears_the_knee();
     printf("\n-- the look: per-layer height and colour --\n");
                                                    test_look_mapping();
+    printf("\n-- response gain (wavereact level) --\n");
+                                                   test_gain();
     printf("\n-- JellyWave 2.0: swell and accent --\n");
                                                    test_shape_mapping();
     printf("\n-- the loudest look stays framed --\n");
