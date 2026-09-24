@@ -197,11 +197,6 @@ void depth_lib_text(int tab) {
 
     const XMBItem *it = (v.grid && v.count > 0 && v.sel >= 0 && v.sel < v.count)
                       ? &v.items[v.sel] : NULL;
-    char pos[32] = "";
-    if (it) {
-        const int total = v.abs_total > v.count ? v.abs_total : v.count;
-        snprintf(pos, sizeof pos, "%d/%d", v.abs_start + v.sel + 1, total);
-    }
     const char *title;
     switch (xmb_kind(tab)) {
     case TABKIND_SEARCH:   title = "Search";   break;
@@ -211,6 +206,6 @@ void depth_lib_text(int tab) {
               : !g_items_loaded[tab] ? "Loading..." : "Nothing here yet";
         break;
     }
-    depth_l1_label_draw(v.shape, v.anchor_x, a, g_tabs[tab].label, pos, title,
-                        lib_meta, it);
+    // The tab's name is already on the spine row: no eyebrow repeating it.
+    depth_l1_label_draw(v.shape, v.anchor_x, a, NULL, NULL, title, lib_meta, it);
 }

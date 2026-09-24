@@ -314,11 +314,14 @@ void depth_l1_label_draw(int shape, float anchor_x, float a,
     int ty = depth_sy(L.y_eye);
 
     char line[160];
-    const int adv = xmb_draw_eyebrow(tx, ty, eyebrow ? eyebrow : "",
-                                     depth_mix_q(XMB_BG, XMB_ACCENT_ALT, a));
-    if (pos && pos[0])
-        drawTTF_face((u32)(tx + adv + UIS_W(12)), (u32)ty, pos, UIS_TF(11.0f),
-                     depth_mix_q(XMB_BG, XMB_TEXT_FAINT, a), UI_FACE_SPEC);
+    // No eyebrow (NULL): the title alone, on the line it always sits on.
+    if (eyebrow) {
+        const int adv = xmb_draw_eyebrow(tx, ty, eyebrow,
+                                         depth_mix_q(XMB_BG, XMB_ACCENT_ALT, a));
+        if (pos && pos[0])
+            drawTTF_face((u32)(tx + adv + UIS_W(12)), (u32)ty, pos, UIS_TF(11.0f),
+                         depth_mix_q(XMB_BG, XMB_TEXT_FAINT, a), UI_FACE_SPEC);
+    }
     ty += UIS_H(24);
 
     const float tpx = UIS_TF(L.title_px);

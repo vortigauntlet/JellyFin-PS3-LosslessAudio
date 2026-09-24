@@ -102,9 +102,10 @@ int xmb_tab_focus_center(void)
 //     into a scratch buffer and blitting it row-shifted, which is real work
 //     every frame for a 1.7px lean at 14px.  Revisit it if it reads as wrong
 //     on a TV beside the mark, which is where this has to be judged anyway.
-//   * ONE shadow pass, not the canvas's stack of five.  They exist so the
-//     wordmark survives the wave moving behind it; at 14px they resolve to
-//     about a single hard 1px drop, which is what this draws.
+//   * Not the canvas's stack of five shadows: a short extrusion instead --
+//     two layers of the ramp, darkened, stepping down-right under the face,
+//     over one hard drop shadow.  It keeps the wordmark legible over the
+//     wave and gives it a little depth (xmb_draw_topbar).
 void xmb_lockup_geom(XmbLockupGeom *g) {
     const int oy    = XMB_OY;   // shift the top bar down out of the CRT overscan
     const int row_y = oy + UIS_H(20);            // the shared 24px row
@@ -121,6 +122,19 @@ void xmb_lockup_geom(XmbLockupGeom *g) {
     g->word_y  = g->cy;
     g->word_ok = ttf_center_y("JELLYFIN", g->word_px, UI_FACE_LOCKUP, g->cy,
                               &g->word_y);
+}
+
+// The wordmark's depth: the ramp itself, darkened, as a short extrusion under
+// the face -- so the edge carries the gradient (a solid letter seen slightly
+// from above) rather than reading as a flat shadow.  k scales each channel.
+static void lk_ramp_shade(const u32 *in, u32 *out, float k) {
+    for (int i = 0; i < 4; i++) {
+        const u32 c = in[i];
+        const u32 r = (u32)((float)((c >> 16) & 0xFF) * k);
+        const u32 g = (u32)((float)((c >> 8) & 0xFF) * k);
+        const u32 b = (u32)((float)(c & 0xFF) * k);
+        out[i] = (c & 0xFF000000u) | (r << 16) | (g << 8) | b;
+    }
 }
 
 void xmb_draw_topbar(void) {
@@ -145,16 +159,31 @@ void xmb_draw_topbar(void) {
 
     const u32 ramp[4] = { XMB_LK_WORD_A, XMB_LK_WORD_B,
                           XMB_LK_WORD_C, XMB_LK_WORD_D };
+    // Back to front: the drop shadow, two extruded layers stepping down-right
+    // (deepest first), then the face.  One step is a device pixel at least.
+    u32 deep[4], mid[4];
+    lk_ramp_shade(ramp, deep, 0.28f);
+    lk_ramp_shade(ramp, mid,  0.50f);
+    const u32 st = UIS_H(1) > 1 ? (u32)UIS_H(1) : 1u;
     if (lk.word_ok && (!pose || pose->show_word)) {
         const u32 wx = (u32)lk.word_x, wy = (u32)lk.word_y;
         if (xmb_nav_depth() > 0) {
             drawTTF_tracked(wx, wy, "JELLYFIN", lk.word_px,
                             XMB_TEXT_FAINT, UI_FACE_LOCKUP, lk.track);
         } else if (pose && pose->word_posed) {
-            // Same two passes as below, each letter at its pose.  NULL stops
-            // is a flat black run: the drop shadow travels with its letter.
-            drawTTF_ramp_posed(wx, wy + (u32)UIS_H(1), "JELLYFIN", lk.word_px,
+            // Same passes as below, each letter at its pose.  NULL stops is
+            // a flat black run: the shadow and the extrusion travel with
+            // their letter.
+            drawTTF_ramp_posed(wx + st, wy + 3 * st, "JELLYFIN", lk.word_px,
                                NULL, 0, UI_FACE_LOCKUP, lk.track,
+                               pose->word_reveal, pose->word_alpha,
+                               BOOT_WORD_LETTERS, pose->word_slide_px);
+            drawTTF_ramp_posed(wx + st, wy + 2 * st, "JELLYFIN", lk.word_px,
+                               deep, 4, UI_FACE_LOCKUP, lk.track,
+                               pose->word_reveal, pose->word_alpha,
+                               BOOT_WORD_LETTERS, pose->word_slide_px);
+            drawTTF_ramp_posed(wx, wy + st, "JELLYFIN", lk.word_px,
+                               mid, 4, UI_FACE_LOCKUP, lk.track,
                                pose->word_reveal, pose->word_alpha,
                                BOOT_WORD_LETTERS, pose->word_slide_px);
             drawTTF_ramp_posed(wx, wy, "JELLYFIN", lk.word_px,
@@ -162,8 +191,12 @@ void xmb_draw_topbar(void) {
                                pose->word_reveal, pose->word_alpha,
                                BOOT_WORD_LETTERS, pose->word_slide_px);
         } else {
-            drawTTF_tracked(wx, wy + (u32)UIS_H(1), "JELLYFIN", lk.word_px,
+            drawTTF_tracked(wx + st, wy + 3 * st, "JELLYFIN", lk.word_px,
                             0x00000000, UI_FACE_LOCKUP, lk.track);
+            drawTTF_ramp(wx + st, wy + 2 * st, "JELLYFIN", lk.word_px,
+                         deep, 4, UI_FACE_LOCKUP, lk.track);
+            drawTTF_ramp(wx, wy + st, "JELLYFIN", lk.word_px,
+                         mid, 4, UI_FACE_LOCKUP, lk.track);
             drawTTF_ramp(wx, wy, "JELLYFIN", lk.word_px,
                          ramp, 4, UI_FACE_LOCKUP, lk.track);
         }
