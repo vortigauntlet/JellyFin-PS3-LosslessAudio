@@ -48,6 +48,84 @@ static const Bitmap *music_art_bitmap(const char *art_id, int A) {
 // scaled blit of ~205k pixels into video memory every frame.  False (and the
 // CPU blit in draw_now_playing takes over) until the texture is up.
 static bool s_cover_gpu = false;
+
+// --- presentation fades (2026-09-24) ----------------------------------------
+//
+// s_scr_a   the whole screen's content; 1 -> 0 over the outro when leaving,
+//           so the screen dissolves to the wave instead of cutting.
+// s_up_a    Up Next; fades out in focus mode.
+// s_ctl_a   transport + seek bar; to FOCUS_CTL_A in focus mode.
+//
+// Focus mode: after FOCUS_AFTER_US of playback with no button pressed, the
+// screen settles -- Up Next fades away and the controls go translucent --
+// until the next press brings them back.  Both directions are eased.
+//
+// Shapes and text fade by mixing their colour toward the background, in
+// sixteenths (so a fading label re-uses its cached GPU text runs, the same
+// rule as depth_mix_q); images fade with real alpha on the RSX.
+#define FOCUS_AFTER_US   4000000ULL
+#define FOCUS_IN_US       650000.0f
+#define FOCUS_OUT_US      220000.0f
+#define FOCUS_CTL_A          0.35f
+#define OUTRO_US          350000.0f
+static float s_scr_a = 1.0f, s_up_a = 1.0f, s_ctl_a = 1.0f;
+static float s_focus_p = 0.0f;          // 0 = normal .. 1 = focused
+static bool  s_outro = false;
+static u64   s_outro_t0 = 0, s_fade_us = 0, s_last_input_us = 0;
+
+static inline float fade_q(float a) {
+    a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+    return (float)(int)(a * 16.0f + 0.5f) / 16.0f;
+}
+static inline u32 fa(u32 col, float a) { return art_mix(XMB_BG, col, fade_q(a)); }
+static inline u8  fa8(float a) {
+    a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+    return (u8)(a * 255.0f + 0.5f);
+}
+static inline float fade_ease(float t) {           // smoothstep
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static void music_fades_reset(void) {
+    s_scr_a = s_up_a = s_ctl_a = 1.0f;
+    s_focus_p = 0.0f;
+    s_outro = false;
+    s_fade_us = s_last_input_us = timing_get_us();
+}
+
+static bool music_any_press(void) {
+    return BTN_PRESSED(cross) || BTN_PRESSED(circle) || BTN_PRESSED(square) ||
+           BTN_PRESSED(triangle) || BTN_PRESSED(up) || BTN_PRESSED(down) ||
+           BTN_PRESSED(left) || BTN_PRESSED(right) || BTN_PRESSED(l1) ||
+           BTN_PRESSED(r1) || BTN_PRESSED(l2) || BTN_PRESSED(r2) ||
+           BTN_PRESSED(start) || BTN_PRESSED(select);
+}
+
+// Once per frame, after input.  `focus_ok`: the screen may settle now
+// (playing, transport zone, no overlay).
+static void music_fades_tick(bool focus_ok) {
+    const u64 now = timing_get_us();
+    float dt = (float)(now - s_fade_us);
+    if (dt > 100000.0f) dt = 100000.0f;
+    s_fade_us = now;
+
+    const bool focus = focus_ok && !s_outro && now - s_last_input_us > FOCUS_AFTER_US;
+    if (focus) s_focus_p += dt / FOCUS_IN_US;
+    else       s_focus_p -= dt / FOCUS_OUT_US;
+    s_focus_p = s_focus_p < 0.0f ? 0.0f : (s_focus_p > 1.0f ? 1.0f : s_focus_p);
+    const float e = fade_ease(s_focus_p);
+    s_up_a  = 1.0f - e;
+    s_ctl_a = 1.0f - (1.0f - FOCUS_CTL_A) * e;
+
+    if (s_outro) {
+        const float t = (float)(now - s_outro_t0) / OUTRO_US;
+        s_scr_a = t >= 1.0f ? 0.0f : 1.0f - fade_ease(t);
+    } else {
+        s_scr_a = 1.0f;
+    }
+}
+
 static void music_cover_gpu(const char *art_id, int ax, int ay, int A) {
     s_cover_gpu = false;
     if (!art_id || !art_id[0] || !ui_card_gpu_ready()) return;
@@ -59,7 +137,8 @@ static void music_cover_gpu(const char *art_id, int ax, int ay, int A) {
     thumb_request(art_id, rw, rh);
     u32 off = 0, pitch = 0;
     if (!thumb_gpu_texture(art_id, rw, rh, &off, &pitch)) return;
-    ui_card_gpu_draw_ex(off, (u32)rw, (u32)rh, pitch, ax, ay, A, A, 0.0f, 1.0f, 255);
+    ui_card_gpu_draw_ex(off, (u32)rw, (u32)rh, pitch, ax, ay, A, A, 0.0f, 1.0f,
+                        fa8(s_scr_a));
     ui_card_gpu_end();
     s_cover_gpu = true;
 }
@@ -153,7 +232,7 @@ static void ring_aa(int cx, int cy, float r, float t, u32 color, u8 alpha) {
 }
 
 // Four-segment breadcrumb (the shared helper caps at three).
-static void draw_breadcrumb4(int x, int y, const char *a, const char *b,
+static __attribute__((unused)) void draw_breadcrumb4(int x, int y, const char *a, const char *b,
                              const char *c, const char *leaf) {
     const float px = UIS_TF(15.0f);
     const char *parts[4] = { a, b, c, leaf };
@@ -176,7 +255,7 @@ static void draw_breadcrumb4(int x, int y, const char *a, const char *b,
 // with a lighter cap so the peaks read at TV distance.
 // -------------------------------------------------------
 
-static void draw_visualizer(int x, int baseline, int width, int max_h) {
+static void draw_visualizer(int x, int baseline, int width, int max_h, float a) {
     float bands[MUSIC_VIZ_BANDS];
     music_viz_bands(bands);
 
@@ -192,13 +271,13 @@ static void draw_visualizer(int x, int baseline, int width, int max_h) {
         int h = UIS_H(2) + (int)(bands[i] * (float)(max_h - 2));
         int bx = x + i * (bw + gap);
         int by = baseline - h;
-        drawRect((u32)bx, (u32)by, (u32)bw, (u32)h, s_mpal.accent);
+        drawRect((u32)bx, (u32)by, (u32)bw, (u32)h, fa(s_mpal.accent, a));
         // Lighter 2px cap on any bar with real energy.  This was a hardcoded
         // lilac (0x00C4B5F7) that ignored the theme entirely -- harmless under
         // XMB wave, plainly wrong under Golden Age, where it put a purple cap
         // on gold bars.  XMB_TEXT is the theme's light ink and tracks it.
         if (h > 6)
-            drawRect((u32)bx, (u32)by, (u32)bw, UIS_H(2), XMB_TEXT);
+            drawRect((u32)bx, (u32)by, (u32)bw, UIS_H(2), fa(XMB_TEXT, a));
     }
 }
 
@@ -437,14 +516,54 @@ static void draw_queue_overlay(const MusicTrack *tracks, int count,
 // Main frame draw
 // -------------------------------------------------------
 
+// Up Next's thumbnails on the RSX (GPU phase), so they can fade with real
+// alpha in focus mode.  Same layout as draw_now_playing's list; a row whose
+// texture is not up yet falls back to the CPU blit / letter tile there.
+#define UQ_ROWS_MAX 32
+static bool s_up_gpu[UQ_ROWS_MAX];
+static void music_upnext_gpu(const MusicTrack *tracks, int count, float a) {
+    for (int i = 0; i < UQ_ROWS_MAX; i++) s_up_gpu[i] = false;
+    if (a <= 0.01f || !ui_card_gpu_ready()) return;
+    const int W = (int)display_width, H = (int)display_height;
+    const int up_x  = W - (int)(W * 0.27f);
+    const int ey0   = (int)(H * 0.18f) + UIS_H(34);
+    const int n_vis = uq_vis_rows();
+    const int first = music_current_pos() + 1;
+    if (count - first <= 0) return;
+    int scroll = (s_fzone == FZ_QUEUE) ? s_u_scroll : first;
+    if (scroll > count - n_vis) scroll = count - n_vis;
+    if (scroll < first)         scroll = first;
+    int ey = ey0;
+    bool any = false;
+    for (int p = scroll, r = 0; p < count && p < scroll + n_vis && r < UQ_ROWS_MAX; p++, r++) {
+        const int orig = music_track_at(p);
+        if (orig < 0) break;
+        const MusicTrack *u = &tracks[orig];
+        thumb_request(u->art_id, MQ_ART, MQ_ART);
+        u32 off = 0, pitch = 0;
+        if (thumb_gpu_texture(u->art_id, MQ_ART, MQ_ART, &off, &pitch)) {
+            ui_card_gpu_draw_ex(off, (u32)MQ_ART, (u32)MQ_ART, pitch, up_x, ey,
+                                MQ_ART, MQ_ART, 0.0f, 1.0f, fa8(a));
+            s_up_gpu[r] = true;
+            any = true;
+        }
+        ey += MQ_ROW_H;
+    }
+    if (any) ui_card_gpu_end();
+}
+
 static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                              int count) {
     int W = (int)display_width;
     int H = (int)display_height;
 
+    // No breadcrumb (Music > Albums > ... > Now Playing): everything it said
+    // is on the screen already.  The lockup stays -- it is the XMB's too.
     xmb_draw_topbar();
-    draw_breadcrumb4(UIS_W(40), XMB_TOPBAR_H + 1, "Music", ctx->parent,
-                     ctx->title[0] ? ctx->title : NULL, "Now Playing");
+    const float sa = s_scr_a;                       // whole screen
+    const float ua = s_scr_a * s_up_a;              // Up Next
+    const float ca = s_scr_a * s_ctl_a;             // transport
+    const float ka = s_scr_a * (0.5f + 0.5f * s_ctl_a);   // seek bar: dims less
 
     int cur = music_current_index();
     if (cur >= count) cur = count - 1;
@@ -454,7 +573,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     int A  = (int)(H * 0.42f);
     int ax = UIS_W(40);
     int ay = (int)(H * 0.27f);
-    if (!s_cover_gpu && !xmb_cpu_blit_thumb(t->art_id, ax, ay, A, A))
+    if (!s_cover_gpu && sa > 0.5f && !xmb_cpu_blit_thumb(t->art_id, ax, ay, A, A))
         xmb_draw_letter_tile(t->art_id,
                              ctx->title[0] ? ctx->title : t->name,
                              ax, ay, A);
@@ -467,7 +586,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         // tight against the art: enough to stop a dark album cover dissolving
         // into a dark background, not enough to read as an edge. Deliberately
         // NOT replaced with a shadow or a glow.
-        const u8 EDGE_A = 32;
+        const u8 EDGE_A = (u8)(32.0f * sa);
         drawRectBlend((u32)(ax - 1),     (u32)(ay - 1),     (u32)(A + 2), 1, XMB_ACCENT, EDGE_A);
         drawRectBlend((u32)(ax - 1),     (u32)(ay + A),     (u32)(A + 2), 1, XMB_ACCENT, EDGE_A);
         drawRectBlend((u32)(ax - 1),     (u32)(ay - 1),     1, (u32)(A + 2), XMB_ACCENT, EDGE_A);
@@ -480,12 +599,12 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     int col_w     = up_x - UIS_W(30) - tx;
     int title_top = ay + (int)(H * 0.15f);
 
-    draw_visualizer(tx, title_top - 18, (int)(W * 0.265f), (int)(H * 0.11f));
+    draw_visualizer(tx, title_top - 18, (int)(W * 0.265f), (int)(H * 0.11f), sa);
 
-    draw_clipped((u32)tx, (u32)title_top, t->name, UIS_TF(32), XMB_WHITE, col_w, true);
+    draw_clipped((u32)tx, (u32)title_top, t->name, UIS_TF(32), fa(XMB_WHITE, sa), col_w, true);
     if (t->artist[0])
         draw_clipped((u32)tx, (u32)(title_top + UIS_H(48)), t->artist, UIS_TF(20),
-                     s_mpal.accent, col_w);
+                     fa(s_mpal.accent, sa), col_w);
     {
         char line[160] = "";
         if (ctx->title[0]) snprintf(line, sizeof(line), "%s", ctx->title);
@@ -496,7 +615,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         }
         if (line[0])
             draw_clipped((u32)tx, (u32)(title_top + UIS_H(80)), line, UIS_TF(15),
-                         XMB_TEXT_DIM, col_w);
+                         fa(XMB_TEXT_DIM, sa), col_w);
     }
     {
         // "Track 7 of 13 · Electronic · 320 kbps FLAC" (play-order position)
@@ -509,13 +628,13 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         if (src[0])
             n += snprintf(meta + n, sizeof(meta) - n, " \xC2\xB7 %s", src);
         draw_clipped((u32)tx, (u32)(title_top + UIS_H(128)), meta, UIS_TF(14),
-                     XMB_TEXT_FAINT, col_w);
+                     fa(XMB_TEXT_FAINT, sa), col_w);
     }
 
     // ---- UP NEXT — the full remaining queue: album-art thumbs (letter
     //      tile while loading), d-pad navigable, scrollbar when it
     //      outruns the window ----
-    {
+    if (ua > 0.01f) {
         int uy    = (int)(H * 0.18f);
         int ey0   = uy + UIS_H(34);
         int n_vis = uq_vis_rows();
@@ -524,7 +643,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         int n_up  = count - first;
 
         drawTTF((u32)up_x, (u32)uy, "UP NEXT", UIS_TF(13),
-                s_fzone == FZ_QUEUE ? XMB_TEXT : XMB_TEXT_FAINT, true);
+                fa(s_fzone == FZ_QUEUE ? XMB_TEXT : XMB_TEXT_FAINT, ua), true);
 
         if (n_up > 0) {
             // Window origin: follow the d-pad in QUEUE zone, playback
@@ -535,35 +654,39 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
 
             int text_w = W - UIS_W(46) - (up_x + UIS_W(56));
             int ey     = ey0;
-            for (int p = scroll; p < count && p < scroll + n_vis; p++) {
+            int row    = 0;
+            for (int p = scroll; p < count && p < scroll + n_vis; p++, row++) {
                 int orig = music_track_at(p);
                 if (orig < 0) break;
                 const MusicTrack *u = &tracks[orig];
                 bool selq = (s_fzone == FZ_QUEUE && p == s_u_sel);
                 if (selq)
                     drawRect((u32)(up_x - UIS_W(8)), (u32)(ey - MQ_ROW_GAP / 2),
-                             (u32)(W - UIS_W(34) - (up_x - UIS_W(8))), MQ_ROW_H, XMB_PANEL_HI);
-                if (!xmb_cpu_blit_thumb(u->art_id, up_x, ey, MQ_ART, MQ_ART))
+                             (u32)(W - UIS_W(34) - (up_x - UIS_W(8))), MQ_ROW_H,
+                             fa(XMB_PANEL_HI, ua));
+                const bool on_gpu = row < UQ_ROWS_MAX && s_up_gpu[row];
+                if (!on_gpu && ua > 0.5f &&
+                    !xmb_cpu_blit_thumb(u->art_id, up_x, ey, MQ_ART, MQ_ART))
                     xmb_draw_letter_tile(u->id, u->name, up_x, ey, MQ_ART);
                 draw_clipped((u32)(up_x + UIS_W(56)), (u32)(ey + 1), u->name, UIS_TF(15),
-                             selq ? XMB_WHITE : XMB_TEXT, text_w, selq);
+                             fa(selq ? XMB_WHITE : XMB_TEXT, ua), text_w, selq);
                 if (u->artist[0])
                     draw_clipped((u32)(up_x + UIS_W(56)), (u32)(ey + UIS_H(22)), u->artist,
-                                 UIS_TF(12), XMB_TEXT_FAINT, text_w);
+                                 UIS_TF(12), fa(XMB_TEXT_FAINT, ua), text_w);
                 ey += MQ_ROW_H;
             }
 
             if (n_up > n_vis) {
                 int bar_x   = W - UIS_W(26);
                 int track_h = n_vis * MQ_ROW_H - MQ_ROW_GAP;
-                drawRect((u32)bar_x, (u32)ey0, UIS_W(3), (u32)track_h, XMB_TRACK);
+                drawRect((u32)bar_x, (u32)ey0, UIS_W(3), (u32)track_h, fa(XMB_TRACK, ua));
                 int th = track_h * n_vis / n_up;
                 if (th < 18) th = 18;
                 int rng = n_up - n_vis;
                 int off = rng > 0 ? (track_h - th) * (scroll - first) / rng
                                   : 0;
                 drawRect((u32)bar_x, (u32)(ey0 + off), UIS_W(3), (u32)th,
-                         XMB_ACCENT);
+                         fa(XMB_ACCENT, ua));
             }
         }
     }
@@ -586,21 +709,22 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
             if (i == 2) {
                 // Play/pause disc — clean two-tone AA fill; focus is a
                 // single crisp ring instead of the old dotted glow.
-                if (fc) ring_aa(cx, cy, 30.5f, 2.0f, XMB_TEXT, 235);
-                fill_circle(cx, cy, 26, XMB_ACCENT_DEEP);
-                fill_circle(cx, cy, 24, XMB_ACCENT);
+                if (fc) ring_aa(cx, cy, 30.5f, 2.0f, XMB_TEXT, fa8(ca * 235.0f / 255.0f));
+                fill_circle(cx, cy, 26, fa(XMB_ACCENT_DEEP, ca));
+                fill_circle(cx, cy, 24, fa(XMB_ACCENT, ca));
                 drawIcon((u32)(cx - UIS_W(14)), (u32)(cy - UIS_H(14)),
-                         paused ? ICON_PLAY : ICON_PAUSE, UIS_TF(28.0f), XMB_WHITE);
+                         paused ? ICON_PLAY : ICON_PAUSE, UIS_TF(28.0f), fa(XMB_WHITE, ca));
             } else {
                 int half = (int)(UIS_TF(T_PX[i]) * 0.5f);
                 u32 col  = fc ? XMB_WHITE
                               : (i == 1 || i == 3) ? XMB_TEXT_DIM
                                                    : XMB_TEXT_FAINT;
                 drawIcon((u32)(ix - half), (u32)(cy - half), T_CP[i],
-                         UIS_TF(T_PX[i]), col);
+                         UIS_TF(T_PX[i]), fa(col, ca));
             }
             if (fc)
-                drawRect((u32)(ix - UIS_W(8)), (u32)(cy + UIS_H(38)), UIS_W(16), UIS_H(3), XMB_KEY_SEL);
+                drawRect((u32)(ix - UIS_W(8)), (u32)(cy + UIS_H(38)), UIS_W(16), UIS_H(3),
+                         fa(XMB_KEY_SEL, ca));
         }
 
         // Shuffle — the 6th focusable control (triangle also toggles it).
@@ -610,10 +734,10 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
             u32 col = on ? XMB_ACCENT
                          : fc ? XMB_TEXT_DIM : XMB_HAIRLINE;
             drawIcon((u32)(cx + UIS_W(182) - UIS_W(10)), (u32)(cy - UIS_H(10)), ICON_SHUFFLE, UIS_TF(20.0f),
-                     col);
+                     fa(col, ca));
             if (fc)
                 drawRect((u32)(cx + UIS_W(182) - UIS_W(8)), (u32)(cy + UIS_H(38)), UIS_W(16), UIS_H(3),
-                         XMB_KEY_SEL);
+                         fa(XMB_KEY_SEL, ca));
         }
     }
 
@@ -652,21 +776,23 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         int bw  = bx1 - bx0;
         if (bw < UIS_W(40)) bw = UIS_W(40);          // degenerate width guard
 
-        drawRect((u32)bx0, (u32)by, (u32)bw, UIS_H(4), XMB_TRACK);
+        drawRect((u32)bx0, (u32)by, (u32)bw, UIS_H(4), fa(XMB_TRACK, ka));
         int fill = (duration > 0) ? (int)((u64)bw * shown / duration) : 0;
         if (fill > bw) fill = bw;
         if (fill > 0)
-            drawRect((u32)bx0, (u32)by, (u32)fill, UIS_H(4), s_mpal.accent);
-        fill_circle(bx0 + fill, by + UIS_H(2), UIS_H(6), XMB_WHITE);
+            drawRect((u32)bx0, (u32)by, (u32)fill, UIS_H(4), fa(s_mpal.accent, ka));
+        fill_circle(bx0 + fill, by + UIS_H(2), UIS_H(6), fa(XMB_WHITE, ka));
 
         drawTTF((u32)rx0, (u32)(by - UIS_H(6)), ts, UIS_TF(14),
-                seeking ? XMB_TEXT : XMB_TEXT_DIM);
+                fa(seeking ? XMB_TEXT : XMB_TEXT_DIM, ka));
         if (td[0])
             drawTTF((u32)(rx1 - dw), (u32)(by - UIS_H(6)), td, UIS_TF(14),
-                    XMB_TEXT_DIM);
+                    fa(XMB_TEXT_DIM, ka));
     }
 
-    if (!s_q_open) {
+    // The hints go with the controls (they would pop, not fade, so they leave
+    // as soon as the screen starts to settle and return with the first press).
+    if (!s_q_open && s_ctl_a > 0.9f && s_scr_a > 0.9f) {
         if (s_fzone == FZ_QUEUE) {
             static const Hint h[3] = {{'X', "Play"},
                                       {'T', "Shuffle"},
@@ -835,6 +961,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
     s_seek_hold = -1;
     s_last_pos  = -1;
     init_btns();
+    music_fades_reset();
 
     // Render-thread proof of life.  When the app died on hardware there was no
     // way to tell whether this loop was still turning, because the only thing
@@ -862,6 +989,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             const int A = (int)(display_height * 0.42f);
             music_accent_update(s_tracks[cur].art_id, A);
             music_cover_gpu(s_tracks[cur].art_id, UIS_W(40), (int)(display_height * 0.27f), A);
+            music_upnext_gpu(s_tracks, count, s_scr_a * s_up_a);
         }
         c_gpu += timing_get_us() - t_gpu0;
 
@@ -884,8 +1012,17 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         }
 
         poll_buttons();
-        if (music_screen_input(s_tracks, count)) break;
-        if (!music_is_active()) break;   // queue finished
+        if (!s_outro) {
+            if (music_any_press()) s_last_input_us = timing_get_us();
+            // Leaving (O / START, or the queue finished) starts the outro: the
+            // screen dissolves to the wave over OUTRO_US, then closes.
+            if (music_screen_input(s_tracks, count) || !music_is_active()) {
+                s_outro    = true;
+                s_outro_t0 = timing_get_us();
+            }
+        }
+        music_fades_tick(!music_is_paused() && s_fzone == FZ_TRANSPORT && !s_q_open);
+        if (s_outro && s_scr_a <= 0.0f) break;
 
         const u64 t_s0 = timing_get_us();
         rsxSync();

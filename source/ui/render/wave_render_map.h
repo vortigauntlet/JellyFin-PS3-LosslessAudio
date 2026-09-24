@@ -317,4 +317,94 @@ static inline void wrm_accent(const wrm_accent_set *a, int layer,
         out[k] = in[k] + wrm_accent_at(a, layer, (float)k * du);
 }
 
+// --- distinct bands (2026-09-24) -------------------------------------------
+//
+// Hardware verdict on the mapping above: "it all moves at a similar intensity;
+// you can't tell the lows, mids and highs apart".  The log said why: during
+// music `drive` went 0.62 -> 1.02 (every layer ~65% taller, together), `ts`
+// sat at 1.2-1.3 (the whole wave faster, together), while the per-band
+// heights only separated by +-15% (amp 0.88..1.16) -- shared terms swamping
+// the per-band ones, and the per-band ones built from MIXED bands.
+//
+// This is applied on top of wrm_map_gain()'s result by the glue:
+//
+//   * The shared terms are held near rest: tempo no longer speeds the wave
+//     (dt_scale 1.0), loudness keeps only a fifth of its drive swing (capped
+//     at WRM_DB_DRIVE_MAX), and the broadband ripple and brightness keep a
+//     fraction.  The base motion stays slow and calm under any music.
+//   * Each solver layer then follows ONE part of the spectrum, taken straight
+//     from stage A's bands, with its own timing -- so the three read as three
+//     different instruments:
+//
+//       layer 0 (near, widest)   sub + bass       slow heavy swell   att 60 ms / rel 420 ms
+//       layer 1 (middle)         low-mid + mid    body               att 45 ms / rel 260 ms
+//       layer 2 (far, finest)    high + air       quick flicker      att 15 ms / rel 120 ms
+//
+//     height from WRM_DB_AMP_QUIET (a band that is quiet sinks BELOW rest,
+//     which is what makes the loud one stand out) to WRM_DB_AMP_MAX, and a
+//     per-layer brightness, strongest on the highs.
+//   * At rest (no audio, silence latched) every output is exactly the rest
+//     value, as before.
+//
+// FRAMING.  Height is linear in drive and in disp_gain, so the budget
+// test_look_framing measured (drive 1.10 x amp 1.30) is spent differently,
+// not raised: with drive held at WRM_DB_DRIVE_MAX the per-layer caps can go
+// much higher.  test_distinct_framing re-runs the same measurement -- real
+// solver, real loft, the fullest swell, the accent on the crest -- with THESE
+// caps, and must stay inside the same box with the same 0.05 margin.
+#define WRM_DB_FLOOR        0.28f   // band level (self-referenced) that reads as 0
+#define WRM_DB_AMP_QUIET    0.78f
+#define WRM_DB_DRIVE_MAX    0.70f
+#define WRM_DB_DRIVE_KEEP   0.20f
+#define WRM_DB_PERTURB_KEEP 0.30f
+#define WRM_DB_LUM_KEEP     0.30f
+#define WRM_DB_ACC_KEEP     0.60f
+
+static const float WRM_DB_ATT[3]     = { 0.060f, 0.045f, 0.015f };
+static const float WRM_DB_REL[3]     = { 0.420f, 0.260f, 0.120f };
+static const float WRM_DB_AMP_MAX[3] = { 1.75f, 1.65f, 2.10f };   // measured: test_distinct_framing
+static const float WRM_DB_LUM_MAX[3] = { 1.10f, 1.18f, 1.35f };
+
+typedef struct { float env[3]; } wrm_db_state;
+
+// src[3]: 0..1 band levels for layers 0..2.  present: 0 at rest .. 1 with
+// audio.  resp: the intensity level's response (1 = default).  Rewrites the
+// shared terms of *o and its amp[], and fills lum3[] (per-layer brightness,
+// exactly 1.0 at rest).
+static inline void wrm_distinct(wrm_db_state *st, const float src[3],
+                                float present, float resp, float dt,
+                                wrm_out *o, float lum3[3])
+{
+    int i;
+    if (!st || !o || !lum3) return;
+    present = wrm_clamp(present, 0.0f, 1.0f);
+    resp    = wrm_clamp(resp, 0.25f, 2.0f);
+    if (!(dt > 0.0f)) dt = 0.0f;
+
+    o->dt_scale = WRM_TS_IDLE;
+    o->drive    = wrm_clamp(WRM_DRIVE_IDLE + (o->drive - WRM_DRIVE_IDLE) * WRM_DB_DRIVE_KEEP,
+                            WRM_DRIVE_IDLE, WRM_DB_DRIVE_MAX);
+    o->perturb  = WM_IDLE_PERTURB + (o->perturb - WM_IDLE_PERTURB) * WRM_DB_PERTURB_KEEP;
+    o->lum      = 1.0f + (o->lum - 1.0f) * WRM_DB_LUM_KEEP;
+    for (i = 0; i < WM_PULSES; i++) o->acc.a[i] *= WRM_DB_ACC_KEEP;
+
+    for (i = 0; i < 3; i++) {
+        const float x   = wrm_clamp(src ? src[i] : 0.0f, 0.0f, 1.0f);
+        const float tau = (x > st->env[i]) ? WRM_DB_ATT[i] : WRM_DB_REL[i];
+        const float k   = dt / (tau + dt);
+        float s, amp;
+        st->env[i] += (x - st->env[i]) * k;
+        s   = wrm_clamp((st->env[i] - WRM_DB_FLOOR) / (1.0f - WRM_DB_FLOOR) * resp,
+                        0.0f, 1.0f);
+        amp = WRM_DB_AMP_QUIET + (WRM_DB_AMP_MAX[i] - WRM_DB_AMP_QUIET) * s;
+        if (present <= 0.0f) {
+            o->amp[i] = 1.0f;                   // rest is exactly rest
+            lum3[i]   = 1.0f;
+        } else {
+            o->amp[i] = 1.0f + present * (amp - 1.0f);
+            lum3[i]   = 1.0f + present * (WRM_DB_LUM_MAX[i] - 1.0f) * s;
+        }
+    }
+}
+
 #endif // WAVE_RENDER_MAP_H

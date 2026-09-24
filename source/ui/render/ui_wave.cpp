@@ -115,6 +115,7 @@ static wf_field s_field;
 // next to wf_step, and only read after that.
 static float    s_amp[3] = { 1.0f, 1.0f, 1.0f };
 static float    s_lum    = 1.0f;
+static float    s_lum3[3] = { 1.0f, 1.0f, 1.0f };   // per layer, distinct bands
 
 // JellyWave 2.0: body swell and travelling accents, same rules.  Zero-filled
 // s_acc means no live pulse, i.e. no accent, so the static initialiser is
@@ -131,6 +132,7 @@ static wrm_accent_set s_acc;
 struct jw_look {
     float          amp[3];
     float          lum;
+    float          lum3[3];
     float          thick;
     wrm_accent_set acc;
 };
@@ -139,6 +141,7 @@ static void jw_look_now(jw_look *k)
 {
     k->amp[0] = s_amp[0]; k->amp[1] = s_amp[1]; k->amp[2] = s_amp[2];
     k->lum    = s_lum;
+    k->lum3[0] = s_lum3[0]; k->lum3[1] = s_lum3[1]; k->lum3[2] = s_lum3[2];
     k->thick  = s_thick;
     k->acc    = s_acc;
 }
@@ -443,7 +446,7 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         // accent adds exactly 0.0f, so the build is bit-identical to spine14.
         jw_layer        Lk = JW_LAYER[li];
         Lk.disp_gain *= look->amp[li];
-        Lk.bright    *= look->lum;
+        Lk.bright    *= look->lum * look->lum3[li];
         Lk.scale     *= look->thick;
         const jw_layer *L  = &Lk;
         int order[JW_SECTION];
@@ -955,6 +958,7 @@ static void wave_draw_cpu(void) {
         float ts, pert, drv;
         wave_audio_frame(&ts, &pert, &drv);
         wave_audio_look(s_amp, &s_lum);
+        wave_audio_lum3(s_lum3);
         wave_audio_shape(&s_thick, &s_acc);
         wf_step(&s_field, WAVE_FIELD_DT * ts, pert, drv);
     }
@@ -1111,6 +1115,7 @@ void wave_draw(void) {
         float ts, pert, drv;
         wave_audio_frame(&ts, &pert, &drv);
         wave_audio_look(s_amp, &s_lum);
+        wave_audio_lum3(s_lum3);
         wave_audio_shape(&s_thick, &s_acc);
         // JellyWave also takes less of the broadband perturbation (0.55x):
         // the fine ripple is what makes a slow wave look agitated rather

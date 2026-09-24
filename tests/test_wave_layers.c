@@ -1107,6 +1107,103 @@ static void test_look_framing(void)
     CHECK(bad == 0, "%d vertices were non-finite or behind the camera", bad);
 }
 
+// The same measurement for the distinct-band mapping (wave_render_map.h):
+// drive held at WRM_DB_DRIVE_MAX, tempo at rest, a fraction of the ripple,
+// each layer at ITS OWN height cap, the fullest swell and the (reduced)
+// accent on the crest along the whole band.  Same box, same 0.05 margin.
+static void test_distinct_framing(void)
+{
+    static const float WANT_TOP[JW_LAYERS] = { -0.16f, -0.09f, -0.12f };
+    static wf_field f;
+    static jw_vert  v[JW_VERTS];
+    static float    dsp[WF_SAMPLES];
+    const float pert = WM_IDLE_PERTURB +
+                       (WM_MAX_PERTURB - WM_IDLE_PERTURB) * WRM_DB_PERTURB_KEEP;
+    float hi[JW_LAYERS];
+    int   l, i, fr, bad = 0;
+
+    for (l = 0; l < JW_LAYERS; l++) hi[l] = -9.0f;
+    wf_init(&f, 0);
+    for (fr = 0; fr < 60 * 60; fr++) {
+        wf_step(&f, 1.25f * WRM_TS_IDLE, pert, WRM_DB_DRIVE_MAX);
+        if (fr % 3) continue;
+        for (l = 0; l < JW_LAYERS; l++) {
+            jw_layer L = JW_LAYER[l];
+            int      k;
+            L.disp_gain *= WRM_DB_AMP_MAX[l];
+            L.bright    *= WRM_LUM_MAX * WRM_DB_LUM_MAX[l];
+            L.scale     *= WRM_THICK_MAX;
+            for (k = 0; k < WF_SAMPLES; k++)
+                dsp[k] = f.sy[l][k] + WRM_ACC_H * WRM_DB_ACC_KEEP * WRM_ACC_LAYER[l];
+            if (jw_build_layer(&L, dsp, WF_SAMPLES, 16.0f / 9.0f,
+                               v, JW_VERTS) != JW_VERTS) { bad++; continue; }
+            for (i = 0; i < JW_VERTS; i++) {
+                if (!v[i].ok || v[i].x != v[i].x || v[i].y != v[i].y) {
+                    bad++;
+                    continue;
+                }
+                if (v[i].y > hi[l]) hi[l] = v[i].y;
+            }
+        }
+    }
+    for (l = 0; l < JW_LAYERS; l++) {
+        printf("  distinct: layer %d at drive %.2f x amp %.2f: top edge %+.3f"
+               " (box %+.3f)\n", l, WRM_DB_DRIVE_MAX, WRM_DB_AMP_MAX[l], hi[l],
+               WANT_TOP[l] + 0.16f);
+        CHECK(hi[l] < WANT_TOP[l] + 0.16f && hi[l] < -0.05f,
+              "distinct: layer %d's top edge reaches %+.3f -- WRM_DB_AMP_MAX is"
+              " too high", l, hi[l]);
+    }
+    CHECK(bad == 0, "%d vertices were non-finite or behind the camera", bad);
+}
+
+// Distinct bands: rest is exactly rest, and a band moves only its own layer.
+static void test_distinct_bands(void)
+{
+    wrm_db_state st;
+    wrm_out o;
+    float lum3[3], src[3] = { 0, 0, 0 };
+    int i, n;
+
+    memset(&st, 0, sizeof st);
+    wrm_map(NULL, &o);
+    wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+    CHECK(o.amp[0] == 1.0f && o.amp[1] == 1.0f && o.amp[2] == 1.0f &&
+          lum3[0] == 1.0f && lum3[1] == 1.0f && lum3[2] == 1.0f &&
+          o.dt_scale == WRM_TS_IDLE && o.drive == WRM_DRIVE_IDLE,
+          "distinct bands move the wave at rest");
+
+    // Bass alone, held: layer 0 climbs toward its cap, 1 and 2 sink below rest.
+    memset(&st, 0, sizeof st);
+    src[0] = 1.0f; src[1] = 0.0f; src[2] = 0.0f;
+    for (n = 0; n < 120; n++) {
+        wrm_map(NULL, &o);
+        wrm_distinct(&st, src, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+    }
+    printf("  distinct: bass only -> amp %.2f/%.2f/%.2f lum %.2f/%.2f/%.2f\n",
+           o.amp[0], o.amp[1], o.amp[2], lum3[0], lum3[1], lum3[2]);
+    CHECK(o.amp[0] > 1.6f && o.amp[1] < 1.0f && o.amp[2] < 1.0f,
+          "bass does not stand out on its own layer");
+
+    // Highs alone: attack within a few frames, release within ~0.3 s.
+    memset(&st, 0, sizeof st);
+    src[0] = 0.0f; src[2] = 1.0f;
+    for (n = 0; n < 6; n++) {
+        wrm_map(NULL, &o);
+        wrm_distinct(&st, src, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+    }
+    CHECK(o.amp[2] > 1.6f && o.amp[0] < 1.0f, "highs are not quick on their own layer");
+    src[2] = 0.0f;
+    for (n = 0; n < 20; n++) {
+        wrm_map(NULL, &o);
+        wrm_distinct(&st, src, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+    }
+    CHECK(o.amp[2] < 1.0f, "highs do not let go quickly");
+    for (i = 0; i < 3; i++)
+        CHECK(o.amp[i] >= WRM_DB_AMP_QUIET - 1e-4f && o.amp[i] <= WRM_DB_AMP_MAX[i] + 1e-4f,
+              "layer %d outside its range", i);
+}
+
 // --- the response gain (jellyfin_wavereact.txt level) ---------------------
 //
 // Steeper, never higher: at every gain the outputs stay inside the same caps
@@ -1348,6 +1445,8 @@ int main(void)
                                                    test_shape_mapping();
     printf("\n-- the loudest look stays framed --\n");
                                                    test_look_framing();
+    test_distinct_framing();
+    test_distinct_bands();
     printf("\n-- rough cost --\n");                report_cost();
 
     if (failures) {

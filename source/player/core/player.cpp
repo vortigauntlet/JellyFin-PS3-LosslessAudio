@@ -39,6 +39,7 @@
 #include "slog.h"
 #include "trickplay.h"
 #include "ui_buffering.h"
+#include "music_player.h"   // music_join_stale
 #include "experience.h"      // vpick_audio_words: the audio chip's words
 
 extern void crash_log(const char *msg);
@@ -266,6 +267,7 @@ void show_player(const JFItem *item, u32 resume_secs,
                  const char *media_source_id) {
     crash_log("p1 enter");
     exit_reports_join();
+    music_join_stale();
     plog("show_player: enter");
     plog("show_player: BUILD=seek-diag-1");
     init_btns();

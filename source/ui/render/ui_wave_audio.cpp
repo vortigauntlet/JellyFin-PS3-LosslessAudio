@@ -96,6 +96,8 @@ static u64          s_last_us = 0;
 // numbers rather than a fresh set derived from a zero dt.
 static wrm_out      s_out;
 static float        s_gain = 1.0f;              // from the gate level
+static wrm_db_state s_db;                       // per-band envelopes
+static float        s_lum3[3] = { 1.0f, 1.0f, 1.0f };
 
 // Lazy, on the first wave_audio_frame().  NOT at init time: UI-BRIEF rule 2 --
 // ui_init() runs before the logger is loaded, so an init-time plog line is
@@ -185,6 +187,18 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
 
             wm_update(&s_wm, &f, dt);             // UI-thread state only
             wrm_map_gain(&s_wm.p, s_gain, &s_out);
+            // Distinct bands (wave_render_map.h): lows, mids and highs each
+            // move their own layer, over a calm shared base.
+            {
+                float src[3];
+                src[0] = f.band[WA_SUB] > f.band[WA_BASS] ? f.band[WA_SUB] : f.band[WA_BASS];
+                src[1] = 0.5f * (f.band[WA_LOWMID] + f.band[WA_MID]);
+                src[2] = f.band_fast[WA_HIGH] > f.band_fast[WA_AIR]
+                       ? f.band_fast[WA_HIGH] : f.band_fast[WA_AIR];
+                const float present = f.silence >= 0.999f ? 0.0f : 1.0f - f.silence;
+                const float resp = s_gain <= 1.0f ? 0.8f : (s_gain < 2.0f ? 1.0f : 1.25f);
+                wrm_distinct(&s_db, src, present, resp, dt, &s_out, s_lum3);
+            }
 
             // A bounded trace of what the wave is actually being driven with.
             //
@@ -208,11 +222,11 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                 // amp and lum added so a wave that moves but does not look
                 // different per band can be told from one whose bands never
                 // separated in the analyser.
-                char b[192];
+                char b[240];
                 snprintf(b, sizeof b,
                          "wave: rms=%d.%02d b0=%d.%02d drive=%d.%02d ts=%d.%02d"
                          " amp=%d.%02d/%d.%02d/%d.%02d lum=%d.%02d"
-                         " thk=%d.%02d acc=%d",
+                         " thk=%d.%02d acc=%d L=%d.%02d/%d.%02d/%d.%02d",
                          (int)f.rms, (int)(f.rms * 100) % 100,
                          (int)f.band[0], (int)(f.band[0] * 100) % 100,
                          (int)s_out.drive, (int)(s_out.drive * 100) % 100,
@@ -223,7 +237,10 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                          (int)s_out.lum, (int)(s_out.lum * 100) % 100,
                          (int)s_out.thick, (int)(s_out.thick * 100) % 100,
                          (s_out.acc.a[0] > 0.0f) + (s_out.acc.a[1] > 0.0f)
-                         + (s_out.acc.a[2] > 0.0f) + (s_out.acc.a[3] > 0.0f));
+                         + (s_out.acc.a[2] > 0.0f) + (s_out.acc.a[3] > 0.0f),
+                         (int)s_lum3[0], (int)(s_lum3[0] * 100) % 100,
+                         (int)s_lum3[1], (int)(s_lum3[1] * 100) % 100,
+                         (int)s_lum3[2], (int)(s_lum3[2] * 100) % 100);
                 plog(b);
             }
         }
@@ -247,6 +264,13 @@ void wave_audio_look(float amp[3], float *lum)
     if (!s_started) { wrm_map(NULL, &idle); o = &idle; }
     if (amp) { amp[0] = o->amp[0]; amp[1] = o->amp[1]; amp[2] = o->amp[2]; }
     if (lum) *lum = o->lum;
+}
+
+void wave_audio_lum3(float lum3[3])
+{
+    if (!lum3) return;
+    if (!s_started) { lum3[0] = lum3[1] = lum3[2] = 1.0f; return; }
+    lum3[0] = s_lum3[0]; lum3[1] = s_lum3[1]; lum3[2] = s_lum3[2];
 }
 
 void wave_audio_shape(float *thick, wrm_accent_set *acc)

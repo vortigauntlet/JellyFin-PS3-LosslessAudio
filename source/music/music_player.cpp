@@ -73,6 +73,9 @@ static char s_session_id[80] = "";
 
 static sys_ppu_thread_t s_stream_tid = 0;
 static sys_ppu_thread_t s_pump_tid   = 0;
+// music_stop() no longer waits for the stream thread (see there); the next
+// music_start() joins it before touching any state it shares.
+static bool             s_stream_unjoined = false;
 
 // -------------------------------------------------------
 // PCM ring + audio source callbacks
@@ -252,6 +255,8 @@ static u64 elapsed_ticks(void) {
 // track audibly restarts from 0:00.  The kill via /Videos/ActiveEncodings
 // doesn't reliably take for audio jobs the way it does for video.
 static int play_one_track(u32 start_secs) {
+    if (!s_run) return MCMD_STOP;
+    crash_log("m0 track start");
     const MusicTrack *t = &s_queue[s_order[s_pos]];
 
     mring_flush();
@@ -266,8 +271,14 @@ static int play_one_track(u32 start_secs) {
     plog(buf);
 
     track_session_setup(t);
+    // Each of these is a blocking round trip.  A stop requested meanwhile
+    // (the user left the screen) ends the track here rather than starting a
+    // stream nobody will hear.
+    if (!s_run) { crash_log("m0x stopped before stream"); return MCMD_STOP; }
     jellyfin_report_playing(t->id, s_session_id,
                             (u64)start_secs * 10000000ULL);
+    if (!s_run) { crash_log("m0x stopped before stream"); return MCMD_STOP; }
+    crash_log("m0b stream_open");
 
     char url[1024];
     build_audio_url(url, sizeof(url), t->id, start_secs);
@@ -406,7 +417,11 @@ static void music_stream_thread(void *arg) {
         }
     }
     s_active = false;
+    // A stop's cancel flag was for THIS thread's stream_open; nothing else
+    // may inherit it (the video player's stream_open reads the same flag).
+    if (!s_run) g_stream_cancel = false;
     plog("music: stream thread exit");
+    crash_log("m9 stream thread exit");
     sysThreadExit(0);
 }
 
@@ -430,6 +445,14 @@ static void music_pump_thread(void *arg) {
 
 bool music_start(const MusicTrack *tracks, int count, int start_idx) {
     if (s_started || count <= 0) return false;
+    // The previous session's stream thread may still be finishing a network
+    // call it was in when that screen closed; it shares every static below.
+    if (s_stream_unjoined) {
+        u64 r;
+        sysThreadJoin(s_stream_tid, &r);
+        s_stream_unjoined = false;
+    }
+    g_stream_cancel = false;
     if (count > MUSIC_QUEUE_MAX) count = MUSIC_QUEUE_MAX;
     if (start_idx < 0)      start_idx = 0;
     if (start_idx >= count) start_idx = count - 1;
@@ -471,15 +494,34 @@ bool music_start(const MusicTrack *tracks, int count, int start_idx) {
     return true;
 }
 
+// The video player calls this before it opens a stream: a music session that
+// was closed mid-network-call may still own its thread and the shared
+// stream_open cancel flag.  Blocks only in that rare case.
+void music_join_stale(void) {
+    if (s_started || !s_stream_unjoined) return;
+    u64 r;
+    sysThreadJoin(s_stream_tid, &r);
+    s_stream_unjoined = false;
+    g_stream_cancel = false;
+}
+
 void music_stop(void) {
     if (!s_started) return;
+    crash_log("m5 music_stop");
     s_cmd = MCMD_STOP;
     s_run = false;
     g_stream_cancel = true;   // unblock a stream_open header wait
     u64 retval;
-    sysThreadJoin(s_stream_tid, &retval);
+    // NOT the stream thread.  2026-09-24: after a network stall the user
+    // switched track and then left; that thread was inside the track change's
+    // blocking HTTP calls (session, playing report, stream open -- up to 5 s
+    // each on a dead network) and this join froze the whole screen behind
+    // them.  It only touches the PCM ring, its socket and HTTP, all safe to
+    // let finish on their own: it sees s_run and ends, and music_start()
+    // joins it before a new session reuses anything.
     sysThreadJoin(s_pump_tid, &retval);
-    g_stream_cancel = false;
+    s_stream_unjoined = true;
+    crash_log("m6 pump joined");
     audio_close();
     audio_set_source(NULL, NULL, NULL);   // hand the port back to the video path
     // Let a queued progress report go out, then retire the worker.  Bounded at

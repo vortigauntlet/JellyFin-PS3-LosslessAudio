@@ -47,5 +47,10 @@ void wave_audio_look(float amp[3], float *lum);
 // neutral (1.0 and no live pulse) at rest and before the first frame.
 void wave_audio_shape(float *thick, wrm_accent_set *acc);
 
+// Per-solver-layer brightness from the distinct-band mapping (the highs'
+// layer flickers brightest).  Exactly 1.0 at rest.  Multiplies with the single
+// lum from wave_audio_look().
+void wave_audio_lum3(float lum3[3]);
+
 // True when the analyser is running (gate on, initialised).  For logging only.
 bool wave_audio_active(void);
