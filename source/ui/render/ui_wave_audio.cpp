@@ -6,9 +6,11 @@
 // would make them untestable: a cross-thread tap, a clock, and a gate file.
 //
 // WHAT THIS FILE DOES NOT TOUCH.  No RSX state, no vertex arrays, no video
-// memory, no framebuffer.  The whole renderer-side change is two call sites in
+// memory, no framebuffer.  The renderer-side change is two call sites in
 // ui_wave.cpp swapping two literals for two variables, which is exactly the
-// seam wave_field.h's INTEGRATION note set up.
+// seam wave_field.h's INTEGRATION note set up, plus wave_audio_look()'s two
+// multipliers, which scale a layer's height and colour before any vertex is
+// computed.
 
 #include <stdio.h>
 #include <string.h>
@@ -47,14 +49,34 @@ extern void crash_log(const char *msg);
 // and the wave reverts to today's behaviour with no reflash.
 #define WAVEAUDIO_FILE    "jellyfin_wavereact.txt"
 
-static bool gate_enabled(void)
+// The file is also the INTENSITY, since the first look on a TV was "barely
+// noticed":
+//
+//   0        off (today's constants, as before)
+//   1        normal -- the mapping as measured, response gain x1.0
+//   2        strong -- x1.8   (the default: absent or unreadable)
+//   3 or up  max    -- x2.6
+//
+// The gain steepens the response only; every ceiling in wave_render_map.h is
+// unchanged, so no level can push the band into the card grid.  Read once,
+// at the first frame, like the other gates: a relaunch applies a change.
+#define WAVEAUDIO_DEFAULT 2
+
+static int gate_level(void)
 {
     FILE *f = fopen(jf_data_path(WAVEAUDIO_FILE), "r");
-    if (!f) return true;                    // absent = on
-    int v = 1;
-    if (fscanf(f, "%d", &v) != 1) v = 1;    // unreadable = on
+    if (!f) return WAVEAUDIO_DEFAULT;               // absent = default
+    int v = WAVEAUDIO_DEFAULT;
+    if (fscanf(f, "%d", &v) != 1) v = WAVEAUDIO_DEFAULT;
     fclose(f);
-    return v != 0;
+    return v < 0 ? 0 : v;
+}
+
+static float level_gain(int level)
+{
+    if (level <= 1) return 1.0f;
+    if (level == 2) return 1.8f;
+    return 2.6f;
 }
 
 // --- state ---------------------------------------------------------------
@@ -73,6 +95,7 @@ static u64          s_last_us = 0;
 // Cached output, so a second wave_draw() in the same frame returns the same
 // numbers rather than a fresh set derived from a zero dt.
 static wrm_out      s_out;
+static float        s_gain = 1.0f;              // from the gate level
 
 // Lazy, on the first wave_audio_frame().  NOT at init time: UI-BRIEF rule 2 --
 // ui_init() runs before the logger is loaded, so an init-time plog line is
@@ -83,7 +106,8 @@ static void wave_audio_start(void)
     s_started = true;
     wrm_map(NULL, &s_out);                  // idle values, valid from here on
 
-    if (!gate_enabled()) {
+    int level = gate_level();
+    if (level == 0) {
         plog("wave: audio-reactive OFF (jellyfin_wavereact.txt = 0)");
         crash_log("wave: audio-reactive OFF (gate)");
         return;
@@ -110,7 +134,15 @@ static void wave_audio_start(void)
     }
     s_last_us = timing_get_us();
     s_on = true;
-    plog("wave: audio-reactive ON (6-band filterbank, 48 kHz tap)");
+    s_gain = level_gain(level);
+    {
+        char b[96];
+        snprintf(b, sizeof b,
+                 "wave: audio-reactive ON (6-band filterbank, 48 kHz tap)"
+                 " level %d, response x%d.%d", level > 3 ? 3 : level,
+                 (int)s_gain, (int)(s_gain * 10.0f + 0.5f) % 10);
+        plog(b);
+    }
     crash_log("wave: audio-reactive ON");
 }
 
@@ -152,7 +184,7 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
             sysMutexUnlock(s_mtx);
 
             wm_update(&s_wm, &f, dt);             // UI-thread state only
-            wrm_map(&s_wm.p, &s_out);
+            wrm_map_gain(&s_wm.p, s_gain, &s_out);
 
             // A bounded trace of what the wave is actually being driven with.
             //
@@ -173,13 +205,25 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
             if (s_dbg_n < 600 && (s_dbg_us == 0 || now - s_dbg_us >= 5000000ULL)) {
                 s_dbg_us = now;
                 s_dbg_n++;
-                char b[112];
+                // amp and lum added so a wave that moves but does not look
+                // different per band can be told from one whose bands never
+                // separated in the analyser.
+                char b[192];
                 snprintf(b, sizeof b,
-                         "wave: rms=%d.%02d b0=%d.%02d drive=%d.%02d ts=%d.%02d",
+                         "wave: rms=%d.%02d b0=%d.%02d drive=%d.%02d ts=%d.%02d"
+                         " amp=%d.%02d/%d.%02d/%d.%02d lum=%d.%02d"
+                         " thk=%d.%02d acc=%d",
                          (int)f.rms, (int)(f.rms * 100) % 100,
                          (int)f.band[0], (int)(f.band[0] * 100) % 100,
                          (int)s_out.drive, (int)(s_out.drive * 100) % 100,
-                         (int)s_out.dt_scale, (int)(s_out.dt_scale * 100) % 100);
+                         (int)s_out.dt_scale, (int)(s_out.dt_scale * 100) % 100,
+                         (int)s_out.amp[0], (int)(s_out.amp[0] * 100) % 100,
+                         (int)s_out.amp[1], (int)(s_out.amp[1] * 100) % 100,
+                         (int)s_out.amp[2], (int)(s_out.amp[2] * 100) % 100,
+                         (int)s_out.lum, (int)(s_out.lum * 100) % 100,
+                         (int)s_out.thick, (int)(s_out.thick * 100) % 100,
+                         (s_out.acc.a[0] > 0.0f) + (s_out.acc.a[1] > 0.0f)
+                         + (s_out.acc.a[2] > 0.0f) + (s_out.acc.a[3] > 0.0f));
                 plog(b);
             }
         }
@@ -191,4 +235,25 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
     if (dt_scale) *dt_scale = s_out.dt_scale;
     if (perturb)  *perturb  = s_out.perturb;
     if (drive)    *drive    = s_out.drive;
+}
+
+// Before the first wave_audio_frame() s_out is still zero-filled, and a zero
+// height would flatten the wave -- so that case returns the rest values
+// rather than the cache.
+void wave_audio_look(float amp[3], float *lum)
+{
+    wrm_out idle;
+    const wrm_out *o = &s_out;
+    if (!s_started) { wrm_map(NULL, &idle); o = &idle; }
+    if (amp) { amp[0] = o->amp[0]; amp[1] = o->amp[1]; amp[2] = o->amp[2]; }
+    if (lum) *lum = o->lum;
+}
+
+void wave_audio_shape(float *thick, wrm_accent_set *acc)
+{
+    wrm_out idle;
+    const wrm_out *o = &s_out;
+    if (!s_started) { wrm_map(NULL, &idle); o = &idle; }
+    if (thick) *thick = o->thick;
+    if (acc)   *acc   = o->acc;
 }

@@ -60,7 +60,7 @@ all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
-     test_experience test_json_unescape test_boot_seq
+     test_experience test_json_unescape test_boot_seq test_wave_motes
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -259,6 +259,7 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_experience
 	./test_json_unescape
 	./test_boot_seq
+	./test_wave_motes
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -268,7 +269,7 @@ clean:
 	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
 	      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient \
-	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq \
+	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq test_wave_motes \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
@@ -419,6 +420,16 @@ test_wave_light: test_wave_light.c ../source/ui/render/wave_light.h \
 test_wave_gel: test_wave_gel.c $(JW_HDRS) $(WAVE_HDRS)
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_gel.c -lm
 
+# The motes (JellyWave stage 9, not wired into the renderer yet): the cloud's
+# spread against its closed form, framing at 16:9 and 4:3, how long a glint
+# is held, and the field's TOTAL light frame to frame -- the strobe bound.
+# wave_motion.h and wave_audio.h are named rather than taken from AUDIO_HDRS,
+# which is defined further down and so is still empty when this line is read.
+test_wave_motes: test_wave_motes.c ../source/ui/render/wave_motes.h \
+                 ../source/ui/render/wave_motion.h \
+                 ../source/ui/render/wave_audio.h $(JW_HDRS) $(WAVE_HDRS)
+	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_motes.c -lm
+
 # The spine (README 2.9 depth model): per-level geometry, the divider/label
 # clearance through a transition, slot falloff and the eased motion clock.
 # Header-only pure C, like the JellyWave headers above.
@@ -508,7 +519,7 @@ test_wave_motion: test_wave_motion.c ../source/ui/render/wave_audio.h \
                   ../source/ui/render/wave_motion.h
 	$(CC) $(CFLAGS) -o $@ test_wave_motion.c -lm
 
-test_wave_layers: test_wave_layers.c $(AUDIO_HDRS) $(WAVE_HDRS)
+test_wave_layers: test_wave_layers.c $(AUDIO_HDRS) $(WAVE_HDRS) $(JW_HDRS)
 	$(CC) $(CFLAGS) -o $@ test_wave_layers.c -lm
 
 

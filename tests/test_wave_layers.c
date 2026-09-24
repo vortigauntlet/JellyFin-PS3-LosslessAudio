@@ -43,6 +43,7 @@
 #include "../source/ui/render/wave_ribbon.h"
 #include "../source/ui/render/wave_field.h"
 #include "../source/ui/render/wave_render_map.h"
+#include "../source/ui/render/wave_gel.h"
 
 #define NODES   96
 #define SAMPLES 72
@@ -822,6 +823,504 @@ static void test_mapped_drive_clears_the_knee(void)
     }
 }
 
+// --- the look: per-layer height and colour --------------------------------
+//
+// These drive the REAL stage B (wm_update) with synthetic features and read
+// what wrm_map hands the renderer, because the properties that matter are of
+// the two together: which band moves which ribbon, and how fast anything can
+// change between frames.
+
+#define LOOK_DT (1.0f / 60.0f)
+
+static void look_feat(wa_features *f, float bass, float mids, float highs,
+                      float rms, float onset)
+{
+    memset(f, 0, sizeof *f);
+    f->band[WA_SUB]    = f->band[WA_BASS] = bass;
+    f->band[WA_LOWMID] = f->band[WA_MID]  = mids;
+    f->band[WA_HIGH]   = f->band[WA_AIR]  = highs;
+    memcpy(f->band_fast, f->band, sizeof f->band);
+    f->rms            = rms;
+    f->centroid       = 0.5f;
+    f->onset          = onset > 0.0f ? 1.0f : 0.0f;
+    f->onset_strength = onset;
+    f->silence        = 0.0f;
+}
+
+// Hold one feature set for `secs` and return the mapped look it settles on.
+static void look_settle(wm_state *m, const wa_features *f, float secs,
+                        wrm_out *o)
+{
+    int i, n = (int)(secs / LOOK_DT);
+    for (i = 0; i < n; i++) wm_update(m, f, LOOK_DT);
+    wrm_map(&m->p, o);
+}
+
+static int look_in_range(const wrm_out *o)
+{
+    int i;
+    for (i = 0; i < 3; i++)
+        if (!(o->amp[i] >= WRM_AMP_MIN && o->amp[i] <= WRM_AMP_MAX)) return 0;
+    return o->lum >= WRM_LUM_MIN && o->lum <= WRM_LUM_MAX;
+}
+
+static void test_look_mapping(void)
+{
+    wrm_out     o, q;
+    wm_state    m;
+    wa_features f;
+    int         i;
+
+    // Rest is EXACTLY 1.0, from both the gate-off path and a fresh stage B,
+    // or the XMB with no music playing would look different from before.
+    wrm_map(NULL, &o);
+    CHECK(o.amp[0] == 1.0f && o.amp[1] == 1.0f && o.amp[2] == 1.0f &&
+          o.lum == 1.0f,
+          "idle look is %.4f/%.4f/%.4f lum %.4f, not exactly 1",
+          o.amp[0], o.amp[1], o.amp[2], o.lum);
+    wm_init(&m);
+    wrm_map(&m.p, &q);
+    CHECK(memcmp(o.amp, q.amp, sizeof o.amp) == 0 && o.lum == q.lum,
+          "a fresh wm_state does not map to the idle look");
+
+    // Each band lifts its own ribbon above rest and leads the other two.
+    {
+        static const char *NAME[3] = { "bass", "mids", "highs" };
+        for (i = 0; i < 3; i++) {
+            wm_init(&m);
+            look_feat(&f, i == 0, i == 1, i == 2, 0.5f, 0.0f);
+            look_settle(&m, &f, 4.0f, &o);
+            printf("  %-5s -> amp %.3f / %.3f / %.3f   lum %.3f\n",
+                   NAME[i], o.amp[0], o.amp[1], o.amp[2], o.lum);
+            CHECK(o.amp[i] > 1.05f, "%s leaves its ribbon at %.3f", NAME[i],
+                  o.amp[i]);
+            CHECK(o.amp[i] > o.amp[(i + 1) % 3] && o.amp[i] > o.amp[(i + 2) % 3],
+                  "%s does not lead its own ribbon", NAME[i]);
+            CHECK(look_in_range(&o), "%s mapped out of range", NAME[i]);
+        }
+    }
+
+    // Monotone in each band's level, and the whole mix at full lands on the
+    // measured ceiling.
+    for (i = 0; i < 3; i++) {
+        float prev = 0.0f;
+        int   k;
+        for (k = 0; k <= 10; k++) {
+            float lv = 0.1f * (float)k;
+            wm_init(&m);
+            look_feat(&f, i == 0 ? lv : 0.0f, i == 1 ? lv : 0.0f,
+                      i == 2 ? lv : 0.0f, 0.5f, 0.0f);
+            look_settle(&m, &f, 4.0f, &o);
+            CHECK(o.amp[i] >= prev - 1e-6f,
+                  "amp[%d] fell from %.4f to %.4f as its band rose to %.1f",
+                  i, prev, o.amp[i], lv);
+            prev = o.amp[i];
+        }
+    }
+    wm_init(&m);
+    look_feat(&f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    look_settle(&m, &f, 4.0f, &o);
+    printf("  full  -> amp %.3f / %.3f / %.3f   lum %.3f\n",
+           o.amp[0], o.amp[1], o.amp[2], o.lum);
+    CHECK(look_in_range(&o), "full-scale input mapped out of range");
+    CHECK(fabsf(o.amp[0] - WRM_AMP_MAX) < 1e-3f &&
+          fabsf(o.amp[2] - WRM_AMP_MAX) < 1e-3f,
+          "full-scale input does not reach WRM_AMP_MAX");
+
+    // Louder is brighter, bounded.
+    {
+        float prev = 0.0f;
+        for (i = 0; i <= 10; i++) {
+            wm_init(&m);
+            look_feat(&f, 0.3f, 0.3f, 0.3f, 0.1f * (float)i, 0.0f);
+            look_settle(&m, &f, 4.0f, &o);
+            CHECK(o.lum >= prev - 1e-6f, "lum is not monotone in rms at %d", i);
+            CHECK(look_in_range(&o), "lum out of range at rms %d", i);
+            prev = o.lum;
+        }
+    }
+
+    // An onset rises and then decays back to where it started.
+    {
+        float base, peak = 0.0f;
+        wm_init(&m);
+        look_feat(&f, 0.3f, 0.3f, 0.3f, 0.5f, 0.0f);
+        look_settle(&m, &f, 4.0f, &o);
+        base = o.lum;
+        look_feat(&f, 0.3f, 0.3f, 0.3f, 0.5f, 1.0f);
+        for (i = 0; i < 6; i++) {                     // a 100 ms onset
+            look_settle(&m, &f, LOOK_DT, &o);
+            if (o.lum > peak) peak = o.lum;
+        }
+        look_feat(&f, 0.3f, 0.3f, 0.3f, 0.5f, 0.0f);
+        look_settle(&m, &f, 2.0f, &o);
+        printf("  onset -> lum %.4f, peak %.4f, back to %.4f\n", base, peak, o.lum);
+        CHECK(peak > base + 0.03f, "a 100 ms onset only lifts lum %.4f", peak - base);
+        CHECK(fabsf(o.lum - base) < 1e-4f, "lum did not return after an onset");
+    }
+
+    // Beats every 250 ms for 30 s: bounded, and no creep between the early
+    // and late stretches.
+    {
+        float hi_early = 0.0f, hi_late = 0.0f;
+        int   fr;
+        wm_init(&m);
+        for (fr = 0; fr < 60 * 30; fr++) {
+            look_feat(&f, 1.0f, 0.6f, 0.6f, 1.0f, (fr % 15) < 6 ? 1.0f : 0.0f);
+            look_settle(&m, &f, LOOK_DT, &o);
+            CHECK(look_in_range(&o), "repeated beats pushed the look out of range");
+            if (failures) return;
+            if (fr >= 60 * 5  && fr < 60 * 10 && o.lum > hi_early) hi_early = o.lum;
+            if (fr >= 60 * 25 &&                 o.lum > hi_late)  hi_late  = o.lum;
+        }
+        CHECK(fabsf(hi_late - hi_early) < 1e-3f,
+              "lum peaks creep under repeated beats: %.4f then %.4f",
+              hi_early, hi_late);
+    }
+
+    // THE STROBE BOUND.  Hostile input -- every feature jumping to a fresh
+    // random value every frame -- must still only move the look by a small
+    // step per frame, because nothing downstream smooths it again.
+    {
+        uint32_t seed = 12345u;
+        float    dl = 0.0f, da = 0.0f;
+        wrm_out  prev;
+        int      fr, k;
+        wm_init(&m);
+        wrm_map(&m.p, &prev);
+        for (fr = 0; fr < 60 * 60; fr++) {
+            float r[5];
+            for (k = 0; k < 5; k++) {
+                seed = seed * 1664525u + 1013904223u;
+                r[k] = (float)(seed >> 8) * (1.0f / 16777216.0f);
+            }
+            look_feat(&f, r[0], r[1], r[2], r[3], r[4] > 0.5f ? r[4] : 0.0f);
+            wm_update(&m, &f, LOOK_DT);
+            wrm_map(&m.p, &o);
+            if (fabsf(o.lum - prev.lum) > dl) dl = fabsf(o.lum - prev.lum);
+            for (k = 0; k < 3; k++)
+                if (fabsf(o.amp[k] - prev.amp[k]) > da)
+                    da = fabsf(o.amp[k] - prev.amp[k]);
+            prev = o;
+        }
+        printf("  hostile input: largest step per frame  lum %.4f  amp %.4f\n",
+               dl, da);
+        CHECK(dl <= 0.018f, "lum can jump %.4f in one frame", dl);
+        CHECK(da <= 0.009f, "amp can jump %.4f in one frame", da);
+    }
+
+    // Long silence after music settles back onto exactly the rest look.
+    wm_init(&m);
+    look_feat(&f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    look_settle(&m, &f, 5.0f, &o);
+    wm_update(&m, NULL, LOOK_DT);
+    for (i = 0; i < 60 * 30; i++) wm_update(&m, NULL, LOOK_DT);
+    wrm_map(&m.p, &o);
+    printf("  after 30 s of silence -> amp %.5f / %.5f / %.5f  lum %.5f\n",
+           o.amp[0], o.amp[1], o.amp[2], o.lum);
+    CHECK(fabsf(o.amp[0] - 1.0f) < 1e-4f && fabsf(o.amp[1] - 1.0f) < 1e-4f &&
+          fabsf(o.amp[2] - 1.0f) < 1e-4f && fabsf(o.lum - 1.0f) < 1e-4f,
+          "silence does not return to the rest look");
+
+    // NaN and infinities land inside the ranges, never outside them.
+    {
+        static const float BAD[3] = { NAN, INFINITY, -INFINITY };
+        for (i = 0; i < 3; i++) {
+            wm_params p;
+            int       k;
+            wm_init(&m);
+            p = m.p;
+            for (k = 0; k < WM_LAYERS; k++) p.amp[k] = BAD[i];
+            p.bright = BAD[i];
+            p.glow   = BAD[i];
+            wrm_map(&p, &o);
+            CHECK(look_in_range(&o), "bad input %d escaped the ranges", i);
+        }
+    }
+
+    // Deterministic: the same input twice gives bit-identical output.
+    {
+        wm_state a, b;
+        wrm_out  oa, ob;
+        wm_init(&a); wm_init(&b);
+        for (i = 0; i < 600; i++) {
+            look_feat(&f, (i % 7) * 0.14f, (i % 5) * 0.2f, (i % 3) * 0.4f,
+                      0.5f, (i % 30) == 0 ? 0.8f : 0.0f);
+            wm_update(&a, &f, LOOK_DT);
+            wm_update(&b, &f, LOOK_DT);
+        }
+        wrm_map(&a.p, &oa);
+        wrm_map(&b.p, &ob);
+        CHECK(memcmp(&oa, &ob, sizeof oa) == 0, "the look is not deterministic");
+    }
+}
+
+// The measurement WRM_AMP_MAX, WRM_THICK_MAX and WRM_ACC_H were chosen from,
+// re-run against the constants: the loudest drive, the tallest multiplier,
+// the fullest swell and an accent sitting on the crest along the WHOLE band
+// (a pessimistic stand-in for a bump that happens to land on a peak), all at
+// once, through the real solver and the real JellyWave loft, must keep every
+// layer inside test_wave_gel.c's framing box with 0.05 to spare under the
+// midline.  WANT_TOP is that test's table.
+static void test_look_framing(void)
+{
+    static const float WANT_TOP[JW_LAYERS] = { -0.16f, -0.09f, -0.12f };
+    static wf_field f;
+    static jw_vert  v[JW_VERTS];
+    static float    dsp[WF_SAMPLES];
+    float hi[JW_LAYERS];
+    int   l, i, fr, bad = 0;
+
+    for (l = 0; l < JW_LAYERS; l++) hi[l] = -9.0f;
+    wf_init(&f, 0);
+    for (fr = 0; fr < 60 * 60; fr++) {
+        wf_step(&f, 1.25f * WRM_TS_MAX, WM_MAX_PERTURB, WRM_DRIVE_MAX);
+        if (fr % 3) continue;
+        for (l = 0; l < JW_LAYERS; l++) {
+            jw_layer L = JW_LAYER[l];
+            int      k;
+            L.disp_gain *= WRM_AMP_MAX;
+            L.bright    *= WRM_LUM_MAX;
+            L.scale     *= WRM_THICK_MAX;
+            for (k = 0; k < WF_SAMPLES; k++)
+                dsp[k] = f.sy[l][k] + WRM_ACC_H * WRM_ACC_LAYER[l];
+            if (jw_build_layer(&L, dsp, WF_SAMPLES, 16.0f / 9.0f,
+                               v, JW_VERTS) != JW_VERTS) { bad++; continue; }
+            for (i = 0; i < JW_VERTS; i++) {
+                if (!v[i].ok || v[i].x != v[i].x || v[i].y != v[i].y) {
+                    bad++;
+                    continue;
+                }
+                if (v[i].y > hi[l]) hi[l] = v[i].y;
+            }
+        }
+    }
+    for (l = 0; l < JW_LAYERS; l++) {
+        printf("  layer %d at drive %.2f x amp %.2f, swell %.2f, accent on the"
+               " crest: top edge %+.3f (box %+.3f, midline 0)\n",
+               l, WRM_DRIVE_MAX, WRM_AMP_MAX, WRM_THICK_MAX, hi[l],
+               WANT_TOP[l] + 0.16f);
+        CHECK(hi[l] < WANT_TOP[l] + 0.16f && hi[l] < -0.05f,
+              "layer %d's top edge reaches %+.3f at the loudest look -- "
+              "WRM_AMP_MAX is too high", l, hi[l]);
+    }
+    CHECK(bad == 0, "%d vertices were non-finite or behind the camera", bad);
+}
+
+// --- the response gain (jellyfin_wavereact.txt level) ---------------------
+//
+// Steeper, never higher: at every gain the outputs stay inside the same caps
+// the framing test measures, rest stays exactly rest, gain 1 IS wrm_map, and
+// a mid-level passage reads more strongly as the gain rises.
+static void test_gain(void)
+{
+    static const float G[] = { 1.0f, 1.8f, 2.6f };
+    wrm_out  a, b;
+    wm_state m;
+    int      gi, i, k;
+    uint32_t r = 99u;
+
+    for (i = 0; i < 2000; i++) {
+        wm_params p;
+        memset(&p, 0, sizeof p);
+        r = r * 1664525u + 1013904223u; p.drive = WM_IDLE_DRIVE + (WM_MAX_DRIVE - WM_IDLE_DRIVE) * (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.timescale = WM_MIN_TIME + (WM_MAX_TIME - WM_MIN_TIME) * (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.perturb = WM_MAX_PERTURB * (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.bright = (float)(r >> 8) / 16777216.0f;
+        r = r * 1664525u + 1013904223u; p.glow = (float)(r >> 8) / 16777216.0f;
+        for (k = 0; k < WM_LAYERS; k++) {
+            r = r * 1664525u + 1013904223u; p.amp[k] = (float)(r >> 8) / 16777216.0f;
+        }
+        for (k = 0; k < WM_PULSES; k++) {
+            p.pulse[k].x = 0.3f * (float)k; p.pulse[k].width = 0.1f;
+            p.pulse[k].amp = 0.25f * (float)k; p.pulse[k].live = k & 1;
+        }
+        wrm_map(&p, &a);
+        wrm_map_gain(&p, 1.0f, &b);
+        CHECK(memcmp(&a, &b, sizeof a) == 0, "gain 1 is not wrm_map");
+        for (gi = 0; gi < 3; gi++) {
+            wrm_map_gain(&p, G[gi] * 1.5f, &b);   /* past the levels on purpose */
+            CHECK(b.drive >= WRM_DRIVE_IDLE && b.drive <= WRM_DRIVE_MAX &&
+                  b.dt_scale >= WRM_TS_MIN && b.dt_scale <= WRM_TS_MAX &&
+                  b.perturb >= 0.0f && b.perturb <= WM_MAX_PERTURB &&
+                  b.amp[0] <= WRM_AMP_MAX && b.amp[2] >= WRM_AMP_MIN &&
+                  b.lum <= WRM_LUM_MAX && b.lum >= WRM_LUM_MIN &&
+                  b.thick <= WRM_THICK_MAX && b.thick >= WRM_THICK_MIN &&
+                  b.acc.a[3] <= 1.0f,
+                  "gain %.1f escaped a cap", G[gi] * 1.5f);
+        }
+        if (failures) return;
+    }
+
+    wm_init(&m);
+    wrm_map(NULL, &a);
+    for (gi = 0; gi < 3; gi++) {
+        wrm_map_gain(&m.p, G[gi], &b);
+        CHECK(a.drive == b.drive && a.dt_scale == b.dt_scale &&
+              a.perturb == b.perturb && a.lum == b.lum && a.thick == b.thick &&
+              memcmp(a.amp, b.amp, sizeof a.amp) == 0 &&
+              b.acc.a[0] == 0.0f && b.acc.a[1] == 0.0f &&
+              b.acc.a[2] == 0.0f && b.acc.a[3] == 0.0f,
+              "rest is not exact at gain %.1f", G[gi]);
+    }
+
+    {
+        wm_params p = m.p;
+        float prev_amp = 0.0f, prev_lum = 0.0f, prev_drv = 0.0f;
+        p.amp[0] = 0.55f; p.bright = 0.75f; p.drive = 0.60f;
+        for (gi = 0; gi < 3; gi++) {
+            wrm_map_gain(&p, G[gi], &b);
+            printf("  mid-level passage at x%.1f: amp0 %.3f  lum %.3f  drive %.3f\n",
+                   G[gi], b.amp[0], b.lum, b.drive);
+            CHECK(b.amp[0] > prev_amp && b.lum > prev_lum && b.drive > prev_drv,
+                  "gain %.1f does not strengthen a mid-level passage", G[gi]);
+            prev_amp = b.amp[0]; prev_lum = b.lum; prev_drv = b.drive;
+        }
+    }
+    {
+        wm_params p = m.p;
+        p.drive = NAN;
+        wrm_map_gain(&p, NAN, &b);
+        CHECK(b.drive == b.drive && b.drive >= WRM_DRIVE_IDLE, "a NaN gain leaked");
+    }
+}
+
+// --- JellyWave 2.0: the body swell and the travelling accent -------------
+
+static float accent_peak(const wrm_out *o, int layer, int *at)
+{
+    static float z[WF_SAMPLES], out[WF_SAMPLES];
+    float best = -1.0f;
+    int   k;
+    memset(z, 0, sizeof z);
+    wrm_accent(&o->acc, layer, z, out, WF_SAMPLES);
+    *at = 0;
+    for (k = 0; k < WF_SAMPLES; k++)
+        if (out[k] > best) { best = out[k]; *at = k; }
+    return best;
+}
+
+static void test_shape_mapping(void)
+{
+    static float in[WF_SAMPLES], out[WF_SAMPLES];
+    wrm_out  o;
+    wm_state m;
+    int      i, k, at;
+
+    // REST IS BIT-IDENTICAL: no swell, and an accent that leaves the solver
+    // curve exactly as it was -- the idle XMB must not change by one ulp.
+    for (k = 0; k < WF_SAMPLES; k++) in[k] = 0.37f * sinf(0.11f * (float)k) - 0.05f;
+    wrm_map(NULL, &o);
+    wrm_accent(&o.acc, 0, in, out, WF_SAMPLES);
+    CHECK(o.thick == 1.0f, "idle swell is %.6f, not exactly 1", o.thick);
+    CHECK(memcmp(in, out, sizeof in) == 0, "the idle accent changes the curve");
+    wm_init(&m);
+    wrm_map(&m.p, &o);
+    wrm_accent(&o.acc, 2, in, out, WF_SAMPLES);
+    CHECK(o.thick == 1.0f && memcmp(in, out, sizeof in) == 0,
+          "a fresh stage B is not bit-identical to rest");
+
+    // Swell: monotone in stage B's Body amplitude, inside its range, and at
+    // its measured ceiling when Body is full.
+    {
+        float prev = 0.0f;
+        for (i = 0; i <= 20; i++) {
+            wm_params p = m.p;
+            p.amp[1] = 0.05f * (float)i;
+            wrm_map(&p, &o);
+            CHECK(o.thick >= prev && o.thick >= WRM_THICK_MIN &&
+                  o.thick <= WRM_THICK_MAX,
+                  "swell %.4f not monotone/bounded at Body %.2f", o.thick, p.amp[1]);
+            prev = o.thick;
+        }
+        CHECK(fabsf(prev - WRM_THICK_MAX) < 1e-5f, "full Body does not reach the swell cap");
+    }
+
+    // One real pulse from stage B: the accent follows it along the band,
+    // never exceeds its height, and the ribbon is bit-identical again once
+    // the pulse has retired.
+    {
+        int   last_at = -1, moved = 0, backwards = 0;
+        float peak_max = 0.0f, worst_step = 0.0f, prev[WF_SAMPLES];
+        int   fr, have_prev = 0;
+
+        wm_init(&m);
+        // The fastest, tightest pulse stage B can make: 200 BPM, hard onset.
+        wm_spawn_pulse(&m, 1.0f, WA_BEAT_MIN, 1.0f);
+        for (fr = 0; fr < 240; fr++) {
+            float cur[WF_SAMPLES];
+            wm_step_pulses(&m, LOOK_DT);
+            wrm_map(&m.p, &o);
+            memset(in, 0, sizeof in);
+            wrm_accent(&o.acc, 0, in, cur, WF_SAMPLES);
+            {
+                float pk = accent_peak(&o, 0, &at);
+                if (pk > peak_max) peak_max = pk;
+                if (pk > 0.2f * WRM_ACC_H) {
+                    if (last_at >= 0 && at > last_at) moved++;
+                    if (last_at >= 0 && at < last_at) backwards++;
+                    last_at = at;
+                }
+            }
+            if (have_prev)
+                for (k = 0; k < WF_SAMPLES; k++) {
+                    float d = fabsf(cur[k] - prev[k]);
+                    if (d > worst_step) worst_step = d;
+                }
+            memcpy(prev, cur, sizeof prev);
+            have_prev = 1;
+        }
+        printf("  accent: peak %.4f (cap %.2f), advanced on %d frames, back on %d;"
+               " largest change in one frame %.4f (%.0f%% of the cap)\n",
+               peak_max, WRM_ACC_H, moved, backwards, worst_step,
+               100.0f * worst_step / WRM_ACC_H);
+        CHECK(peak_max > 0.5f * WRM_ACC_H && peak_max <= WRM_ACC_H + 1e-6f,
+              "a full pulse's accent peaks at %.4f", peak_max);
+        CHECK(moved > 10 && backwards == 0, "the accent does not travel one way");
+        CHECK(worst_step <= 0.45f * WRM_ACC_H,
+              "the fastest pulse moves the curve %.4f in one frame", worst_step);
+
+        for (k = 0; k < WF_SAMPLES; k++) in[k] = 0.2f * sinf(0.05f * (float)k);
+        wrm_accent(&o.acc, 0, in, out, WF_SAMPLES);
+        CHECK(memcmp(in, out, sizeof in) == 0,
+              "after the pulse retires the curve is not bit-identical");
+    }
+
+    // Four pulses stacked on one spot: clamped, never more than the cap.
+    {
+        wm_params p = m.p;
+        for (i = 0; i < WM_PULSES; i++) {
+            p.pulse[i].x = 0.5f; p.pulse[i].width = 0.1f;
+            p.pulse[i].amp = 1.0f; p.pulse[i].live = 1;
+        }
+        wrm_map(&p, &o);
+        CHECK(fabsf(accent_peak(&o, 0, &at) - WRM_ACC_H) < 1e-6f,
+              "stacked pulses exceed or miss the cap");
+        CHECK(accent_peak(&o, 2, &at) <= WRM_ACC_H * WRM_ACC_LAYER[2] + 1e-6f,
+              "the far layer's accent is not scaled down");
+    }
+
+    // Hostile pulse fields stay finite and capped.
+    {
+        static const float BAD[3] = { NAN, INFINITY, -INFINITY };
+        for (i = 0; i < 3; i++) {
+            wm_params p = m.p;
+            float     pk;
+            int       j;
+            for (j = 0; j < WM_PULSES; j++) {
+                p.pulse[j].x = BAD[i]; p.pulse[j].width = BAD[i];
+                p.pulse[j].amp = BAD[i]; p.pulse[j].live = 1;
+            }
+            p.amp[1] = BAD[i];
+            wrm_map(&p, &o);
+            pk = accent_peak(&o, 0, &at);
+            CHECK(pk == pk && pk >= 0.0f && pk <= WRM_ACC_H + 1e-6f &&
+                  o.thick >= WRM_THICK_MIN && o.thick <= WRM_THICK_MAX,
+                  "bad pulse input %d escaped: peak %f swell %f", i, pk, o.thick);
+        }
+    }
+}
+
 int main(void)
 {
     printf("wave_layers: %d layers, %d nodes, %d samples, band [%.2f, %.2f]\n",
@@ -841,6 +1340,14 @@ int main(void)
     printf("\n-- the renderer calibration seam --\n"); test_render_mapping();
     printf("\n-- the mapped maximum clears the knee --\n");
                                                    test_mapped_drive_clears_the_knee();
+    printf("\n-- the look: per-layer height and colour --\n");
+                                                   test_look_mapping();
+    printf("\n-- response gain (wavereact level) --\n");
+                                                   test_gain();
+    printf("\n-- JellyWave 2.0: swell and accent --\n");
+                                                   test_shape_mapping();
+    printf("\n-- the loudest look stays framed --\n");
+                                                   test_look_framing();
     printf("\n-- rough cost --\n");                report_cost();
 
     if (failures) {
