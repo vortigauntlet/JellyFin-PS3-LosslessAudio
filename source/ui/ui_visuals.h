@@ -508,6 +508,16 @@ int  ttf_text_width_tracked(const char *text, float px, int face, float track);
 // facility, and it takes the same per-glyph path its tracking does.
 void drawTTF_ramp(u32 x, u32 y, const char *text, float px,
                   const u32 *stops, int nstops, int face, float track);
+// drawTTF_ramp with each glyph posed, for the boot animation's wordmark:
+// glyph i slides into its home from up to max_slide px to its left (never
+// from left of x; max_slide <= 0 means always from x) by reveal[i]
+// (1 = home), at opacity alpha[i].  At all-ones it draws exactly
+// drawTTF_ramp's pixels.  stops may be NULL for a flat black run (the
+// lockup's drop shadow).
+void drawTTF_ramp_posed(u32 x, u32 y, const char *text, float px,
+                        const u32 *stops, int nstops, int face, float track,
+                        const float *reveal, const float *alpha, int npose,
+                        float max_slide = 0.0f);
 
 // The y that centres a run's INK box (not its em box) on cy, for any face.
 // false = the string has no ink, so draw nothing.
@@ -585,6 +595,21 @@ void xmb_draw_topbar(void);         // brand top-left, clock top-right
 // The raster carries the design's drop shadow in a padded box, so it draws
 // slightly larger than bell_px and slightly above/left of (x,y).
 void xmb_draw_mark(int x, int y, int bell_px);
+// Which mark raster the loaded theme takes: 0 = cool, 1 = gold.  The boot
+// animation's large mark follows the same choice.
+int  xmb_mark_variant(void);
+
+// Where the lockup sits.  ONE source for the top bar and for the boot
+// animation, which docks its mark onto exactly these numbers -- so the
+// animation's last frame and the static lockup are the same pixels.
+typedef struct {
+    int   mark_x, mark_y, mark_px;   // the mark's bell box (xmb_draw_mark args)
+    int   cy;                        // the shared row's centre line
+    int   word_x, word_y;            // "JELLYFIN" pen position (ink-centred)
+    float word_px, track;
+    bool  word_ok;                   // false: the face has no ink, skip it
+} XmbLockupGeom;
+void xmb_lockup_geom(XmbLockupGeom *g);
 
 // Section eyebrow: the small uppercase label above a row (--font-eyebrow,
 // 11px, 0.18em tracking).  Returns its advance so a count can follow it.

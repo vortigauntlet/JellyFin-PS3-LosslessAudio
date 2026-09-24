@@ -60,7 +60,7 @@ all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
-     test_experience test_json_unescape
+     test_experience test_json_unescape test_boot_seq
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -258,6 +258,7 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_facts
 	./test_experience
 	./test_json_unescape
+	./test_boot_seq
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -267,7 +268,7 @@ clean:
 	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
 	      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient \
-	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape \
+	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
@@ -448,6 +449,17 @@ test_depth: test_depth.c ../source/ui/render/depth.h ../source/ui/render/spine.h
 # Item facts (the Home queue's tech strip): the stream-to-words parser.
 test_facts: test_facts.cpp ../source/api/facts_parse.cpp ../source/api/api_facts.h
 	$(CXX) $(CXXFLAGS) -Ihoststub -o $@ test_facts.cpp ../source/api/facts_parse.cpp
+
+# ---------------------------------------------------------------------------
+# Cold-boot animation -- the timeline is header-only pure C (boot_seq.h), so
+# every path through it runs here: XMB early and late, a login screen
+# instead, a skip, stalled frames, NaN frame times, 3000 random
+# interleavings.  It asserts that nothing can wedge, that nothing pops
+# (every visible value checked frame to frame at 60 Hz), and that the last
+# frame is EXACTLY the static lockup -- the renderer (boot_anim.cpp) only
+# draws what this computes.  See docs/boot-animation.md.
+test_boot_seq: test_boot_seq.c ../source/ui/render/boot_seq.h
+	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_boot_seq.c -lm
 
 # ---------------------------------------------------------------------------
 # Audio-reactive wave -- three more header-only scalar kernels, three tests.

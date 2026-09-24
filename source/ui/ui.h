@@ -157,6 +157,14 @@ static inline u32 argb_over(u32 dst, u32 color, u32 a) {
 // -------------------------------------------------------
 void ui_run_xmb(void);
 
+// Everything the XMB's first frame would otherwise block on: the library
+// list, then every Home row.  main.cpp runs it on a worker thread behind the
+// cold-boot animation, so the first XMB frame arrives with its data instead
+// of stalling on five HTTP requests -- one a frame -- under the reveal.
+// ui_run_xmb() then skips its own detect_tabs, once.  Must not run while
+// anything else uses responseBuffer.
+void xmb_prepare(void);
+
 // -------------------------------------------------------
 // Legacy on-screen keyboard (used by login flow).
 // Returns 1 = confirmed, -1 = cancelled.
