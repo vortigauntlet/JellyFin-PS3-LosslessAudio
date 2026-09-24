@@ -645,6 +645,57 @@ static void test_determinism(void)
           "identical input produced different motion state");
 }
 
+// --- monotone mappings -----------------------------------------------------
+//
+// Each input lifts what it is meant to lift, never lowers it, and reaches a
+// visibly different value between nothing and full.  Held for 5 s so every
+// slew has settled.
+
+static wm_params settle_on(float bass, float mids, float highs, float rms)
+{
+    static wm_state s;
+    wa_features f;
+    int i;
+    memset(&f, 0, sizeof f);
+    f.band[WA_SUB]    = f.band[WA_BASS] = bass;
+    f.band[WA_LOWMID] = f.band[WA_MID]  = mids;
+    f.band[WA_HIGH]   = f.band[WA_AIR]  = highs;
+    memcpy(f.band_fast, f.band, sizeof f.band);
+    f.rms = rms; f.centroid = 0.5f; f.silence = 0.0f;
+    wm_init(&s);
+    for (i = 0; i < 300; i++) wm_update(&s, &f, DT);
+    return s.p;
+}
+
+static void test_monotone(void)
+{
+    static const char *NAME[] = { "bass -> drive", "bass -> amp[0] (swell)",
+                                  "low/mid -> amp[1] (body)", "energy -> bright",
+                                  "energy -> lift", "highs -> perturb",
+                                  "highs -> detail[3] (fine)" };
+    float first[7], prev[7];
+    int   i, j;
+    for (i = 0; i <= 10; i++) {
+        float x = 0.1f * (float)i, v[7];
+        wm_params a = settle_on(x, 0.3f, 0.3f, 0.5f);
+        wm_params b = settle_on(0.3f, x, 0.3f, 0.5f);
+        wm_params c = settle_on(0.3f, 0.3f, 0.3f, x);
+        wm_params d = settle_on(0.3f, 0.3f, x, 0.5f);
+        v[0] = a.drive;  v[1] = a.amp[0]; v[2] = b.amp[1];
+        v[3] = c.bright; v[4] = c.lift;   v[5] = d.perturb; v[6] = d.detail[3];
+        for (j = 0; j < 7; j++) {
+            if (i == 0) first[j] = v[j];
+            else CHECK(v[j] >= prev[j] - 1e-6f, "%s falls at %.1f: %.4f -> %.4f",
+                       NAME[j], x, prev[j], v[j]);
+            prev[j] = v[j];
+        }
+    }
+    for (j = 0; j < 7; j++) {
+        printf("  %-26s %.3f -> %.3f\n", NAME[j], first[j], prev[j]);
+        CHECK(prev[j] > first[j] + 0.02f, "%s does not respond", NAME[j]);
+    }
+}
+
 int main(void)
 {
     printf("wave_motion: %d layers, %d pulses, %d slew-limited parameters\n",
@@ -655,6 +706,7 @@ int main(void)
     printf("\n-- idle --\n");                     test_idle();
     printf("\n-- silence transitions --\n");      test_silence_transition();
     printf("\n-- frequency is depth --\n");       test_depth_mapping();
+    printf("\n-- monotone mappings --\n");        test_monotone();
     printf("\n-- tempo drives the drift rate --\n"); test_tempo_mapping();
     printf("\n-- travelling pulses --\n");        test_pulses();
     printf("\n-- defensive API --\n");            test_defensive();

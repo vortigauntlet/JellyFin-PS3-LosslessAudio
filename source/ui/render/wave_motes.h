@@ -251,9 +251,11 @@
 #define WMO_TS_MIN      0.90f
 #define WMO_TS_MAX      1.40f
 
-// Pulses, placed by WMO_PULSE_X0/X1.  (The ribbon does not consume pulses
-// yet.  When it does, it and this must agree on that mapping, or the ripple
-// in the cloud and the one in the band will not line up.)
+// Pulses, placed by WMO_PULSE_X0/X1 -- the ON-SCREEN stretch of the
+// centreline.  The ribbon (wave_render_map.h, wrm_accent) places the same
+// pulses on the solver u of each layer, which runs a little past both screen
+// edges; when the motes are wired, align the two or the ripple in the cloud
+// will lead the one in the band near the edges.
 #define WMO_PULSE_KICK  0.80f      // upward accel under a full pulse, units/s^2
 #define WMO_EXC_TAU     0.35f      // how long a lit mote stays lit, s
 #define WMO_EXC_GAIN    0.90f      // brightness added at full excitation

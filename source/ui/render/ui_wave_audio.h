@@ -1,5 +1,6 @@
 #pragma once
 #include <ppu-types.h>
+#include "wave_render_map.h"
 
 // The audio-reactive wave's console-side glue: it owns the analyser and the
 // motion stage, and it is the only file in this subsystem that knows about
@@ -40,6 +41,11 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive);
 // exactly 1.0 at rest -- see wave_render_map.h.  Reads the cached result and
 // advances nothing, so it costs a copy and needs no lock.
 void wave_audio_look(float amp[3], float *lum);
+
+// JellyWave 2.0: the body swell and the travelling accents, from the same
+// cached frame as wave_audio_look() and with the same rules -- exactly
+// neutral (1.0 and no live pulse) at rest and before the first frame.
+void wave_audio_shape(float *thick, wrm_accent_set *acc);
 
 // True when the analyser is running (gate on, initialised).  For logging only.
 bool wave_audio_active(void);

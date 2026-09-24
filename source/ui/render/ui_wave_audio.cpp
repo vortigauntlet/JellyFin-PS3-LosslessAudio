@@ -178,10 +178,11 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                 // amp and lum added so a wave that moves but does not look
                 // different per band can be told from one whose bands never
                 // separated in the analyser.
-                char b[160];
+                char b[192];
                 snprintf(b, sizeof b,
                          "wave: rms=%d.%02d b0=%d.%02d drive=%d.%02d ts=%d.%02d"
-                         " amp=%d.%02d/%d.%02d/%d.%02d lum=%d.%02d",
+                         " amp=%d.%02d/%d.%02d/%d.%02d lum=%d.%02d"
+                         " thk=%d.%02d acc=%d",
                          (int)f.rms, (int)(f.rms * 100) % 100,
                          (int)f.band[0], (int)(f.band[0] * 100) % 100,
                          (int)s_out.drive, (int)(s_out.drive * 100) % 100,
@@ -189,7 +190,10 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                          (int)s_out.amp[0], (int)(s_out.amp[0] * 100) % 100,
                          (int)s_out.amp[1], (int)(s_out.amp[1] * 100) % 100,
                          (int)s_out.amp[2], (int)(s_out.amp[2] * 100) % 100,
-                         (int)s_out.lum, (int)(s_out.lum * 100) % 100);
+                         (int)s_out.lum, (int)(s_out.lum * 100) % 100,
+                         (int)s_out.thick, (int)(s_out.thick * 100) % 100,
+                         (s_out.acc.a[0] > 0.0f) + (s_out.acc.a[1] > 0.0f)
+                         + (s_out.acc.a[2] > 0.0f) + (s_out.acc.a[3] > 0.0f));
                 plog(b);
             }
         }
@@ -213,4 +217,13 @@ void wave_audio_look(float amp[3], float *lum)
     if (!s_started) { wrm_map(NULL, &idle); o = &idle; }
     if (amp) { amp[0] = o->amp[0]; amp[1] = o->amp[1]; amp[2] = o->amp[2]; }
     if (lum) *lum = o->lum;
+}
+
+void wave_audio_shape(float *thick, wrm_accent_set *acc)
+{
+    wrm_out idle;
+    const wrm_out *o = &s_out;
+    if (!s_started) { wrm_map(NULL, &idle); o = &idle; }
+    if (thick) *thick = o->thick;
+    if (acc)   *acc   = o->acc;
 }

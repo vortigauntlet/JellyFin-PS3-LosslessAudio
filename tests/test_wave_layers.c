@@ -1055,15 +1055,19 @@ static void test_look_mapping(void)
     }
 }
 
-// The measurement WRM_AMP_MAX was chosen from, re-run against the constant:
-// the loudest drive and the tallest multiplier together, through the real
-// solver and the real JellyWave loft, must keep every layer inside
-// test_wave_gel.c's framing box.  WANT_TOP is that test's table.
+// The measurement WRM_AMP_MAX, WRM_THICK_MAX and WRM_ACC_H were chosen from,
+// re-run against the constants: the loudest drive, the tallest multiplier,
+// the fullest swell and an accent sitting on the crest along the WHOLE band
+// (a pessimistic stand-in for a bump that happens to land on a peak), all at
+// once, through the real solver and the real JellyWave loft, must keep every
+// layer inside test_wave_gel.c's framing box with 0.05 to spare under the
+// midline.  WANT_TOP is that test's table.
 static void test_look_framing(void)
 {
     static const float WANT_TOP[JW_LAYERS] = { -0.16f, -0.09f, -0.12f };
     static wf_field f;
     static jw_vert  v[JW_VERTS];
+    static float    dsp[WF_SAMPLES];
     float hi[JW_LAYERS];
     int   l, i, fr, bad = 0;
 
@@ -1074,9 +1078,13 @@ static void test_look_framing(void)
         if (fr % 3) continue;
         for (l = 0; l < JW_LAYERS; l++) {
             jw_layer L = JW_LAYER[l];
+            int      k;
             L.disp_gain *= WRM_AMP_MAX;
             L.bright    *= WRM_LUM_MAX;
-            if (jw_build_layer(&L, f.sy[l], WF_SAMPLES, 16.0f / 9.0f,
+            L.scale     *= WRM_THICK_MAX;
+            for (k = 0; k < WF_SAMPLES; k++)
+                dsp[k] = f.sy[l][k] + WRM_ACC_H * WRM_ACC_LAYER[l];
+            if (jw_build_layer(&L, dsp, WF_SAMPLES, 16.0f / 9.0f,
                                v, JW_VERTS) != JW_VERTS) { bad++; continue; }
             for (i = 0; i < JW_VERTS; i++) {
                 if (!v[i].ok || v[i].x != v[i].x || v[i].y != v[i].y) {
@@ -1088,14 +1096,151 @@ static void test_look_framing(void)
         }
     }
     for (l = 0; l < JW_LAYERS; l++) {
-        printf("  layer %d at drive %.2f x amp %.2f: top edge %+.3f "
-               "(box %+.3f, midline 0)\n",
-               l, WRM_DRIVE_MAX, WRM_AMP_MAX, hi[l], WANT_TOP[l] + 0.16f);
+        printf("  layer %d at drive %.2f x amp %.2f, swell %.2f, accent on the"
+               " crest: top edge %+.3f (box %+.3f, midline 0)\n",
+               l, WRM_DRIVE_MAX, WRM_AMP_MAX, WRM_THICK_MAX, hi[l],
+               WANT_TOP[l] + 0.16f);
         CHECK(hi[l] < WANT_TOP[l] + 0.16f && hi[l] < -0.05f,
               "layer %d's top edge reaches %+.3f at the loudest look -- "
               "WRM_AMP_MAX is too high", l, hi[l]);
     }
     CHECK(bad == 0, "%d vertices were non-finite or behind the camera", bad);
+}
+
+// --- JellyWave 2.0: the body swell and the travelling accent -------------
+
+static float accent_peak(const wrm_out *o, int layer, int *at)
+{
+    static float z[WF_SAMPLES], out[WF_SAMPLES];
+    float best = -1.0f;
+    int   k;
+    memset(z, 0, sizeof z);
+    wrm_accent(&o->acc, layer, z, out, WF_SAMPLES);
+    *at = 0;
+    for (k = 0; k < WF_SAMPLES; k++)
+        if (out[k] > best) { best = out[k]; *at = k; }
+    return best;
+}
+
+static void test_shape_mapping(void)
+{
+    static float in[WF_SAMPLES], out[WF_SAMPLES];
+    wrm_out  o;
+    wm_state m;
+    int      i, k, at;
+
+    // REST IS BIT-IDENTICAL: no swell, and an accent that leaves the solver
+    // curve exactly as it was -- the idle XMB must not change by one ulp.
+    for (k = 0; k < WF_SAMPLES; k++) in[k] = 0.37f * sinf(0.11f * (float)k) - 0.05f;
+    wrm_map(NULL, &o);
+    wrm_accent(&o.acc, 0, in, out, WF_SAMPLES);
+    CHECK(o.thick == 1.0f, "idle swell is %.6f, not exactly 1", o.thick);
+    CHECK(memcmp(in, out, sizeof in) == 0, "the idle accent changes the curve");
+    wm_init(&m);
+    wrm_map(&m.p, &o);
+    wrm_accent(&o.acc, 2, in, out, WF_SAMPLES);
+    CHECK(o.thick == 1.0f && memcmp(in, out, sizeof in) == 0,
+          "a fresh stage B is not bit-identical to rest");
+
+    // Swell: monotone in stage B's Body amplitude, inside its range, and at
+    // its measured ceiling when Body is full.
+    {
+        float prev = 0.0f;
+        for (i = 0; i <= 20; i++) {
+            wm_params p = m.p;
+            p.amp[1] = 0.05f * (float)i;
+            wrm_map(&p, &o);
+            CHECK(o.thick >= prev && o.thick >= WRM_THICK_MIN &&
+                  o.thick <= WRM_THICK_MAX,
+                  "swell %.4f not monotone/bounded at Body %.2f", o.thick, p.amp[1]);
+            prev = o.thick;
+        }
+        CHECK(fabsf(prev - WRM_THICK_MAX) < 1e-5f, "full Body does not reach the swell cap");
+    }
+
+    // One real pulse from stage B: the accent follows it along the band,
+    // never exceeds its height, and the ribbon is bit-identical again once
+    // the pulse has retired.
+    {
+        int   last_at = -1, moved = 0, backwards = 0;
+        float peak_max = 0.0f, worst_step = 0.0f, prev[WF_SAMPLES];
+        int   fr, have_prev = 0;
+
+        wm_init(&m);
+        // The fastest, tightest pulse stage B can make: 200 BPM, hard onset.
+        wm_spawn_pulse(&m, 1.0f, WA_BEAT_MIN, 1.0f);
+        for (fr = 0; fr < 240; fr++) {
+            float cur[WF_SAMPLES];
+            wm_step_pulses(&m, LOOK_DT);
+            wrm_map(&m.p, &o);
+            memset(in, 0, sizeof in);
+            wrm_accent(&o.acc, 0, in, cur, WF_SAMPLES);
+            {
+                float pk = accent_peak(&o, 0, &at);
+                if (pk > peak_max) peak_max = pk;
+                if (pk > 0.2f * WRM_ACC_H) {
+                    if (last_at >= 0 && at > last_at) moved++;
+                    if (last_at >= 0 && at < last_at) backwards++;
+                    last_at = at;
+                }
+            }
+            if (have_prev)
+                for (k = 0; k < WF_SAMPLES; k++) {
+                    float d = fabsf(cur[k] - prev[k]);
+                    if (d > worst_step) worst_step = d;
+                }
+            memcpy(prev, cur, sizeof prev);
+            have_prev = 1;
+        }
+        printf("  accent: peak %.4f (cap %.2f), advanced on %d frames, back on %d;"
+               " largest change in one frame %.4f (%.0f%% of the cap)\n",
+               peak_max, WRM_ACC_H, moved, backwards, worst_step,
+               100.0f * worst_step / WRM_ACC_H);
+        CHECK(peak_max > 0.5f * WRM_ACC_H && peak_max <= WRM_ACC_H + 1e-6f,
+              "a full pulse's accent peaks at %.4f", peak_max);
+        CHECK(moved > 10 && backwards == 0, "the accent does not travel one way");
+        CHECK(worst_step <= 0.45f * WRM_ACC_H,
+              "the fastest pulse moves the curve %.4f in one frame", worst_step);
+
+        for (k = 0; k < WF_SAMPLES; k++) in[k] = 0.2f * sinf(0.05f * (float)k);
+        wrm_accent(&o.acc, 0, in, out, WF_SAMPLES);
+        CHECK(memcmp(in, out, sizeof in) == 0,
+              "after the pulse retires the curve is not bit-identical");
+    }
+
+    // Four pulses stacked on one spot: clamped, never more than the cap.
+    {
+        wm_params p = m.p;
+        for (i = 0; i < WM_PULSES; i++) {
+            p.pulse[i].x = 0.5f; p.pulse[i].width = 0.1f;
+            p.pulse[i].amp = 1.0f; p.pulse[i].live = 1;
+        }
+        wrm_map(&p, &o);
+        CHECK(fabsf(accent_peak(&o, 0, &at) - WRM_ACC_H) < 1e-6f,
+              "stacked pulses exceed or miss the cap");
+        CHECK(accent_peak(&o, 2, &at) <= WRM_ACC_H * WRM_ACC_LAYER[2] + 1e-6f,
+              "the far layer's accent is not scaled down");
+    }
+
+    // Hostile pulse fields stay finite and capped.
+    {
+        static const float BAD[3] = { NAN, INFINITY, -INFINITY };
+        for (i = 0; i < 3; i++) {
+            wm_params p = m.p;
+            float     pk;
+            int       j;
+            for (j = 0; j < WM_PULSES; j++) {
+                p.pulse[j].x = BAD[i]; p.pulse[j].width = BAD[i];
+                p.pulse[j].amp = BAD[i]; p.pulse[j].live = 1;
+            }
+            p.amp[1] = BAD[i];
+            wrm_map(&p, &o);
+            pk = accent_peak(&o, 0, &at);
+            CHECK(pk == pk && pk >= 0.0f && pk <= WRM_ACC_H + 1e-6f &&
+                  o.thick >= WRM_THICK_MIN && o.thick <= WRM_THICK_MAX,
+                  "bad pulse input %d escaped: peak %f swell %f", i, pk, o.thick);
+        }
+    }
 }
 
 int main(void)
@@ -1119,6 +1264,8 @@ int main(void)
                                                    test_mapped_drive_clears_the_knee();
     printf("\n-- the look: per-layer height and colour --\n");
                                                    test_look_mapping();
+    printf("\n-- JellyWave 2.0: swell and accent --\n");
+                                                   test_shape_mapping();
     printf("\n-- the loudest look stays framed --\n");
                                                    test_look_framing();
     printf("\n-- rough cost --\n");                report_cost();

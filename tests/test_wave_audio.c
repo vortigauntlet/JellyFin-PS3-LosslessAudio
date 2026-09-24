@@ -611,6 +611,116 @@ static void test_determinism(void)
           "identical input produced different state");
 }
 
+// --- dynamics -------------------------------------------------------------
+//
+// Stage A normalises every level against a slow running reference (up over
+// about 2 s, down over 12 s), so "louder reads higher" is only true RELATIVE
+// to what it has been hearing -- by design, so a quiet mastering and a loud
+// one both use the whole range.  These tests therefore settle on a level and
+// then step it, and read the features a moment after the step: the way music
+// actually moves, a chorus against the verse before it.
+
+static void run_frames(wa_state *s, tone *g, float amp, int frames,
+                       float *trace, int band, int fast, wa_features *out)
+{
+    static float buf[BLK];
+    int f;
+    g->amp = amp;
+    for (f = 0; f < frames; f++) {
+        tone_block(g, buf, BLK);
+        wa_push(s, buf, BLK, 1);
+        wa_frame(s, DT, out);
+        if (trace)
+            trace[f] = band < 0 ? out->rms
+                     : (fast ? out->band_fast[band] : out->band[band]);
+    }
+}
+
+// Settle on `amp` for 20 s, then step by k and hold 0.3 s.  Returns the
+// feature picked by (band, fast); band < 0 means broadband rms.
+static float step_response(float hz, float amp, float k, int band, int fast)
+{
+    static wa_state s;
+    wa_features f;
+    tone g;
+    float tr[18];
+    wa_init(&s, RATE);
+    g.t = 0; g.hz = hz; g.amp = amp;
+    run_frames(&s, &g, amp, (int)(20 * FPS), NULL, band, fast, &f);
+    run_frames(&s, &g, amp * k, 18, tr, band, fast, &f);
+    return tr[17];
+}
+
+static void test_dynamics(void)
+{
+    static const float K[] = { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
+    static const struct { const char *name; float hz; int band; int fast; } R[] = {
+        { "energy (rms)",      220.0f, -1,      0 },
+        { "bass (BASS band)",  0.0f,   WA_BASS, 0 },
+        { "highs (HIGH band)", 0.0f,   WA_HIGH, 0 },
+        { "highs (HIGH fast)", 0.0f,   WA_HIGH, 1 },
+    };
+    int r, i;
+
+    for (r = 0; r < 4; r++) {
+        float v[5], hz = R[r].hz > 0.0f ? R[r].hz : band_centre(R[r].band);
+        int   mono = 1;
+        for (i = 0; i < 5; i++) v[i] = step_response(hz, 0.08f, K[i], R[r].band, R[r].fast);
+        for (i = 1; i < 5; i++) mono &= (v[i] >= v[i - 1]);
+        printf("  %-18s after a step of x0.25..x4: %.3f %.3f %.3f %.3f %.3f\n",
+               R[r].name, v[0], v[1], v[2], v[3], v[4]);
+        CHECK(mono, "%s is not monotone in the step", R[r].name);
+        CHECK(v[4] > v[0] + 0.2f, "%s barely responds: %.3f -> %.3f",
+              R[r].name, v[0], v[4]);
+    }
+
+    // Attack is faster than release: step up x4 after settling, then back
+    // down after half a second, and time each to cover 63% of its move.
+    {
+        static wa_state s;
+        wa_features f;
+        tone  g;
+        float up[60], dn[120], lo, hi;
+        int   t_up = -1, t_dn = -1;
+        wa_init(&s, RATE);
+        g.t = 0; g.hz = 220.0f; g.amp = 0.08f;
+        run_frames(&s, &g, 0.08f, (int)(20 * FPS), NULL, -1, 0, &f);
+        lo = f.rms;
+        run_frames(&s, &g, 0.32f, 30, up, -1, 0, &f);
+        hi = up[0];
+        for (i = 0; i < 30; i++) if (up[i] > hi) hi = up[i];
+        for (i = 0; i < 30; i++) if (up[i] >= lo + 0.63f * (hi - lo)) { t_up = i; break; }
+        run_frames(&s, &g, 0.08f, 120, dn, -1, 0, &f);
+        {
+            float from = up[29], to = dn[0];
+            for (i = 0; i < 120; i++) if (dn[i] < to) to = dn[i];
+            for (i = 0; i < 120; i++)
+                if (dn[i] <= from - 0.63f * (from - to)) { t_dn = i; break; }
+            printf("  attack/release: up %.3f -> %.3f in %d frames, down %.3f -> %.3f"
+                   " in %d frames\n", lo, hi, t_up, from, to, t_dn);
+        }
+        CHECK(t_up >= 0 && t_dn >= 0, "a step was not followed at all");
+        CHECK(t_up < t_dn, "attack (%d frames) is not faster than release (%d)",
+              t_up, t_dn);
+    }
+
+    // Smoothing: a steady tone, once settled, does not jitter frame to frame.
+    {
+        static wa_state s;
+        wa_features f;
+        tone  g;
+        float tr[300], worst = 0.0f;
+        wa_init(&s, RATE);
+        g.t = 0; g.hz = 330.0f; g.amp = 0.1f;
+        run_frames(&s, &g, 0.1f, (int)(20 * FPS), NULL, -1, 0, &f);
+        run_frames(&s, &g, 0.1f, 300, tr, -1, 0, &f);
+        for (i = 1; i < 300; i++)
+            if (fabsf(tr[i] - tr[i - 1]) > worst) worst = fabsf(tr[i] - tr[i - 1]);
+        printf("  steady tone: largest rms change between frames %.5f\n", worst);
+        CHECK(worst < 0.01f, "a steady tone jitters by %.4f a frame", worst);
+    }
+}
+
 int main(void)
 {
     printf("wave_audio: %d bands, %d edges, %.0f Hz test rate\n",
@@ -622,6 +732,7 @@ int main(void)
     printf("\n-- silence and the ref floor --\n"); test_silence();
     printf("\n-- self-calibration --\n");        test_self_calibration();
     printf("\n-- onsets and the beat estimate --\n"); test_onsets_and_beat();
+    printf("\n-- dynamics: energy, bass, highs, attack/release --\n"); test_dynamics();
     printf("\n-- hostile input --\n");           test_hostile();
     printf("\n-- defensive API --\n");           test_defensive();
     printf("\n-- determinism --\n");             test_determinism();

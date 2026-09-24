@@ -3,11 +3,18 @@
 // and a colour multiplier, which are the two things the renderer can take
 // without a geometry or GPU-state change.
 //
+// JellyWave 2.0 adds two more, both still CPU-side numbers handed to code
+// that already takes them: a body SWELL from the low-mids (a multiplier on
+// the layer's scale, i.e. its half-width and half-thickness), and stage B's
+// travelling pulses as an ACCENT -- a smooth bump added to the solver's
+// displacement curve before the loft reads it.  Neither touches a vertex
+// format, a buffer, a draw call or GPU state.
+//
 // STILL NOT CARRIED, and why: detail[] and phase[] have no input on the spring
 // chain (it makes its own fine detail from perturb and its own phase from
-// integration); pulse[] and lift move vertices individually or move the whole
-// band, which is geometry; hue would have to re-tint wave_gel.h's lit colour
-// per vertex.  wave_layers.h consumes all of them and is not wired in.
+// integration); lift moves the whole band, which would shift its framing; hue
+// would have to re-tint wave_gel.h's lit colour per vertex.  wave_layers.h
+// consumes all of them and is not wired in.
 //
 //   wave_audio.h       PCM -> features
 //   wave_motion.h      features -> slew-limited parameters
@@ -135,12 +142,60 @@
 #define WRM_LUM_MIN     0.85f
 #define WRM_LUM_MAX     1.20f
 
+// --- body swell (JellyWave 2.0) ---------------------------------------
+// Low-mids thicken the body: stage B's Body layer (0.46 bass, 0.40 low-mid,
+// 0.14 mid) scales every layer's half-width and half-thickness.  Centred on
+// WM_IDLE_AMP like the heights, so rest is exactly 1.0.
+//
+// 1.04 IS MEASURED, together with WRM_ACC_H below: with everything at its
+// loudest at once -- WRM_DRIVE_MAX, WRM_AMP_MAX, this, and the accent sitting
+// on the crest along the whole band -- the near layer's top edge measured
+// -0.053 in clip space, just inside the same 0.05 margin under the midline
+// WRM_AMP_MAX keeps.  test_wave_layers.c re-runs that worst case.
+#define WRM_THICK_MAX   1.04f
+#define WRM_THICK_GAIN  ((WRM_THICK_MAX - 1.0f) / (1.0f - WM_IDLE_AMP))
+#define WRM_THICK_MIN   (1.0f - WRM_THICK_GAIN * WM_IDLE_AMP)
+
+// --- the accent (JellyWave 2.0) ----------------------------------------
+// A stage B pulse is an object: it spawns on an onset, travels the band over
+// two beats and fades on a C1 envelope.  Here it becomes a smooth compact
+// bump, (1 - q^2)^2, added to the solver's displacement -- a swell that runs
+// along the ribbon, which is the "brief controlled accent" rather than a
+// flash of the whole screen.
+//
+//   WRM_ACC_H      bump height in the solver's own units at pulse amp 1.
+//                  0.10 is about 15% of the chain's nominal peak (0.653): an
+//                  accent, not a second wave.  Measured -- see WRM_THICK_MAX.
+//   WRM_ACC_WIDEN  the ribbon's bump is twice stage B's pulse width, 0.15 to
+//                  0.30 in u.  JellyWave re-samples its geometry every third
+//                  frame, and a pulse at 120 BPM moves 0.057 u between
+//                  samples; against a bump this broad that reads as travel,
+//                  against stage B's raw width it read as stepping.
+//   WRM_ACC_LAYER  full on the near/widest layer, less on the others, so the
+//                  accent reads as one gesture through the band rather than
+//                  three.
+//
+// Overlapping pulses are summed and then clamped to 1, so the accent can never
+// exceed WRM_ACC_H however many are live.
+#define WRM_ACC_H       0.10f
+#define WRM_ACC_WIDEN   2.0f
+
+static const float WRM_ACC_LAYER[3] = { 1.00f, 0.80f, 0.60f };
+
+typedef struct {
+    float x[WM_PULSES];     // pulse centre, u along the solver's [0,1]
+    float inv[WM_PULSES];   // 1 / bump half-width in u
+    float a[WM_PULSES];     // amplitude 0..1, 0 when not live
+} wrm_accent_set;
+
 typedef struct {
     float dt_scale;     // multiplies WAVE_FIELD_DT
     float perturb;      // straight to wf_step
     float drive;        // straight to wf_step
     float amp[3];       // per solver layer, multiplies the ribbon's height
     float lum;          // multiplies the ribbon's colour
+    float thick;        // multiplies the layer's scale (width and thickness)
+    wrm_accent_set acc; // travelling accents, see wrm_accent()
 } wrm_out;
 
 static inline float wrm_clamp(float v, float lo, float hi)
@@ -163,6 +218,8 @@ static inline void wrm_map(const wm_params *p, wrm_out *out)
         out->drive    = WRM_DRIVE_IDLE;
         out->amp[0]   = out->amp[1] = out->amp[2] = 1.0f;
         out->lum      = 1.0f;
+        out->thick    = 1.0f;
+        memset(&out->acc, 0, sizeof out->acc);
         return;
     }
     out->dt_scale = wrm_clamp(
@@ -189,6 +246,51 @@ static inline void wrm_map(const wm_params *p, wrm_out *out)
     out->lum = wrm_clamp(1.0f + (p->bright - WM_IDLE_BRIGHT) * WRM_LUM_BRIGHT
                               + p->glow * WRM_LUM_GLOW,
                          WRM_LUM_MIN, WRM_LUM_MAX);
+    out->thick = wrm_clamp(1.0f + (p->amp[1] - WM_IDLE_AMP) * WRM_THICK_GAIN,
+                           WRM_THICK_MIN, WRM_THICK_MAX);
+    {
+        int j;
+        for (j = 0; j < WM_PULSES; j++) {
+            const wm_pulse *q = &p->pulse[j];
+            float w = WRM_ACC_WIDEN * wrm_clamp(q->width, 0.02f, 0.5f);
+            out->acc.x[j]   = wrm_clamp(q->x, -0.5f, 1.5f);
+            out->acc.inv[j] = 1.0f / w;
+            out->acc.a[j]   = q->live ? wrm_clamp(q->amp, 0.0f, 1.0f) : 0.0f;
+        }
+    }
+}
+
+// The accent at one point u of the solver's [0,1], in the solver's units, for
+// one layer (0 near .. 2 far).  EXACTLY 0.0f when no pulse is live, so adding
+// it leaves a displacement bit-identical -- the idle look depends on that.
+static inline float wrm_accent_at(const wrm_accent_set *a, int layer, float u)
+{
+    float acc = 0.0f;
+    int   j;
+    if (!a) return 0.0f;
+    if (layer < 0) layer = 0;
+    if (layer > 2) layer = 2;
+    for (j = 0; j < WM_PULSES; j++) {
+        float q = (u - a->x[j]) * a->inv[j];
+        float t = 1.0f - q * q;
+        t    = (t > 0.0f) ? t : 0.0f;
+        acc += a->a[j] * t * t;
+    }
+    acc = (acc < 1.0f) ? acc : 1.0f;
+    return WRM_ACC_H * WRM_ACC_LAYER[layer] * acc;
+}
+
+// out[k] = in[k] + the accent at sample k, with the samples spanning u in
+// [0,1] as wave_field.h's do.  in and out may not alias; n < 2 copies nothing.
+static inline void wrm_accent(const wrm_accent_set *a, int layer,
+                              const float *in, float *out, int n)
+{
+    float du;
+    int   k;
+    if (!in || !out || n < 2) return;
+    du = 1.0f / (float)(n - 1);
+    for (k = 0; k < n; k++)
+        out[k] = in[k] + wrm_accent_at(a, layer, (float)k * du);
 }
 
 #endif // WAVE_RENDER_MAP_H

@@ -116,6 +116,14 @@ static wf_field s_field;
 static float    s_amp[3] = { 1.0f, 1.0f, 1.0f };
 static float    s_lum    = 1.0f;
 
+// JellyWave 2.0: body swell and travelling accents, same rules.  Zero-filled
+// s_acc means no live pulse, i.e. no accent, so the static initialiser is
+// already the rest state.  s_jw_disp is one layer's accented copy of the
+// solver curve, rebuilt per layer just before the loft reads it.
+static float          s_thick = 1.0f;
+static wrm_accent_set s_acc;
+static float          s_jw_disp[WF_SAMPLES];
+
 // Two corrections turn a unitless displacement into the pixel excursion the
 // sine used to have.  Both are needed, and the second one is not obvious.
 //
@@ -141,7 +149,7 @@ static float    s_lum    = 1.0f;
 // them into a table would trade that for file-scope dynamic initialisation,
 // which is a worse thing to have on this target than a microsecond.
 static inline float wave_field_px(int li, float fx, float W) {
-    return wf_disp(&s_field, li, fx / W)
+    return (wf_disp(&s_field, li, fx / W) + wrm_accent_at(&s_acc, li, fx / W))
          * WAVE_AMP[li] * s_amp[li] / (WF_NOMINAL_PEAK * WF_DRIVE[li]);
 }
 
@@ -907,6 +915,7 @@ static void wave_draw_cpu(void) {
         float ts, pert, drv;
         wave_audio_frame(&ts, &pert, &drv);
         wave_audio_look(s_amp, &s_lum);
+        wave_audio_shape(&s_thick, &s_acc);
         wf_step(&s_field, WAVE_FIELD_DT * ts, pert, drv);
     }
 
@@ -1062,6 +1071,7 @@ void wave_draw(void) {
         float ts, pert, drv;
         wave_audio_frame(&ts, &pert, &drv);
         wave_audio_look(s_amp, &s_lum);
+        wave_audio_shape(&s_thick, &s_acc);
         // JellyWave also takes less of the broadband perturbation (0.55x):
         // the fine ripple is what makes a slow wave look agitated rather
         // than floating.  Legacy modes are untouched.
