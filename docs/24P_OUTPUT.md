@@ -1,6 +1,6 @@
 # Physical 1080p23.976 / 1080p24 output
 
-Status: **implemented, opt-in, not yet run on hardware.** The mechanism was read
+Status: **implemented, opt-in; the mode switch is PROVEN on hardware (2026-09-24).** The mechanism was read
 out of the firmware. It was not guessed, and it is not proven on a TV yet.
 
 ## TL;DR
@@ -165,6 +165,25 @@ a receiver's display). Do not rely only on the log.
 hangs, power it off. The next launch disables 24p by itself, or you can write
 `0` to `jellyfin_24p.txt` over FTP. To ask again after a failed TV check, delete
 `jf_24p_confirmed.txt`.
+
+## Hardware result, 2026-09-24 (CECH-2503, 4.92, Panasonic UT30)
+
+```
+24p: baseline vblank=16685.042 us clock=59.940
+24p: SWITCH try refresh=0x10 rc=0x00000000 state=0x10 vblank=41707.888 us clock=23.976
+24p: REVERT (no answer within 15 s) rc=0x00000000 refresh now 0x01 (was 0x01)
+```
+
+- The TV's input switched to 24 Hz, and **refresh bit 0x10 = 23.976** (measured).
+  So 0x20 is presumably 24.000.
+- The game vblank IRQ follows the scan-out by default. SCANOUT was not needed.
+- The revert worked cleanly.
+- The screen stayed black because nothing was flipped after the switch, so the
+  confirmation prompt was invisible. It is now redrawn once the new vblank has
+  been measured. Flipping is safe at that point: the 09-18 hang happened only
+  because the vblank had stopped.
+- Playback then ended (`playing=0`) instead of continuing at 59.94. The likely
+  cause is the stream stalling during the ~20 s pause. Not yet investigated.
 
 ## Still unproven
 
