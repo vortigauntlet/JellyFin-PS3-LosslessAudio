@@ -4,7 +4,7 @@
 #include "plog.h"
 
 enum {
-    STROBE_PROFILE_LAST = 6,
+    STROBE_PROFILE_LAST = 0,   // inert: stay on baseline, never cycle
     STROBE_PROFILE_FRAMES = 300
 };
 

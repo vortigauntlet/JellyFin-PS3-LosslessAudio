@@ -1047,6 +1047,17 @@ void wave_draw(void) {
             s_jw_rebuilds++;
             s_jw_verts = (u32)n;
             s_jw_have_geom = 1;
+        } else if (jellywave) {
+            // Reuse call: s_jw_stage still holds the last build and is
+            // uploaded as-is below.  Nothing may be written into it here.
+            // Falling through to the legacy branches (as this once did)
+            // wrote 6*ncols legacy crest->bottom vertices over the start of
+            // the JellyWave stream on 2 of every 3 frames -- the far body,
+            // at 1080p indices 0..581 -- which the RSX then drew as huge
+            // full-height triangles: the "JellyWave strobe" (~13 ms of fill,
+            // 30 Hz frames).  Found by diffing the one clean hardware build
+            // (whose reuse writes landed past the drawn range) against the
+            // strobing ones.
         } else if (s_wave_blend) {
             // One quad per ribbon: constant tint, alpha ramping from the
             // crest opacity down to zero at the screen bottom.  The GPU
@@ -1189,6 +1200,21 @@ void wave_draw(void) {
             rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
             rsxSetBlendEnable(context, GCM_TRUE);
 
+            // Body then rim, layer by layer, furthest first -- and the rim is
+            // ADDITIVE, as the design draws it (rimMat, AdditiveBlending) and
+            // as stages 1-6 shipped it (9d2fec3).  rimColor is light to ADD:
+            // it is near-black wherever the rim weight or the key is low.
+            // 14428bb put this pass on the standard blend at alpha 255 while
+            // chasing the strobe, which painted those near-black values
+            // opaque over the body -- the dark tubes along every rolled edge.
+            // It was never the strobe (that was the reuse-frame legacy write,
+            // see the empty `else if (jellywave)` above), so the design's
+            // blend comes back.  The rim follows ITS OWN body rather than all
+            // rims going last, because there is no depth buffer: a nearer
+            // layer has to be able to cover a further layer's edge.  The
+            // standard function is restored after the loop, below, for the
+            // rest of the UI.
+
             // Draw the finished JellyWave stream uploaded from CPU staging.
             //
             // IMPORTANT: s_jw_off/s_jw_cnt describe the CPU-built stream;
@@ -1204,6 +1230,15 @@ void wave_draw(void) {
                     const u32 count = s_jw_cnt[slot][pass];
                     if (!count)
                         continue;
+
+                    if (pass == 0)
+                        rsxSetBlendFunc(context,
+                            GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+                            GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+                    else
+                        rsxSetBlendFunc(context,          // src*a + dst
+                            GCM_SRC_ALPHA, GCM_ONE,
+                            GCM_SRC_ALPHA, GCM_ONE);
 
                     rsxDrawVertexArray(context,
                         GCM_TYPE_TRIANGLE_STRIP,

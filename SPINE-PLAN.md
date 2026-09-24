@@ -994,3 +994,22 @@ EBOOT sha1 `78395337cf35b35737dbf5f1be7dc71beed3916c` (sha256 `0c4ec502…`),
 FTP'd to .202 and read back to verify; `jellyfin_spine.txt` = 1. The console
 had been running another session's EBOOT (1,474,960 bytes, 10:20), not spine8.
 It is kept as `outputs/EBOOT.BIN.pre-spine9-console`.
+
+### spine10 — strobe fix + additive rim restored, deployed 2026-09-24
+
+spine9 strobed on hardware and showed black accents at first. Its log (written
+3 min after the push) had `sync` ≈ 14.5 ms and 28–33 ms frames, falling to about
+1 ms only in the `jellywave-body-off` profile. That is the known reuse-frame
+signature. **feature/xmb-spine was based on 428d54a and never had the fixes.**
+Cherry-picked from the strobe line:
+
+- 955f218 → 77fed10: the empty `else if (jellywave)` reuse guard, and the
+  strobe-test harness made inert. It was still cycling profiles, which is why
+  the wave changed look partway through.
+- 241357a → 6cde40a: the rim pass is additive again. The opaque rim from 14428bb
+  is the black accents.
+
+Clean serial build: 119 objects, 48 warnings, header `0480`. EBOOT sha1
+`4d7c53b7…` (sha256 `c8ab5dca…`). Staged as `outputs/EBOOT.BIN.spine10`,
+FTP'd and verified. Expected on the TV: `sync` about 2.7 ms and frames about 22 ms,
+as on the verified 7ed1f910 build.
