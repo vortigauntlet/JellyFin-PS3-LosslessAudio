@@ -62,12 +62,28 @@
 #define WS_R_NEAR    16.0f        // extra radius at the nearest (bokeh)
 #define WS_R_FAR      0.9f
 
+#define WS_WV         16          // wave velocity samples across the screen
+
 typedef struct {
-    float sway;     // 0..1 lows
+    float sway;     // 0..1 lows: stronger, faster swirl
     float twinkle;  // 0..1 highs
     float kick;     // 0..1, non-zero on the frame a sub-bass hit lands
     float bright;   // 0..1 loudness
+    const float *wv;  // WS_WV vertical velocities of the wave (clip units/s,
+                      // +up) at evenly spaced x over [-1,1]; NULL = none
+    float band_y;     // the wave's resting centre, clip y
 } ws_ctl;
+
+// 2026-09-25 v3: "less like snow and more like swirling floatiness that
+// reacts to the wave".  No fall any more: every particle rides a slowly
+// turning, divergence-free flow (the curl of a sum of drifting sine cells),
+// so the field swirls in eddies and fills the whole screen evenly; the lows
+// stir it harder, and near the band the WAVE'S OWN vertical motion carries
+// the particles -- a crest rising lifts what floats above it, a ripple runs
+// through them as it runs along the band.
+#define WS_SWIRL      0.055f      // flow speed, clip units/s
+#define WS_WAVE_K     0.55f       // share of the wave's velocity passed on
+#define WS_WAVE_REACH 0.75f       // clip units above/below the band it reaches
 
 typedef struct {
     int      n;
@@ -150,14 +166,17 @@ static inline int ws_init(ws_state *st, int count, uint32_t seed)
 static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
 {
     int i;
-    ws_ctl z0 = { 0.0f, 0.0f, 0.0f, 0.0f };
+    ws_ctl z0 = { 0.0f, 0.0f, 0.0f, 0.0f, 0, 0.0f };
     if (!st) return;
     if (!c) c = &z0;
     dt = ws_clampf(dt, 0.0f, WS_DT_MAX);
     st->t += dt;
 
     const float kick  = ws_clampf(c->kick, 0.0f, 1.0f);
-    const float sway  = WS_SWAY * (1.0f + 1.4f * ws_clampf(c->sway, 0.0f, 1.0f));
+    const float stir  = 1.0f + 1.3f * ws_clampf(c->sway, 0.0f, 1.0f)
+                             + 0.5f * ws_clampf(c->bright, 0.0f, 1.0f);
+    const float sway  = WS_SWAY * stir;
+    const float T     = st->t * 0.045f;
     const float fric  = 1.0f / (1.0f + WS_FRICTION * dt);
     const float brown = WS_BROWN * dt;
     st->flash = st->flash * (1.0f / (1.0f + dt / WS_FLASH_TAU));
@@ -166,20 +185,56 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
     for (i = 0; i < st->n; i++) {
         const float z    = st->z[i];
         const float near = 1.0f - z;
-        // the drift: fall + wind + a slow sway, all with parallax
-        const float fall = WS_FALL_FAR + (WS_FALL_NEAR - WS_FALL_FAR) * near;
-        const float sw   = sway * (0.4f + 0.6f * near)
-                         * ws_sin2pi(st->ph[i] + st->t * WS_SWAY_HZ * (0.7f + 0.6f * st->hue[i]));
+        // the swirl: velocity = curl of psi, psi = sum of drifting cells
+        //   psi_k = A_k sin(2pi(fx_k x + a_k)) sin(2pi(fy_k y + b_k))
+        const float x = st->x[i], y = st->y[i];
+        float fu = 0.0f, fv = 0.0f;
+        {
+            static const float FX[3] = { 0.55f, 0.95f, 1.60f };
+            static const float FY[3] = { 0.60f, 1.05f, 1.45f };
+            static const float AK[3] = { 1.00f, 0.55f, 0.28f };
+            static const float WK[3] = { 1.00f, -1.40f, 2.10f };
+            int k;
+            for (k = 0; k < 3; k++) {
+                const float px = FX[k] * x + T * WK[k] + 0.13f * k;
+                const float py = FY[k] * y - T * WK[k] * 0.8f + 0.29f * k;
+                const float sx = ws_sin2pi(px), cx = ws_sin2pi(px + 0.25f);
+                const float sy = ws_sin2pi(py), cy = ws_sin2pi(py + 0.25f);
+                // dpsi/dy and -dpsi/dx (the 2pi f folds into the gain)
+                fu +=  AK[k] * FY[k] * sx * cy;
+                fv += -AK[k] * FX[k] * cx * sy;
+            }
+        }
+        const float par  = 0.45f + 0.75f * near;           // parallax
+        const float fall = 0.0f;
+        const float sw   = WS_SWIRL * stir * par * fu
+                         + sway * 0.3f * ws_sin2pi(st->ph[i] + st->t * WS_SWAY_HZ);
+        const float swv  = WS_SWIRL * stir * par * fv;
+        // the wave: its vertical motion carries what floats near it
+        if (c->wv) {
+            const float dy = y - c->band_y;
+            float w = 1.0f - (dy < 0.0f ? -dy : dy) / WS_WAVE_REACH;
+            if (w > 0.0f) {
+                float s = (x + 1.0f) * 0.5f * (float)(WS_WV - 1);
+                int   k = (int)s;
+                if (s < 0.0f) { s = 0.0f; k = 0; }
+                if (k > WS_WV - 2) { k = WS_WV - 2; s = (float)(WS_WV - 1); }
+                const float fr = s - (float)k;
+                const float v  = c->wv[k] + (c->wv[k + 1] - c->wv[k]) * fr;
+                st->vy[i] += WS_WAVE_K * v * w * w * par * WS_FRICTION * dt;
+            }
+        }
         // the push: Brownian jostle, damped
         st->vx[i] = st->vx[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
         st->vy[i] = st->vy[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
-        st->x[i] += (WS_WIND * (0.5f + 0.5f * near) + sw + st->vx[i]) * dt;
-        st->y[i] += (st->vy[i] - fall) * dt;
+        st->x[i] += (WS_WIND * 0.3f * (0.5f + 0.5f * near) + sw + st->vx[i]) * dt;
+        st->y[i] += (st->vy[i] + swv - fall) * dt;
         st->age[i] += dt;
 
-        // leave the bottom or run out of life: back in at the top; the sides wrap
-        if (st->y[i] < -WS_Y_EDGE || st->age[i] >= st->life[i]) ws_spawn(st, i, 0);
-        if (st->y[i] >  WS_Y_EDGE + 0.2f) st->y[i] = -WS_Y_EDGE + 0.01f;
+        // run out of life: reborn anywhere (fading in); every edge wraps
+        if (st->age[i] >= st->life[i]) { ws_spawn(st, i, 1); st->age[i] = 0.0f; }
+        if (st->y[i] >  WS_Y_EDGE) st->y[i] -= 2.0f * WS_Y_EDGE;
+        if (st->y[i] < -WS_Y_EDGE) st->y[i] += 2.0f * WS_Y_EDGE;
         if (st->x[i] >  WS_X_EDGE) st->x[i] -= 2.0f * WS_X_EDGE;
         if (st->x[i] < -WS_X_EDGE) st->x[i] += 2.0f * WS_X_EDGE;
     }
@@ -194,7 +249,7 @@ static inline int ws_shade(const ws_state *st, const ws_ctl *c, float alpha,
                            ws_sprite *out, int cap)
 {
     int i, n, vis = 0;
-    ws_ctl z0 = { 0.0f, 0.0f, 0.0f, 0.0f };
+    ws_ctl z0 = { 0.0f, 0.0f, 0.0f, 0.0f, 0, 0.0f };
     if (!st || !out || cap <= 0) return 0;
     if (!c) c = &z0;
     n = st->n < cap ? st->n : cap;

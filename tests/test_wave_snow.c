@@ -12,7 +12,8 @@ static ws_sprite sp[WS_MAX];
 
 int main(void)
 {
-    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f };
+    static float wv[WS_WV];
+    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f, 0, -0.3f };
     int i, f, near = 0, vis;
     ws_init(&st, WS_COUNT_DEF, 1234u);
     for (i = 0; i < st.n; i++) near += st.z[i] < 0.22f;
@@ -40,6 +41,34 @@ int main(void)
         for (i = 0; i < st.n; i++) vy1 += st.vy[i];
         printf("  snow: mean vy %.4f -> %.4f on a kick\n", vy0 / st.n, vy1 / st.n);
         CHECK(vy1 / st.n < vy0 / st.n + 0.01f, "the kick lifts the field");
+    }
+
+    // the field fills the screen: every quarter of it holds particles
+    {
+        int q[4] = { 0, 0, 0, 0 };
+        for (i = 0; i < st.n; i++)
+            if (st.x[i] > -1.0f && st.x[i] < 1.0f && st.y[i] > -1.0f && st.y[i] < 1.0f)
+                q[(st.x[i] >= 0.0f) + 2 * (st.y[i] >= 0.0f)]++;
+        printf("  snow: quadrants %d %d %d %d\n", q[0], q[1], q[2], q[3]);
+        for (i = 0; i < 4; i++) CHECK(q[i] > st.n / 10, "quadrant %d holds %d", i, q[i]);
+    }
+
+    // a rising wave lifts what floats near the band, and only there
+    {
+        float near_vy = 0.0f, far_vy = 0.0f; int nn = 0, nf = 0;
+        for (i = 0; i < WS_WV; i++) wv[i] = 0.8f;
+        c.wv = wv;
+        for (i = 0; i < st.n; i++) st.vy[i] = 0.0f;
+        ws_step(&st, &c, 1.0f / 60.0f);
+        for (i = 0; i < st.n; i++) {
+            const float d = st.y[i] - c.band_y;
+            if (d > -0.2f && d < 0.2f) { near_vy += st.vy[i]; nn++; }
+            if (d > 0.9f || d < -0.9f) { far_vy += st.vy[i]; nf++; }
+        }
+        near_vy /= nn ? nn : 1; far_vy /= nf ? nf : 1;
+        printf("  snow: wave lift near %.4f far %.4f\n", near_vy, far_vy);
+        CHECK(near_vy > far_vy + 0.005f, "the wave does not carry the particles near it");
+        c.wv = 0;
     }
 
     // presence 0 draws nothing; presence 1 draws most of them

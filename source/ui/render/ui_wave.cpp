@@ -488,7 +488,28 @@ static u32 motes_build(float aspect)
     wave_audio_bands(lvl, &kick);
     if (s_mote_lin <= 0.0f) return 0;
 
+    // The near layer's vertical velocity across the screen, in clip units/s
+    // (+up), so the particles near the band ride its motion -- ripples too.
+    static float s_wy_prev[WS_WV];
+    static float s_wv[WS_WV];
+    static bool  s_wy_have = false;
+    {
+        const float Wd = (float)display_width, Hd = (float)display_height;
+        for (int k = 0; k < WS_WV; k++) {
+            const float fx = Wd * (float)k / (float)(WS_WV - 1);
+            const float y  = -2.0f * wave_field_px(0, fx, Wd) / Hd;
+            float v = (s_wy_have && dt > 0.0f) ? (y - s_wy_prev[k]) / dt : 0.0f;
+            if (v >  1.5f) v =  1.5f;
+            if (v < -1.5f) v = -1.5f;
+            s_wv[k] += (v - s_wv[k]) * 0.5f;       // one frame of smoothing
+            s_wy_prev[k] = y;
+        }
+        s_wy_have = true;
+    }
+
     ws_ctl c;
+    c.wv      = s_wv;
+    c.band_y  = 1.0f - 2.0f * WAVE_BASEY[0];
     c.sway    = lvl[0];
     c.twinkle = lvl[2];
     c.kick    = kick;
