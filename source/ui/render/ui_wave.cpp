@@ -1047,6 +1047,17 @@ void wave_draw(void) {
             s_jw_rebuilds++;
             s_jw_verts = (u32)n;
             s_jw_have_geom = 1;
+        } else if (jellywave) {
+            // Reuse call: s_jw_stage still holds the last build and is
+            // uploaded as-is below.  Nothing may be written into it here.
+            // Falling through to the legacy branches (as this once did)
+            // wrote 6*ncols legacy crest->bottom vertices over the start of
+            // the JellyWave stream on 2 of every 3 frames -- the far body,
+            // at 1080p indices 0..581 -- which the RSX then drew as huge
+            // full-height triangles: the "JellyWave strobe" (~13 ms of fill,
+            // 30 Hz frames).  Found by diffing the one clean hardware build
+            // (whose reuse writes landed past the drawn range) against the
+            // strobing ones.
         } else if (s_wave_blend) {
             // One quad per ribbon: constant tint, alpha ramping from the
             // crest opacity down to zero at the screen bottom.  The GPU
