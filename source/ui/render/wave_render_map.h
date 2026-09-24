@@ -182,10 +182,15 @@
 
 static const float WRM_ACC_LAYER[3] = { 1.00f, 0.80f, 0.60f };
 
+// Slots [0, WM_PULSES) are the map's travelling pulses; the rest belong to the
+// sub-bass ripples (wrm_distinct), so the two never compete for a slot.
+#define WRM_RIPPLES     2
+#define WRM_ACC_SLOTS   (WM_PULSES + 2 * WRM_RIPPLES)
+
 typedef struct {
-    float x[WM_PULSES];     // pulse centre, u along the solver's [0,1]
-    float inv[WM_PULSES];   // 1 / bump half-width in u
-    float a[WM_PULSES];     // amplitude 0..1, 0 when not live
+    float x[WRM_ACC_SLOTS];     // pulse centre, u along the solver's [0,1]
+    float inv[WRM_ACC_SLOTS];   // 1 / bump half-width in u
+    float a[WRM_ACC_SLOTS];     // amplitude 0..1, 0 when not live
 } wrm_accent_set;
 
 typedef struct {
@@ -281,6 +286,9 @@ static inline void wrm_map_gain(const wm_params *p, float g, wrm_out *out)
             out->acc.inv[j] = 1.0f / w;
             out->acc.a[j]   = q->live ? wrm_clamp(q->amp * g, 0.0f, 1.0f) : 0.0f;
         }
+        for (; j < WRM_ACC_SLOTS; j++) {
+            out->acc.x[j] = 0.0f; out->acc.inv[j] = 1.0f; out->acc.a[j] = 0.0f;
+        }
     }
 }
 
@@ -294,7 +302,7 @@ static inline float wrm_accent_at(const wrm_accent_set *a, int layer, float u)
     if (!a) return 0.0f;
     if (layer < 0) layer = 0;
     if (layer > 2) layer = 2;
-    for (j = 0; j < WM_PULSES; j++) {
+    for (j = 0; j < WRM_ACC_SLOTS; j++) {
         float q = (u - a->x[j]) * a->inv[j];
         float t = 1.0f - q * q;
         t    = (t > 0.0f) ? t : 0.0f;
@@ -376,27 +384,47 @@ typedef struct {
     // the sub-bass shock (2026-09-25: "the subbass needs to be more
     // distinctive -- when it bumps, send extra shocks through the whole wave")
     float sub_slow;    // the sub band's recent level
-    float shock;       // 0..1, decays
-    float shock_x;     // where the travelling shock is along the band, u
+    float shock;       // 0..1, the strongest live ripple (for the log)
+    float shock_x;     // 0 only in a zeroed state (see the ripple block)
     float refr;        // s until the next hit may fire
     float kick;        // non-zero on the frame a hit lands (read by the snow)
+    // the ripples (2026-09-25 v2: the whole-wave jolt was "way too noticeable";
+    // "more of a ripple across the wave that stems from a flowy spike")
+    float rt[WRM_RIPPLES];   // s since this ripple's hit; < 0 = not live
+    float rx[WRM_RIPPLES];   // where it started, u
+    float rm[WRM_RIPPLES];   // its strength, 0..1
+    int   rn;                // hits so far (picks the next origin)
+    int   armed;             // re-armed once the sub falls back (a held note fires once)
 } wrm_db_state;
 
-// A hit is a fast rise of the sub band above its own recent level.  On a hit
-// every layer is pushed toward its OWN height cap (never past it) and lifted
-// in brightness, and a broad bump runs along the band -- a shock through the
-// whole wave, not just the bass layer.  The accent total is then capped at the
-// measured bound (see the end of wrm_distinct), so the framing still holds.
+// A hit is a fast rise of the sub band above its own recent level.  Each hit
+// starts a RIPPLE: a narrow spike rises smoothly (~0.1 s) at a point on the
+// band, then splits into two crests that run outward in both directions,
+// easing out as they go -- widening and fading -- over ~1.5 s.  Two ripples
+// can be live at once, so a fast bass line layers them instead of cutting the
+// last one off.  The layers get only a faint, smoothed lift (no whole-wave
+// jolt), and the accent total is still capped at the measured bound (see the
+// end of wrm_distinct), so the framing holds.
 #define WRM_SUB_TAU        0.35f
 #define WRM_SUB_THRESH     0.14f
-#define WRM_SUB_REFR       0.22f
-#define WRM_SHOCK_TAU      0.28f
-#define WRM_SHOCK_CROSS    0.55f      // s to run the length of the band
-#define WRM_SHOCK_PUSH     0.60f      // fraction of the way to each layer's cap
-#define WRM_SHOCK_LUM      0.14f
-#define WRM_SHOCK_ACC      0.60f
-#define WRM_SHOCK_WIDTH    0.16f
+#define WRM_SUB_REFR       0.28f
+#define WRM_RIP_ATT        0.10f      // s, the spike's smooth rise
+#define WRM_RIP_DECAY      0.45f      // s, 1/(1+t/this)^2 fall-off
+#define WRM_RIP_END        1.60f      // s, gone (faded to 0 over the last 0.5 s)
+#define WRM_RIP_SPREAD     0.70f      // u each crest travels, asymptotically
+#define WRM_RIP_EASE       0.35f      // s, how quickly the spreading eases out
+#define WRM_RIP_W0         0.055f     // half-width at the spike, u
+#define WRM_RIP_W1         0.17f      // extra half-width by the end
+#define WRM_RIP_A          0.28f      // per crest (the spike is two, overlapping)
+#define WRM_RIP_PUSH       0.10f      // faint lift toward each layer's cap
+#define WRM_RIP_LUM        0.05f
 #define WRM_ACC_TOTAL_MAX  WRM_DB_ACC_KEEP   // test_distinct_framing measured this
+
+static inline float wrm_smooth01(float x)
+{
+    x = wrm_clamp(x, 0.0f, 1.0f);
+    return x * x * (3.0f - 2.0f * x);
+}
 
 // src[3]: 0..1 band levels for layers 0..2.  present: 0 at rest .. 1 with
 // audio.  resp: the intensity level's response (1 = default).  Rewrites the
@@ -438,39 +466,69 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         }
     }
 
-    // --- the sub-bass shock ---
+    // --- the sub-bass ripples ---
     {
+        static const float ORIGIN[5] = { 0.50f, 0.36f, 0.62f, 0.44f, 0.56f };
         const float sf = wrm_clamp(sub_fast, 0.0f, 1.0f);
         const float ks = dt / (WRM_SUB_TAU + dt);
         const float excess = sf - st->sub_slow;
+        float lift = 0.0f;
+        int r;
         st->sub_slow += (sf - st->sub_slow) * ks;
         st->kick  = 0.0f;
         st->refr -= dt;
-        st->shock *= 1.0f / (1.0f + dt / WRM_SHOCK_TAU);
-        st->shock_x += dt / WRM_SHOCK_CROSS;
-        if (present > 0.0f && st->refr <= 0.0f && excess > WRM_SUB_THRESH) {
-            const float m = wrm_clamp(0.35f + (excess - WRM_SUB_THRESH) * 3.0f, 0.0f, 1.0f);
-            if (m > st->shock) st->shock = m;
-            st->shock_x = -0.15f;
-            st->refr    = WRM_SUB_REFR;
-            st->kick    = m * present;
+        if (st->shock_x == 0.0f && st->rt[0] == 0.0f && st->rt[1] == 0.0f) {
+            // a zeroed state: no ripple is live yet
+            for (r = 0; r < WRM_RIPPLES; r++) st->rt[r] = -1.0f;
+            st->shock_x = 1.0f;
         }
-        if (present <= 0.0f) st->shock = 0.0f;
-        if (st->shock > 0.001f) {
-            const float sh = st->shock * present;
-            for (i = 0; i < 3; i++) {
-                o->amp[i] += (WRM_DB_AMP_MAX[i] - o->amp[i]) * WRM_SHOCK_PUSH * sh;
-                if (o->amp[i] > WRM_DB_AMP_MAX[i]) o->amp[i] = WRM_DB_AMP_MAX[i];
-                lum3[i] += WRM_SHOCK_LUM * sh;
-                if (lum3[i] > WRM_DB_LUM_MAX[2] + WRM_SHOCK_LUM) lum3[i] = WRM_DB_LUM_MAX[2] + WRM_SHOCK_LUM;
+        if (excess < 0.5f * WRM_SUB_THRESH) st->armed = 1;
+        if (present > 0.0f && st->armed && st->refr <= 0.0f && excess > WRM_SUB_THRESH) {
+            const float m = wrm_clamp(0.35f + (excess - WRM_SUB_THRESH) * 3.0f, 0.0f, 1.0f);
+            int use = 0;
+            for (r = 0; r < WRM_RIPPLES; r++) {
+                if (st->rt[r] < 0.0f) { use = r; break; }
+                if (st->rt[r] > st->rt[use]) use = r;   // else the oldest
             }
-            if (st->shock_x < 1.3f) {
-                int j, free_j = -1;
-                for (j = 0; j < WM_PULSES; j++) if (o->acc.a[j] <= 0.0f) { free_j = j; break; }
-                if (free_j < 0) free_j = WM_PULSES - 1;
-                o->acc.x[free_j]   = st->shock_x;
-                o->acc.inv[free_j] = 1.0f / WRM_SHOCK_WIDTH;
-                o->acc.a[free_j]   = WRM_SHOCK_ACC * sh;
+            st->rt[use] = 0.0f;
+            st->rx[use] = ORIGIN[st->rn % 5];
+            st->rm[use] = m;
+            st->rn++;
+            st->refr = WRM_SUB_REFR;
+            st->kick = m * present;
+            st->armed = 0;
+        }
+        for (r = 0; r < WRM_RIPPLES; r++) {
+            const int s0 = WM_PULSES + 2 * r;
+            o->acc.a[s0] = o->acc.a[s0 + 1] = 0.0f;
+            o->acc.x[s0] = o->acc.x[s0 + 1] = 0.0f;
+            o->acc.inv[s0] = o->acc.inv[s0 + 1] = 1.0f;
+            if (st->rt[r] < 0.0f) continue;
+            if (present <= 0.0f || st->rt[r] >= WRM_RIP_END) { st->rt[r] = -1.0f; continue; }
+            {
+                const float t    = st->rt[r];
+                const float dq   = 1.0f + t / WRM_RIP_DECAY;
+                const float env  = st->rm[r] * present
+                                 * wrm_smooth01(t / WRM_RIP_ATT)
+                                 * (1.0f / (dq * dq))
+                                 * (1.0f - wrm_smooth01((t - (WRM_RIP_END - 0.5f)) / 0.5f));
+                const float prog = t / (t + WRM_RIP_EASE);
+                const float d    = WRM_RIP_SPREAD * prog;
+                const float w    = WRM_RIP_W0 + WRM_RIP_W1 * prog;
+                o->acc.x[s0]       = st->rx[r] - d;
+                o->acc.x[s0 + 1]   = st->rx[r] + d;
+                o->acc.inv[s0]     = o->acc.inv[s0 + 1] = 1.0f / w;
+                o->acc.a[s0]       = o->acc.a[s0 + 1]   = WRM_RIP_A * env;
+                if (env > lift) lift = env;
+            }
+            st->rt[r] += dt;
+        }
+        st->shock = lift;
+        if (lift > 0.0f) {
+            for (i = 0; i < 3; i++) {
+                o->amp[i] += (WRM_DB_AMP_MAX[i] - o->amp[i]) * WRM_RIP_PUSH * lift;
+                if (o->amp[i] > WRM_DB_AMP_MAX[i]) o->amp[i] = WRM_DB_AMP_MAX[i];
+                lum3[i] += WRM_RIP_LUM * lift;
             }
         }
     }
@@ -478,10 +536,10 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
     // The accents may add up to the measured bound and no further.
     {
         float sum = 0.0f;
-        for (i = 0; i < WM_PULSES; i++) sum += o->acc.a[i];
+        for (i = 0; i < WRM_ACC_SLOTS; i++) sum += o->acc.a[i];
         if (sum > WRM_ACC_TOTAL_MAX) {
             const float k = WRM_ACC_TOTAL_MAX / sum;
-            for (i = 0; i < WM_PULSES; i++) o->acc.a[i] *= k;
+            for (i = 0; i < WRM_ACC_SLOTS; i++) o->acc.a[i] *= k;
         }
     }
 }

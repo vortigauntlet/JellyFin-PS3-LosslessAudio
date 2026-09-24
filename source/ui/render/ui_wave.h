@@ -3,6 +3,11 @@
 
 void wave_init(void);
 void wave_draw(void);
+
+// Call just before wave_draw() on a menu screen: with Settings > Menu
+// Particles on, the snow field drifts there too (it fades out on any screen
+// that does not ask -- playback, the item details page).  One frame only.
+void wave_snow_ambient(void);
 void wave_reset(void);
 
 // True when CPU framebuffer writes are cheap (emulator): the whole XMB

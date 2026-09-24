@@ -8,7 +8,8 @@
 #include "wave_shaders.h"
 #include "wave_field.h"
 #include "wave_gel.h"          /* JellyWave: pulls wave_cam.h + wave_light.h */
-#include "wave_snow.h"         /* the snow field, while music plays */
+#include "wave_snow.h"
+#include "menusnow.h"         /* Settings > Menu Particles */
 #include "bg_gradient.h"
 #include "timing.h"
 #include "month_bg.h"
@@ -431,8 +432,15 @@ static WaveVert   *s_mote_vbuf[2] = { NULL, NULL };
 static u32         s_mote_voff[2] = { 0, 0 };
 static u32         s_mote_n  = 0;          // vertices uploaded by this call
 static bool        s_mote_ok = false;
-static float       s_mote_a  = 0.0f;       // presence fade
+static float       s_mote_a  = 0.0f;       // the eased fade, 0..1
+static float       s_mote_lin = 0.0f;      // the fade's linear ramp, 0..1
+static float       s_mote_lvl = 1.0f;      // 1 with music, dimmer as menu ambience
+static bool        s_mote_music = false;   // music gate, with hysteresis
+static float       s_mote_quiet = 0.0f;    // s of silence while the gate is open
+static bool        s_mote_amb_req = false; // wave_snow_ambient() this frame
 static u64         s_mote_us = 0;
+
+void wave_snow_ambient(void) { s_mote_amb_req = true; }
 
 static void motes_init(void)
 {
@@ -460,12 +468,25 @@ static u32 motes_build(float aspect)
     s_mote_us = now;
     if (dt > WS_DT_MAX) dt = WS_DT_MAX;
 
-    const float target = wave_audio_presence();
-    const float tau = target > s_mote_a ? 1.0f : 0.7f;
-    s_mote_a += (target - s_mote_a) * (dt / (tau + dt));
+    // Who wants the snow: music (gated with hysteresis, so a quiet intro or a
+    // gap between tracks does not flicker it), or a menu with Menu Particles
+    // on.  The fade is a linear ramp through an ease curve -- in over ~2.5 s,
+    // out over ~1.3 s -- and wave_snow.h staggers it per particle, so they
+    // arrive one by one rather than as a sheet.
+    const float pres = wave_audio_presence();
+    if (pres > 0.05f) { s_mote_music = true; s_mote_quiet = 0.0f; }
+    else if (s_mote_music && (s_mote_quiet += dt) > 1.2f) s_mote_music = false;
+    const bool amb = s_mote_amb_req && menusnow_enabled();
+    s_mote_amb_req = false;
+    const float want = (s_mote_music || amb) ? 1.0f : 0.0f;
+    const float lvl_want = s_mote_music ? 1.0f : 0.75f;
+    if (want > s_mote_lin) { s_mote_lin += dt / 2.5f; if (s_mote_lin > want) s_mote_lin = want; }
+    else                   { s_mote_lin -= dt / 1.3f; if (s_mote_lin < want) s_mote_lin = want; }
+    s_mote_lvl += (lvl_want - s_mote_lvl) * (dt / (0.8f + dt));
+    s_mote_a = s_mote_lin * s_mote_lin * (3.0f - 2.0f * s_mote_lin) * s_mote_lvl;
     float lvl[3], kick = 0.0f;
     wave_audio_bands(lvl, &kick);
-    if (s_mote_a < 0.01f) return 0;
+    if (s_mote_lin <= 0.0f) return 0;
 
     ws_ctl c;
     c.sway    = lvl[0];

@@ -24,9 +24,9 @@
 // THE AUDIO (all through ws_ctl, all neutral at 0):
 //   sway     lows        wider, slower side-to-side drift
 //   twinkle  highs       per-particle sparkle
-//   kick     sub-bass    a one-frame impulse: every particle is thrown up and
-//                        outward from the centre, harder the nearer it is, and
-//                        the field flashes; friction settles it in ~1 s
+//   kick     sub-bass    a faint glint only -- it moves NOTHING (2026-09-25
+//                        v2: throwing the field up on every hit kept pushing
+//                        the particles off the top of the screen)
 //   bright   loudness    the whole field a little brighter
 //
 // House rules: header-only, pure C, no libm, no PS3 headers, caller-owned
@@ -49,8 +49,7 @@
 #define WS_SWAY_HZ    0.11f
 #define WS_BROWN      0.060f      // jostle, clip units/s^2 per sqrt-frame
 #define WS_FRICTION   1.6f        // 1/s -- how fast a push dies away
-#define WS_KICK_UP    0.55f       // sub-bass impulse, clip units/s at full kick, z = 0
-#define WS_KICK_OUT   0.35f
+#define WS_KICK_FLASH 0.30f       // glint at a full kick, of the full flash
 #define WS_FLASH_TAU  0.22f       // s
 #define WS_LIFE_MIN   5.0f
 #define WS_LIFE_MAX  12.0f
@@ -162,7 +161,7 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
     const float fric  = 1.0f / (1.0f + WS_FRICTION * dt);
     const float brown = WS_BROWN * dt;
     st->flash = st->flash * (1.0f / (1.0f + dt / WS_FLASH_TAU));
-    if (kick > st->flash) st->flash = kick;
+    if (kick * WS_KICK_FLASH > st->flash) st->flash = kick * WS_KICK_FLASH;
 
     for (i = 0; i < st->n; i++) {
         const float z    = st->z[i];
@@ -171,15 +170,9 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
         const float fall = WS_FALL_FAR + (WS_FALL_NEAR - WS_FALL_FAR) * near;
         const float sw   = sway * (0.4f + 0.6f * near)
                          * ws_sin2pi(st->ph[i] + st->t * WS_SWAY_HZ * (0.7f + 0.6f * st->hue[i]));
-        // the pushes: Brownian jostle and the sub-bass kick, both damped
+        // the push: Brownian jostle, damped
         st->vx[i] = st->vx[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
         st->vy[i] = st->vy[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
-        if (kick > 0.0f) {
-            const float out = st->x[i] >= 0.0f ? 1.0f : -1.0f;
-            const float k   = kick * (0.35f + 0.65f * near);
-            st->vy[i] += WS_KICK_UP * k * (0.6f + 0.8f * ws_rand(&st->rng));
-            st->vx[i] += WS_KICK_OUT * k * out * (0.3f + 0.9f * ws_rand(&st->rng));
-        }
         st->x[i] += (WS_WIND * (0.5f + 0.5f * near) + sw + st->vx[i]) * dt;
         st->y[i] += (st->vy[i] - fall) * dt;
         st->age[i] += dt;
@@ -194,7 +187,9 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
 
 // Shade: one sprite per particle, in state order.  Returns how many are drawn.
 // `alpha` is the presence fade (0..1); colours are Jellyfin violet -> blue,
-// lifted toward white in focus.
+// lifted toward white in focus.  The fade is STAGGERED: each particle has its
+// own threshold, so as alpha rises they appear one by one, each on its own
+// smooth curve, instead of the whole field brightening as one sheet.
 static inline int ws_shade(const ws_state *st, const ws_ctl *c, float alpha,
                            ws_sprite *out, int cap)
 {
@@ -226,7 +221,11 @@ static inline int ws_shade(const ws_state *st, const ws_ctl *c, float alpha,
         // highs: each particle twinkles on its own phase
         const float sp = 0.5f + 0.5f * ws_sin2pi(st->ph[i] * 3.7f + st->t * (1.3f + 1.7f * st->hue[i]));
         a *= 1.0f + tw * (0.9f * sp * sp - 0.2f);
-        a *= e * alpha * brt;
+        {
+            const float thr = st->ph[i] * 7.31f - (float)(int)(st->ph[i] * 7.31f);   // 0..1 per particle
+            const float ai  = ws_clampf(alpha * 1.6f - 0.6f * thr, 0.0f, 1.0f);
+            a *= e * (ai * ai * (3.0f - 2.0f * ai)) * brt;
+        }
         a = ws_clampf(a, 0.0f, 1.0f);
 
         // colour: violet (170,120,235) -> blue (110,190,245), toward white in focus

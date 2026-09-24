@@ -30,7 +30,7 @@ int main(void)
         CHECK(st.y[i] >= -WS_Y_EDGE - 0.2f && st.y[i] <= WS_Y_EDGE + 0.25f, "y out %d %f", i, st.y[i]);
     }
 
-    // a kick throws the field upward
+    // a kick moves nothing: the sub-bass may glint the field, never push it
     {
         float vy0 = 0.0f, vy1 = 0.0f;
         c.kick = 0.0f;
@@ -39,7 +39,7 @@ int main(void)
         c.kick = 1.0f; ws_step(&st, &c, 1.0f / 60.0f);
         for (i = 0; i < st.n; i++) vy1 += st.vy[i];
         printf("  snow: mean vy %.4f -> %.4f on a kick\n", vy0 / st.n, vy1 / st.n);
-        CHECK(vy1 / st.n > vy0 / st.n + 0.15f, "the kick does not lift the field");
+        CHECK(vy1 / st.n < vy0 / st.n + 0.01f, "the kick lifts the field");
     }
 
     // presence 0 draws nothing; presence 1 draws most of them

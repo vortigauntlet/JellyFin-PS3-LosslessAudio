@@ -559,6 +559,7 @@ void ui_run_xmb(void) {
         if (first_iter) crash_log("13.5c clearScreen");
         clearScreen(XMB_BG);
         if (first_iter) crash_log("13.5d wave_draw");
+        wave_snow_ambient();   // a menu: Menu Particles may show here
         wave_draw();
         s_fc.gpu += timing_get_us() - t_gpu0;
         if (first_iter) crash_log("13.6 wave_draw done");

@@ -34,6 +34,7 @@
 #include "subfont.h"
 #include "subcolor.h"
 #include "statsovl.h"
+#include "menusnow.h"
 #include "audio.h"
 #include "video.h"
 #include "player_hud.h"
@@ -147,6 +148,7 @@ int main(int argc, const char *argv[]) {
     centermix_load();      // restore the dialogue / centre-channel mode
     subfont_load();        // restore the subtitle typeface
     subcolor_load();       // restore the subtitle colour
+    menusnow_load();       // restore the Menu Particles toggle
     statsovl_load();       // restore the player stats overlay toggle
     audio_volume_load();   // restore the saved master volume
     ui_sfx_init();         // XMB menu sounds, read from the console flash

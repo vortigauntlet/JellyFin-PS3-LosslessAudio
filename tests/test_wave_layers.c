@@ -1203,8 +1203,9 @@ static void test_distinct_bands(void)
         CHECK(o.amp[i] >= WRM_DB_AMP_QUIET - 1e-4f && o.amp[i] <= WRM_DB_AMP_MAX[i] + 1e-4f,
               "layer %d outside its range", i);
 
-    // Sub-bass hit: settle, then a step -- a kick fires, every layer rises,
-    // nothing passes its cap, the accent total stays inside the bound.
+    // Sub-bass hit: settle, then a step -- a kick fires, a spike rises and
+    // splits into two crests running outward, the layers barely move, nothing
+    // passes its cap, the accent total stays inside the bound throughout.
     {
         float before[3], asum;
         int j, fired = 0;
@@ -1220,16 +1221,29 @@ static void test_distinct_bands(void)
             wrm_distinct(&st, src, 0.9f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
             fired |= st.kick > 0.0f;
         }
-        asum = 0.0f;
-        for (j = 0; j < WM_PULSES; j++) asum += o.acc.a[j];
-        printf("  distinct: sub hit -> amp %.2f/%.2f/%.2f (from %.2f/%.2f/%.2f) acc %.2f\n",
-               o.amp[0], o.amp[1], o.amp[2], before[0], before[1], before[2], asum);
-        CHECK(fired, "a sub-bass step does not fire a kick");
-        for (i = 0; i < 3; i++) {
-            CHECK(o.amp[i] > before[i] + 0.05f, "the shock does not reach layer %d", i);
-            CHECK(o.amp[i] <= WRM_DB_AMP_MAX[i] + 1e-4f, "the shock passes layer %d's cap", i);
+        {
+            float sep0, sep1, amax = 0.0f;
+            const int s0 = WM_PULSES;
+            sep0 = o.acc.x[s0 + 1] - o.acc.x[s0];
+            for (n = 0; n < 30; n++) {
+                wrm_map(NULL, &o);
+                wrm_distinct(&st, src, 0.9f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+                asum = 0.0f;
+                for (j = 0; j < WRM_ACC_SLOTS; j++) asum += o.acc.a[j];
+                CHECK(asum <= WRM_ACC_TOTAL_MAX + 1e-4f, "accent total %.3f over the bound", asum);
+                for (i = 0; i < 3; i++) {
+                    CHECK(o.amp[i] <= WRM_DB_AMP_MAX[i] + 1e-4f, "the ripple passes layer %d's cap", i);
+                    if (o.amp[i] - before[i] > amax) amax = o.amp[i] - before[i];
+                }
+            }
+            sep1 = o.acc.x[s0 + 1] - o.acc.x[s0];
+            printf("  distinct: sub hit -> crests %.2f apart -> %.2f after 0.5 s, "
+                   "amp lift %.3f, crest %.3f\n", sep0, sep1, amax, o.acc.a[s0]);
+            CHECK(fired, "a sub-bass step does not fire a kick");
+            CHECK(sep0 < 0.35f && sep1 > sep0 + 0.4f, "the spike does not spread into a ripple");
+            CHECK(o.acc.a[s0] > 0.0f, "the ripple died too soon");
+            CHECK(amax < 0.12f, "the hit still jolts the whole wave (%.3f)", amax);
         }
-        CHECK(asum <= WRM_ACC_TOTAL_MAX + 1e-4f, "accent total %.3f over the bound", asum);
     }
 }
 
