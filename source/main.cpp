@@ -12,6 +12,7 @@
 #include "rsxutil.h"
 #include "ui.h"
 #include "ui_visuals.h"
+#include "ui_sfx.h"
 #include "ui_wave.h"   // wave_init() -- called here, not from ui_init()
 #include "http.h"
 #include "update_check.h"
@@ -148,6 +149,7 @@ int main(int argc, const char *argv[]) {
     subcolor_load();       // restore the subtitle colour
     statsovl_load();       // restore the player stats overlay toggle
     audio_volume_load();   // restore the saved master volume
+    ui_sfx_init();         // XMB menu sounds, read from the console flash
     video_log_capabilities();   // what refresh rates does this panel offer?
     audio_out_log_capabilities();  // ...and will this chain take a bitstream?
 

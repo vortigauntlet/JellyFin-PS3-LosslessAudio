@@ -11,6 +11,11 @@ void audio_open(int channels);
 bool audio_write_pcm(void);  // returns true if a DMA event was consumed
 void audio_close(void);
 
+// Shared libaudio init: audioInit() on the first acquire, audioQuit() on the
+// last release.  audio_open/close and ui_sfx.cpp both go through these.
+int  audio_sys_acquire(void);   // 0 or the audioInit() error
+void audio_sys_release(void);
+
 // Widest program the port that is actually open can carry: 2 (stereo) or 8.
 // A 5.1 program uses six of those eight slots and the output stage zeroes the
 // two rear ones every block; a TrueHD 7.1 program uses all eight.  The

@@ -5,6 +5,7 @@
 #include "jf_paths.h"
 #include "player_stats.h"
 #include "centermix.h"
+#include "ui_sfx.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +43,26 @@ static u32          s_pcm_blocks   = 0;
 static u32          s_sil_blocks   = 0;
 
 u64 audio_block_count(void) { return s_audio_blocks; }
+
+// libaudio is initialised once for everyone who has a port open: the menu
+// sound effects (ui_sfx.cpp) keep one open while the music player opens
+// another, and a second audioInit() fails with ALREADY_INIT while an
+// early audioQuit() would pull the other port out from under it.
+// Main thread only, like every caller.
+static int s_sys_refs = 0;
+
+int audio_sys_acquire(void) {
+    if (s_sys_refs == 0) {
+        int rc = audioInit();
+        if (rc != 0) return rc;
+    }
+    s_sys_refs++;
+    return 0;
+}
+
+void audio_sys_release(void) {
+    if (s_sys_refs > 0 && --s_sys_refs == 0) audioQuit();
+}
 
 // ---- PCM source (defaults to the video pipeline's decoder) ----
 static audio_avail_fn    s_src_avail    = adec_pcm_available;
@@ -120,7 +141,7 @@ void audio_open(int channels) {
     char buf[128];
 
     crash_log("a2 sysAudioInit");
-    rc = audioInit();
+    rc = audio_sys_acquire();
     snprintf(buf, sizeof(buf), "audio: sysAudioInit rc=0x%x", rc);
     plog(buf);
     if (rc != 0) return;
@@ -172,7 +193,7 @@ void audio_open(int channels) {
     s_output_channels = opened;   // program capacity, not a fixed 5.1
     snprintf(buf, sizeof(buf), "audio: sysAudioPortOpen rc=0x%x port=%u", rc, s_audio_port);
     plog(buf);
-    if (rc != 0) { audioQuit(); return; }
+    if (rc != 0) { audio_sys_release(); return; }
     snprintf(buf, sizeof(buf), "audio_open: ch=%d blocks=%d",
              s_port_channels, (int)p.numBlocks);
     plog(buf);
@@ -222,7 +243,7 @@ void audio_open(int channels) {
     }
 
     if (audioCreateNotifyEventQueue(&s_audio_eq, &s_audio_key) != 0) {
-        audioPortClose(s_audio_port); audioQuit(); return;
+        audioPortClose(s_audio_port); audio_sys_release(); return;
     }
     rc = audioSetNotifyEventQueue(s_audio_key);
     snprintf(buf, sizeof(buf), "audio: audioSetNotifyEventQueue rc=0x%x", rc);
@@ -384,7 +405,9 @@ bool audio_write_pcm(void) {
 
 void audio_close(void) {
     crash_log("ax1 audio_close enter");
-    if (!s_audio_ok) return;
+    // A video open suspended the menu sounds; bring them back however that
+    // open went (a no-op after music, which never suspends them).
+    if (!s_audio_ok) { ui_sfx_resume(); return; }
     // Put the wire format back before tearing the port down.  The output is a
     // shared console resource -- the XMB and the next app should not inherit a
     // coding type this app asked for.
@@ -396,7 +419,7 @@ void audio_close(void) {
     audioPortClose(s_audio_port);
     sysEventQueueDestroy(s_audio_eq, 0);
     crash_log("ax4 sysAudioQuit");
-    audioQuit();
+    audio_sys_release();
     s_audio_ok    = false;
     s_data_start  = 0;
     s_num_blocks  = 0;
@@ -405,4 +428,5 @@ void audio_close(void) {
     s_port_channels   = 2;
     s_output_channels = 2;
     crash_log("ax5 audio_close done");
+    ui_sfx_resume();
 }
