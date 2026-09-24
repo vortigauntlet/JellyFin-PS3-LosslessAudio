@@ -106,6 +106,9 @@ DlResult dl_remove(const char *id);    // deletes everything for the item
 // Snapshots, in queue order.  completed_only gives the Offline library.
 int  dl_list(DlStatus *out, int max, bool completed_only);
 bool dl_find(const char *id, DlStatus *out);
+// Ids of COMPLETED items in queue order -- just the ids (the offline
+// library, dl_library.h, verifies each one).
+int  dl_completed_ids(char (*ids)[DL_ID_MAX], int max);
 bool dl_load_meta(const char *id, DlMeta *out);
 // Path of the finished media file; false unless the item is COMPLETED.
 bool dl_media_path(const char *id, char *out, int cap);
@@ -126,6 +129,9 @@ void dl_set_suspended(bool suspended);
 // Independent of dl_set_suspended: ending playback never lifts a suspension.
 void dl_playback_begin(const char *stream_url);
 void dl_playback_end(void);
+// The same gate for a LOCAL file (offline playback, Stage 4): no URL to
+// classify, so the caller passes the file's own weight (dl_meta_is_light).
+void dl_playback_begin_local(bool light);
 bool dl_playback_blocking(void);   // "held while streaming", for the UI
 
 // Runs one transfer attempt on the next due item.  Blocks for the length of

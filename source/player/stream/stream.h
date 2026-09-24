@@ -41,3 +41,19 @@ int stream_read(int sock, u8 *buf, int size);
 // microseconds spent blocked inside it, and how many times it was called.
 // The heartbeat diffs these to report throughput and blocked-time share.
 void stream_rx_stats(u64 *bytes, u64 *wait_us, u32 *calls);
+
+// ---- Local files (offline playback, Stage 4) ------------------------------
+// The player's other kind of source: a downloaded media.ts read from the HDD
+// through the same buffer and the same stream_read().  The handle is tagged
+// so it can never be mistaken for a socket.  offset must be a TS packet
+// boundary (stream_local.h picks it).
+int  stream_open_file(const char *path, u64 offset);
+bool stream_is_file(int h);
+// Close either kind: netClose for a socket, exactly as before.
+void stream_close(int h);
+// SO_RCVTIMEO for a socket, exactly as before; nothing for a file.
+void stream_set_timeout(int h, u32 usec);
+// The stream's 256 KB buffer as scratch -- only while no stream is being
+// read (before an open, or mid-seek after the close).  Offline seeking
+// probes the file with it instead of allocating.
+u8  *stream_scratch(int *cap);

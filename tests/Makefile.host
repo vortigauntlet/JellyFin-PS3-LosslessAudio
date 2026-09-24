@@ -96,13 +96,14 @@ OFFLINE_DIR  = ../source/offline
 OFFLINE_SRCS = $(OFFLINE_DIR)/dl_model.cpp $(OFFLINE_DIR)/dl_http.cpp \
                $(OFFLINE_DIR)/dl_store.cpp $(OFFLINE_DIR)/dl_manager.cpp \
                $(OFFLINE_DIR)/dl_ts.cpp $(OFFLINE_DIR)/dl_request.cpp \
-               $(OFFLINE_DIR)/dl_service.cpp
+               $(OFFLINE_DIR)/dl_service.cpp $(OFFLINE_DIR)/dl_library.cpp
 # Stage 3: the downloader shares the PLAYER's stream decision, so the test
 # links the player's real stream_request.cpp and what it calls -- the real
 # quality ladder (vquality.cpp), track labels (track_codec.c) and
 # url_encode_query (jellyfin_api.cpp).  host/ppu-types.h stands in for
 # PSL1GHT's integer typedefs; nothing else is stubbed.
 SHARED_SRCS  = ../source/player/stream/stream_request.cpp \
+               ../source/player/stream/stream_local.cpp \
                ../source/util/vquality.cpp ../source/util/jf_paths.cpp \
                ../source/api/jellyfin_api.cpp
 OFFLINE_INC  = -I$(OFFLINE_DIR) -I../source/player/stream -I../source/api \
@@ -111,7 +112,8 @@ track_codec_host.o: $(TRACK_SRC)
 	$(CC) $(CFLAGS) -c -o $@ $<
 test_offline: test_offline.cpp dl_fake.cpp dl_fake.h $(OFFLINE_SRCS) \
               $(SHARED_SRCS) track_codec_host.o $(wildcard $(OFFLINE_DIR)/*.h) \
-              ../source/player/stream/stream_request.h
+              ../source/player/stream/stream_request.h \
+              ../source/player/stream/stream_local.h
 	$(CXX) $(CXXFLAGS) -Wextra $(OFFLINE_INC) -o $@ \
 	    test_offline.cpp dl_fake.cpp $(OFFLINE_SRCS) $(SHARED_SRCS) \
 	    track_codec_host.o

@@ -32,6 +32,18 @@ typedef struct {
     uint64_t wrap_add;
 } DlTsScan;
 
+// One packet's header facts, shared by the scan below and by local-file
+// seeking (player/stream/stream_local.cpp): the same parse, not a second one.
+typedef struct {
+    bool     sync;          // starts with 0x47
+    uint16_t pid;
+    bool     pusi;          // a PES/section starts here
+    bool     rai;           // adaptation-field random_access_indicator (keyframe)
+    bool     video_pts;     // a video PES header with a PTS starts here
+    uint64_t pts;           // raw 33-bit, valid when video_pts
+} DlTsPacketInfo;
+void dl_ts_packet_info(const uint8_t *pkt, DlTsPacketInfo *out);
+
 void dl_ts_init(DlTsScan *t);
 void dl_ts_feed(DlTsScan *t, const uint8_t *data, int len);
 // Seconds between the first and the highest video PTS seen; -1 if no video

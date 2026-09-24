@@ -41,6 +41,10 @@ bool dl_svc_start(const char *const *roots, int n_roots);
 uint32_t dl_svc_tick(void);
 void dl_svc_stop(void);
 bool dl_svc_started(void);
+// True once the worker has finished its restore attempt (whether or not a
+// root was found).  The offline startup path waits on this before listing
+// the library, so "nothing downloaded" is never just "not restored yet".
+bool dl_svc_restored(void);
 // "" before restore has succeeded.
 const char *dl_svc_root(void);
 // Session for transfers.  An empty token (logged out) holds the queue.
@@ -57,6 +61,9 @@ bool dl_service_start(void);
 void dl_service_stop(void);
 void dl_service_refresh_auth(void);     // from g_token + jf_device_id()
 const char *dl_service_root(void);
+// Offline startup path: wait (bounded) for the worker's restore.  True if
+// the library can be queried now.  Needs no server and no login.
+bool dl_service_wait_restored(unsigned timeout_ms);
 
 // DOWNLOAD FOR OFFLINE: the item page's action.  source is the version the
 // page has selected (its versions list), detail may be NULL.  Only disk

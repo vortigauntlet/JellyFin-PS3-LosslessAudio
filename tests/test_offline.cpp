@@ -15,6 +15,8 @@
 #include "dl_request.h"
 #include "dl_service.h"
 #include "dl_ts.h"
+#include "dl_library.h"
+#include "stream_local.h"
 #include "stream_request.h"
 
 #include <stdio.h>
@@ -2493,6 +2495,497 @@ static void test_service_lifecycle(void) {
     CHECK(dl_manager_init(s_root.c_str(), &s_cfg));
 }
 
+
+// =========================================================================
+// Stage 4: offline library, startup path, local playback entry/seek
+// =========================================================================
+
+// A TS shaped like ffmpeg's mpegts output: PAT + PMT right before every
+// video keyframe (random_access_indicator set), frames at `fps`, a GOP every
+// `gop_s` seconds, and a bitrate that swings with a slow pattern (VBR), so
+// byte offset and time are NOT proportional.
+struct TsFile { std::string data; std::vector<uint64_t> key_off; std::vector<double> key_t; };
+
+static void put_pts(uint8_t *e, uint64_t pts) {
+    e[9]  = (uint8_t)(0x21 | ((pts >> 29) & 0x0E));
+    e[10] = (uint8_t)(pts >> 22);
+    e[11] = (uint8_t)(((pts >> 14) & 0xFE) | 1);
+    e[12] = (uint8_t)(pts >> 7);
+    e[13] = (uint8_t)(((pts << 1) & 0xFE) | 1);
+}
+
+static TsFile make_vbr_ts(double secs, double fps = 5, double gop_s = 2,
+                          uint64_t pts0 = 126000, bool rai = true,
+                          bool reorder = false, bool pat_every_key = true) {
+    TsFile f;
+    const int frames = (int)(secs * fps);
+    const int gop = (int)(gop_s * fps);
+    for (int fr = 0; fr <= frames; fr++) {
+        const bool key = fr % gop == 0;
+        // reorder: decode order I P B B, so the frame after a P has a LOWER
+        // PTS -- and the file's last frames are B-frames.
+        int pfr = fr;
+        if (reorder && !key) { int k = fr % 3; pfr = k == 1 ? fr + 2 : fr - 1; }
+        if (pfr > frames) pfr = frames;
+        const uint64_t pts = (pts0 + (uint64_t)((double)pfr * 90000.0 / fps)) & ((1ULL << 33) - 1);
+        uint8_t p[188];
+        if (key && (pat_every_key || fr == 0)) {
+            memset(p, 0xFF, 188); p[0] = 0x47; p[1] = 0x40; p[2] = 0x00; p[3] = 0x10;   // PAT
+            f.data.append((const char *)p, 188);
+            memset(p, 0xFF, 188); p[0] = 0x47; p[1] = 0x50; p[2] = 0x00; p[3] = 0x10;   // PMT 0x1000
+            f.data.append((const char *)p, 188);
+            f.key_off.push_back(f.data.size() - 2 * 188);
+            f.key_t.push_back((double)fr / fps);
+        } else if (key) {
+            f.key_off.push_back(f.data.size());      // the keyframe itself
+            f.key_t.push_back((double)fr / fps);
+        }
+        // Frame start: video PES with PTS; keyframes carry an adaptation
+        // field with random_access_indicator.
+        memset(p, 0xFF, 188);
+        p[0] = 0x47; p[1] = 0x41; p[2] = 0x00;
+        int off = 4;
+        if (key && rai) { p[3] = 0x30; p[4] = 1; p[5] = 0x40; off = 6; }
+        else            { p[3] = 0x10; }
+        uint8_t *e = p + off;
+        e[0] = 0; e[1] = 0; e[2] = 1; e[3] = 0xE0; e[4] = 0; e[5] = 0;
+        e[6] = 0x80; e[7] = 0x80; e[8] = 5;
+        put_pts(e, pts);
+        f.data.append((const char *)p, 188);
+        // Payload: 2..40 packets, big on keyframes, slowly varying otherwise.
+        int n = key ? 40 : 2 + (int)(18.0 * (1.0 + ((fr / 37) % 5)) / 5.0);
+        for (int k = 0; k < n; k++) {
+            memset(p, 0x11, 188); p[0] = 0x47; p[1] = 0x01; p[2] = 0x00; p[3] = 0x10;
+            f.data.append((const char *)p, 188);
+        }
+        // An audio packet between frames (PES start, PTS far ahead: must be ignored).
+        memset(p, 0x22, 188); p[0] = 0x47; p[1] = 0x41; p[2] = 0x01; p[3] = 0x10;
+        e = p + 4; e[0] = 0; e[1] = 0; e[2] = 1; e[3] = 0xC0; e[6] = 0x80; e[7] = 0x80; e[8] = 5;
+        put_pts(e, pts + 90000ULL * 3600);
+        f.data.append((const char *)p, 188);
+    }
+    return f;
+}
+
+struct MemFile { const std::string *d; int reads; bool fail; };
+static int mem_read_at(void *ctx, uint64_t off, uint8_t *buf, int len) {
+    MemFile *m = (MemFile *)ctx;
+    m->reads++;
+    if (m->fail) return -1;
+    if (off >= m->d->size()) return 0;
+    size_t n = m->d->size() - (size_t)off;
+    if (n > (size_t)len) n = (size_t)len;
+    memcpy(buf, m->d->data() + off, n);
+    return (int)n;
+}
+
+static uint8_t s_scratch[256 * 1024];   // the size of the stream's buffer
+
+static void test_local_index(void) {
+    s_test = "local file index"; printf("- %s\n", s_test);
+    TsFile f = make_vbr_ts(600);
+    MemFile m = { &f.data, 0, false };
+    StreamLocalIndex idx;
+    CHECK(stream_local_index(mem_read_at, &m, f.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(idx.ok && idx.size == f.data.size());
+    CHECK(idx.first_pts == 126000);
+    CHECK(idx.duration_secs == 600);        // from the file, not metadata
+    // A stream that does not start at PTS ~0 (copyts) measures the same.
+    TsFile late = make_vbr_ts(120, 5, 2, 90000ULL * 50000);
+    MemFile ml = { &late.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &ml, late.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(idx.duration_secs == 120);
+    // Across a 33-bit PTS wrap.
+    TsFile wrap = make_vbr_ts(60, 5, 2, (1ULL << 33) - 90000ULL * 30);
+    MemFile mw = { &wrap.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &mw, wrap.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(idx.duration_secs == 60);
+    // Nothing to enter: no video, garbage, empty, unreadable.
+    std::string junk(188 * 500, 'x');
+    MemFile mj = { &junk, 0, false };
+    CHECK(!stream_local_index(mem_read_at, &mj, junk.size(), s_scratch, sizeof(s_scratch), &idx));
+    std::string empty;
+    MemFile me = { &empty, 0, false };
+    CHECK(!stream_local_index(mem_read_at, &me, 0, s_scratch, sizeof(s_scratch), &idx));
+    MemFile mf = { &f.data, 0, true };
+    CHECK(!stream_local_index(mem_read_at, &mf, f.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(!idx.ok);
+}
+
+static void test_local_seek(void) {
+    s_test = "local file seek"; printf("- %s\n", s_test);
+    TsFile f = make_vbr_ts(3600, 5, 2);     // an hour, ~50 MB of VBR
+    MemFile m = { &f.data, 0, false };
+    StreamLocalIndex idx;
+    CHECK(stream_local_index(mem_read_at, &m, f.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    // Start: offset 0 is the first PAT, position 0.
+    uint64_t off, us;
+    CHECK(stream_local_seek(mem_read_at, &m, &idx, 0, s_scratch, sizeof(s_scratch), &off, &us));
+    CHECK(off == 0 && us == 0);
+    int worst_err_ms = 0, worst_reads = 0;
+    const uint64_t targets[] = { 1, 7, 61, 599, 1234, 1800, 2999, 3500, 3598 };
+    for (uint64_t t : targets) {
+        m.reads = 0;
+        CHECK(stream_local_seek(mem_read_at, &m, &idx, t * 1000000ULL, s_scratch,
+                                sizeof(s_scratch), &off, &us));
+        // Lands on a PAT that precedes a keyframe...
+        bool is_entry = false;
+        for (size_t k = 0; k < f.key_off.size(); k++)
+            if (f.key_off[k] == off) {
+                is_entry = true;
+                // ...whose position is exactly what was reported.
+                CHECK(us == (uint64_t)(f.key_t[k] * 1000000.0));
+            }
+        CHECK(is_entry);
+        CHECK(off % 188 == 0);
+        // ...never more than half a second past the target, and within a
+        // couple of GOPs before it.
+        CHECK(us <= t * 1000000ULL + 500000ULL);
+        const int err_ms = (int)(((int64_t)t * 1000000LL - (int64_t)us) / 1000);
+        if (err_ms > 4500 || !is_entry) printf("    target %llus -> %.2fs off=%llu entry=%d reads=%d\n", (unsigned long long)t, us / 1e6, (unsigned long long)off, (int)is_entry, m.reads);
+        CHECK(err_ms <= 4500);
+        if (err_ms > worst_err_ms) worst_err_ms = err_ms;
+        if (m.reads > worst_reads) worst_reads = m.reads;
+    }
+    printf("    worst landing %d ms before target, %d reads of 256 KB\n", worst_err_ms, worst_reads);
+    CHECK(worst_reads <= 12);
+    // Past the end clamps to the last entry, not an error.
+    CHECK(stream_local_seek(mem_read_at, &m, &idx, 99999ULL * 1000000ULL, s_scratch,
+                            sizeof(s_scratch), &off, &us));
+    CHECK(us <= 3600ULL * 1000000ULL && us >= 3590ULL * 1000000ULL);
+    // Deterministic: the same seek twice lands on the same byte.
+    uint64_t off2, us2;
+    CHECK(stream_local_seek(mem_read_at, &m, &idx, 1234 * 1000000ULL, s_scratch, sizeof(s_scratch), &off, &us));
+    CHECK(stream_local_seek(mem_read_at, &m, &idx, 1234 * 1000000ULL, s_scratch, sizeof(s_scratch), &off2, &us2));
+    CHECK(off == off2 && us == us2);
+
+    s_test = "local seek without keyframe flags"; printf("- %s\n", s_test);
+    TsFile nr = make_vbr_ts(300, 5, 2, 126000, false);
+    MemFile mn = { &nr.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &mn, nr.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(stream_local_seek(mem_read_at, &mn, &idx, 100 * 1000000ULL, s_scratch, sizeof(s_scratch), &off, &us));
+    CHECK(off % 188 == 0 && us <= 100500000ULL && us >= 90000000ULL);
+    // Enters at a PAT (the demuxer's reset needs one), not mid-table.
+    CHECK((uint8_t)nr.data[off + 1] == 0x40 && (uint8_t)nr.data[off + 2] == 0x00);
+}
+
+
+static void test_local_seek_edges(void) {
+    s_test = "local seek edge cases"; printf("- %s\n", s_test);
+    StreamLocalIndex idx;
+    uint64_t off, us;
+    // An entry search that starts between a PAT and its keyframe still
+    // enters at the PAT (the demuxer needs it after its reset).
+    TsFile f = make_vbr_ts(120);
+    MemFile m = { &f.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &m, f.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    for (size_t k = 1; k < 5; k++) {
+        CHECK(stream_local_entry(mem_read_at, &m, &idx, f.key_off[k] + 188, s_scratch,
+                                 sizeof(s_scratch), &off, &us));
+        CHECK(off == f.key_off[k]);
+        CHECK(us == (uint64_t)(f.key_t[k] * 1e6));
+    }
+    // Small reads: the bracket narrows and the forward finish has to walk
+    // several windows -- same accuracy.
+    static uint8_t tiny[STREAM_LOCAL_MIN_SCRATCH - 1];
+    CHECK(!stream_local_seek(mem_read_at, &m, &idx, 10000000ULL, tiny, sizeof(tiny), &off, &us));
+    CHECK(!stream_local_index(mem_read_at, &m, f.data.size(), tiny, sizeof(tiny), &idx) && !idx.ok);
+    CHECK(stream_local_index(mem_read_at, &m, f.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    static uint8_t small[STREAM_LOCAL_MIN_SCRATCH];
+    for (uint64_t t : { 13ULL, 59ULL, 111ULL }) {
+        CHECK(stream_local_seek(mem_read_at, &m, &idx, t * 1000000ULL, small, sizeof(small), &off, &us));
+        CHECK(us <= t * 1000000ULL + 500000ULL && t * 1000000ULL - us <= 2000000ULL);
+    }
+    // Short GOPs (0.4 s) with small reads: only the forward finish, walking
+    // window after window, gets within one GOP of the target.
+    TsFile sg = make_vbr_ts(120, 5, 0.4);
+    MemFile ms = { &sg.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &ms, sg.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    for (uint64_t t : { 17ULL, 63ULL, 101ULL }) {
+        CHECK(stream_local_seek(mem_read_at, &ms, &idx, t * 1000000ULL, small, sizeof(small), &off, &us));
+        const int64_t d = (int64_t)us - (int64_t)(t * 1000000ULL);   // landing - target
+        CHECK(d <= 500000 && d >= -400000);
+    }
+    CHECK(stream_local_index(mem_read_at, &m, f.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    // B-frames at the end: the duration is the highest PTS, not the last.
+    // (62 s at 1 fps: the last frame in decode order is a B-frame whose PTS
+    // is a second BELOW the one before it.)
+    TsFile b = make_vbr_ts(62, 1, 6, 126000, true, true);
+    MemFile mb = { &b.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &mb, b.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(idx.duration_secs == 62);
+    // Positions across a 33-bit PTS wrap are still exact.
+    TsFile w = make_vbr_ts(60, 5, 2, (1ULL << 33) - 90000ULL * 30);
+    MemFile mw = { &w.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &mw, w.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(stream_local_seek(mem_read_at, &mw, &idx, 45 * 1000000ULL, s_scratch, sizeof(s_scratch), &off, &us));
+    CHECK(us <= 45500000ULL && us >= 43000000ULL);
+    // Keyframes flagged, but the PAT only at the start (another muxer): the
+    // entry is the keyframe itself.
+    TsFile np = make_vbr_ts(120, 5, 2, 126000, true, false, false);
+    MemFile mn = { &np.data, 0, false };
+    CHECK(stream_local_index(mem_read_at, &mn, np.data.size(), s_scratch, sizeof(s_scratch), &idx));
+    CHECK(idx.has_rai);
+    CHECK(stream_local_seek(mem_read_at, &mn, &idx, 60 * 1000000ULL, s_scratch, sizeof(s_scratch), &off, &us));
+    bool at_key = false;
+    for (size_t k = 0; k < np.key_off.size(); k++) if (np.key_off[k] == off) at_key = true;
+    CHECK(at_key && us <= 60500000ULL && us >= 58000000ULL);
+}
+
+static void make_completed(const char *id, const char *title, bool ts = false,
+                           int packets = 0) {
+    DlMeta m = meta_for(id, title);
+    DlExtras x = {};
+    if (ts) {
+        FakeResp r;
+        r.body = fake_ts(packets, 60);
+        r.has_body = true;
+        g_fake_queue.push_back(r);
+        x.container = "ts";
+    }
+    CHECK(dl_enqueue(&m, URL, 0, ts ? &x : NULL) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(id).rec.state == DL_COMPLETED);
+}
+
+static void test_library(void) {
+    begin("offline library: only complete, verified media");
+    make_completed("lib_a", "Alpha", true, 1000);
+    make_completed("lib_b", "Beta", true, 1200);
+    // Everything that is NOT complete: queued, paused, failed, cancelled,
+    // mid-download (active), and a partial left by a drop.
+    DlMeta q = meta_for("lib_q", "Queued"), p = meta_for("lib_p", "Paused"),
+           fl = meta_for("lib_f", "Failed"), c = meta_for("lib_c", "Cancelled"),
+           pr = meta_for("lib_partial", "Partial");
+    CHECK(dl_enqueue(&pr, URL, 0) == DL_OK);
+    FakeResp drop; drop.drop_after = 50000;
+    g_fake_queue.push_back(drop);
+    CHECK(dl_manager_step());                             // lib_partial: part file only
+    CHECK(dl_enqueue(&p, URL, 0) == DL_OK);
+    CHECK(dl_pause("lib_p") == DL_OK);
+    CHECK(dl_enqueue(&c, URL, 0) == DL_OK);
+    CHECK(dl_cancel("lib_c") == DL_OK);
+    FakeResp nf; nf.status = 404;
+    g_fake_queue.push_back(nf);
+    CHECK(dl_enqueue(&fl, URL, 0) == DL_OK);
+    CHECK(dl_retry("lib_partial") == DL_E_STATE);         // (queued, not failed)
+    g_fake_now_ms += 400000;
+    // lib_partial is due first; make it fail again so lib_f gets its 404.
+    FakeResp drop2; drop2.drop_after = 10;
+    g_fake_queue.insert(g_fake_queue.begin(), drop2);
+    CHECK(dl_manager_step());
+    CHECK(dl_manager_step());
+    CHECK(status_of("lib_f").rec.state == DL_FAILED);
+    CHECK(dl_enqueue(&q, URL, 0) == DL_OK);
+
+    char ids[16][DL_ID_MAX];
+    int n = dl_library_ids(ids, 16);
+    CHECK(n == 2 && !strcmp(ids[0], "lib_a") && !strcmp(ids[1], "lib_b"));   // download order
+    CHECK(dl_library_ids(ids, 1) == 1);                  // honours max
+    const char *not_playable[] = { "lib_q", "lib_p", "lib_f", "lib_c", "lib_partial", "nope", "../x" };
+    for (const char *id : not_playable) {
+        DlLibraryEntry e;
+        CHECK(!dl_library_has(id));
+        CHECK(!dl_library_get(id, &e));
+    }
+    CHECK(!dl_library_has(NULL));
+    DlLibraryEntry e;
+    CHECK(dl_library_get("lib_a", &e));
+    CHECK(e.meta_ok && !strcmp(e.meta.title, "Alpha"));
+    CHECK(e.bytes == 188ull * 1000 && e.bytes % 188 == 0);
+    CHECK(strstr(e.media_path, "/items/lib_a/media.ts") != NULL);
+    CHECK(fake_file_matches(e.media_path, 0) == false);   // it is a TS, not the pattern
+    CHECK(e.poster_path[0] == '\0' && e.backdrop_path[0] == '\0');   // no artwork
+
+    s_test = "offline library: artwork only when the file is there"; printf("- %s\n", s_test);
+    std::string j = fake_jpeg(500);
+    CHECK(dl_store_save_blob("lib_a", DL_FILE_POSTER, (const uint8_t *)j.data(), (int)j.size()));
+    CHECK(dl_library_get("lib_a", &e));
+    CHECK(strstr(e.poster_path, "/items/lib_a/poster.jpg") != NULL && e.backdrop_path[0] == '\0');
+    CHECK(remove(e.poster_path) == 0);
+    CHECK(dl_library_get("lib_a", &e) && e.poster_path[0] == '\0');   // deleted since
+
+    s_test = "offline library: media that changed under a running app"; printf("- %s\n", s_test);
+    CHECK(dl_library_get("lib_b", &e));
+    std::string media_b = e.media_path;
+    CHECK(truncate(media_b.c_str(), 188 * 1000) == 0);   // shorter than verified
+    CHECK(!dl_library_has("lib_b") && !dl_library_get("lib_b", &e));
+    n = dl_library_ids(ids, 16);
+    CHECK(n == 1 && !strcmp(ids[0], "lib_a"));
+    CHECK(remove(media_b.c_str()) == 0);                  // gone entirely
+    CHECK(!dl_library_has("lib_b"));
+    // A torn TS (not whole packets) at the recorded size is refused too.
+    DlRecord r;
+    CHECK(dl_store_load_record("lib_a", &r));
+    CHECK(dl_library_get("lib_a", &e));
+    FILE *f = fopen(e.media_path, "ab"); fputs("xyz", f); fclose(f);
+    CHECK(!dl_library_has("lib_a"));
+    CHECK(truncate(e.media_path, 188 * 1000) == 0);
+    CHECK(dl_library_has("lib_a"));
+
+    // A TS whose verified size is not whole packets is never playable, even
+    // when the file matches the record byte for byte.
+    CHECK(dl_store_load_record("lib_a", &r));
+    {
+        FILE *g = fopen(e.media_path, "ab"); fputs("xyz", g); fclose(g);
+        r.bytes_total += 3;
+        CHECK(dl_store_save_record(&r));
+        restart_app();
+        CHECK(status_of("lib_a").rec.state == DL_COMPLETED);   // record and file agree...
+        CHECK(!dl_library_has("lib_a"));                       // ...but it is not a TS
+        CHECK(truncate(e.media_path, 188 * 1000) == 0);
+        r.bytes_total -= 3;
+        CHECK(dl_store_save_record(&r));
+        restart_app();
+        CHECK(dl_library_has("lib_a"));
+    }
+    // The manager's completed-id query lists completed items only.
+    {
+        char cids[16][DL_ID_MAX];
+        int nc = dl_completed_ids(cids, 16);
+        for (int i = 0; i < nc; i++) CHECK(status_of(cids[i]).rec.state == DL_COMPLETED);
+        CHECK(nc == 1 && !strcmp(cids[0], "lib_a"));          // lib_b failed at restore
+        CHECK(dl_completed_ids(cids, 0) == 0);
+    }
+
+    s_test = "offline library: stale / missing metadata"; printf("- %s\n", s_test);
+    write_file(item_file("lib_a", DL_FILE_META), "jfdl-meta 1\nid=lib_a\ntitle=Alpha");   // torn
+    CHECK(dl_library_get("lib_a", &e));
+    CHECK(!e.meta_ok && !strcmp(e.meta.title, "Alpha") && !strcmp(e.meta.id, "lib_a"));
+    CHECK(!strcmp(e.meta.container, "ts"));                // from the verified record
+    CHECK(e.meta.season == -1 && e.meta.runtime_secs == 0);
+    write_file(item_file("lib_a", DL_FILE_META), "jfdl-meta 1\nid=lib_b\ntitle=Wrong\nend\n");
+    CHECK(dl_library_get("lib_a", &e) && !e.meta_ok && !strcmp(e.meta.title, "Alpha"));
+    CHECK(remove(item_file("lib_a", DL_FILE_META).c_str()) == 0);
+    CHECK(dl_library_get("lib_a", &e) && !e.meta_ok);
+
+    s_test = "offline library: survives a restart, stays consistent"; printf("- %s\n", s_test);
+    restart_app();
+    n = dl_library_ids(ids, 16);
+    CHECK(n == 1 && !strcmp(ids[0], "lib_a"));
+    CHECK(status_of("lib_b").rec.state == DL_FAILED);      // restore saw it missing
+    CHECK(status_of("lib_b").rec.error == DL_ERR_CORRUPT);
+    CHECK(status_of("lib_partial").rec.state == DL_QUEUED);
+    CHECK(!dl_library_has("lib_partial"));
+
+    s_test = "offline library: before restore"; printf("- %s\n", s_test);
+    dl_manager_shutdown();
+    CHECK(dl_library_ids(ids, 16) == 0 && !dl_library_has("lib_a"));
+    CHECK(dl_manager_init(s_root.c_str(), &s_cfg));
+    CHECK(dl_library_has("lib_a"));
+}
+
+static void test_local_plan(void) {
+    s_test = "local playback plan"; printf("- %s\n", s_test);
+    DlLibraryEntry e;
+    memset(&e, 0, sizeof(e));
+    dl_meta_init(&e.meta);
+    e.meta_ok = true;
+    e.meta.width = 1280; e.meta.height = 720; e.meta.runtime_secs = 2820;
+    e.meta.video_bitrate = 4000000;
+    snprintf(e.meta.audio_codec, sizeof(e.meta.audio_codec), "ac3");
+    DlLocalPlan p;
+    dl_library_plan(&e, &p);
+    // The file's frame size, whatever the quality setting says now.
+    CHECK(p.req_w == 1280 && p.req_h == 720 && p.runtime_secs == 2820);
+    CHECK(!p.light);                                    // 720p: heavy
+    e.meta.width = 854; e.meta.height = 480; e.meta.video_bitrate = 1500000;
+    dl_library_plan(&e, &p);
+    CHECK(p.light && p.req_h == 480);
+    snprintf(e.meta.audio_codec, sizeof(e.meta.audio_codec), "truehd");
+    CHECK(!dl_meta_is_light(&e.meta, true));             // HD audio: heavy
+    snprintf(e.meta.audio_codec, sizeof(e.meta.audio_codec), "mp3");
+    CHECK(dl_meta_is_light(&e.meta, true));
+    e.meta.video_bitrate = 0;                            // copied at source rate
+    CHECK(!dl_meta_is_light(&e.meta, true));
+    e.meta.video_bitrate = 700000; e.meta.height = 0;
+    CHECK(!dl_meta_is_light(&e.meta, true));             // unknown size: heavy
+    e.meta.height = 360; e.meta.audio_codec[0] = '\0';
+    CHECK(!dl_meta_is_light(&e.meta, true));             // unknown audio: heavy
+    snprintf(e.meta.audio_codec, sizeof(e.meta.audio_codec), "mp3");
+    CHECK(dl_meta_is_light(&e.meta, true));
+    CHECK(!dl_meta_is_light(&e.meta, false));            // stale meta: heavy
+    // Stale or out-of-range dimensions: the largest ceiling, never too small.
+    e.meta_ok = false;
+    dl_library_plan(&e, &p);
+    CHECK(p.req_w == 1920 && p.req_h == 1080 && p.runtime_secs == 0 && !p.light);
+    e.meta_ok = true; e.meta.width = 3840; e.meta.height = 2160;
+    dl_library_plan(&e, &p);
+    CHECK(p.req_w == 1920 && p.req_h == 1080);
+    // The shared thresholds: a request's metadata and its URL agree.
+    JFItem it = fixture_item();
+    JFMediaSource src = fixture_source(4);   // AAC default track
+    for (int q = 0; q < VQ_COUNT; q++) {
+        DlRequest dr;
+        CHECK(build_request(it, NULL, &src, prefs_of(q, false, 0), &dr));
+        CHECK(dl_meta_is_light(&dr.meta, true) == dl_stream_is_light(dr.url));
+        CHECK(build_request(it, NULL, &src, prefs_of(q, true, 1), &dr));
+        CHECK(dl_meta_is_light(&dr.meta, true) == dl_stream_is_light(dr.url));
+    }
+    JFMediaSource thd = fixture_source(1);
+    DlRequest dr;
+    CHECK(build_request(it, NULL, &thd, prefs_of(VQ_480P, false, 2), &dr));
+    CHECK(!dl_meta_is_light(&dr.meta, true) && !dl_stream_is_light(dr.url));
+}
+
+static void test_local_playback_gate(void) {
+    begin("local playback gates downloads by the file's weight");
+    DlMeta m = meta_for("lg");
+    CHECK(dl_enqueue(&m, URL, 0) == DL_OK);
+    dl_playback_begin_local(false);                    // a heavy file playing
+    CHECK(dl_playback_blocking());
+    CHECK(!dl_manager_step() && g_fake_connects == 0);
+    dl_playback_end();
+    s_cfg.stream_share_bps = 800000;
+    restart_app();
+    dl_playback_begin_local(true);                     // a 480p file playing
+    CHECK(!dl_playback_blocking());
+    uint64_t t0 = g_fake_now_ms;
+    CHECK(dl_manager_step());
+    CHECK(status_of("lg").rec.state == DL_COMPLETED);
+    CHECK(g_fake_now_ms - t0 >= 2400);                 // paced (300 KB at 100 KB/s)
+    dl_playback_end();
+    // A heavy file starting mid-download parks it, like a heavy stream.
+    DlMeta m2 = meta_for("lg2");
+    CHECK(dl_enqueue(&m2, URL, 0) == DL_OK);
+    g_fake_default.on_body = [](int64_t sent) { if (sent > 50000) dl_playback_begin_local(false); };
+    CHECK(dl_manager_step());
+    CHECK(status_of("lg2").rec.state == DL_QUEUED && status_of("lg2").rec.error == DL_ERR_NONE);
+    g_fake_default.on_body = nullptr;
+    dl_playback_end();
+    CHECK(dl_manager_step() && status_of("lg2").rec.state == DL_COMPLETED);
+}
+
+static void test_offline_startup_path(void) {
+    begin("offline startup path: library ready without server or login");
+    const std::string root = s_root;
+    make_completed("boot_a", "Boot A", true, 800);
+    dl_manager_shutdown();
+    dl_set_auth_header("");                            // not logged in
+    g_fake_default.refuse = true;                      // no server either
+    g_fake_connects = 0;
+    const char *roots[] = { root.c_str() };
+    CHECK(dl_svc_start(roots, 1));
+    CHECK(!dl_svc_restored());                         // not until the worker has run
+    char ids[4][DL_ID_MAX];
+    CHECK(dl_library_ids(ids, 4) == 0);                // "not restored", not "empty"
+    CHECK(dl_svc_tick() == 0);
+    CHECK(dl_svc_restored());
+    CHECK(dl_library_ids(ids, 4) == 1 && !strcmp(ids[0], "boot_a"));
+    DlLibraryEntry e;
+    CHECK(dl_library_get("boot_a", &e));
+    CHECK(g_fake_connects == 0);                       // no network anywhere
+    dl_svc_stop();
+    CHECK(!dl_svc_restored());                         // a stopped service is not "restored"
+    const char *bad[] = { "/proc/nope/offline" };
+    CHECK(dl_svc_start(bad, 1));
+    CHECK(dl_svc_tick() == 0);
+    CHECK(dl_svc_restored() && !dl_manager_ready());   // restored: nothing to show
+    CHECK(dl_library_ids(ids, 4) == 0);
+    dl_svc_stop();
+    CHECK(dl_manager_init(s_root.c_str(), &s_cfg));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "-v") == 0) g_fake_verbose = true;
 
@@ -2549,6 +3042,15 @@ int main(int argc, char **argv) {
     test_request_heavy_playback();
     test_auth_hold();
     test_service_lifecycle();
+
+    // Stage 4
+    test_local_index();
+    test_local_seek();
+    test_local_seek_edges();
+    test_library();
+    test_local_plan();
+    test_local_playback_gate();
+    test_offline_startup_path();
 
     if (!s_tmp.empty()) fake_rmtree(s_tmp);
     printf("offline downloads: %d checks, %d failed\n", s_checks, s_failed);

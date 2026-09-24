@@ -1,10 +1,12 @@
 # Offline Downloads — Design & Implementation
 
-Status: **Stages 1–3 implemented**: storage model, queue, state machine,
-persistence, resumable transfer, Jellyfin integration and service lifecycle.
-Host-tested and compiled into the PS3 build. **Not yet user-visible:** there is
-no DOWNLOAD FOR OFFLINE button (Stage 5), so nothing is ever enqueued. What a
-Stage 3 build does differently at runtime:
+Status: **Stages 1–4 implemented**: storage model, queue, state machine,
+persistence, resumable transfer, Jellyfin integration, service lifecycle, and
+(Stage 4) the offline library model, the offline startup path, and local
+playback through the existing player. Host-tested and compiled into the PS3
+build. **Not yet user-visible:** there is no DOWNLOAD FOR OFFLINE button and
+no Offline section (both Stage 5), so nothing is enqueued and nothing
+launches `show_player_offline()`. What the build does differently at runtime:
 
 * it starts the download service after `load_config()`. The worker creates
   the store root on the HDD (§4), restores it, and then idles;
@@ -445,7 +447,7 @@ left as a measured decision for later, not assumed.
 | 1 | persistent storage model, states, queue, bookkeeping, tests | **done** |
 | 2 | network transfer, progress, retry, resume, cancellation, yielding to playback, batched writes | **done** (service built, not started; player gate live) |
 | 3 | Jellyfin integration: shared stream decision, request builder, metadata + artwork, TS validation, service lifecycle, session hold | **done** (no UI entry point yet) |
-| 4 | offline library, offline startup path, playback of `media.ts` through the existing player (`stream_open` on a local file) | |
+| 4 | offline library, offline startup path, playback of `media.ts` through the existing player (`stream_open` on a local file) | **done** (§11; nothing launches it until Stage 5) |
 | 5 | UI: item-page action, Downloads list with progress, Offline section | |
 
 ## 9. Tests
@@ -542,9 +544,6 @@ are equivalent, meaning the behaviour cannot change:
 
 ## 10. Remaining work
 
-* **Stage 4:** the Offline library, and playback of `media.ts` through the
-  existing player. The model is ready: `dl_list(.., completed_only)`,
-  `dl_load_meta`, `dl_media_path`, the stored artwork.
 * **Stage 5:** the DOWNLOAD FOR OFFLINE action on the info screen (it calls
   `dl_download_item(item, &detail, &versions.source[version_sel])`), the
   Downloads list, and the Offline section.
@@ -556,3 +555,177 @@ are equivalent, meaning the behaviour cannot change:
     a light playback from the same DeviceId;
   * plugin "live" sources, which normally need PlaybackInfo to open a
     LiveStreamId and so may refuse a download (surfaced as an HTTP failure).
+  * Stage 4 on the console:
+    * local playback startup and seek feel on the real HDD (a seek costs 4–12
+      reads of 256 KB);
+    * VDEC entering at the PAT and keyframe found by the index;
+    * the frame-buffer re-grab when a file's ceiling is larger than the
+      current quality setting's.
+
+## 11. Stage 4: offline library, startup path, local playback
+
+### 11a. The offline library (`dl_library.{h,cpp}`)
+
+This is a query layer over the records the manager already keeps. There is no
+second index and no new files on disk. An item is in the library only when
+**all** of these hold. They are checked every time it is asked for, because
+the file can change under a running app (FTP, a full disk, a crash):
+
+* its record is **COMPLETED**. Queued, downloading (active), paused, failed,
+  cancelled and partial items are never listed and never playable;
+* `media.ts` exists at **exactly** the size the record verified;
+* a TS download is still whole packets. Size % 188 is checked even when the
+  file and the record agree, since a hand-edited record is still not a TS.
+
+| API | Returns |
+|---|---|
+| `dl_library_ids(ids, max)` | playable ids in download order (cheap: no metadata read, no 64-entry snapshot array) |
+| `dl_library_get(id, &entry)` | one fully verified entry: `DlMeta`, `meta_ok`, media path, poster/backdrop paths, bytes, seq |
+| `dl_library_has(id)` | does an online item have a playable local copy |
+| `dl_library_plan(entry, &plan)` | how to set the player up: frame ceiling, runtime, download gate |
+
+The library adds one manager query, `dl_completed_ids()`: ids only, in queue
+order.
+
+**Stale metadata.** If `meta.txt` is missing, torn or belongs to another item,
+the entry still plays, using what the record knows (id, title, verified
+container) with `meta_ok = false`. A stale entry is treated conservatively:
+the frame ceiling becomes 1080p (it holds any smaller frame), and the file is
+treated as heavy for download gating.
+
+**Missing artwork.** A poster or backdrop path is set only while the image file
+exists with a non-zero size. It is re-checked on every lookup, so an image
+deleted since is simply absent.
+
+**After a restart,** Stage 1's restore already turns a COMPLETED record with
+missing or wrong-size media into FAILED/corrupt, so the library and the
+records never disagree about it.
+
+### 11b. Offline startup path
+
+The library needs no server and no login. The worker restores it from disk on
+its own thread right after `load_config()` (§7d). The one thing a startup
+screen cannot tell from an empty list is "not restored yet", so Stage 4 adds:
+
+* `dl_svc_restored()`: true once the worker has finished its restore
+  attempt. It is published only after the store has been read, and a stopped
+  service reports false;
+* `dl_service_wait_restored(timeout_ms)` (console): a bounded wait, true when
+  the library can be queried.
+
+Before restore, the library reports nothing: an empty list and no item
+playable.
+
+### 11c. Local playback through the existing player
+
+`show_player_offline(item_id, resume_secs)` (player.h) plays a library item
+with the **same player**. It uses the same decoder, jitter buffer, HUD,
+threads and teardown; `show_player()` and it share one body
+(`show_player_run`). The online path passes `local = NULL` and runs exactly
+the statements it always ran. Every local difference is an explicit `if
+(local)`:
+
+| Online | Local file |
+|---|---|
+| PlaybackInfo, track fetch | none: one audio track (the downloaded one), so the AUDIO/CC menus are inert |
+| `build_stream_url()`, `stream_open(url)` | `stream_open_file(path, offset)`, an explicit local source in `stream.cpp` |
+| frame ceiling from the quality setting | the **file's** ceiling (`meta.txt`), since it was downloaded at some quality |
+| runtime from the server | **measured from the file** (first keyframe PTS to last video PTS), so stale metadata cannot mislead the HUD |
+| report playing / progress / stopped, stop transcode | none. A report to an unreachable server would block for its connect timeout |
+| HD-audio fallback reopen as AC-3 | disabled (the audio is what was downloaded) |
+| seek: new transcode at StartTimeTicks | seek **in the file** (§11d) |
+| download gate from the URL | `dl_playback_begin_local(plan.light)`: the file's own weight by the same `DL_LIGHT_*` thresholds; heavy stops downloads, light paces them |
+
+**The stream layer.** `stream.cpp` gains a local-file source. The handle is
+tagged (`0x40000000`) so it can never be mistaken for a socket, and
+`stream_read()` serves it through the same 256 KB buffer. `stream_close()` and
+`stream_set_timeout()` replace the player's direct `netClose()`/`setsockopt()`
+calls and do exactly what those did for a socket. Nothing else in the online
+path changed.
+
+**Verification at play time.** `show_player_offline` asks the library again at
+the moment of playing, so a file removed or truncated since a list was drawn
+never reaches the decoder. A file with no enterable video is refused before
+the player is touched.
+
+### 11d. Entering and seeking a local TS (`stream_local.{h,cpp}`)
+
+The player resets its demuxer on every seek, forgetting the PAT/PMT. So a seek
+must land on a **PAT that precedes a keyframe**, which is exactly where
+ffmpeg's mpegts muxer writes its tables. The random-access flag marks the
+keyframe; without one, "a video PES right after a PAT" is the keyframe. With
+flags but no repeated PAT (another muxer), the keyframe itself is the entry.
+
+A seek is an interpolation search over (offset, PTS), with bisection once
+interpolation stops paying. It finishes with a forward scan to the last entry
+at or before the target, allowing up to 0.5 s past it.
+Each probe is one 256 KB read, using the stream's own buffer as scratch (no
+allocation) through a separate descriptor. On an hour of VBR test media, the
+worst landing was 1 s before the target in 4 reads.
+
+The clock stays exact: the entry's PTS minus the file's first PTS becomes
+`play_base_us`, and avsync re-latches on the first frame, as it does online.
+33-bit PTS wrap, streams not starting at PTS 0, B-frame reordering at the end,
+and audio PES (ignored) are handled. The PTS parsing is `dl_ts`'s, exposed as
+`dl_ts_packet_info()` rather than copied.
+
+### 11e. Stage 4 tests
+
+* **Index:**
+  * duration measured from the file;
+  * streams starting at a non-zero PTS;
+  * a PTS wrap;
+  * B-frames at the end;
+  * refusal of garbage, empty and unreadable files.
+* **Seek:**
+  * on an hour of VBR: lands on a PAT-before-keyframe at the exact reported
+    position, never more than 0.5 s past the target and within a GOP or two
+    before it, in 12 reads or fewer;
+  * clamps past the end;
+  * deterministic;
+  * files without keyframe flags;
+  * files with flags but no repeated PAT;
+  * a search starting between a PAT and its keyframe;
+  * short GOPs with minimum-size reads;
+  * positions across a wrap;
+  * the minimum-scratch guard.
+* **Library:**
+  * only COMPLETED items with verified media;
+  * queued, paused, failed, cancelled, partial and unknown ids refused;
+  * download order;
+  * artwork present, absent, and deleted since;
+  * media truncated, removed, or torn;
+  * a torn TS that matches its record;
+  * stale metadata (torn, other item's, missing);
+  * restart consistency;
+  * empty before restore.
+* **Plan:**
+  * the file's frame ceiling;
+  * the light rule's every branch;
+  * stale-meta fallbacks;
+  * light/heavy agreement with the URL classifier for every quality.
+* **Local playback gate:** heavy stops, light paces, and heavy starting
+  mid-download parks the transfer.
+* **Startup path:**
+  * restored only after the worker ran, with no network and no login;
+  * a stopped service is not "restored";
+  * no-root restore reports restored with nothing to show.
+
+Mutation testing covered 30 planted breaks of Stage 4 logic (library
+verification, light rule, plan, entry/seek/index, packet parse, local gate,
+completed-id query, restore publication):
+
+* 26 are caught.
+* 3 are equivalent (the behaviour cannot change):
+  * the COMPLETED test in `verify`, since `dl_media_path` already requires
+    COMPLETED;
+  * the `size <= 0` guard, since a completed record always has a verified
+    non-zero size;
+  * the past-the-end clamp, since the interpolation fraction is clamped too.
+* 1 survives: the finish scan's continuation past its first window. The
+  bracket already ends within two windows of the target on every fixture.
+  Removing the finish scan altogether is caught.
+
+**Online playback unchanged:** the Stage 3 goldens (byte-identical playback
+URLs) still pass, and the player diff substitutes only `stream_close` and
+`stream_set_timeout` on the online path.

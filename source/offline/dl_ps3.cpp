@@ -286,6 +286,13 @@ void dl_service_refresh_auth(void) { dl_svc_set_session(g_token, jf_device_id())
 
 const char *dl_service_root(void) { return dl_svc_root(); }
 
+bool dl_service_wait_restored(unsigned timeout_ms) {
+    if (!dl_svc_started()) return false;
+    for (unsigned waited = 0; !dl_svc_restored() && waited < timeout_ms; waited += 10)
+        usleep(10000);
+    return dl_svc_restored() && dl_manager_ready();
+}
+
 int dl_download_item(const JFItem *item, const XMBItemDetail *detail,
                      const JFMediaSource *source) {
     StreamPrefs prefs;

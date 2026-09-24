@@ -13,6 +13,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sysutil/sysutil.h>
+#include <sys/file.h>   // lv2 fs: local files for offline playback
 
 extern u32 running;
 
@@ -116,9 +117,23 @@ static int netcfg_kb(const char *name, int def_kb, int max_kb) {
 // Refill when empty.  Returns bytes available (>0), 0 if the peer closed, or
 // -1 on receive timeout -- the same three outcomes netRecv gave the old code,
 // so the carry/resume logic above is unchanged.
+// The open local file (offline playback), or -1 when streaming a socket.
+// One stream at a time is all this module has ever supported (every piece
+// of its state is static); a file is simply the other kind of source.
+static s32 s_file_fd = -1;
+
 static int sb_fill(int sock) {
     if (s_sb_p < s_sb_n) return s_sb_n - s_sb_p;
     s_sb_p = s_sb_n = 0;
+    if (s_file_fd >= 0) {
+        // Local file: the same buffer, filled from the HDD.  A file never
+        // times out; its end is the stream's end (0 = "closed").
+        u64 got = 0;
+        if (sysLv2FsRead(s_file_fd, s_sb, SB_SIZE, &got) != 0 || got == 0) return 0;
+        s_rx_bytes += got;
+        s_sb_n = (int)got;
+        return s_sb_n;
+    }
     u64 t0 = timing_get_us();
     int n = netRecv(sock, s_sb, s_sb_req ? s_sb_req : SB_SIZE, 0);
     u64 dt = timing_get_us() - t0;
@@ -161,6 +176,7 @@ static int sb_read(int sock, u8 *dst, int want) {
 static char s_last_error[64] = "";
 
 int stream_open(const char *url) {
+    if (s_file_fd >= 0) { sysLv2FsClose(s_file_fd); s_file_fd = -1; }
     const char *p = url;
     if (strncmp(p, "http://", 7) == 0) p += 7;
 
@@ -347,6 +363,65 @@ int stream_open(const char *url) {
 
     s_last_error[0] = '\0';
     return sock;
+}
+
+// -------------------------------------------------------------------------
+// Local files (offline playback)
+// -------------------------------------------------------------------------
+
+#define STREAM_FILE_TAG 0x40000000   // lv2 socket ids are small; never this
+
+bool stream_is_file(int h) { return h >= 0 && (h & STREAM_FILE_TAG) != 0; }
+
+int stream_open_file(const char *path, u64 offset) {
+    if (s_file_fd >= 0) { sysLv2FsClose(s_file_fd); s_file_fd = -1; }
+    s32 fd = -1;
+    if (sysLv2FsOpen(path, SYS_O_RDONLY, &fd, 0, NULL, 0) != 0 || fd < 0) {
+        snprintf(s_last_error, sizeof(s_last_error), "Could not open the offline copy");
+        return -1;
+    }
+    u64 pos = 0;
+    if (offset && sysLv2FsLSeek64(fd, offset, 0 /* SEEK_SET */, &pos) != 0) {
+        sysLv2FsClose(fd);
+        snprintf(s_last_error, sizeof(s_last_error), "Could not seek the offline copy");
+        return -1;
+    }
+    s_file_fd      = fd;
+    s_chunked      = false;
+    s_chunk_remain = -1;
+    s_chdr_n       = 0;
+    s_ctrail       = 0;
+    s_carry_n      = 0;
+    sb_reset();
+    s_last_error[0] = '\0';
+    char b[96];
+    snprintf(b, sizeof(b), "stream_open_file: fd=%d offset=%llu", (int)fd,
+             (unsigned long long)offset);
+    plog(b);
+    return (int)(STREAM_FILE_TAG | (u32)fd);
+}
+
+void stream_close(int h) {
+    if (stream_is_file(h)) {
+        if (s_file_fd >= 0) sysLv2FsClose(s_file_fd);
+        s_file_fd = -1;
+        sb_reset();
+        return;
+    }
+    if (h >= 0) netClose(h);
+}
+
+void stream_set_timeout(int h, u32 usec) {
+    if (stream_is_file(h)) return;    // a file never waits on anyone
+    struct { u32 sec; u32 usec; } tv = { usec / 1000000u, usec % 1000000u };
+    setsockopt(h, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+u8 *stream_scratch(int *cap) {
+    // Free exactly when nothing is being streamed: before an open, and
+    // during a seek (the old stream is closed first).
+    *cap = SB_SIZE;
+    return s_sb;
 }
 
 const char *stream_last_error(void) {

@@ -108,6 +108,15 @@ void dl_playback_begin(const char *stream_url) {
                           : "dl: stream playing -- downloads stopped");
 }
 
+void dl_playback_begin_local(bool light) {
+    const bool was_block = s_play_block, was_light = s_play_light;
+    s_play_light = light;
+    s_play_block = !light;
+    if (was_block != s_play_block || was_light != s_play_light)
+        dl_plat_log(light ? "dl: light local playback -- downloads paced"
+                          : "dl: local playback -- downloads stopped");
+}
+
 void dl_playback_end(void) {
     if (s_play_block || s_play_light) dl_plat_log("dl: playback ended");
     s_play_block = false;
@@ -452,6 +461,28 @@ bool dl_find(const char *id, DlStatus *out) {
     if (s) fill_status(s, now, out);
     UNLOCK();
     return s != NULL;
+}
+
+int dl_completed_ids(char (*ids)[DL_ID_MAX], int max) {
+    if (!s_ready) return 0;
+    LOCK();
+    int n = 0;
+    uint32_t last = 0;
+    while (n < max) {
+        const Slot *best = NULL;
+        for (int i = 0; i < DL_MAX_ITEMS; i++) {
+            const Slot *s = &s_slots[i];
+            if (!s->used || s->removing || s->rec.seq <= last ||
+                s->rec.state != DL_COMPLETED)
+                continue;
+            if (!best || s->rec.seq < best->rec.seq) best = s;
+        }
+        if (!best) break;
+        snprintf(ids[n++], DL_ID_MAX, "%s", best->rec.id);
+        last = best->rec.seq;
+    }
+    UNLOCK();
+    return n;
 }
 
 bool dl_load_meta(const char *id, DlMeta *out) {

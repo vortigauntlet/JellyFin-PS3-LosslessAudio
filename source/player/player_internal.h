@@ -5,6 +5,8 @@
 
 #include "jellyfin_api.h"
 #include "player_hud.h"
+#include "stream_local.h"
+#include "dl_library.h"
 
 // -------------------------------------------------------
 // Thread context structs (core/player.cpp spawns, threads/player_threads.cpp runs)
@@ -59,7 +61,18 @@ struct PlayerSeekInput {
     bool resume_after_seek; // unpause once the seek lands
 };
 
+// Offline playback (Stage 4): a downloaded media.ts instead of a server
+// stream.  Filled by show_player_offline (core/player_local.cpp); NULL on
+// the online path, which then runs exactly as it always did.
+struct PlayerLocal {
+    char             path[256];
+    char             label[64];     // HUD/version label ("Offline")
+    StreamLocalIndex idx;           // measured from the file at open
+    DlLocalPlan      plan;          // frame ceiling, runtime, download gate
+};
+
 struct PlayerState {
+    const PlayerLocal *local;    // NULL = online
     const JFItem *item;
     u32      req_w, req_h;       // transcode size (H.264 level 3.1 cap)
     char     session_id[64];     // Jellyfin PlaySessionId (re-minted per seek)
@@ -101,6 +114,14 @@ struct PlayerState {
 
     PlayerSeekInput seek;
 };
+
+// The player body; show_player() is the online entry (local == NULL).
+void show_player_run(const JFItem *item, u32 resume_secs,
+                     const char *media_source_id, const PlayerLocal *local);
+
+// core/player_local.cpp -- (re)open ps->local's file at the entry nearest
+// target_us, setting ps->sock and ps->play_base_us (where it really landed).
+bool player_local_open(PlayerState *ps, u64 target_us);
 
 // -------------------------------------------------------
 // core/player_session.cpp — session helpers

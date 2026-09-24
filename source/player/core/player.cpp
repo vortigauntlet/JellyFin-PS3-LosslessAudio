@@ -165,6 +165,15 @@ static bool player_stream_wait(unsigned elapsed_ms)
 
 void show_player(const JFItem *item, u32 resume_secs,
                  const char *media_source_id) {
+    show_player_run(item, resume_secs, media_source_id, NULL);
+}
+
+// The player body, online or local.  `local` NULL is the online path, and
+// every statement it runs is the one show_player always ran; a local file
+// (offline playback, player_local.cpp) takes the explicit `if (local)`
+// branches instead -- no server call is made for it at all.
+void show_player_run(const JFItem *item, u32 resume_secs,
+                     const char *media_source_id, const PlayerLocal *local) {
     crash_log("p1 enter");
     plog("show_player: enter");
     plog("show_player: BUILD=seek-diag-1");
@@ -216,6 +225,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     ps.cur_audio = -1;
     ps.cur_sub   = -1;               // subtitles start off
     ps.menu_kind = PLAYER_MENU_NONE;
+    ps.local     = local;
 
     // Baseline H.264 level 3.1 caps at 1280×720 @ 30fps.  1080p (Alpha) asks
     // the server for a full 1920×1080 High-profile transcode instead — flat,
@@ -228,6 +238,21 @@ void show_player(const JFItem *item, u32 resume_secs,
                     display_width, display_height,
                     &ps.req_w, &ps.req_h, NULL, NULL, NULL);
 
+    if (local) {
+        // The file decides: its frame ceiling (downloaded at some quality,
+        // whatever the setting is now), its runtime (measured from the file
+        // itself when the index could), and one audio track -- the one that
+        // was downloaded -- so the AUDIO/CC menus have nothing to switch.
+        ps.req_w = local->plan.req_w;
+        ps.req_h = local->plan.req_h;
+        ps.session_id[0] = '\0';
+        ps.total_secs = local->idx.duration_secs ? local->idx.duration_secs
+                                                 : local->plan.runtime_secs;
+        snprintf(ps.source.id, sizeof(ps.source.id), "%s", item->id);
+        snprintf(ps.source.label, sizeof(ps.source.label), "%s", local->label);
+        ps.source.runtime_secs = ps.total_secs;
+        ps.have_tracks = false;
+    } else {
     if (!jellyfin_get_playback_info(item->id, media_source_id, ps.session_id,
                                     sizeof(ps.session_id), &ps.total_secs,
                                     NULL, &ps.source, true)) {
@@ -251,6 +276,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         ps.source.tracks = ps.tracks;
         ps.source.runtime_secs = ps.total_secs;
     }
+    }   // online
     // Default audio track, subtitles off -- the rule downloads share.
     stream_select_initial(&ps.tracks, ps.have_tracks, &ps.cur_audio, &ps.cur_sub);
 
@@ -267,6 +293,13 @@ void show_player(const JFItem *item, u32 resume_secs,
     }
 
     char url[768];
+    if (local) {
+        snprintf(url, sizeof(url), "%s", local->path);   // for the error screen
+        plog_url("local", url);
+        // No network, but the PPU and the HDD are shared: the file's own
+        // weight decides, by the same thresholds as a stream (Stage 2).
+        dl_playback_begin_local(local->plan.light);
+    } else {
     build_stream_url(url, sizeof(url), &ps, (u64)resume_secs * 10000000ULL);
     plog_url("url", url);
 
@@ -275,6 +308,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // decision is made from this exact URL (dl_stream_is_light).  The guard
     // ends it on every one of show_player's many return paths.
     dl_playback_begin(url);
+    }   // online
     struct DlPlaybackEnd { ~DlPlaybackEnd() { dl_playback_end(); } } dl_playback_guard;
     (void)dl_playback_guard;
 
@@ -324,7 +358,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     plog("show_player: stream_open");
     s_wait_title = item->name;
     stream_set_wait_cb(player_stream_wait);
-    ps.sock = stream_open(url);
+    ps.sock = local ? (player_local_open(&ps, (u64)resume_secs * 1000000ULL) ? ps.sock : -1)
+                    : stream_open(url);
     stream_set_wait_cb(NULL);
     if (ps.sock < 0) {
         plog("show_player: stream_open FAILED");
@@ -350,7 +385,7 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     if (!jbuf_alloc(ps.req_w, ps.req_h)) {
         plog("show_player: jbuf_alloc FAILED");
-        netClose(ps.sock);
+        stream_close(ps.sock);
         adec_stop();
         audio_close();
         vdec_close();
@@ -393,8 +428,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     vid_gpu_init(jbuf_fw(), jbuf_fh());
 
     // 5 ms socket receive timeout keeps the network thread responsive
-    { struct { u32 sec; u32 usec; } tv = { 0, 5000 };
-      setsockopt(ps.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+    // (a local file never waits, so there is nothing to set for one)
+    stream_set_timeout(ps.sock, 5000);
 
     // The button always reads "AUDIO" — track names are too long for the HUD
     // row; the selected track is plogged when cycled.
@@ -412,7 +447,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         vid_gpu_free();
         decode_ring_free();
         jbuf_free();
-        netClose(ps.sock);
+        stream_close(ps.sock);
         adec_stop();
         audio_close();
         vdec_close();
@@ -518,9 +553,12 @@ void show_player(const JFItem *item, u32 resume_secs,
     }
 
     // ---- Spawn progress reporter — keeps server resume position current ----
-    jellyfin_report_playing(item->id, ps.session_id, ps.play_base_us * 10ULL);
+    // Local playback reports nothing: there may be no server at all, and a
+    // report to an unreachable one blocks for its connect timeout.
+    if (!local)
+        jellyfin_report_playing(item->id, ps.session_id, ps.play_base_us * 10ULL);
     sys_ppu_thread_t prog_tid = 0;
-    if (ps.playing) {
+    if (ps.playing && !local) {
         int trc = sysThreadCreate(&prog_tid, progress_thread_fn,
                                   (void *)&ps,
                                   1100, 16 * 1024,
@@ -619,7 +657,9 @@ void show_player(const JFItem *item, u32 resume_secs,
         // the current position — the same 0-delta reopen a track change uses
         // — which re-negotiates the stream as an AC-3 5.1 transcode.  Silence
         // is not an acceptable resting state.
-        if (act == HUD_ACTION_NONE && surround_hd_preferred() &&
+        // (Not for a local file: its audio is what was downloaded, and a
+        // reopen would read the same track again.)
+        if (act == HUD_ACTION_NONE && !local && surround_hd_preferred() &&
             (adec_dts_no_core() || adec_truehd_no_audio())) {
             const bool dts = adec_dts_no_core();
             plog(dts ? "dts: no core substream in this track, falling back to AC-3"
@@ -759,7 +799,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     crash_log("p12 threads joined");
 
     // Tell the server where we stopped (also finalizes Continue Watching).
-    jellyfin_report_stopped(item->id, ps.session_id, final_pos_ticks);
+    if (!local)
+        jellyfin_report_stopped(item->id, ps.session_id, final_pos_ticks);
 
     // Kill the server-side transcode for this session.  Without this the job
     // is left running when playback ends, and starting the SAME item and
@@ -767,7 +808,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // back HTTP 500.  Picking a different version appeared to "fix" it only
     // because a different MediaSourceId is a different job.  Seeks already do
     // this (player_seek.cpp) for the same reason; ending playback did not.
-    if (ps.session_id[0])
+    if (!local && ps.session_id[0])
         jellyfin_stop_transcode(ps.session_id);
 
     // Free video GPU blit resources before releasing the jitter buffer
@@ -777,7 +818,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     decode_ring_free();
     jbuf_free();
     crash_log("p18 jbuf_free OK");
-    netClose(ps.sock);
+    stream_close(ps.sock);
     adec_stop();
     crash_log("p15 audio_close begin");
     audio_close();

@@ -15,7 +15,7 @@ static const char   *s_roots[MAX_ROOTS];
 static int           s_n_roots  = 0;
 static volatile bool s_started  = false;   // worker thread exists
 static volatile bool s_run      = false;   // worker should keep going
-static bool          s_restored = false;   // worker-thread only
+static volatile bool s_restored = false;   // written by the worker only
 static bool          s_no_root  = false;   // worker-thread only
 static char          s_root[DL_PATH_MAX] = "";
 
@@ -41,7 +41,6 @@ uint32_t dl_svc_tick(void) {
     if (!s_restored) {
         // Restore here, on the worker, so a slow HDD or a large queue never
         // holds up the UI.  Disk only: this works with the server down.
-        s_restored = true;
         for (int i = 0; i < s_n_roots; i++) {
             if (dl_manager_init(s_roots[i], NULL)) {
                 snprintf(s_root, sizeof(s_root), "%s", s_roots[i]);
@@ -58,6 +57,10 @@ uint32_t dl_svc_tick(void) {
             s_no_root = true;
             dl_plat_log("dl: no writable root; downloads unavailable");
         }
+        // Published last: a waiter (the offline startup path) must never
+        // see "restored" while the store is still being read.
+        __sync_synchronize();
+        s_restored = true;
         return 0;
     }
     if (s_no_root) return 1000;
@@ -104,4 +107,5 @@ void dl_svc_stop(void) {
 }
 
 bool dl_svc_started(void) { return s_started; }
+bool dl_svc_restored(void) { return s_started && s_restored; }
 const char *dl_svc_root(void) { return s_root; }

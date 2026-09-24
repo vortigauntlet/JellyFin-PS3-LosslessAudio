@@ -22,25 +22,38 @@ static void on_pts(DlTsScan *t, uint64_t raw) {
     if (pts < t->first_pts) t->first_pts = pts;   // reordered opening frames
 }
 
-static void packet(DlTsScan *t, const uint8_t *p) {
-    t->packets++;
-    if (p[0] != 0x47) { t->sync_errors++; return; }
-    if (!(p[1] & 0x40)) return;                 // no PES starts here
+void dl_ts_packet_info(const uint8_t *p, DlTsPacketInfo *o) {
+    memset(o, 0, sizeof(*o));
+    if (p[0] != 0x47) return;
+    o->sync = true;
+    o->pid  = (uint16_t)(((p[1] & 0x1F) << 8) | p[2]);
+    o->pusi = (p[1] & 0x40) != 0;
     const int afc = (p[3] >> 4) & 3;
-    if (!(afc & 1)) return;                     // adaptation only, no payload
     int off = 4;
-    if (afc & 2) off += 1 + p[4];
+    if (afc & 2) {
+        if (p[4] > 0) o->rai = (p[5] & 0x40) != 0;
+        off += 1 + p[4];
+    }
+    if (!o->pusi || !(afc & 1)) return;         // no PES starts here
     if (off + 14 > DL_TS_PACKET) return;
     const uint8_t *e = p + off;
     if (e[0] != 0 || e[1] != 0 || e[2] != 1) return;
     if (e[3] < 0xE0 || e[3] > 0xEF) return;     // video PES only
     if (!(e[7] & 0x80)) return;                 // no PTS
-    const uint64_t raw = ((uint64_t)((e[9] >> 1) & 7) << 30) |
-                         ((uint64_t)e[10] << 22) |
-                         ((uint64_t)(e[11] >> 1) << 15) |
-                         ((uint64_t)e[12] << 7) |
-                         ((uint64_t)e[13] >> 1);
-    on_pts(t, raw);
+    o->video_pts = true;
+    o->pts = ((uint64_t)((e[9] >> 1) & 7) << 30) |
+             ((uint64_t)e[10] << 22) |
+             ((uint64_t)(e[11] >> 1) << 15) |
+             ((uint64_t)e[12] << 7) |
+             ((uint64_t)e[13] >> 1);
+}
+
+static void packet(DlTsScan *t, const uint8_t *p) {
+    t->packets++;
+    DlTsPacketInfo i;
+    dl_ts_packet_info(p, &i);
+    if (!i.sync) { t->sync_errors++; return; }
+    if (i.video_pts) on_pts(t, i.pts);
 }
 
 void dl_ts_feed(DlTsScan *t, const uint8_t *d, int len) {

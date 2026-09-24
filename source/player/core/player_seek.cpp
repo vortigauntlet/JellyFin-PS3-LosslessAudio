@@ -223,7 +223,18 @@ bool player_execute_seek(PlayerState *ps) {
     crash_log("sk3 flushed");
 
     // 3) Re-request the stream at the new offset.
-    netClose(ps->sock);
+    stream_close(ps->sock);
+    if (ps->local) {
+        // Offline: no server to ask.  Find the entry point nearest the target
+        // in the file itself; player_local_open sets play_base_us to where it
+        // actually landed, which keeps the clock exact.
+        if (!player_local_open(ps, (u64)target_us)) {
+            plog("seek: local reopen FAILED");
+            crash_log("sk_fail local");
+            ps->playing = false;
+            return false;
+        }
+    } else {
     // Kill the existing transcode first, otherwise Jellyfin keeps
     // serving the in-progress job (which started at offset 0) and
     // the seek appears to reset to 0:00 instead of honouring the
@@ -290,8 +301,8 @@ bool player_execute_seek(PlayerState *ps) {
     // The new stream's PTS restarts at ~0, so its clock now maps to
     // absolute media time target_us.
     ps->play_base_us = (u64)target_us;
-    { struct { u32 sec; u32 usec; } tv = { 0, 5000 };
-      setsockopt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+    }   // online
+    stream_set_timeout(ps->sock, 5000);
     crash_log("sk4 reopened");
 
     // 4) Re-prime: decode a few frames before resuming display so
