@@ -1013,3 +1013,27 @@ Clean serial build: 119 objects, 48 warnings, header `0480`. EBOOT sha1
 `4d7c53b7…` (sha256 `c8ab5dca…`). Staged as `outputs/EBOOT.BIN.spine10`,
 FTP'd and verified. Expected on the TV: `sync` about 2.7 ms and frames about 22 ms,
 as on the verified 7ed1f910 build.
+
+### spine12 — Triangle peek wired everywhere + cold boot + UI sfx, deployed 2026-09-24
+
+spine10 on the TV: strobe fixed (`sync` ≈ 3.4 ms, frames 16.7–22 ms), wave
+right. Two faults remained:
+
+- **Triangle opened detail, like X.** The peek existed but only the Movies/TV
+  grid root called it. The log never showed that path (`outer: triangle` lines
+  appear only there). Home's handler still said "X opens; so does Triangle".
+  bbe4c2e: Triangle peeks on Home, the base column, every non-music library
+  grid, the TV/collection sub-grids and Search. X from the peek does that
+  screen's X. The depth stage now notes the focused card's image
+  (`depth_note_focus_card`), so the spin turns over the poster on screen.
+  New log line: `peek: open <id> type=... img=... WxH/kind`.
+- **No cold boot.** feature/cold-boot-animation had never been merged here.
+  eddcd6b merges fd2ee94 (4 add/add conflicts, both kept; boot hook first in
+  the input chain).
+
+Also merged feature/ui-sfx (d318a3c, clean). That session had deployed
+spine10-uisfx at 12:26. spine11 overwrote it at 12:45; it is kept as
+`outputs/EBOOT.BIN.pre-spine11-console-1226`.
+
+Clean serial build: 121 objects, 48 warnings, `0480`; 12 host tests pass.
+EBOOT sha256 `1eb0a24f…`, 1,731,216 bytes; `outputs/EBOOT.BIN.spine12`.
