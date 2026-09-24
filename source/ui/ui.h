@@ -12,6 +12,12 @@ typedef struct {
     u8 cross, circle, square, triangle;
     u8 start, select;
     u8 l1, r1, l2, r2;
+    // Media keys, from the Blu-ray remote and keyboards (see ui_input.cpp).
+    // No pad sets these, and they never borrow a pad button: START already
+    // means stop in the player.
+    u8 play, pause, playpause, stop;
+    u8 ffwd, rew, next, prev;
+    u8 subtitle, audio, info;
 } ButtonState;
 
 // -------------------------------------------------------
@@ -49,13 +55,17 @@ extern ButtonState btn_prev;
 // backspace you cannot hold down is barely a backspace -- fixing a typo four
 // letters back would be four separate presses.  The slots array is sized by
 // NAV_REPEAT_SLOTS, so adding one is all that is needed.
-enum { NAV_up, NAV_down, NAV_left, NAV_right, NAV_square, NAV_REPEAT_SLOTS };
+enum { NAV_up, NAV_down, NAV_left, NAV_right, NAV_square, NAV_media, NAV_REPEAT_SLOTS };
 #define NAV_DELAY_US   350000ULL   // hold this long before repeat kicks in
 #define NAV_REPEAT_US  140000ULL   // then ~7 steps/sec (raise to slow it down)
 bool btn_nav_repeat(bool held, int slot);
 #define BTN_REPEAT(b)  btn_nav_repeat(btn_cur.b, NAV_##b)
 
 void update_buttons(padData *pad);
+
+// Keyboard support; call once after ioPadInit().  Pads and the Blu-ray
+// remote need nothing beyond ioPadInit().
+void input_init(void);
 
 // Reads all active pad slots, ORs their button data into one merged padData,
 // calls update_buttons() exactly once. Returns true if any pad was active.
