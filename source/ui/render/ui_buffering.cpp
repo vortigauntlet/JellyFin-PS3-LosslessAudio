@@ -7,10 +7,20 @@
 //      shade as a soft pool of light;
 //   2. the veil: a vertical black ramp, darkest at the bottom where the title
 //      sits.  It also carries the fade: at ui_a = 0 the veil is opaque black;
-//   3. a soft glow behind the mark, in the artwork's glow shade, breathing;
-//   4. the ring's faint full-circle track, then the gradient arc (tail
-//      transparent in the glow shade -> head opaque in the accent);
-//   5. the Jellyfin mark -- the graphic only, no wordmark.
+//   3. a soft glow behind the logo, in the artwork's glow shade, breathing;
+//   4. the ring's faint full-circle track, then the arc in Jellyfin's own
+//      colours: #AA5CC3 purple at the (transparent) tail -> #00A4DC blue at
+//      the head.  Closed, it is the same gradient round both halves, so the
+//      full circle has no seam;
+//   5. the legacy JellyFin-PS3 logo -- MontyMcK's original app icon
+//      (ICON0.PNG, gfx/jf_legacy_icon_png.h): the PlayStation mark in
+//      Jellyfin's gradient.  Decoded ONCE per run into its own VRAM slot
+//      (GPU_TEX_BRAND, ~56 KB) and blended by its own alpha -- the HUD
+//      overlay's blend.  If that ever fails, the vector Jellyfin mark
+//      (jf_logo_geom.h) stands in;
+//   6. the fade: one near-black quad over all of the above at 1 - ui_a.  A
+//      texture blended by its own alpha cannot also take a per-frame
+//      opacity, so everything fades together under one cover instead.
 // Then rsxSync and the text: BUFFERING / 47% under the ring, the title at the
 // lower left, and the O hint.
 
@@ -29,6 +39,9 @@
 #include "ui_visuals.h"
 #include "rsxutil.h"
 #include "timing.h"
+#include "stb_image.h"          // implementation compiled in thumbnail_cache.cpp
+#include "jf_legacy_icon_png.h"
+#include <stdlib.h>
 
 static buf_anim    s_anim;
 static bool        s_on = false;
@@ -40,6 +53,36 @@ static bool        s_show_pct = false;
 static const char *s_hint = NULL;
 static int         s_art = -1;           // GPU_TEX_* slot, or -1
 static art_palette s_pal;
+
+// Jellyfin's brand colours: the ring is drawn in them whatever the artwork.
+#define JF_PURPLE 0x00AA5CC3
+#define JF_BLUE   0x0000A4DC
+
+// The legacy logo in VRAM: 0 = not tried, 1 = ready, -1 = failed (vector mark).
+static int s_logo_state = 0;
+
+static void logo_load_once(void) {
+    if (s_logo_state) return;
+    s_logo_state = -1;
+    int w = 0, h = 0, comp = 0;
+    unsigned char *img = stbi_load_from_memory(jf_legacy_icon_png,
+                                               (int)sizeof jf_legacy_icon_png,
+                                               &w, &h, &comp, 4);
+    if (!img) return;
+    Bitmap bm;
+    memset(&bm, 0, sizeof bm);
+    bm.width = (u32)w; bm.height = (u32)h;
+    bm.pixels = (u32 *)malloc((size_t)w * h * 4);
+    if (bm.pixels) {
+        // RGBA bytes -> A8R8G8B8, straight alpha (what the texture samples).
+        for (int i = 0; i < w * h; i++)
+            bm.pixels[i] = ((u32)img[i*4+3] << 24) | ((u32)img[i*4] << 16) |
+                           ((u32)img[i*4+1] << 8)  |  (u32)img[i*4+2];
+        if (ui_gpu_tex_upload(GPU_TEX_BRAND, &bm)) s_logo_state = 1;
+        free(bm.pixels);
+    }
+    stbi_image_free(img);
+}
 
 static int BX(int x) { return XMB_OX + UIS_W(x); }
 static int BY(int y) { return XMB_OY + UIS_H(y); }
@@ -67,6 +110,9 @@ void buffering_begin(const char *item_id, const char *title) {
         else if (strcmp(ui_gpu_tex_tag(GPU_TEX_POSTER), item_id) == 0) s_art = GPU_TEX_POSTER;
     }
     ui_art_peek(item_id, &s_pal);
+    // Before vdec_open reshuffles the heap: the decode's ~110 KB of scratch is
+    // freed again at once, and the texture itself lives in VRAM.
+    logo_load_once();
 }
 
 void buffering_step(const char *label, bool show_pct, const char *circle_hint) {
@@ -97,44 +143,65 @@ static void draw_gpu(const buf_frame &f) {
     }
     ui_card_gpu_end();
 
-    // 2. the veil (and the fade).  Without artwork the clear colour is
-    //    already near black and the accent's deep shade pools behind the
-    //    mark instead.
+    // 2. the veil.  Without artwork the clear colour is already near black
+    //    and the accent's deep shade pools behind the logo instead.
     if (art) {
         static const float vp[4] = { 0.0f, 0.40f, 0.70f, 1.0f };
-        const float base[4] = { 0.80f, 0.70f, 0.78f, 0.94f };
-        u8 va[4];
-        for (int i = 0; i < 4; i++) va[i] = a8(1.0f - ua * (1.0f - base[i]));
+        static const u8    va[4] = { 204, 179, 199, 240 };   // .80 .70 .78 .94
         wave_draw_ramp_gpu(0, 0, W, H, 0x00030408, true, 4, vp, va);
     } else {
         wave_draw_glow_gpu(BX(640), BY(330), UIS_W(620), UIS_H(420),
                            (u8)(s_pal.deep >> 16), (u8)(s_pal.deep >> 8), (u8)s_pal.deep,
-                           a8(0.9f * ua));
+                           a8(0.9f));
     }
 
-    // 3-5. glow, ring, mark
+    // 3-4. glow, ring
     const int cx = BX(640), cy = BY(318);
     const float R = (float)UIS_H(64), T = (float)UIS_H(3) < 2.0f ? 2.0f : (float)UIS_H(3);
     const u32 g = s_pal.glow;
     wave_draw_glow_gpu(cx, cy, UIS_H(150), UIS_H(150),
-                       (u8)(g >> 16), (u8)(g >> 8), (u8)g, a8(f.glow_a * ua));
+                       (u8)(g >> 16), (u8)(g >> 8), (u8)g, a8(f.glow_a));
     if (f.track_a > 0.0f)
         wave_draw_ring_arc_gpu(cx, cy, R, T * 0.66f, 0.0f, 1.0f, 72,
-                               0x00FFFFFF, a8(f.track_a * 0.6f * ua),
-                               0x00FFFFFF, a8(f.track_a * 0.6f * ua));
+                               0x00FFFFFF, a8(f.track_a * 0.6f),
+                               0x00FFFFFF, a8(f.track_a * 0.6f));
     {
-        float arc = f.arc > 1.0f ? 1.0f : f.arc;
-        int segs = (int)(96.0f * arc);
-        if (segs < 8) segs = 8;
-        const u8 head = a8(f.ring_a * ua);
-        // Closed: one colour all round, so there is no seam where tail meets head.
-        const bool closed = arc >= 0.999f;
-        wave_draw_ring_arc_gpu(cx, cy, R, T, f.ring_angle - arc, arc, segs,
-                               closed ? s_pal.accent : g, closed ? head : 0,
-                               s_pal.accent, head);
+        const float arc = f.arc > 1.0f ? 1.0f : f.arc;
+        const u8 head = a8(f.ring_a);
+        if (arc >= 0.999f) {
+            // Closed: purple -> blue -> purple round the two halves.
+            const float a0 = f.ring_angle - 1.0f;
+            wave_draw_ring_arc_gpu(cx, cy, R, T, a0, 0.5f, 48,
+                                   JF_PURPLE, head, JF_BLUE, head);
+            wave_draw_ring_arc_gpu(cx, cy, R, T, a0 + 0.5f, 0.5f, 48,
+                                   JF_BLUE, head, JF_PURPLE, head);
+        } else {
+            int segs = (int)(96.0f * arc);
+            if (segs < 8) segs = 8;
+            wave_draw_ring_arc_gpu(cx, cy, R, T, f.ring_angle - arc, arc, segs,
+                                   JF_PURPLE, 0, JF_BLUE, head);
+        }
     }
-    wave_draw_jf_logo_gpu(cx, cy, (float)UIS_H(34) * f.mark_scale,
-                          0x00AA5CC3, 0x0000A4DC, a8(f.mark_a * ua));
+
+    // 5. the logo (breath and final pulse are its scale)
+    if (s_logo_state == 1) {
+        const float lh = (float)UIS_H(76) * f.mark_scale;
+        const float lw = lh * (float)JF_LEGACY_ICON_W / (float)JF_LEGACY_ICON_H;
+        ui_gpu_tex_draw_alpha(GPU_TEX_BRAND, cx - (int)(lw * 0.5f), cy - (int)(lh * 0.5f),
+                              (int)lw, (int)lh);
+        ui_card_gpu_end();
+    } else {
+        wave_draw_jf_logo_gpu(cx, cy, (float)UIS_H(34) * f.mark_scale,
+                              JF_PURPLE, JF_BLUE, a8(f.mark_a));
+    }
+
+    // 6. the fade
+    if (ua < 0.999f) {
+        static const float fp[2] = { 0.0f, 1.0f };
+        const u8 c = a8(1.0f - ua);
+        const u8 fa[2] = { c, c };
+        wave_draw_ramp_gpu(0, 0, W, H, 0x00030408, true, 2, fp, fa);
+    }
 }
 
 static void draw_text(const buf_frame &f) {

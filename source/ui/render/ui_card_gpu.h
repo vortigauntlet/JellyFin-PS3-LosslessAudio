@@ -93,6 +93,9 @@ void ui_card_gpu_selection(int cx, int cy, int w, int h);
 #include "bitmap.h"
 #define GPU_TEX_BACKDROP 0
 #define GPU_TEX_POSTER   1
+// Slot 2 holds brand art that lives for the whole run (the buffering
+// screen's logo).  Nothing clears it.
+#define GPU_TEX_BRAND    2
 bool ui_gpu_tex_upload(int slot, const Bitmap *bm);
 void ui_gpu_tex_clear(int slot);
 bool ui_gpu_tex_draw(int slot, int x, int y, int w, int h);
@@ -110,3 +113,8 @@ const char *ui_gpu_tex_tag(int slot);
 // blend colour), LINEAR.
 bool ui_gpu_tex_draw_crop(int slot, int x, int y, int w, int h,
                           float v_top, float v_bot);
+// The slot's texture blended by its OWN alpha channel (straight alpha, the
+// HUD overlay's blend) -- for art with a transparent background.  LINEAR.
+bool ui_gpu_tex_draw_alpha(int slot, int x, int y, int w, int h);
+// True when the slot holds a texture.
+bool ui_gpu_tex_ready(int slot);

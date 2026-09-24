@@ -130,7 +130,8 @@ static void bind_card(u32 tex_off, u32 w, u32 h, u32 pitch, bool linear)
 
 static void card_draw(u32 tex_off, u32 tex_w, u32 tex_h, u32 tex_pitch,
                       int x, int y, int w, int h, bool linear,
-                      float v_top = 0.0f, float v_bot = 1.0f, u8 alpha = 255)
+                      float v_top = 0.0f, float v_bot = 1.0f, u8 alpha = 255,
+                      bool tex_alpha = false)
 {
     if (!s_ready || w <= 0 || h <= 0 || tex_w == 0 || tex_h == 0) return;
     if (tex_pitch < tex_w * 4 || (tex_pitch & 63u)) return;   // see the header
@@ -155,7 +156,15 @@ static void card_draw(u32 tex_off, u32 tex_w, u32 tex_h, u32 tex_pitch,
     // the blend weight is a CONSTANT, set with rsxSetBlendColor, so the
     // texture's own alpha still does not matter -- a thumbnail decoded with
     // a zero alpha channel draws exactly as translucent as one with 0xFF.
-    if (alpha < 255) {
+    if (tex_alpha) {
+        // The texture's OWN straight alpha: exactly the HUD overlay's blend
+        // (player_rsx.cpp draw_overlay_ndc), same program and format.
+        rsxSetBlendFunc(context,
+            GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+            GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+        rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
+        rsxSetBlendEnable(context, GCM_TRUE);
+    } else if (alpha < 255) {
         rsxSetBlendColor(context, (u32)alpha << 24, 0);
         rsxSetBlendFunc(context,
             GCM_CONSTANT_ALPHA, GCM_ONE_MINUS_CONSTANT_ALPHA,
@@ -352,7 +361,7 @@ void ui_card_gpu_selection(int cx, int cy, int w, int h)
 // row by row into a 64-byte-aligned pitch (the RSX requires it of a linear
 // texture) and ends with a sync, the same write-gather rule the vertex
 // uploads follow.
-#define GPU_TEX_SLOTS 2
+#define GPU_TEX_SLOTS 3   // backdrop, poster, brand
 
 typedef struct {
     u32 *mem;
@@ -409,6 +418,21 @@ const char *ui_gpu_tex_tag(int slot)
 {
     if (slot < 0 || slot >= GPU_TEX_SLOTS || !s_tex[slot].w) return "";
     return s_tex_tag[slot];
+}
+
+bool ui_gpu_tex_draw_alpha(int slot, int x, int y, int w, int h)
+{
+    if (!s_ready || slot < 0 || slot >= GPU_TEX_SLOTS) return false;
+    const GpuTex *t = &s_tex[slot];
+    if (!t->w) return false;
+    card_draw(t->off, t->w, t->h, t->pitch, x, y, w, h, true,
+              0.0f, 1.0f, 255, true);
+    return true;
+}
+
+bool ui_gpu_tex_ready(int slot)
+{
+    return s_ready && slot >= 0 && slot < GPU_TEX_SLOTS && s_tex[slot].w != 0;
 }
 
 bool ui_gpu_tex_draw_crop(int slot, int x, int y, int w, int h,
