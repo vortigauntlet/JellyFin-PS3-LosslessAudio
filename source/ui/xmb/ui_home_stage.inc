@@ -493,6 +493,42 @@ void xmb_home_stage_text(void) {
     g_cpu_clip_top = 0;
 }
 
+// --- the screensaver's artwork -----------------------------------------------------------
+
+int xmb_home_ambient_art(AmbientArt *out, int max) {
+    home_init_once();
+    static char meta[16][16];
+    static const int order[4] = { HR_CONTINUE, HR_NEXTUP, HR_MOVIES, HR_SHOWS };
+    int n = 0;
+    for (int oi = 0; oi < 4 && n < max; oi++) {
+        const int r = order[oi];
+        const HomeRow *row = &s_rows[r];
+        if (!row->loaded) continue;
+        for (int c = 0; c < row->count && c < 4 && n < max; c++) {
+            // One entry per image: Next Up often repeats Continue Watching's
+            // series.
+            const char *img = q_img_id(r, c);
+            bool dup = false;
+            for (int k = 0; k < n; k++) if (strcmp(out[k].img_id, img) == 0) dup = true;
+            if (dup) continue;
+            AmbientArt *a = &out[n];
+            a->img_id  = img;
+            q_src(r, &a->src_w, &a->src_h);
+            a->eyebrow = row->title;
+            a->title   = q_title(r, c);
+            char *m = meta[n < 16 ? n : 15];
+            const HomeExtra *x = &s_extra[r][c];
+            if (strcmp(row->items[c].type, "Episode") == 0 && x->episode)
+                snprintf(m, 16, "S%u E%u", (unsigned)x->season, (unsigned)x->episode);
+            else
+                snprintf(m, 16, "%s", row->items[c].year_str);
+            a->meta = m;
+            n++;
+        }
+    }
+    return n;
+}
+
 // --- input ------------------------------------------------------------------------------
 
 bool xmb_home_at_top(void) {

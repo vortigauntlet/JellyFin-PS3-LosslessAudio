@@ -54,6 +54,20 @@ void wave_draw_rrect_outline_gpu(int x, int y, int w, int h, int r, int t,
 void wave_draw_ramp_gpu(int x, int y, int w, int h, u32 rgb, bool vertical,
                         int n, const float *pos, const u8 *alpha);
 
+// --- experience panels (ui_wave_panels.cpp) --------------------------------
+// A thin ring arc of thickness t_px centred on radius r_px: from angle a0 (in
+// turns, 0 = 12 o'clock, clockwise) for `arc` turns, one triangle strip of
+// `segs` segments.  Colour and alpha run from the TAIL (a0) to the HEAD
+// (a0 + arc), so a short bright head over a fading tail reads as a gradient
+// ring turning.  arc >= 1 draws the closed circle.
+void wave_draw_ring_arc_gpu(int cx, int cy, float r_px, float t_px,
+                            float a0, float arc, int segs,
+                            u32 rgb_tail, u8 a_tail, u32 rgb_head, u8 a_head);
+// The Jellyfin mark (render/jf_logo_geom.h), half_w_px from its centre to the
+// arch's side, coloured with a diagonal ramp rgb_a -> rgb_b.  244 vertices.
+void wave_draw_jf_logo_gpu(int cx, int cy, float half_w_px,
+                           u32 rgb_a, u32 rgb_b, u8 alpha);
+
 // Blended full-screen black quad at the given alpha, drawn on the GPU and
 // fenced with rsxSync() so CPU pixel writes may follow immediately.  Used to
 // dim the finished frame under a modal.

@@ -125,6 +125,34 @@ void xmb_home_stage_gpu(void);
 void xmb_home_stage_cpu(void);
 void xmb_home_stage_text(void);
 
+// The ambient screensaver's artwork (xmb/ui_ambient.cpp): posters Home has
+// already fetched -- Continue Watching, Next Up, Recently Added Movies and
+// Shows -- with the size they are cached at, so the screensaver shares the
+// Home queue's cache slots and fetches nothing Home would not.  Strings point
+// into Home's rows and are valid until the next fetch.  Returns how many.
+typedef struct {
+    const char *img_id;
+    int         src_w, src_h;
+    const char *eyebrow;     // the row's title
+    const char *title;       // an episode goes by its series
+    const char *meta;        // "2014" / "S1 E4" (may be "")
+} AmbientArt;
+int  xmb_home_ambient_art(AmbientArt *out, int max);
+
+// The ambient screensaver (xmb/ui_ambient.cpp).  Once per XMB frame, after
+// poll_buttons(): ambient_update() advances it and returns true when this
+// frame's input must not reach the UI (it woke the screensaver).  `allowed`
+// = false over a modal, which counts as activity.  ambient_draw_ui() says
+// whether the XMB draws its own phases this frame; when it does not,
+// ambient_gpu() / ambient_text() draw in their place.  ambient_cover_over_ui()
+// goes after the frame's text flush (the dissolve).  All inert with the spine
+// gate off.
+bool ambient_update(bool allowed);
+bool ambient_draw_ui(void);
+void ambient_gpu(void);
+void ambient_text(void);
+void ambient_cover_over_ui(void);
+
 // -------------------------------------------------------
 // Library categories on the depth engine (xmb/ui_depth_lib.cpp)
 // -------------------------------------------------------

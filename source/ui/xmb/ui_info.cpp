@@ -18,6 +18,7 @@
 #include "slog.h"
 #include "detail_media.h"
 #include "thumbnail_cache.h"
+#include "experience.h"      // vpick_*: the version selector's words
 
 // The title band behind the header — a deep stripe over the backdrop (the
 // official page's grey bar, re-tinted to fit the theme).  Now the `detail_band`
@@ -105,6 +106,135 @@ static void info_blit(const Bitmap *bm, int dx, int dy) {
     }
 }
 
+// A version's audio words, from its default audio track's DisplayTitle
+// ("English \xC2\xB7 DTS-HD MA \xC2\xB7 5.1").  "" when it reports none.
+static void info_version_audio(const JFMediaSource *src, char *out, size_t cap) {
+    out[0] = 0;
+    const JFTracks *t = &src->tracks;
+    if (t->n_audio <= 0) return;
+    int a = t->default_audio;
+    if (a < 0 || a >= t->n_audio) a = 0;
+    vpick_describe(t->audio[a].label, out, cap);
+}
+
+// The spine's version picker: the version Play would use unasked -- the
+// first, Jellyfin's own default (vpick_recommended) -- stands in a section of
+// its own with what it carries, and the rest are listed under "Other
+// versions".  Same modal, same input, same result as the old list: only the
+// presentation changed.  Nothing is claimed that the source does not report:
+// the description is the version's name and its default audio track, as the
+// server words them.
+static void info_draw_versions(const char *title, const JFMediaSources *sources,
+                               int sel) {
+    const int n = sources->n_sources;
+    const int rec = vpick_recommended(n);
+    const int max_other = 6;
+    int shown_other = n - 1 < max_other ? n - 1 : max_other;
+    if (shown_other < 0) shown_other = 0;
+    int first = 1;                                   // first "other" row shown
+    if (sel > 0) {
+        first = sel - shown_other / 2;
+        if (first < 1) first = 1;
+        if (first > n - shown_other) first = n - shown_other;
+        if (first < 1) first = 1;
+    }
+
+    const int pw = UIS_W(760);
+    const int rec_h = UIS_H(70), row_h = UIS_H(44);
+    const int ph = UIS_H(96) + UIS_H(26) + rec_h +
+                   (shown_other > 0 ? UIS_H(40) + shown_other * row_h : 0) + UIS_H(20);
+    const int px = ((int)display_width - pw) / 2;
+    const int py = ((int)display_height - ph) / 2;
+    drawRect((u32)px, (u32)py, (u32)pw, (u32)ph, XMB_PANEL);
+    drawRect((u32)px, (u32)py, (u32)pw, 1, XMB_HAIRLINE);
+    drawRect((u32)px, (u32)(py + ph - 1), (u32)pw, 1, XMB_HAIRLINE);
+    drawRect((u32)px, (u32)py, 1, (u32)ph, XMB_HAIRLINE);
+    drawRect((u32)(px + pw - 1), (u32)py, 1, (u32)ph, XMB_HAIRLINE);
+
+    const int cx = px + UIS_W(30), cw = pw - UIS_W(60);
+    info_clip_text(cx, py + UIS_H(24), title, UIS_TF(24), XMB_WHITE,
+                   pw - UIS_W(200), false, UI_FACE_DISPLAY);
+    {
+        char count[24];
+        snprintf(count, sizeof count, "%d versions", n);
+        const int w = ttf_text_width(count, UIS_TF(14));
+        drawTTF((u32)(px + pw - UIS_W(30) - w), (u32)(py + UIS_H(31)), count,
+                UIS_TF(14), XMB_TEXT_FAINT);
+    }
+
+    char name[128], audio[96];
+    int y = py + UIS_H(80);
+    xmb_draw_eyebrow(cx, y, "Recommended", XMB_ACCENT_ALT);
+    y += UIS_H(24);
+    if (rec >= 0) {
+        const bool on = sel == rec;
+        if (on) {
+            drawRect((u32)cx, (u32)y, (u32)cw, (u32)(rec_h - UIS_H(6)), XMB_PANEL_HI);
+            drawRect((u32)(cx - UIS_W(4)), (u32)y, UIS_W(3), (u32)(rec_h - UIS_H(6)),
+                     XMB_ACCENT);
+        }
+        vpick_name(sources->source[rec].label, rec, name, sizeof name);
+        info_clip_text(cx + UIS_W(16), y + UIS_H(10), name, UIS_TF(19),
+                       on ? XMB_TEXT : XMB_TEXT_DIM, cw - UIS_W(130), true);
+        // What X will do here, spelled out on the recommended row.
+        const int pl = ttf_text_width("PLAY", UIS_TF(12), true);
+        drawTTF((u32)(cx + cw - UIS_W(16) - pl), (u32)(y + UIS_H(14)), "PLAY",
+                UIS_TF(12), on ? XMB_ACCENT_ALT : XMB_TEXT_FAINT, true);
+        info_version_audio(&sources->source[rec], audio, sizeof audio);
+        if (audio[0])
+            info_clip_text(cx + UIS_W(16), y + UIS_H(38), audio, UIS_TF(13),
+                           on ? XMB_TEXT_DIM : XMB_TEXT_FAINT, cw - UIS_W(32), false,
+                           UI_FACE_SPEC);
+    }
+    y += rec_h;
+
+    if (shown_other > 0) {
+        y += UIS_H(8);
+        xmb_draw_eyebrow(cx, y, "Other versions", XMB_TEXT_FAINT);
+        y += UIS_H(32);
+        for (int r = 0; r < shown_other; r++) {
+            const int idx = first + r;
+            const bool on = idx == sel;
+            const int ry = y + r * row_h;
+            if (on) {
+                drawRect((u32)cx, (u32)ry, (u32)cw, (u32)(row_h - UIS_H(4)), XMB_PANEL_HI);
+                drawRect((u32)(cx - UIS_W(4)), (u32)ry, UIS_W(3), (u32)(row_h - UIS_H(4)),
+                         XMB_ACCENT);
+            }
+            vpick_name(sources->source[idx].label, idx, name, sizeof name);
+            info_clip_text(cx + UIS_W(16), ry + UIS_H(11), name, UIS_TF(17),
+                           on ? XMB_TEXT : XMB_TEXT_DIM, cw / 2, on);
+            info_version_audio(&sources->source[idx], audio, sizeof audio);
+            if (audio[0]) {
+                const float apx = UIS_TF(11.5f);
+                char clip[96];
+                snprintf(clip, sizeof clip, "%s", audio);
+                int len = (int)strlen(clip);
+                const int maxw = cw / 2 - UIS_W(32);
+                while (len > 1 && ttf_text_width_face(clip, apx, UI_FACE_SPEC) > maxw)
+                    clip[--len] = 0;
+                const int aw = ttf_text_width_face(clip, apx, UI_FACE_SPEC);
+                drawTTF_face((u32)(cx + cw - UIS_W(16) - aw), (u32)(ry + UIS_H(15)),
+                             clip, apx, XMB_TEXT_FAINT, UI_FACE_SPEC);
+            }
+        }
+        // A scroll mark when the list outruns the window.
+        if (n - 1 > shown_other) {
+            char more[24];
+            snprintf(more, sizeof more, "%d\xE2\x80\x93%d of %d", first, first + shown_other - 1,
+                     n - 1);
+            const int w = ttf_text_width(more, UIS_TF(11));
+            drawTTF((u32)(cx + cw - w), (u32)(y - UIS_H(26)), more, UIS_TF(11),
+                    XMB_TEXT_FAINT);
+        }
+    }
+
+    Hint h[2];
+    h[0].glyph = 'X'; h[0].label = sel == rec ? "Play recommended" : "Choose";
+    h[1].glyph = 'C'; h[1].label = "Back";
+    draw_hints_bar(h, 2);
+}
+
 // Modal version picker used by the info page.  The full source list lives only
 // here, before playback starts; the player receives one selected MediaSourceId.
 static int info_choose_version(const char *title,
@@ -133,6 +263,12 @@ static int info_choose_version(const char *title,
         clearScreen(XMB_BG);
         wave_draw();
         rsxSync();
+
+        if (g_spine_on) {
+            info_draw_versions(title, sources, sel);
+            flip();
+            continue;
+        }
 
         const int max_rows = 8;
         int shown = sources->n_sources < max_rows
@@ -215,6 +351,7 @@ static int info_choose_version(const char *title,
 // ===========================================================================
 
 #include "ui_card_gpu.h"
+#include "ui_art.h"
 #include "ui_spine.h"
 #include "ui_depth.h"      // the L2 -> L3 arrival
 #include "ui_text_gpu.h"
@@ -358,7 +495,12 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             Bitmap poster;
             memset(&poster, 0, sizeof poster);
             detail_media_load(it->id, "Primary", PW, PH, 0.5f, &poster);
+            // The artwork's accent, sampled once from main memory before the
+            // poster goes to VRAM (render/art_colour.h).  The buffering
+            // screen's ring and glow use it when this title is played.
+            ui_art_palette(it->id, &poster);
             poster_gpu = ui_gpu_tex_upload(GPU_TEX_POSTER, &poster);
+            if (poster_gpu) ui_gpu_tex_set_tag(GPU_TEX_POSTER, it->id);
             if (poster_gpu) detail_media_free(&poster);
             else            poster_cpu = poster;
 
@@ -370,6 +512,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             back_gpu = false;
             if (detail_media_load(it->id, "Backdrop", 960, 540, 0.3f, &back))
                 back_gpu = ui_gpu_tex_upload(GPU_TEX_BACKDROP, &back);
+            if (back_gpu) ui_gpu_tex_set_tag(GPU_TEX_BACKDROP, it->id);
             detail_media_free(&back);
             if (!back_gpu) ui_gpu_tex_clear(GPU_TEX_BACKDROP);
 
@@ -550,7 +693,9 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         {
             int x = TX;
             for (int i = 0; i < n1; i++) {
-                sw_[i] = UIS_W(row1[i] == F3_VERSION ? 172 : 216);
+                // The version selector is wider than the canvas's 172 so that
+                // "Recommended" and a version name both fit.
+                sw_[i] = UIS_W(row1[i] == F3_VERSION ? 260 : 216);
                 sx_[i] = x;
                 x += sw_[i] + UIS_W(12);
                 wave_draw_rrect_outline_gpu(sx_[i], SY, sw_[i], SH, AR, 1,
@@ -699,11 +844,17 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         // Selector labels.
         for (int i = 0; i < n1; i++) {
             const int y = SY + (SH - (int)UIS_TF(12.0f)) / 2 - UIS_H(1);
-            const char *name = row1[i] == F3_VERSION ? "Version" : "Quality";
-            drawTTF((u32)(sx_[i] + UIS_W(15)), (u32)y, name, UIS_TF(12.0f), XMB_TEXT_DIM);
+            // The version selector says when the choice is the recommended
+            // one (the version Play uses unasked -- vpick_recommended).
+            const bool rec_v = row1[i] == F3_VERSION &&
+                               version_sel == vpick_recommended(versions.n_sources);
+            const char *name = row1[i] == F3_VERSION ? (rec_v ? "Recommended" : "Version")
+                                                    : "Quality";
+            drawTTF((u32)(sx_[i] + UIS_W(15)), (u32)y, name, UIS_TF(12.0f),
+                    rec_v ? XMB_ACCENT_ALT : XMB_TEXT_DIM);
             char val[64];
             if (row1[i] == F3_VERSION) {
-                snprintf(val, sizeof val, "%s", versions.source[version_sel].label);
+                vpick_name(versions.source[version_sel].label, version_sel, val, sizeof val);
             } else {
                 u32 qw = 0, qh = 0; unsigned qbr = 0;
                 const vquality_t vq = vquality_get();
@@ -713,7 +864,8 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                 else          snprintf(val, sizeof val, "%s \xC2\xB7 %u Mbps",
                                        vquality_label(vq), qbr / 1000000u);
             }
-            const int vx = sx_[i] + UIS_W(row1[i] == F3_VERSION ? 70 : 66);
+            int vx = sx_[i] + UIS_W(row1[i] == F3_VERSION ? 70 : 66);
+            if (rec_v) vx = sx_[i] + UIS_W(15) + ttf_text_width(name, UIS_TF(12.0f)) + UIS_W(8);
             info_clip_text(vx, y, val, UIS_TF(12.5f), XMB_TEXT,
                            sx_[i] + sw_[i] - vx - UIS_W(24), true);
             drawTTF((u32)(sx_[i] + sw_[i] - UIS_W(18)), (u32)(y + UIS_H(1)),

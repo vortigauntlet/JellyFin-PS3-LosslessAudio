@@ -37,6 +37,7 @@
 #include "meminfo.h"   // read-ahead ring sizing
 #include "slog.h"
 #include "trickplay.h"
+#include "ui_buffering.h"
 
 extern void crash_log(const char *msg);
 
@@ -71,6 +72,10 @@ static inline void player_startup_flip(void) {
 // (where NV3089 is fine) still draws it in full.  The flip keeps the display
 // alive through the long vdec_open/stream stalls that follow.
 static inline void player_status_screen(const char *name, const char *msg) {
+    // With the spine gate on, the startup is one continuous presentation
+    // (render/ui_buffering.cpp) instead of a sequence of text screens; the
+    // callers name the step with player_startup_step() and this is not used.
+    if (buffering_active()) { (void)name; (void)msg; buffering_frame(); return; }
 #if !BUILD_FOR_RPCS3
     drawHeader();
     drawTextf(40, 100, "%.70s", name);
@@ -79,6 +84,24 @@ static inline void player_status_screen(const char *name, const char *msg) {
     (void)name; (void)msg;
 #endif
     player_startup_flip();
+}
+
+// One startup step: the buffering presentation's label when it is running,
+// the old status line otherwise.
+static void player_startup_step(const char *name, const char *label,
+                                const char *old_msg) {
+    if (buffering_active()) {
+        buffering_step(label, false, NULL);
+        buffering_frame();
+    } else {
+        player_status_screen(name, old_msg);
+    }
+}
+
+// Leaving startup before playback (an error, or the user backed out): fade
+// the presentation out quickly so the error screen does not cut into it.
+static void player_startup_abort(void) {
+    if (buffering_active()) buffering_finish(false);
 }
 
 // -------------------------------------------------------
@@ -155,6 +178,14 @@ static bool player_stream_wait(unsigned elapsed_ms)
     poll_buttons();                          // refresh btn_cur/btn_prev
     if (BTN_PRESSED(circle)) return false;   // user gave up: abort the open
 
+    if (buffering_active()) {
+        char lab[48];
+        snprintf(lab, sizeof lab, "Waiting for the server \xC2\xB7 %us",
+                 elapsed_ms / 1000u);
+        buffering_step(lab, false, "Cancel");
+        buffering_frame();
+        return true;
+    }
     char msg[96];
     snprintf(msg, sizeof(msg),
              "Waiting for the server... %us   (Circle to cancel)",
@@ -300,7 +331,11 @@ void show_player(const JFItem *item, u32 resume_secs,
     build_stream_url(url, sizeof(url), &ps, (u64)resume_secs * 10000000ULL);
     plog_url("url", url);
 
-    player_status_screen(item->name, "Initializing decoder...");
+    // The buffering presentation starts here and runs until the first frame
+    // (spine gate on; the gate off keeps the status lines below).  It reuses
+    // the detail page's artwork, which is still in video memory.
+    if (g_spine_on) buffering_begin(item->id, item->name);
+    player_startup_step(item->name, "Preparing", "Initializing decoder...");
 
     // Release the UI thumbnail cache (joins its fetch thread, frees ~15 MB
     // of card bitmaps) — the decoder + jitter buffer below need every MB,
@@ -320,6 +355,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     plog("show_player: vdec_open");
     if (!vdec_open()) {
         plog("show_player: vdec_open FAILED");
+        player_startup_abort();
         vdec_close();
         thumb_cache_init();
         show_error("VDEC init failed.", "See /dev_hdd0/tmp/player_log.txt");
@@ -340,7 +376,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     plog("show_player: audio_open done");
     crash_log("p5 audio_open OK");
 
-    player_status_screen(item->name, "Connecting to stream...");
+    player_startup_step(item->name, "Connecting", "Connecting to stream...");
 
     crash_log("p6 stream_open begin");
     plog("show_player: stream_open");
@@ -350,6 +386,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     stream_set_wait_cb(NULL);
     if (ps.sock < 0) {
         plog("show_player: stream_open FAILED");
+        player_startup_abort();
         adec_stop();
         audio_close();
         vdec_close();
@@ -361,7 +398,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     plog("show_player: stream_open OK");
     crash_log("p7 stream_open OK");
 
-    player_status_screen(item->name, "Streaming... START=stop");
+    player_startup_step(item->name, "Buffering", "Streaming... START=stop");
 
     video_reset();
     // Clear any avsync state (incl. the video-PTS base correction) left over
@@ -372,6 +409,7 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     if (!jbuf_alloc(ps.req_w, ps.req_h)) {
         plog("show_player: jbuf_alloc FAILED");
+        player_startup_abort();
         netClose(ps.sock);
         adec_stop();
         audio_close();
@@ -431,6 +469,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     player_prefill(&ps, true, 0x7FFFFFFF);
 
     if (!ps.playing) {
+        player_startup_abort();
         vid_gpu_free();
         decode_ring_free();
         jbuf_free();
@@ -471,6 +510,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         int last_pct       = -1;
         plog("preroll: filling read-ahead ring");
         init_btns();
+        if (buffering_active()) buffering_step("Buffering", true, "Start now");
         while (running && ps.playing && decode_ring_fill() < target &&
                timing_get_us() < deadline) {
             sysUtilCheckCallback();
@@ -488,7 +528,12 @@ void show_player(const JFItem *item, u32 resume_secs,
             // loop is doing nothing but showing progress.
             u64 now = timing_get_us();
             int pct = decode_ring_fill() * 100 / (decode_ring_cap() ? decode_ring_cap() : 1);
-            if (pct != last_pct && now - last_draw_us > 250000ULL) {
+            if (buffering_active()) {
+                // The presentation animates for the whole wait: ~30 fps,
+                // paced by its own flips, with the fill as its progress.
+                buffering_progress((float)pct / 90.0f);
+                buffering_frame_paced(33000ULL);
+            } else if (pct != last_pct && now - last_draw_us > 250000ULL) {
                 last_draw_us = now;
                 last_pct     = pct;
                 char msg[64];
@@ -506,6 +551,9 @@ void show_player(const JFItem *item, u32 resume_secs,
         }
         init_btns();
     }
+    // Ready (or skipped with O, or the deadline): close the ring and fade.
+    // The decode thread keeps filling the ring while the outro plays.
+    if (buffering_active()) buffering_finish(ps.playing);
 
     // ---- Spawn audio thread ----
     AudioCtx         aud_ctx = { &ps.playing, &ps.paused };

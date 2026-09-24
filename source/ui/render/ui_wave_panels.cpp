@@ -146,3 +146,56 @@ void wave_draw_ramp_gpu(int x, int y, int w, int h, u32 rgb, bool vertical,
     }
     rsxDrawVertexEnd(context);
 }
+
+// ---------------------------------------------------------------------------
+// Experience panels: the buffering screen's ring and mark, the music screen's
+// halo.  Same rules as everything above: immediate mode, GPU phase only.
+
+#include <math.h>
+#include "jf_logo_geom.h"
+
+void wave_draw_ring_arc_gpu(int cx, int cy, float r_px, float t_px,
+                            float a0, float arc, int segs,
+                            u32 rgb_tail, u8 a_tail, u32 rgb_head, u8 a_head) {
+    if (r_px <= 0.0f || t_px <= 0.0f || arc <= 0.0f || segs < 2 || !wave_imm_bind()) return;
+    if (arc > 1.0f) arc = 1.0f;
+    if (segs > 128) segs = 128;
+    const float ri = r_px - t_px * 0.5f, ro = r_px + t_px * 0.5f;
+    const float two_pi = 6.2831853f;
+    rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_STRIP);
+    for (int i = 0; i <= segs; i++) {
+        const float u = (float)i / (float)segs;             // tail 0 -> head 1
+        const float ang = (a0 + arc * u) * two_pi;
+        const float sx = sinf(ang), cy_ = -cosf(ang);       // 0 turns = up
+        const u32 rgb = panel_lerp_rgb(rgb_tail, rgb_head, u);
+        const u8  a   = (u8)((float)a_tail + ((float)a_head - (float)a_tail) * u + 0.5f);
+        panel_vert((float)cx + sx * ro, (float)cy + cy_ * ro, rgb, a);
+        panel_vert((float)cx + sx * ri, (float)cy + cy_ * ri, rgb, a);
+    }
+    rsxDrawVertexEnd(context);
+}
+
+void wave_draw_jf_logo_gpu(int cx, int cy, float half_w_px,
+                           u32 rgb_a, u32 rgb_b, u8 alpha) {
+    if (half_w_px <= 0.0f || !alpha || !wave_imm_bind()) return;
+    const float fx = (float)cx, fy = (float)cy, s = half_w_px;
+    // The logo's gradient runs from its upper left to its lower right; in
+    // mark units that is t = (x + 0.25 y) mapped from [-1.25, 1.25] to [0, 1].
+    #define LV(px, py) panel_vert(fx + (px) * s, fy + (py) * s, \
+        panel_lerp_rgb(rgb_a, rgb_b, ((px) + 0.25f * (py) + 1.25f) / 2.5f), alpha)
+    rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_STRIP);
+    for (int i = 0; i <= JF_LOGO_N; i++) {
+        const int k = i % JF_LOGO_N;
+        LV(JF_LOGO_OUTER[k][0], JF_LOGO_OUTER[k][1]);
+        LV(JF_LOGO_HOLE[k][0],  JF_LOGO_HOLE[k][1]);
+    }
+    rsxDrawVertexEnd(context);
+    rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_FAN);
+    LV(JF_LOGO_INNER_C[0], JF_LOGO_INNER_C[1]);
+    for (int i = 0; i <= JF_LOGO_M; i++) {
+        const int k = i % JF_LOGO_M;
+        LV(JF_LOGO_INNER[k][0], JF_LOGO_INNER[k][1]);
+    }
+    rsxDrawVertexEnd(context);
+    #undef LV
+}

@@ -392,9 +392,33 @@ bool ui_gpu_tex_upload(int slot, const Bitmap *bm)
     return true;
 }
 
+static char s_tex_tag[GPU_TEX_SLOTS][64];
+
 void ui_gpu_tex_clear(int slot)
 {
-    if (slot >= 0 && slot < GPU_TEX_SLOTS) s_tex[slot].w = 0;
+    if (slot >= 0 && slot < GPU_TEX_SLOTS) { s_tex[slot].w = 0; s_tex_tag[slot][0] = 0; }
+}
+
+void ui_gpu_tex_set_tag(int slot, const char *item_id)
+{
+    if (slot < 0 || slot >= GPU_TEX_SLOTS) return;
+    snprintf(s_tex_tag[slot], sizeof s_tex_tag[slot], "%s", item_id ? item_id : "");
+}
+
+const char *ui_gpu_tex_tag(int slot)
+{
+    if (slot < 0 || slot >= GPU_TEX_SLOTS || !s_tex[slot].w) return "";
+    return s_tex_tag[slot];
+}
+
+bool ui_gpu_tex_draw_crop(int slot, int x, int y, int w, int h,
+                          float v_top, float v_bot)
+{
+    if (!s_ready || slot < 0 || slot >= GPU_TEX_SLOTS) return false;
+    const GpuTex *t = &s_tex[slot];
+    if (!t->w) return false;
+    ui_card_gpu_draw_ex(t->off, t->w, t->h, t->pitch, x, y, w, h, v_top, v_bot, 255);
+    return true;
 }
 
 bool ui_gpu_tex_draw(int slot, int x, int y, int w, int h)

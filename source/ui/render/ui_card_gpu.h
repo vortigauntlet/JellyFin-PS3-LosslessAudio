@@ -99,3 +99,14 @@ bool ui_gpu_tex_draw(int slot, int x, int y, int w, int h);
 // The same at a constant opacity (255 = ui_gpu_tex_draw).  Item detail
 // fades its backdrop in as the spine arrives at L3.
 bool ui_gpu_tex_draw_a(int slot, int x, int y, int w, int h, u8 alpha);
+
+// Which item's art a slot holds, so a screen other than detail (the player's
+// buffering screen) can reuse it without guessing.  Set by whoever uploads;
+// cleared by ui_gpu_tex_clear().  "" = unknown / empty.
+void        ui_gpu_tex_set_tag(int slot, const char *item_id);
+const char *ui_gpu_tex_tag(int slot);
+// The slot's texture drawn filling (x, y, w, h) with the rows v_top..v_bot
+// only -- a portrait poster cropped to a wide band.  Opaque (no constant
+// blend colour), LINEAR.
+bool ui_gpu_tex_draw_crop(int slot, int x, int y, int w, int h,
+                          float v_top, float v_bot);

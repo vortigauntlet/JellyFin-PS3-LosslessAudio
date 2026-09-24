@@ -59,7 +59,8 @@ all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
-     test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget
+     test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
+     test_experience
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -255,6 +256,7 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_depth
 	./test_stream_budget
 	./test_facts
+	./test_experience
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -264,7 +266,7 @@ clean:
 	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
 	      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient \
-	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
+	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
@@ -418,6 +420,13 @@ test_wave_gel: test_wave_gel.c $(JW_HDRS) $(WAVE_HDRS)
 # The spine (README 2.9 depth model): per-level geometry, the divider/label
 # clearance through a transition, slot falloff and the eased motion clock.
 # Header-only pure C, like the JellyWave headers above.
+# The experience pass (render/art_colour.h, buffer_anim.h, experience.h):
+# artwork accent extraction and its cache, the buffering presentation's state
+# machine, the version selector's words and the ambient screensaver.
+test_experience: test_experience.c ../source/ui/render/art_colour.h \
+                 ../source/ui/render/buffer_anim.h ../source/ui/render/experience.h
+	$(CC) $(CFLAGS) -Wextra -o $@ test_experience.c -lm
+
 test_spine: test_spine.c ../source/ui/render/spine.h
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_spine.c -lm
 

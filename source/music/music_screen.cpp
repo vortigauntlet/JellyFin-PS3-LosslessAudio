@@ -21,6 +21,78 @@
 #include "music_fft.h"
 #include "plog.h"
 #include "timing.h"
+#include "thumbnail_cache.h"
+#include "ui_art.h"
+#include "ui_card_gpu.h"   // ui_card_gpu_ready
+
+// -------------------------------------------------------
+// The atmosphere: the whole screen listening, not a widget
+// -------------------------------------------------------
+//
+// The album art's accent (render/art_colour.h, sampled once per album from the
+// thumbnail already in main memory) tints the visualiser, the artist line and
+// the seek bar, and lights two soft GPU layers over the wave: a halo behind
+// the cover and a low wash along the floor.  Both breathe with the music --
+// their size and opacity follow the visualiser's OWN band levels
+// (music_viz_bands, already computed for the bars), smoothed here with a fast
+// attack and a slow release so the room swells with the song rather than
+// flickering on every transient.  No new DSP, no audio-pipeline change, and
+// the JellyWave renderer is untouched: these are immediate-mode fans drawn
+// after it, in the GPU phase.  With the spine gate off the screen is exactly
+// as it was.
+
+static art_palette s_mpal;          // this frame's palette
+static float       s_energy = 0.0f; // 0..1, smoothed
+static u64         s_energy_us = 0;
+
+// The size the cover is fetched at -- the same rule as xmb_cpu_blit_thumb, so
+// this reads the very bitmap that is on screen and fetches nothing new.
+static const Bitmap *music_art_bitmap(const char *art_id, int A) {
+    int rw = A, rh = A, cap = thumb_max_square();
+    if (rw > cap || rh > cap || (size_t)rw * rh > (size_t)cap * cap) {
+        rw = rw < cap ? rw : cap;
+        rh = rh < cap ? rh : cap;
+    }
+    return thumb_get(art_id, rw, rh);
+}
+
+static void music_atmos_update(const char *art_id, int A) {
+    s_mpal = g_spine_on ? ui_art_palette(art_id, music_art_bitmap(art_id, A))
+                        : ui_art_fallback();
+    // Loudness: the mean of the lower two thirds of the bands (where the
+    // beat and the body of a mix are), then attack ~90 ms / release ~700 ms.
+    float bands[MUSIC_VIZ_BANDS];
+    music_viz_bands(bands);
+    float sum = 0.0f;
+    const int nb = MUSIC_VIZ_BANDS * 2 / 3;
+    for (int i = 0; i < nb; i++) sum += bands[i];
+    float target = music_is_paused() ? 0.0f : sum / (float)nb * 1.6f;
+    if (target > 1.0f) target = 1.0f;
+    const u64 now = timing_get_us();
+    float dt = s_energy_us ? (float)(now - s_energy_us) : 16000.0f;
+    if (dt > 100000.0f) dt = 100000.0f;
+    s_energy_us = now;
+    const float tau = target > s_energy ? 90000.0f : 700000.0f;
+    const float k = dt / (tau + dt);
+    s_energy += (target - s_energy) * k;
+}
+
+// GPU phase: after wave_draw(), before the frame's rsxSync().
+static void music_atmos_gpu(int ax, int ay, int A) {
+    if (!g_spine_on) return;
+    const int W = (int)display_width, H = (int)display_height;
+    const float e = s_energy;
+    const u32 g = s_mpal.glow, d = s_mpal.deep;
+    // Halo behind the cover: grows ~8% and brightens with the music.
+    const int r = (int)((float)A * (0.92f + 0.08f * e));
+    wave_draw_glow_gpu(ax + A / 2, ay + A / 2, r, r,
+                       (u8)(g >> 16), (u8)(g >> 8), (u8)g, (u8)(46.0f + 58.0f * e));
+    // The floor: a wash in the deep shade over the bottom of the screen.
+    static const float fp[3] = { 0.0f, 0.55f, 1.0f };
+    const u8 fa[3] = { 0, (u8)(40.0f + 40.0f * e), (u8)(90.0f + 70.0f * e) };
+    const int fy = (int)(H * 0.58f);
+    wave_draw_ramp_gpu(0, fy, W, H - fy, d, true, 3, fp, fa);
+}
 
 // -------------------------------------------------------
 // Small local helpers
@@ -145,7 +217,7 @@ static void draw_visualizer(int x, int baseline, int width, int max_h) {
         int h = UIS_H(2) + (int)(bands[i] * (float)(max_h - 2));
         int bx = x + i * (bw + gap);
         int by = baseline - h;
-        drawRect((u32)bx, (u32)by, (u32)bw, (u32)h, XMB_ACCENT);
+        drawRect((u32)bx, (u32)by, (u32)bw, (u32)h, s_mpal.accent);
         // Lighter 2px cap on any bar with real energy.  This was a hardcoded
         // lilac (0x00C4B5F7) that ignored the theme entirely -- harmless under
         // XMB wave, plainly wrong under Golden Age, where it put a purple cap
@@ -438,7 +510,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     draw_clipped((u32)tx, (u32)title_top, t->name, UIS_TF(32), XMB_WHITE, col_w, true);
     if (t->artist[0])
         draw_clipped((u32)tx, (u32)(title_top + UIS_H(48)), t->artist, UIS_TF(20),
-                     XMB_ACCENT, col_w);
+                     s_mpal.accent, col_w);
     {
         char line[160] = "";
         if (ctx->title[0]) snprintf(line, sizeof(line), "%s", ctx->title);
@@ -609,7 +681,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         int fill = (duration > 0) ? (int)((u64)bw * shown / duration) : 0;
         if (fill > bw) fill = bw;
         if (fill > 0)
-            drawRect((u32)bx0, (u32)by, (u32)fill, UIS_H(4), XMB_ACCENT);
+            drawRect((u32)bx0, (u32)by, (u32)fill, UIS_H(4), s_mpal.accent);
         fill_circle(bx0 + fill, by + UIS_H(2), UIS_H(6), XMB_WHITE);
 
         drawTTF((u32)rx0, (u32)(by - UIS_H(6)), ts, UIS_TF(14),
@@ -802,6 +874,16 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         sysUtilCheckCallback();
         clearScreen(XMB_BG);
         wave_draw();
+        {
+            // The atmosphere follows the current track's album.  Same
+            // geometry draw_now_playing() puts the cover at.
+            int cur = music_current_index();
+            if (cur >= count) cur = count - 1;
+            if (cur < 0) cur = 0;
+            const int A = (int)(display_height * 0.42f);
+            music_atmos_update(s_tracks[cur].art_id, A);
+            music_atmos_gpu(UIS_W(40), (int)(display_height * 0.27f), A);
+        }
 
         hb_frame++;
         {

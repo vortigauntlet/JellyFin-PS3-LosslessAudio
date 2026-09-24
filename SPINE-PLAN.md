@@ -657,3 +657,187 @@ Host suite 33/33 (new `test_stream_budget`, a `BitRate` fixture in
    compensate). Check the XMB, spine, detail page and the player HUD at that value.
 3. The 1 Mbps sessions: if they recur, check the network and server at the time
    (both connections failed together).
+
+---
+
+## 2026-09-24 — the experience pass, BUILT (host-checked), NOT DEPLOYED
+
+A UI polish pass on top of spine8. Everything is behind `jellyfin_spine.txt`
+= 1; with the gate off, every screen below is exactly as it was. **Not
+touched:** the JellyWave renderer (`ui_wave.cpp` has no change;
+`ui_wave.h` gained declarations only), its vertex buffers, `jw_upload()`, RSX
+ownership and fences, the audio-reactive wave (`ui_wave_audio.*`,
+`wave_audio.h`), the music DSP (`music_fft.*`), the 24p work, and the player's
+decode, audio, network and display paths.
+
+**Dropped by request:** picture-frame pause mode and welcome-back. Focus
+memory is unchanged.
+
+### New pure-C cores (host-tested: `tests/test_experience.c`, 5,920 checks)
+
+| file | what |
+| --- | --- |
+| `render/art_colour.h` | artwork accent extraction and a 24-entry LRU cache |
+| `render/buffer_anim.h` | the buffering presentation's state machine and every animated value |
+| `render/experience.h` | the version selector's words (`vpick_*`), the ambient screensaver's state and drift (`amb_*`) |
+| `render/jf_logo_geom.h` | the Jellyfin mark, tessellated by `tools/gen_jf_logo_geom.py` from the official SVG paths |
+
+### 1. Buffering screen (`render/ui_buffering.{h,cpp}`, `player/core/player.cpp`)
+
+The old startup was a series of text screens: the item name plus
+"Initializing decoder…", "Connecting…", "Buffering 47% (O: start now)". With
+the gate on, it is now one continuous presentation from Play to the first frame:
+
+- **Layers:** the detail page's backdrop, full screen and darkened. If there
+  is no backdrop, its poster cropped to a wide band; if neither, a pool of the
+  accent's deep shade. Then a black veil ramp, a breathing glow, a thin ring
+  track, and a gradient arc turning slowly (one turn per 2.6 s). The arc's
+  tail is transparent; its head is the artwork's accent. At the centre is the
+  Jellyfin mark, graphic only. The eyebrow reads PREPARING, CONNECTING,
+  "Waiting for the server · 12s", then BUFFERING with the percentage under it.
+  The title sits bottom-left, and the O hint shows Start now or Cancel.
+- **Motion:**
+  - The arc grows with the read-ahead ring's fill, and the displayed
+    percentage eases (220 ms) and never decreases.
+  - When ready, the arc closes (220 ms), the rotation decelerates to rest with
+    no jolt, the mark pulses once (+7%), and everything fades (250 ms).
+  - The loading phase lasts exactly as long as the player loads. An almost
+    instant ready is held to 450 ms counted from the first frame, so there is
+    no one-frame flash; a slow start adds nothing.
+  - A cancel or error fades in 180 ms before the error screen.
+- **Artwork:** reused only when `ui_gpu_tex` is tagged with THIS item's id.
+  Detail now tags both slots. After an auto-advance to the next episode the
+  slots still hold the previous episode's art, so that start gets the plain
+  background, never the wrong picture.
+- **Cost:** GPU only, from what is already in VRAM. Per frame that is one
+  textured quad, three ramp stops, two glow fans, two ring strips (≤ 340
+  vertices) and the mark (244 vertices, immediate mode), then one `rsxSync`
+  for the text. There is no decode, allocation, framebuffer read or vertex
+  buffer. Pre-roll draws at ≤ 30 fps (`buffering_frame_paced(33 ms)`) and
+  waits only for its own previous flip. The blocking steps before pre-roll
+  (vdec_open, stream_open, prefill) each show one frame, as before.
+- **Emulator:** frames keep `player_startup_flip()`'s RPCS3 `rsxSync` rule. No
+  NV3089 bitmap-font blits are used; the text is TTF runs.
+
+### 2. Artwork colour (`render/art_colour.h`, `render/ui_art.{h,cpp}`)
+
+- **Sampling:** at most 24×24 points on a grid inside an 8% border, from the
+  bitmap already in MAIN memory, never VRAM.
+- **Choosing the colour:** samples are binned into 12 hue buckets, weighted by
+  saturation² × brightness. Near-black and near-white samples do not vote. The
+  winning bucket is smoothed with its neighbours and its mean colour is pushed
+  into a readable band, giving three shades: accent (L 0.62), glow (0.46) and
+  deep (0.16).
+- **Fallback:** the theme accent exactly. It is used when there are no pixels,
+  when the image is invalid, or when less than ~8% of it is clearly coloured.
+- **Cache:** analysed once per image id. An image that has not loaded yet is
+  not cached; a colourless one is cached as the fallback.
+- **Fed from:** detail's poster, before it goes to VRAM, and the thumbnail
+  cache (music covers, screensaver posters).
+- **Used by:** the buffering ring, arc and glow, the music atmosphere, and the
+  screensaver's halo.
+
+### 3. Version selector (`xmb/ui_info.cpp`)
+
+It uses the same modal, input and result as before. The version Play already
+uses (source[0], Jellyfin's default order) now stands under **RECOMMENDED**
+with a PLAY tag. Its description is its default audio track's DisplayTitle,
+reworded ("English · DTS-HD MA · 5.1", without the Default/Forced/External
+flags). The rest are listed under **OTHER VERSIONS**, each with its audio
+words, in a 6-row window with a range mark. An empty name becomes "Version N".
+No resolution or frame rate is shown, because a source does not report them
+per version (`JFMediaSource` has none). The detail page's Version selector is
+widened to 260; its label reads "Recommended" (accent) before the name when the recommended one is
+chosen. Items with a single version still show no selector.
+
+### 4. Music atmosphere (`music/music_screen.cpp`)
+
+- **Colour:** the album's accent tints the visualiser bars, the artist line
+  and the seek fill.
+- **Light:** two GPU layers over the wave. One is a halo behind the cover that
+  grows about 8% and brightens with the music. The other is a floor wash in the
+  deep shade.
+- **What drives them:** `music_viz_bands()`, the bars' own data, averaged over
+  the lower two thirds. Attack is 90 ms and release 700 ms, so it swells
+  rather than flickers, and it falls to rest when paused.
+- **Unchanged:** no new DSP, no change to the audio pipeline or the wave.
+
+### 5. Ambient screensaver (`xmb/ui_ambient.cpp`)
+
+- **When it starts:** after 3 idle minutes on the XMB. Set this in
+  `jellyfin_ambient.txt`, in minutes; 0 turns it off. A modal or time spent in
+  another screen (detail, music, a film) counts as activity.
+- **Going in:** the UI dissolves under a black cover over 0.7 s. The cover
+  then lifts to 58%, so the wave shows dimmed, while one poster at a time
+  drifts in. Each poster is on screen for 16 s: ±18 px, +4%, a 1.8 s
+  cross-dissolve, a glow in its own colour and a faint reflection. The lockup,
+  the clock and one line of metadata stay up.
+- **Coming back:** any button dissolves it back in 0.7 s. That press does
+  nothing else.
+- **Artwork:** posters Home already has (Continue Watching, Next Up, Recently
+  Added Movies and Shows; 4 each, de-duplicated). They are requested at the
+  Home queue's cache size, so nothing new is fetched. If Home was never
+  visited there are no posters, only the dimmed wave and clock.
+- **Cost:** while it runs, the XMB's own phases are skipped, so a frame is
+  cheaper than a normal one. The dissolve is one blended quad after the text
+  flush, FIFO-ordered, with no extra fence.
+
+### Tests and checks
+
+- `test_experience` (new, in `all` and `check`): 5,920 checks, 0 failures.
+  - **Artwork:** dominant colour (red on black, blue sky over grey, the
+    majority hue), stride, determinism, the alpha byte ignored, NULL/zero/
+    negative/stride-invalid input, greyscale/black/white/speck fallback,
+    caching (one analysis over 1,000 lookups, late art analysed once,
+    colourless art cached, LRU).
+  - **Buffering:** 0 → loading → ready, % never decreasing, rotation, one
+    subtle pulse, no jolt at settle, an instant ready held and not flashed, a
+    90 s load, a 3 s frame gap, cancel (quick, the ring not completed, final),
+    and determinism.
+  - **Version words:** one, several and missing metadata.
+  - **Screensaver:** idle, dissolve, swallow, an interrupted dissolve, off, and
+    slides.
+- Host suite: 29 of 29 runnable tests pass. The five decode tests and
+  `test_dts_stream` need ffmpeg tone files (no ffmpeg in the environment that
+  ran them). `test_bg_gradient` / `test_month_bg` are still missing from the
+  tree, as before.
+- **PS3 build: NOT RUN.** There was no PSL1GHT toolchain in the environment.
+  Instead, every new and edited translation unit, plus every file in
+  `source/ui`, `source/player` and `source/music`, passed a host
+  `g++ -fsyntax-only` against the real PSL1GHT headers. The only exception is
+  `theme.cpp`, which is untouched and trips on a newlib/glibc `MAXPATHLEN`
+  difference. That is a type and API check, not a PPU build. **Do the clean
+  serial build first**; the new objects are `ui_art.o`, `ui_buffering.o` and
+  `ui_ambient.o`.
+
+### Needs the console / TV
+
+1. **Clean PS3 build.** The census should stay at 48 warnings. Check none are
+   in the new files.
+2. **Buffering screen on hardware:**
+   - The first frame after Play shows the detail backdrop darkened, with the
+     ring and mark centred.
+   - The ring turns smoothly through a long pre-roll, and `preroll:` timings do
+     not move against spine8 (the draw is ≤ 30 fps, GPU only).
+   - Circle = Start now still works.
+   - The outro is ~0.45 s and the first video frame follows cleanly, with no
+     stale frame and no flash.
+   - Errors: stream_open cancel and a vdec failure fade quickly into the error
+     screen.
+   - Next-episode auto-advance shows the plain background.
+3. **Mark and ring legibility at TV distance:** the mark is 68 px wide and the
+   ring 128 px, both authored at 720p. Check the ring's 3 px stroke at 480p/576i.
+4. **Accent choice on real posters:** check that it reads well and is never
+   muddy. The fallback is the theme accent.
+5. **Music:** the halo and floor breathe with the music without pumping. Check
+   the frame cost against spine8 (two fans and a ramp).
+6. **Screensaver:**
+   - It starts after 3 minutes and a press dissolves it back with the press
+     swallowed.
+   - Posters load (cached at the Home queue's size) and drift smoothly.
+   - Constant-alpha posters rely on `rsxSetBlendColor`, the same unproven state
+     as spine6's.
+   - The reflection's mirrored UVs.
+   - `xmb:` cost while ambient: `bpx` must not move.
+7. **Version selector with 2+ versions:** the layout, the 6-row window, and
+   that X plays the one chosen.

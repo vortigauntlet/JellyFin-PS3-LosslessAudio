@@ -572,8 +572,14 @@ void ui_run_xmb(void) {
 
         poll_buttons();
         spine_frame_begin();   // one depth sample for the whole frame
+        // The ambient screensaver: a press that wakes it does nothing else.
+        const bool amb_swallow =
+            ambient_update(!xmb_update_popup_active() && !g_overscan_calib);
+        const bool draw_ui = ambient_draw_ui();
         bool should_exit = false;
-        if (xmb_update_popup_active())
+        if (amb_swallow)
+            ;                           // it only brought the UI back
+        else if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
         else if (spine_at_base())
             should_exit = spine_input_base();
@@ -590,7 +596,10 @@ void ui_run_xmb(void) {
         slog_menu_tick();   // STATE: MENU ... (emulator-only, emits on change)
 
         // Card images go into the FIFO with the wave, ahead of the fence.
-        if (!g_overscan_calib) xmb_draw_gpu_phase(tab);
+        if (!g_overscan_calib) {
+            if (draw_ui) xmb_draw_gpu_phase(tab);
+            else         ambient_gpu();
+        }
 
         u64 t_sync0 = timing_get_us();
         rsxSync();
@@ -608,6 +617,8 @@ void ui_run_xmb(void) {
             // Full-screen overscan calibration takeover — no chrome/hints/tabs.
             xmb_overscan_calib_cpu();
             xmb_overscan_calib_text();
+        } else if (!draw_ui) {
+            ambient_text();
         } else {
             if (first_iter) crash_log("13.8 cpu_phase");
             xmb_draw_cpu_phase(tab);
@@ -642,6 +653,7 @@ void ui_run_xmb(void) {
         // is the wait, so the RSX gets the rest of the vblank to draw them.
         u64 t_tg0 = timing_get_us();
         ui_text_gpu_flush();
+        ambient_cover_over_ui();       // the dissolve, over everything
         s_fc.textgpu += timing_get_us() - t_tg0;
 
         u64 t_flip0 = timing_get_us();
