@@ -1076,3 +1076,27 @@ Clean serial build: 121 objects, 47 warnings, `0480`; 12 host tests pass.
 To check in the next log: `jellywave: ... worker=1 late=0`, `xmb: frame=16.7ms`
 on Home, `show_player: exit took N ms (reports done)`, `thumb: kept N posters`,
 `music_screen: ... draw=` well under 10 ms.
+
+### spine15 — distinct bands, calm wave, music focus mode, deployed 2026-09-24 (01aca02)
+
+feature/jellywave2 (the audio session's build, live as jellywave2-spine14) was
+merged first (9ceb0ca), so spine15 contains it.  On top of it:
+
+- **Distinct lows/mids/highs** (`wrm_distinct`, wave_render_map.h). The log had
+  drive 0.62->1.02 and ts 1.2-1.3 shared by every layer against +-15% per band.
+  Shared terms are now held near rest. Each layer follows one band group with its
+  own timing: near = lows (60/420 ms), middle = mids (45/260 ms), far = highs
+  (15/120 ms). Heights run 0.78 .. 1.75 / 1.65 / 2.10, with brightness per
+  layer. `test_distinct_framing` measures those caps in the same box.
+- **Speed**: console `jellyfin_jwspeed.txt` 50 -> 20. Music no longer speeds
+  the wave (ts pinned to 1.0).
+- **Music leave hang**: `music_stop()` no longer joins the stream thread
+  (which was stuck in HTTP on a failing network). It is joined by the next
+  `music_start()` / `show_player()`. crash_log breadcrumbs m0..m9.
+- **Music screen**: breadcrumb removed. Focus mode starts after 4 s without
+  input: Up Next fades out and the controls go to 35%, eased both ways. Leaving
+  dissolves to the wave over 350 ms.
+
+121 objects, 47 warnings, `0480`; 16 host tests pass.  `outputs/EBOOT.BIN.spine15`,
+1,735,712 bytes.  Next log: `wave: ... amp=a/b/c ... L=x/y/z` should show the
+three layers moving independently during music.
