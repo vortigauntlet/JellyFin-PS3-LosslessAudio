@@ -104,7 +104,7 @@ static bool load_with_fallback(const char *id, const char *leaf, T *out,
 
 bool dl_store_save_record(const DlRecord *r) {
     char path[DL_PATH_MAX];
-    char text[DL_URL_MAX + 1024];
+    char text[TEXT_MAX];          // url + two artwork urls + the rest: < 3 KB
     if (!dl_store_item_file(path, sizeof(path), r->id, DL_FILE_STATE)) return false;
     int n = dl_record_format(r, text, sizeof(text));
     return n > 0 && write_text_atomic(path, text, n);
@@ -157,6 +157,22 @@ bool dl_store_remove_item(const char *id) {
         if (path_join(path, sizeof(path), dir, k_item_files[i])) dl_plat_remove(path);
     dl_plat_rmdir(dir);
     return !dl_plat_exists(dir);
+}
+
+bool dl_store_save_blob(const char *id, const char *leaf,
+                        const uint8_t *data, int len) {
+    char path[DL_PATH_MAX], tmp[DL_PATH_MAX + 8];
+    if (!dl_store_item_file(path, sizeof(path), id, leaf)) return false;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (!dl_plat_truncate(tmp)) return false;
+    int fh = dl_plat_file_open_append(tmp);
+    if (fh < 0) return false;
+    bool ok = dl_plat_file_write(fh, data, len) == len;
+    ok = dl_plat_file_sync(fh) && ok;
+    dl_plat_file_close(fh);
+    if (!ok) { dl_plat_remove(tmp); return false; }
+    dl_plat_remove(path);
+    return dl_plat_rename(tmp, path);
 }
 
 bool dl_store_remove_partial(const char *id) {

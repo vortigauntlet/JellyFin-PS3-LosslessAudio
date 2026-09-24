@@ -4,6 +4,7 @@
 #include "dl_http.h"
 #include "dl_platform.h"
 #include "dl_store.h"
+#include "dl_ts.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -44,6 +45,7 @@ static bool     s_ready = false;
 static DlConfig s_cfg;
 static char     s_auth[512] = "";
 static volatile bool s_suspended = false;
+static volatile bool s_auth_hold = false;    // a 401 until the next login
 // Playback, from dl_playback_begin/end: a heavy stream blocks downloads
 // outright; a light one lets them run, paced to stream_share_bps.
 static volatile bool s_play_block = false;
@@ -88,8 +90,11 @@ bool dl_manager_ready(void) { return s_ready; }
 void dl_set_auth_header(const char *line) {
     LOCK();
     snprintf(s_auth, sizeof(s_auth), "%s", line ? line : "");
+    s_auth_hold = false;          // a new session: worth trying again
     UNLOCK();
 }
+
+bool dl_auth_held(void) { return s_auth_hold || !s_auth[0]; }
 
 void dl_set_suspended(bool suspended) { s_suspended = suspended; }
 
@@ -251,12 +256,22 @@ void dl_manager_shutdown(void) {
 // Control API
 // -------------------------------------------------------------------------
 
-DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint) {
+DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint,
+                    const DlExtras *extras) {
     if (!s_ready) return DL_E_NOT_READY;
     if (!meta || !url || !dl_id_valid(meta->id) || !meta->title[0])
         return DL_E_INVALID;
     DlUrl u;
     if (strlen(url) >= DL_URL_MAX || !dl_url_parse(url, &u)) return DL_E_INVALID;
+    if (extras) {
+        const char *arts[2] = { extras->poster_url, extras->backdrop_url };
+        for (int i = 0; i < 2; i++)
+            if (arts[i] && arts[i][0] &&
+                (strlen(arts[i]) >= DL_ART_URL_MAX || !dl_url_parse(arts[i], &u)))
+                return DL_E_INVALID;
+        if (extras->container && strlen(extras->container) >= sizeof(((DlRecord *)0)->container))
+            return DL_E_INVALID;
+    }
 
     DlResult res = DL_OK;
     LOCK();
@@ -304,6 +319,14 @@ DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint) {
     r.http_status = 0;
     r.attempts = 0;
     if (!requeue) r.bytes_total = size_hint;   // refined by the response
+    snprintf(r.container, sizeof(r.container), "%s",
+             extras && extras->container ? extras->container : "");
+    r.expect_secs = extras ? extras->expect_secs : 0;
+    snprintf(r.poster_url, sizeof(r.poster_url), "%s",
+             extras && extras->poster_url ? extras->poster_url : "");
+    snprintf(r.backdrop_url, sizeof(r.backdrop_url), "%s",
+             extras && extras->backdrop_url ? extras->backdrop_url : "");
+    r.art_tries = 0;
     if (!dl_store_save_record(&r)) {
         if (!requeue) dl_store_remove_item(meta->id);
         res = DL_E_IO;
@@ -491,8 +514,11 @@ static bool stop_requested(const Slot *s, Outcome *o) {
 }
 
 // Payload waiting in s_buf[0..*fill) goes to disk.
+static DlTsScan s_ts;            // the scan of the current attempt's bytes
+
 static DlError flush_buf(int fh, int *fill, uint64_t *on_disk) {
     if (*fill == 0) return DL_ERR_NONE;
+    dl_ts_feed(&s_ts, s_buf, *fill);   // exactly the bytes that go to disk
     if (dl_plat_file_write(fh, s_buf, *fill) != *fill)
         return space_ok(1) ? DL_ERR_DISK : DL_ERR_NO_SPACE;
     *on_disk += (uint64_t)*fill;
@@ -511,6 +537,163 @@ static void publish(Slot *s, const DlRecord *r, bool persist) {
     UNLOCK();
 }
 
+// -------------------------------------------------------------------------
+// Artwork: small whole-body GETs, best effort
+// -------------------------------------------------------------------------
+
+// GET a small resource whole into s_buf (the worker's buffer; the media
+// transfer has not started yet).  Returns its length, or -1 with *status
+// set to the HTTP status (0 = no response).  Bounded by the same deadlines
+// as the media transfer, and abandoned as soon as a stop is posted.
+static int fetch_small(Slot *s, const char *url, int *status, bool *is_image) {
+    *status = 0;
+    *is_image = false;
+    DlUrl u;
+    if (!dl_url_parse(url, &u)) return -1;
+    char auth[sizeof(s_auth)];
+    LOCK();
+    snprintf(auth, sizeof(auth), "%s", s_auth);
+    UNLOCK();
+    char req[DL_ART_URL_MAX + 1024];
+    int rlen = dl_http_build_get(req, sizeof(req), &u, 0, auth[0] ? auth : NULL);
+    if (rlen < 0) return -1;
+    int h = dl_plat_connect(u.host, u.port);
+    if (h < 0) return -1;
+    if (dl_plat_send(h, req, rlen) != rlen) { dl_plat_close(h); return -1; }
+
+    Outcome o;
+    static DlHeadReader hr;   // worker thread only
+    dl_head_reader_init(&hr);
+    int fill = 0;
+    uint64_t t0 = dl_plat_now_ms(), last_rx = t0;
+    while (!hr.done) {
+        if (stop_requested(s, &o)) { dl_plat_close(h); return -1; }
+        int n = dl_plat_recv(h, s_buf, DL_XFER_BUF);
+        if (n > 0) {
+            int used = dl_head_reader_feed(&hr, s_buf, n);
+            if (used < 0) { dl_plat_close(h); return -1; }
+            fill = n - used;
+            if (fill > 0) memmove(s_buf, s_buf + used, (size_t)fill);
+            continue;
+        }
+        if (n == DL_RECV_TIMEOUT && dl_plat_now_ms() - t0 < s_cfg.head_timeout_ms)
+            continue;
+        dl_plat_close(h);
+        return -1;
+    }
+    DlHttpHead hd;
+    if (!dl_http_parse_head(hr.buf, hr.n, &hd)) { dl_plat_close(h); return -1; }
+    *status = hd.status;
+    *is_image = hd.content_type[0] == '\0' ||
+                strncmp(hd.content_type, "image/", 6) == 0;
+    if (hd.status != 200) { dl_plat_close(h); return -1; }
+
+    DlChunked ch;
+    dl_chunked_init(&ch);
+    int got = 0;   // decoded payload at s_buf[0..got)
+    int n = fill;  // undecoded bytes at s_buf[got..got+n)
+    for (;;) {
+        if (n > 0) {
+            last_rx = dl_plat_now_ms();
+            if (hd.chunked) {
+                n = dl_chunked_decode(&ch, s_buf + got, n, s_buf + got);
+                if (n < 0) { dl_plat_close(h); return -1; }
+            }
+            got += n;
+            n = 0;
+        }
+        if ((hd.chunked && ch.done) ||
+            (hd.content_length >= 0 && got >= hd.content_length)) break;
+        if (got >= DL_XFER_BUF) { dl_plat_close(h); return -1; }   // too big
+        if (stop_requested(s, &o)) { dl_plat_close(h); return -1; }
+        n = dl_plat_recv(h, s_buf + got, DL_XFER_BUF - got);
+        if (n > 0) continue;
+        if (n == DL_RECV_TIMEOUT) {
+            n = 0;
+            if (dl_plat_now_ms() - last_rx < s_cfg.idle_timeout_ms) continue;
+            dl_plat_close(h);
+            return -1;
+        }
+        dl_plat_close(h);
+        if (n == DL_RECV_CLOSED && !hd.chunked && hd.content_length < 0) break;
+        return -1;       // cut short
+    }
+    dl_plat_close(h);
+    if (hd.content_length >= 0 && got > hd.content_length) got = (int)hd.content_length;
+    return got;
+}
+
+static bool looks_like_image(const uint8_t *p, int n) {
+    if (n >= 3 && p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF) return true;   // JPEG
+    if (n >= 8 && memcmp(p, "\x89PNG\r\n\x1a\n", 8) == 0) return true;      // PNG
+    return false;
+}
+
+// Fetch whatever artwork is still wanted.  Never fails the download: a
+// missing poster is a cosmetic loss, a missing film is not.  Each image is
+// fetched once -- an existing file is never re-requested -- and a failed
+// fetch is retried on later attempts only up to DL_ART_MAX_TRIES in total.
+static void fetch_artwork(Slot *s, DlRecord *r) {
+    struct { char *url; const char *leaf; bool poster; } art[2] = {
+        { r->poster_url,   DL_FILE_POSTER,   true  },
+        { r->backdrop_url, DL_FILE_BACKDROP, false },
+    };
+    bool changed = false;
+    for (int i = 0; i < 2; i++) {
+        if (!art[i].url[0]) continue;
+        char path[DL_PATH_MAX];
+        dl_store_item_file(path, sizeof(path), r->id, art[i].leaf);
+        bool stored = dl_plat_file_size(path) > 0;
+        if (!stored) {
+            int status = 0;
+            bool is_image = false;
+            int len = fetch_small(s, art[i].url, &status, &is_image);
+            if (len > 0 && is_image && looks_like_image(s_buf, len) &&
+                dl_store_save_blob(r->id, art[i].leaf, s_buf, len)) {
+                stored = true;
+                char b[64];
+                snprintf(b, sizeof(b), "%s saved, %d bytes", art[i].leaf, len);
+                logf_id(r->id, b);
+            } else if (status == 404 || status == 410) {
+                art[i].url[0] = '\0';          // the server has none: done
+                changed = true;
+                continue;
+            } else {
+                if (s->ctl != CTL_NONE || s_suspended || s_play_block) return;
+                r->art_tries++;
+                changed = true;
+                logf_id(r->id, "artwork fetch failed (non-fatal)");
+            }
+        }
+        if (stored) {
+            // Record it in the metadata only once the file is really there.
+            LOCK();
+            static DlMeta m;   // lock held
+            if (dl_store_load_meta(r->id, &m)) {
+                snprintf(art[i].poster ? m.poster : m.backdrop, sizeof(m.poster),
+                         "%s", art[i].leaf);
+                dl_store_save_meta(&m);
+            }
+            UNLOCK();
+            art[i].url[0] = '\0';
+            changed = true;
+        }
+    }
+    if (r->art_tries >= DL_ART_MAX_TRIES && (r->poster_url[0] || r->backdrop_url[0])) {
+        logf_id(r->id, "artwork given up");
+        r->poster_url[0] = r->backdrop_url[0] = '\0';
+        changed = true;
+    }
+    if (changed) {
+        LOCK();
+        snprintf(s->rec.poster_url, sizeof(s->rec.poster_url), "%s", r->poster_url);
+        snprintf(s->rec.backdrop_url, sizeof(s->rec.backdrop_url), "%s", r->backdrop_url);
+        s->rec.art_tries = r->art_tries;
+        dl_store_save_record(&s->rec);
+        UNLOCK();
+    }
+}
+
 static Outcome attempt(Slot *s, DlRecord *r) {
     char part[DL_PATH_MAX], media[DL_PATH_MAX];
     dl_store_item_file(part,  sizeof(part),  r->id, DL_FILE_PART);
@@ -525,12 +708,21 @@ static Outcome attempt(Slot *s, DlRecord *r) {
     }
     const uint64_t have_at_start = have;
     r->bytes_done = have;
+    // The TS scan is only meaningful for a file it saw from byte 0; set when
+    // the body starts writing at offset 0 (a fresh or restarted transfer).
+    dl_ts_init(&s_ts);
+    bool ts_from_zero = false;
+    const bool is_ts = strcmp(r->container, "ts") == 0;
 
     if (!space_ok(r->bytes_total > have ? r->bytes_total - have : 0))
         return fail(DL_ERR_NO_SPACE);
 
     DlUrl u;
     if (!dl_url_parse(r->url, &u)) return fail(DL_ERR_UNSUPPORTED);
+
+    // Artwork first, while the item is being set up: small, best effort,
+    // and the Downloads list can show the poster while the film arrives.
+    if (r->poster_url[0] || r->backdrop_url[0]) fetch_artwork(s, r);
 
     char auth[sizeof(s_auth)];
     LOCK();
@@ -652,6 +844,7 @@ static Outcome attempt(Slot *s, DlRecord *r) {
         uint64_t last_ckpt_bytes = have, last_space_bytes = have;
         const uint64_t t_start = dl_plat_now_ms();
         uint64_t last_ckpt_ms = t_start, last_rx_ms = t_start, last_pub_ms = t_start;
+        ts_from_zero = (have == 0);
         uint32_t pace_bps = 0;                  // rate the pacing is anchored to
         uint64_t pace_t0 = 0, pace_b0 = 0;
         bool finished = false, stopped = false;
@@ -781,6 +974,28 @@ verify:
         f.progressed = have > have_at_start;
         return f;
     }
+    if (is_ts) {
+        // Length says all the promised bytes came.  Is it the film?  Size must
+        // be whole packets; and when the scan saw the whole file, every packet
+        // must be in sync and the video must cover (nearly) the runtime.
+        bool short_media = false;
+        const bool ok = ts_from_zero
+            ? dl_ts_plausible(&s_ts, have, r->expect_secs, &short_media)
+            : (have % DL_TS_PACKET) == 0;
+        if (!ok) {
+            char b[96];
+            snprintf(b, sizeof(b), "not a complete TS: %s (span %llds of %us, %llu sync errors)",
+                     short_media ? "ended early" : "malformed",
+                     (long long)dl_ts_span_secs(&s_ts), (unsigned)r->expect_secs,
+                     (unsigned long long)s_ts.sync_errors);
+            logf_id(r->id, b);
+            // Never resumable: whatever the next attempt gets must start over.
+            dl_plat_truncate(part);
+            r->bytes_done = 0;
+            Outcome f = fail(DL_ERR_BAD_MEDIA, r->http_status);
+            return f;
+        }
+    }
     dl_plat_remove(media);
     if (!dl_plat_rename(part, media)) return fail(DL_ERR_DISK, r->http_status);
     r->bytes_done = have;
@@ -826,12 +1041,24 @@ static void finish(Slot *s, DlRecord *r, const Outcome *o) {
     } else {
         r->error = o->err;
         if (o->http_status) r->http_status = o->http_status;
+        const bool auth = o->err == DL_ERR_AUTH;
+        const uint32_t limit = o->err == DL_ERR_BAD_MEDIA ? DL_MEDIA_MAX_ATTEMPTS
+                                                          : DL_MAX_ATTEMPTS;
         if (dl_error_retryable(o->err)) {
             // Progress resets the count: only attempts that move nothing
-            // add up to giving up.
-            r->attempts = o->progressed ? 1 : r->attempts + 1;
+            // add up to giving up.  Not for bad media: a whole film that
+            // failed validation is exactly the attempt not to repeat freely.
+            r->attempts = (o->progressed && o->err != DL_ERR_BAD_MEDIA)
+                              ? 1 : r->attempts + 1;
         }
-        if (dl_error_retryable(o->err) && r->attempts < DL_MAX_ATTEMPTS) {
+        if (auth) {
+            // The session died, not the download: park it and hold the whole
+            // queue until someone signs in again (dl_set_auth_header).
+            apply(r, DL_EV_FAIL_RETRY);
+            s->retry_at_ms = 0;
+            s_auth_hold = true;
+            snprintf(msg, sizeof(msg), "sign-in expired (http 401): queue held");
+        } else if (dl_error_retryable(o->err) && r->attempts < limit) {
             apply(r, DL_EV_FAIL_RETRY);
             uint32_t wait = dl_backoff_ms(r->attempts);
             s->retry_at_ms = dl_plat_now_ms() + wait;
@@ -850,7 +1077,8 @@ static void finish(Slot *s, DlRecord *r, const Outcome *o) {
 }
 
 bool dl_manager_step(void) {
-    if (!s_ready || s_suspended || s_play_block) return false;
+    if (!s_ready || s_suspended || s_play_block || s_auth_hold || !s_auth[0])
+        return false;
     const uint64_t now = dl_plat_now_ms();
     LOCK();
     Slot *pick = NULL;

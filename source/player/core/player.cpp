@@ -35,6 +35,7 @@
 #include "thumbnail_cache.h"
 #include "meminfo.h"   // read-ahead ring sizing
 #include "slog.h"
+#include "stream_request.h"
 #include "dl_manager.h"   // offline downloads yield to playback
 
 extern void crash_log(const char *msg);
@@ -250,8 +251,8 @@ void show_player(const JFItem *item, u32 resume_secs,
         ps.source.tracks = ps.tracks;
         ps.source.runtime_secs = ps.total_secs;
     }
-    if (ps.have_tracks && ps.tracks.n_audio > 0)
-        ps.cur_audio = ps.tracks.default_audio;
+    // Default audio track, subtitles off -- the rule downloads share.
+    stream_select_initial(&ps.tracks, ps.have_tracks, &ps.cur_audio, &ps.cur_sub);
 
     // Continue Watching: open the transcode at the saved position.  The new
     // stream's PTS starts at 0, so play_base_us anchors the absolute clock —

@@ -57,6 +57,25 @@ typedef struct {
     char role[64];    // "as The Terminator" / "Director" (character or job)
 } JFPerson;
 
+// Identity of an item beyond its name -- what an offline copy needs to be
+// shown without the server (series / season / episode, year, runtime) and
+// where its artwork comes from.  Parsed from the same item DTO the info
+// screen already fetches, so it costs no extra request.
+typedef struct {
+    char     series_name[128];   // "" for non-episodes
+    char     series_id[64];
+    int      season;             // ParentIndexNumber, -1 = n/a
+    int      episode;            // IndexNumber, -1 = n/a
+    int      year;               // ProductionYear, 0 = unknown
+    unsigned runtime_secs;       // RunTimeTicks / 10^7, 0 = unknown
+    bool     has_backdrop;       // the item has its own BackdropImageTags
+    char     parent_backdrop_id[64];  // ParentBackdropItemId (episodes), or ""
+} JFItemIdentity;
+
+// Pure: never fails on missing fields (they keep their "unknown" values).
+// Returns false only for a NULL/empty document.
+bool jellyfin_parse_item_identity(const char *json, JFItemIdentity *out);
+
 // Full per-item detail (populated by jellyfin_fetch_item_detail)
 typedef struct {
     char overview[1024];       // Plot summary
@@ -70,6 +89,7 @@ typedef struct {
     char studios[256];         // "Universal Pictures, Original Film"
     JFPerson people[JF_MAX_PEOPLE];  // top-billed cast + key crew
     int      n_people;
+    JFItemIdentity identity;   // offline downloads (dl_request.cpp)
 } XMBItemDetail;
 
 bool jellyfin_fetch_item_detail(const char *item_id, XMBItemDetail *out);

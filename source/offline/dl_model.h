@@ -19,11 +19,17 @@
 #define DL_ID_MAX        64      // Jellyfin ids are 32 hex chars
 #define DL_URL_MAX       1024
 #define DL_TITLE_MAX     128
+#define DL_ART_URL_MAX   384     // artwork request (no token)
+// Artwork is best effort: this many failed fetches and it is given up on.
+#define DL_ART_MAX_TRIES 3
 
 // Consecutive failed attempts before a transient failure becomes FAILED.
 // Reset whenever an attempt moves bytes, so a flaky link that keeps making
 // progress never runs out of retries.
 #define DL_MAX_ATTEMPTS  8
+// A file that arrived whole but failed validation costs a whole film to try
+// again, and progress does not reset this count: one retry, then the user.
+#define DL_MEDIA_MAX_ATTEMPTS 2
 
 typedef enum {
     DL_QUEUED = 0,     // waiting its turn (or waiting out a retry backoff)
@@ -65,6 +71,10 @@ typedef enum {
     DL_ERR_DISK,          // could not open/write the media file
     DL_ERR_UNSUPPORTED,   // a URL this client cannot fetch (https)
     DL_ERR_CORRUPT,       // on-disk state could not be restored
+    // Stage 3
+    DL_ERR_BAD_MEDIA,     // arrived whole but is not a complete TS (e.g. the
+                          // server's transcode died part way): retried once
+                          // (DL_MEDIA_MAX_ATTEMPTS), then failed
     DL_ERR_COUNT
 } DlError;
 
@@ -81,6 +91,12 @@ typedef struct {
     uint64_t bytes_done;           // bytes on disk
     uint64_t bytes_total;          // 0 = not known yet
     uint8_t  resumable;            // server has honoured a Range request
+    // Stage 3.  All optional: a record without them loads as before.
+    char     container[8];         // "ts" -> the MPEG-TS checks at completion
+    uint32_t expect_secs;          // item runtime; 0 = unknown
+    char     poster_url[DL_ART_URL_MAX];    // artwork still to fetch ("" =
+    char     backdrop_url[DL_ART_URL_MAX];  //  fetched, none, or given up)
+    uint32_t art_tries;            // failed artwork fetches so far
 } DlRecord;
 
 // Everything needed to show and play an item with the server gone

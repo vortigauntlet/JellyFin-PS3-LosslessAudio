@@ -24,6 +24,13 @@ bool                     g_fake_verbose = false;
 int                      g_fake_data_recvs = 0;
 std::vector<int>         g_fake_write_sizes;
 void                   (*g_fake_on_sleep)(void) = nullptr;
+std::map<std::string, FakeResp> g_fake_routes;
+int                      g_fake_route_hits = 0;
+int                      g_fake_thread_starts = 0;
+int                      g_fake_thread_joins = 0;
+bool                     g_fake_thread_fail = false;
+bool                     g_fake_app_running = true;
+void                   (*g_fake_on_join)(void) = nullptr;
 
 void fake_reset(void) {
     g_fake_queue.clear();
@@ -36,6 +43,45 @@ void fake_reset(void) {
     g_fake_data_recvs = 0;
     g_fake_write_sizes.clear();
     g_fake_on_sleep = nullptr;
+    g_fake_routes.clear();
+    g_fake_route_hits = 0;
+    g_fake_thread_fail = false;
+    g_fake_app_running = true;
+}
+
+std::string fake_ts(int packets, double secs) {
+    std::string out;
+    const int every = 50;
+    const int starts = (packets + every - 1) / every;
+    for (int i = 0; i < packets; i++) {
+        uint8_t p[188];
+        memset(p, 0xFF, sizeof(p));
+        p[0] = 0x47;
+        p[1] = 0x01; p[2] = 0x00;        // PID 0x100
+        p[3] = 0x10 | (i & 0x0F);        // payload only
+        if (i % every == 0) {
+            p[1] |= 0x40;                // PUSI
+            uint64_t pts = 126000 + (uint64_t)((double)(i / every) *
+                            (secs * 90000.0) / (starts > 1 ? starts - 1 : 1));
+            uint8_t *e = p + 4;
+            e[0] = 0; e[1] = 0; e[2] = 1; e[3] = 0xE0;   // video PES
+            e[4] = 0; e[5] = 0; e[6] = 0x80; e[7] = 0x80; e[8] = 5;
+            e[9]  = (uint8_t)(0x21 | ((pts >> 29) & 0x0E));
+            e[10] = (uint8_t)(pts >> 22);
+            e[11] = (uint8_t)(((pts >> 14) & 0xFE) | 1);
+            e[12] = (uint8_t)(pts >> 7);
+            e[13] = (uint8_t)(((pts << 1) & 0xFE) | 1);
+        }
+        out.append((const char *)p, 188);
+    }
+    return out;
+}
+
+std::string fake_jpeg(int bytes) {
+    std::string j = "\xFF\xD8\xFF\xE0";
+    while ((int)j.size() < bytes - 2) j.push_back((char)(j.size() * 7));
+    j += "\xFF\xD9";
+    return j;
 }
 
 uint8_t fake_byte(uint64_t i) {
@@ -106,11 +152,29 @@ static uint64_t parse_range(const std::string &req, bool *has) {
     return strtoull(req.c_str() + p + 15, NULL, 10);
 }
 
+static void choose_response(Conn *c) {
+    for (auto &kv : g_fake_routes) {
+        if (c->req.find(kv.first) != std::string::npos) {
+            c->resp = kv.second;
+            g_fake_route_hits++;
+            return;
+        }
+    }
+    if (!g_fake_queue.empty()) {
+        c->resp = g_fake_queue.front();
+        g_fake_queue.erase(g_fake_queue.begin());
+    } else {
+        c->resp = g_fake_default;
+    }
+}
+
 static void build_response(Conn *c) {
+    choose_response(c);
     const FakeResp &r = c->resp;
     c->built = true;
     if (!r.raw.empty()) { c->out = r.raw; c->body_at = r.raw.size(); return; }
-    const int64_t total = r.total >= 0 ? r.total : g_fake_total;
+    const int64_t total = r.has_body ? (int64_t)r.body.size()
+                        : r.total >= 0 ? r.total : g_fake_total;
     bool has_range = false;
     uint64_t from = parse_range(c->req, &has_range);
     int status = 200;
@@ -128,7 +192,9 @@ static void build_response(Conn *c) {
     if (r.status) status = r.status;
     const int64_t claim_total = r.total_lie >= 0 ? r.total_lie : total;
     std::string body;
-    if (status == 200 || status == 206) {
+    if (r.has_body && (status == 200 || status == 206)) {
+        body = r.body.substr((size_t)start);
+    } else if (status == 200 || status == 206) {
         for (int64_t i = (int64_t)start; i < total; i++) body.push_back((char)fake_byte((uint64_t)i));
     } else if (status != 416) {
         body = "{\"error\":\"nope\"}";
@@ -177,14 +243,17 @@ static void build_response(Conn *c) {
 int dl_plat_connect(const char *host, int port) {
     (void)host; (void)port;
     g_fake_connects++;
-    FakeResp r = g_fake_default;
-    if (!g_fake_queue.empty()) { r = g_fake_queue.front(); g_fake_queue.erase(g_fake_queue.begin()); }
-    if (r.refuse) return -1;
+    // Refusal is decided at connect (the request is not known yet); the
+    // answer to an accepted connection is chosen from the request itself.
+    if (!g_fake_queue.empty()) {
+        if (g_fake_queue.front().refuse) { g_fake_queue.erase(g_fake_queue.begin()); return -1; }
+    } else if (g_fake_default.refuse) {
+        return -1;
+    }
     for (int i = 0; i < 8; i++) {
         if (!s_conns[i].open) {
             s_conns[i] = Conn();
             s_conns[i].open = true;
-            s_conns[i].resp = r;
             return i;
         }
     }
@@ -336,3 +405,19 @@ void     dl_plat_sleep_ms(unsigned ms) {
 void     dl_plat_lock(void) {}
 void     dl_plat_unlock(void) {}
 void     dl_plat_log(const char *line) { if (g_fake_verbose) printf("    [%s]\n", line); }
+
+// -------------------------------------------------------------------------
+// Worker thread: recorded, never run (tests call dl_svc_tick themselves)
+// -------------------------------------------------------------------------
+
+bool dl_plat_thread_start(void (*fn)(void)) {
+    (void)fn;
+    if (g_fake_thread_fail) return false;
+    g_fake_thread_starts++;
+    return true;
+}
+void dl_plat_thread_join(void) {
+    g_fake_thread_joins++;
+    if (g_fake_on_join) g_fake_on_join();
+}
+bool dl_plat_app_running(void) { return g_fake_app_running; }

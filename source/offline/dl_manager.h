@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>   // NULL
 #include <stdint.h>
 #include "dl_model.h"
 
@@ -73,7 +74,11 @@ bool dl_manager_ready(void);
 
 // The auth header sent with every transfer, as a complete header line
 // without CRLF.  Kept in memory only: records never contain a token.
+// Nothing transfers without one.  A 401 puts the queue on hold (the item goes
+// back to QUEUED, not FAILED: its session died, not the download) until the
+// next call here -- i.e. until the user signs in again.
 void dl_set_auth_header(const char *line);
+bool dl_auth_held(void);   // "sign in to continue downloads", for the UI
 
 // Queue an item.  meta is saved beside the media and must carry at least id
 // and title; url is the media request (http://, no token).  size_hint is the
@@ -81,7 +86,17 @@ void dl_set_auth_header(const char *line);
 // space now, so an item that cannot fit is refused up front rather than
 // failing half way.  A FAILED or CANCELLED item is re-queued with the new
 // url/meta, keeping any partial data.
-DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint);
+// Stage 3 extras, supplied by dl_request_build(): what completion must
+// validate and the artwork to fetch alongside.  NULL = none (plain file).
+typedef struct {
+    const char *container;      // "ts": validate as MPEG-TS at completion
+    uint32_t    expect_secs;    // runtime the TS must roughly cover; 0 = skip
+    const char *poster_url;     // fetched once, best effort; NULL/"" = none
+    const char *backdrop_url;
+} DlExtras;
+
+DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint,
+                    const DlExtras *extras = NULL);
 DlResult dl_pause(const char *id);
 DlResult dl_resume(const char *id);
 DlResult dl_cancel(const char *id);    // deletes partial data, keeps the entry

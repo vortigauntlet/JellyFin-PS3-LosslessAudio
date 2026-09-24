@@ -9,6 +9,7 @@
 // its offset -- so a finished file can be verified without keeping a copy.
 
 #include <stdint.h>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,8 @@ struct FakeResp {
     bool        close_now      = false;  // close before sending anything
     int         recv_chunk     = 7919;   // bytes per recv (prime: odd splits)
     int         timeout_every  = 0;      // >0: a timeout before every Nth data read
+    std::string body;                    // non-empty: serve this instead of the pattern
+    bool        has_body       = false;  // (so an intentionally empty body works too)
     // Called with the body offset reached, before each recv returns data.
     void      (*on_body)(int64_t body_sent) = nullptr;
 };
@@ -48,6 +51,21 @@ extern bool                     g_fake_verbose;
 extern int                      g_fake_data_recvs;  // recvs that returned bytes
 extern std::vector<int>         g_fake_write_sizes; // every media write, in order
 extern void                   (*g_fake_on_sleep)(void); // called on every dl_plat_sleep_ms
+// Requests whose path contains a key are answered by that route (artwork);
+// everything else by the queue, then the default.  Routes are not consumed.
+extern std::map<std::string, FakeResp> g_fake_routes;
+extern int                      g_fake_route_hits;
+// Worker thread hooks: the fake records the start instead of running it.
+extern int                      g_fake_thread_starts;
+extern int                      g_fake_thread_joins;
+extern bool                     g_fake_thread_fail;
+extern bool                     g_fake_app_running;
+extern void                   (*g_fake_on_join)(void);   // called inside dl_plat_thread_join
+
+// A syntactically valid MPEG-TS of `packets` packets whose video PES carry
+// PTS covering `secs` seconds (a PUSI+PTS every 50 packets).
+std::string fake_ts(int packets, double secs);
+std::string fake_jpeg(int bytes);
 
 void    fake_reset(void);
 uint8_t fake_byte(uint64_t offset);

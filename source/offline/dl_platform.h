@@ -70,3 +70,10 @@ void     dl_plat_sleep_ms(unsigned ms);
 void     dl_plat_lock(void);          // guards the manager's item table
 void     dl_plat_unlock(void);
 void     dl_plat_log(const char *line);
+
+// ---- the worker thread ----------------------------------------------------
+// One thread, started once by dl_service.cpp.  The host fake does not run
+// it: tests drive dl_svc_tick() directly.
+bool dl_plat_thread_start(void (*fn)(void));
+void dl_plat_thread_join(void);
+bool dl_plat_app_running(void);       // false once the app is quitting

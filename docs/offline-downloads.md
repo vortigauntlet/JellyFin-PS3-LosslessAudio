@@ -1,12 +1,16 @@
 # Offline Downloads — Design & Implementation
 
-Status: **Stages 1–2 implemented** (storage model, queue, state machine,
-persistence, resumable network transfer), host-tested, and compiled into the
-PS3 build. **Not yet user-visible**: nothing starts the service or enqueues
-anything until Stage 3 wires in the item page. With this build installed, the
-app behaves exactly as before and writes nothing new to the HDD. The player
-already reports its streams to the download manager (§5a), which only sets two
-flags while no service is running.
+Status: **Stages 1–3 implemented**: storage model, queue, state machine,
+persistence, resumable transfer, Jellyfin integration and service lifecycle.
+Host-tested and compiled into the PS3 build. **Not yet user-visible:** there is
+no DOWNLOAD FOR OFFLINE button (Stage 5), so nothing is ever enqueued. What a
+Stage 3 build does differently at runtime:
+
+* it starts the download service after `load_config()`. The worker creates
+  the store root on the HDD (§4), restores it, and then idles;
+* the player reports its streams to the download manager (§5a);
+* the info screen's existing item fetch also parses series/season/episode/
+  year/runtime (§7b). No extra request is made.
 
 ## 1. Goal
 
@@ -151,7 +155,8 @@ disk rather than the record's, because the record can lag by one checkpoint.
 | `416`, `*/N` with N bytes already here | already complete, so verify and finish |
 | `416` otherwise | discard, retry from 0 |
 | `text/*` / JSON with 200 | refused: an error page must not be saved as a film |
-| `401`/`403` | failed: `auth` |
+| `401` | `auth`: the item goes back to **queued** (not failed) and the whole queue **holds** until the next login (§7d) |
+| `403` | failed: `http` (this account may not have the item; no retry or re-login changes that) |
 | `404`/`410` | failed: `not_found` |
 | other `4xx` | failed: `http` |
 | `5xx`, `408`, `429` | retried: `server` |
@@ -182,6 +187,7 @@ buffer.
 **Completion.** The partial is renamed to `media.ts` only once its length
 matches Content-Length/Content-Range, or the terminating chunk arrived. A
 close-delimited body with no length is the one case where a close means done.
+Downloads requested through Stage 3 are then also validated as MPEG-TS (§7c).
 
 ### Write batching (from pkgi-ps3)
 
@@ -263,27 +269,174 @@ directory whose name is a valid id:
 
 Damaged items are never silently dropped, because they still hold HDD space.
 
-## 7. Compatibility (Stage 3 design)
+## 7. Stage 3: Jellyfin integration
 
-The download must be something the existing player can play, and the player
-consumes MPEG-TS (`video/ts_demux.cpp`) requested by `build_stream_url()` in
-`player/core/player_session.cpp`. That function is the capability engine: it
-decides from the quality ladder (`vquality`), the 1080p toggle and the surround
-mode whether video is copied or transcoded (`AllowVideoStreamCopy` with a
-bitrate ceiling) and whether HD audio is stream-copied. **Stage 3 reuses it and
-builds no second engine.** The plan is to split its query-string construction
-into a function the downloader can call with `StartTimeTicks=0` and no
-`PlaySessionId`. The server then makes the same original/remux/transcode
-decision it makes for playback, and the file on disk is exactly what the
-player would have streamed.
+```
+ item page (info screen)                  already loaded: item, detail, versions
+        |  dl_download_item(item, detail, version)          [dl_ps3.cpp]
+        v
+ dl_request_build()                                          [dl_request.cpp]
+   selection = version + stream_select_initial()   <- the player's track rule
+   decision  = stream_request_resolve(prefs, sel)  <- the player's decision
+   url       = stream_url_build(decision, StartTimeTicks=0, no PlaySessionId)
+   meta      = item + identity + detail + what the decision makes the file
+   extras    = container "ts", runtime, artwork URLs
+        |  dl_enqueue(meta, url, 0, extras)   disk writes only; returns at once
+        v
+ worker: artwork (best effort) -> media.ts.part -> length + TS validation
+        -> media.ts, COMPLETED
+```
 
-Consequence for resume: a stream-copied or transcoded `stream.ts` is produced
-live, so Jellyfin serves it as a `200` with no Range support, and an
-interrupted download of one restarts from zero. The transfer layer already
-handles that correctly (§5, tested). Byte-exact resume applies when the server
-honours Range, which is the case for static file responses. Stage 3 will
-evaluate time-offset resume (`StartTimeTicks` plus TS splicing) or HLS
-segments for transcodes.
+### 7a. One stream decision, shared
+
+`build_stream_url()` used to hold the whole stream decision inline, reading
+the player's state and the settings globals. That decision now lives in
+**`player/stream/stream_request.{h,cpp}`**. It was moved rather than
+rewritten: same code, same comments, and it stays pure, with no globals or I/O.
+
+| Step | Function | Used by |
+|---|---|---|
+| settings snapshot | `stream_prefs_current()` (player_session.cpp): `vquality_get()`, `hd1080_enabled()`, `surround_enabled()`, `surround_hd_preferred()`, display size | player, downloader |
+| initial tracks | `stream_select_initial()`: the version's default audio track, subtitles off | player (show_player), downloader |
+| decision | `stream_request_resolve()`: frame ceiling, profile/level, bitrate ceiling (0 = direct copy), AC-3/MP3 transcode or DTS/TrueHD stream copy, stream indices, MediaSourceId, LiveStreamId | player, downloader |
+| URL | `stream_url_build()`: the decision plus server, DeviceId, **PlaySessionId** and **StartTimeTicks** | player, downloader |
+
+`build_stream_url(ps, ticks)` is now a thin adapter. It snapshots the settings,
+passes the player's selection, keeps the frame ceiling its jitter buffer was
+sized for, and adds its session and offset. The downloader's adapter
+(`dl_request_build`) passes the same things with `StartTimeTicks=0` and no
+`PlaySessionId`. The server therefore makes the same original, remux or
+transcode choice, and `media.ts` is exactly what Play would have streamed from
+the start.
+
+**Proof, both ways:**
+
+* *Playback unchanged.* The pre-refactor `build_stream_url` was compiled on the
+  host, with its globals stubbed, as an oracle. The refactored path produced
+  byte-identical URLs on all **31,104** combinations of quality step, 1080p
+  toggle, surround mode (stereo / 5.1 / 5.1 with HD copy), display size, audio
+  track kind (DTS-HD, TrueHD, AC-3, E-AC-3, AAC), subtitle, version (none /
+  chosen / live), session and offset. Eleven of those URLs are frozen as
+  goldens in the test suite.
+* *Download = playback.* Over 1,620 combinations (quality × 1080p × surround ×
+  display × default-track kind × live source), the download's decision matches
+  Play's in every field, and its URL has the same path and parameters. The
+  only difference is that PlaySessionId is absent, and StartTimeTicks is 0 in
+  both. A resuming playback differs only in StartTimeTicks.
+
+**No playback session is created.** A download makes no PlaybackInfo call,
+because that would mint a PlaySessionId and open live streams just to
+download. The version list comes from the item DTO that the info screen
+already fetches with `jellyfin_fetch_media_sources`. It carries the same
+MediaSources/MediaStreams, parsed by the same `jellyfin_parse_media_sources`
+the player's PlaybackInfo response goes through. `stream.ts` without a
+PlaySessionId is a path the player already relies on when PlaybackInfo fails.
+Because `jellyfin_stop_transcode()` only acts on a PlaySessionId, a player
+seek can never kill a download's transcode.
+
+**Nothing is guessed.** `dl_request_build` refuses to build a request without
+a version. That version's tracks decide the audio track and the HD-copy
+choice, so guessing would silently differ from Play.
+
+Consistent with Play at the same moment: the quality is whatever
+`vquality_get()` holds, which is the per-title value once the info screen has
+restored it. A per-session HD veto (a coreless DTS track found earlier)
+applies to both, because the player's first URL is also built before it
+resets the veto.
+
+### 7b. Metadata and artwork
+
+`meta.txt` holds id, type, title, series and series id, season, episode,
+year, runtime, overview, and the item page's video/audio descriptions. It also
+holds what the **file** is: `ts`/`h264`, the audio codec actually requested
+(`mp3`/`ac3`, or `dts`/`truehd` when copied), the frame ceiling, the bitrate
+ceiling, MediaSourceId, AudioStreamIndex, the quality label, and the label of
+the track downloaded.
+
+Series, season, episode, year, runtime and backdrop source are parsed by
+`jellyfin_parse_item_identity()` (jellyfin_api.cpp, pure) from the item DTO
+that `jellyfin_fetch_item_detail()` already downloads for the info screen. They
+land in `XMBItemDetail.identity`, at no extra request. Missing fields keep
+"unknown" values (-1 / 0 / ""). The runtime falls back to the version's.
+
+Artwork is fetched by the worker, not the UI, as the first step of a transfer
+attempt:
+
+* **What:** the item's `Primary` image (`maxWidth=400&maxHeight=600`, aspect
+  kept), and a backdrop at `maxWidth=1280`: the item's own, or for an episode
+  the series backdrop it inherits (`ParentBackdropItemId`).
+* **How:** a whole-body GET into the worker's 512 KB buffer, sent with the
+  session header like every request. It is accepted only as `200` with
+  `image/*` and JPEG/PNG magic bytes, then written with the same atomic
+  `.tmp` + rename as records, as `poster.jpg`/`backdrop.jpg`. `meta.txt`
+  names an image only once its file exists. Stored as JPEG bytes and not
+  decoded: decoding is for whatever screen shows it (Stage 4/5, through the
+  existing image path).
+* **Once:** an image already on disk is never requested again, including when
+  a crash left its URL pending. A `404`/`410` means the server has none, and
+  it is not asked again. Other failures are retried on later attempts, **3
+  failed fetches in total** (persisted), and then given up.
+* **Never fatal:** artwork failures do not affect the media download.
+
+### 7c. Completion validation
+
+A live transcode is chunked with no length. When the server's ffmpeg dies
+part way, the response can still end cleanly, so "all promised bytes arrived"
+proves nothing. Every byte written goes through a streaming MPEG-TS scan
+(`dl_ts.cpp`, fed at each batched flush). The scan reads a few header bytes per
+188-byte packet and never re-reads the file. At completion:
+
+* size must be whole packets;
+* when the scan saw the whole file (the transfer started at byte 0; a
+  transcode always restarts there), every packet must start with `0x47` and
+  the video PES timestamps must be present;
+* the video PTS span must cover at least 90 % of the runtime, minus 10 s.
+  This is deliberately loose: its job is catching a transcode that died, and
+  a false alarm would re-download a whole film. 33-bit PTS wrap is handled.
+  Audio PES do not count.
+
+A failure is `bad_media` ("Server sent an incomplete video"). The partial is
+discarded and the item is retried **once**; after that it is FAILED for the
+user to decide. Unlike other errors, progress does not reset this count: a
+validation failure means a whole film was fetched, and that is exactly the
+attempt not to repeat freely. A byte-resumed file, which the scan did not see
+whole, gets the packet-size check only. This is not a checksum: Jellyfin
+provides none, and two transcodes of the same request are not
+byte-identical.
+
+### 7d. Service lifecycle
+
+The lifecycle is portable (`dl_service.cpp`, host-tested) and wired in
+`main.cpp`:
+
+| When | Call | Effect |
+|---|---|---|
+| after `load_config()` | `dl_service_start()` | starts the **one** worker thread (idempotent). The worker restores every item from the HDD: no network, off the UI thread, so the first frame never waits. Completed items are usable whatever the server's state; an interrupted item is back in QUEUED with its bytes. |
+| saved login, or login succeeded (before the main menu) | `dl_service_refresh_auth()` | installs the session header, and the queue runs |
+| main menu returns (logout / revoked) | `dl_service_refresh_auth()` | empty token, so the queue holds |
+| a download gets `401` | — | item back to QUEUED (`auth`), queue held until the next `refresh_auth` |
+| app exit (before `http_end`) | `dl_service_stop()` | worker told to stop. The active item parks in QUEUED with its data; the worker is joined and the manager shut down |
+
+Nothing transfers without a session. That is enforced in the manager itself
+(no auth header means no attempt), not only by the service. Roots are tried
+on the worker in order, and the first that proves writable wins (§4). With
+none, the service idles once a second and every `dl_*` call reports
+`DL_E_NOT_READY`.
+
+The worker runs at thread priority 1500, below every playback thread
+(700–1100). Playback gating (§5a) is unchanged and independent of all this.
+Heavy streams stop downloads and light ones pace them, now verified with URLs
+from the shared builder: light at 480p/360p only, and heavy at every step when
+an HD track is copied.
+
+### 7e. Resume and transcodes
+
+A stream-copied or transcoded `stream.ts` is produced live, so Jellyfin serves
+it as a `200` with no Range support. An interrupted download of one restarts
+from zero, which the transfer handles correctly (§5, tested). Byte-exact
+resume applies when the server honours Range. Time-offset resume
+(`StartTimeTicks` plus TS splicing) or HLS segments would change this; it is
+left as a measured decision for later, not assumed.
 
 ## 8. Stages
 
@@ -291,7 +444,7 @@ segments for transcodes.
 |---|---|---|
 | 1 | persistent storage model, states, queue, bookkeeping, tests | **done** |
 | 2 | network transfer, progress, retry, resume, cancellation, yielding to playback, batched writes | **done** (service built, not started; player gate live) |
-| 3 | Jellyfin integration: shared request builder, metadata + artwork capture, start the service after login, suspend around playback | next |
+| 3 | Jellyfin integration: shared stream decision, request builder, metadata + artwork, TS validation, service lifecycle, session hold | **done** (no UI entry point yet) |
 | 4 | offline library, offline startup path, playback of `media.ts` through the existing player (`stream_open` on a local file) | |
 | 5 | UI: item-page action, Downloads list with progress, Offline section | |
 
@@ -318,3 +471,88 @@ deletion (including the active item and unknown files), storage
 limits (up front, from the server's size, disk full mid-write, space draining
 mid-transfer), crash/restart recovery, damaged state, and offline startup.
 The suite runs clean under ASan and UBSan.
+
+Stage 3 adds:
+
+* **Stream selection:**
+  * goldens against the pre-refactor playback URL;
+  * download-equals-playback across 1,620 combinations (decision fields and
+    URL parameters);
+  * StartTimeTicks=0 with no PlaySessionId, and no token in the URL;
+  * refusal without a version, with a bad id, with a missing server, or when
+    the URL overflows;
+  * https refused at enqueue;
+  * gating classification of builder URLs at every quality.
+* **Metadata:**
+  * identity parsing, including "ParentIndexNumber is not IndexNumber";
+  * request metadata for an episode, and for a movie with optional fields
+    missing;
+  * a `meta.txt` round trip.
+* **Artwork:**
+  * saved and linked in meta, with the session header;
+  * 500, HTML and not-an-image responses are non-fatal;
+  * a 404 is not retried;
+  * oversized images are rejected;
+  * gives up after 3 tries, persisted across a restart;
+  * never re-fetched once on disk, including after a crash left the URL
+    pending.
+* **TS validation:**
+  * the scanner, fed in odd splits;
+  * garbage, no-PTS, audio-only PTS and PTS-wrap cases;
+  * a complete transcode is kept;
+  * a transcode that died part way becomes `bad_media`, is retried once, then
+    FAILED, and a retry succeeds;
+  * non-TS bodies and torn packets are rejected;
+  * unknown runtime;
+  * byte-resumed files, including one with a torn tail;
+  * a restart after the Range was ignored;
+  * a 500 is retried.
+* **Playback:** heavy playback parks a requested download, persisted, and it
+  resumes by Range afterwards.
+* **Session:**
+  * no session means no transfer;
+  * a 401 holds the queue (no other item is tried) and a fresh login releases
+    it;
+  * the auth header format.
+* **Lifecycle:**
+  * start once;
+  * restore happens on the worker, falls back past an unwritable root, and
+    touches no network;
+  * with the server down at boot, completed items stay usable and an
+    interrupted one is restored;
+  * no session means an idle worker;
+  * a download resumes when the server returns;
+  * logout holds the queue;
+  * stop suspends the worker while joining, is harmless twice, and can be
+    followed by a restart;
+  * thread start failure;
+  * no writable root.
+
+Mutation testing covered 38 deliberate breaks of Stage 3 logic (stream decision,
+request builder, metadata, artwork, TS scan and rule, bad-media limit, auth
+hold, service start/restore/stop, identity parser). 36 are caught. The other 2
+are equivalent, meaning the behaviour cannot change:
+
+* dropping the bad-media exclusion from the progress reset: that outcome never
+  reports progress;
+* dropping the no-root idle: the manager's own idle returns the same 1000 ms.
+
+**Build:** clean PS3 build with 0 errors. The warning set is identical to
+`main`'s (45).
+
+## 10. Remaining work
+
+* **Stage 4:** the Offline library, and playback of `media.ts` through the
+  existing player. The model is ready: `dl_list(.., completed_only)`,
+  `dl_load_meta`, `dl_media_path`, the stored artwork.
+* **Stage 5:** the DOWNLOAD FOR OFFLINE action on the info screen (it calls
+  `dl_download_item(item, &detail, &versions.source[version_sel])`), the
+  Downloads list, and the Offline section.
+* **To verify on hardware** (nothing here has run on a console yet):
+  * that `/dev_hdd0/jellyfin_offline` is writable (the log says which root
+    won);
+  * that a 25 Mbps-class download sustains near the measured ceiling;
+  * Jellyfin's handling of a `stream.ts` with no PlaySessionId running beside
+    a light playback from the same DeviceId;
+  * plugin "live" sources, which normally need PlaybackInfo to open a
+    LiveStreamId and so may refuse a download (surfaced as an HTTP failure).

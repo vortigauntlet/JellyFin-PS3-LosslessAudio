@@ -10,6 +10,8 @@
 #include "dl_service.h"
 #include "dl_manager.h"
 #include "dl_store.h"
+#include "dl_request.h"
+#include "stream_request.h"   // stream_prefs_current
 
 #include "../build_config.h"   // relative: source/ is not on the -I path
 #include "http.h"              // http_open_socket
@@ -199,11 +201,49 @@ void     dl_plat_unlock(void) { if (s_mtx_ok) sysMutexUnlock(s_mtx); }
 void     dl_plat_log(const char *line) { plog(line); }
 
 // -------------------------------------------------------------------------
-// Service
+// Worker thread
 // -------------------------------------------------------------------------
 
-// Where the store lives.  Tried in order; the first that can be created AND
-// written (dl_store_init writes a marker to prove it) wins.
+static sys_ppu_thread_t s_thread = 0;
+static void (*s_thread_fn)(void) = NULL;
+
+static void thread_entry(void *arg) {
+    (void)arg;
+    s_thread_fn();
+    sysThreadExit(0);
+}
+
+bool dl_plat_thread_start(void (*fn)(void)) {
+    s_thread_fn = fn;
+    static char name[] = "dl_worker";   // sysThreadCreate takes char*
+    // Priority 1500: below every playback thread (700-1100), so a download
+    // can never take the PPU from the player.  Same as pkgi-ps3's worker.
+    s32 rc = sysThreadCreate(&s_thread, thread_entry, NULL, 1500, 65536, 0, name);
+    if (rc != 0) {
+        char b[48];
+        snprintf(b, sizeof(b), "dl: worker create failed 0x%08x", (u32)rc);
+        plog(b);
+        s_thread = 0;
+        return false;
+    }
+    return true;
+}
+
+void dl_plat_thread_join(void) {
+    if (!s_thread) return;
+    u64 tret;
+    sysThreadJoin(s_thread, &tret);
+    s_thread = 0;
+}
+
+bool dl_plat_app_running(void) { return running != 0; }
+
+// -------------------------------------------------------------------------
+// Service glue (dl_service.h)
+// -------------------------------------------------------------------------
+
+// Where the store lives.  Tried in order on the worker; the first that can
+// be created AND written (dl_store_init writes a marker to prove it) wins.
 //
 //  Hardware: a directory of its own at the HDD root first.  Not /dev_hdd0/tmp
 //  -- that is scratch space (jf_paths.cpp) and a film is not scratch -- and
@@ -211,45 +251,18 @@ void     dl_plat_log(const char *line) { plog(line); }
 //  while the title runs.  /dev_hdd0/tmp is the fallback only because it is
 //  the one place this app has PROVEN writable on hardware.
 //  RPCS3: the USRDIR, where the emulator keeps everything else of ours.
-static const char *const k_roots[] = {
+static char s_fallback_root[DL_PATH_MAX] = "";
+static const char *s_roots[2] = {
 #if BUILD_FOR_RPCS3
     "/dev_hdd0/game/JFPS30000/USRDIR/jellyfin_offline",
 #else
     "/dev_hdd0/jellyfin_offline",
 #endif
-    NULL,   // jf_data_path("jellyfin_offline"), filled in at start
+    s_fallback_root,
 };
 
-static char             s_root[DL_PATH_MAX] = "";
-static sys_ppu_thread_t s_thread = 0;
-static volatile bool    s_run = false;
-
-static void worker_fn(void *arg) {
-    (void)arg;
-    while (s_run && running) {
-        if (dl_manager_step()) continue;       // did an attempt; look again
-        // Idle: sleep until something is due, in slices so stop is prompt.
-        uint32_t wait = dl_next_wake_ms();
-        if (wait < 50) wait = 50;
-        usleep(wait * 1000u);
-    }
-    sysThreadExit(0);
-}
-
-void dl_service_refresh_auth(void) {
-    char line[512];
-    if (g_token[0])
-        snprintf(line, sizeof(line),
-                 "X-Emby-Authorization: MediaBrowser Client=\"PS3\", Device=\"PS3\","
-                 " DeviceId=\"%s\", Version=\"0.1\", Token=\"%s\"",
-                 jf_device_id(), g_token);
-    else
-        line[0] = '\0';
-    dl_set_auth_header(line);
-}
-
 bool dl_service_start(void) {
-    if (s_thread) return true;
+    if (dl_svc_started()) return true;
     if (!s_mtx_ok) {
         sys_mutex_attr_t attr;
         memset(&attr, 0, sizeof(attr));
@@ -259,58 +272,30 @@ bool dl_service_start(void) {
         if (!s_mtx_ok) { plog("dl: mutex create failed"); return false; }
     }
     if (!s_fs_module) s_fs_module = (sysModuleLoad(SYSMODULE_FS) == 0);
-
-    char fallback[DL_PATH_MAX];
-    snprintf(fallback, sizeof(fallback), "%s", jf_data_path("jellyfin_offline"));
-    const char *roots[2] = { k_roots[0], fallback };
-    s_root[0] = '\0';
-    for (int i = 0; i < 2 && !s_root[0]; i++) {
-        if (dl_manager_init(roots[i], NULL))
-            snprintf(s_root, sizeof(s_root), "%s", roots[i]);
-        else {
-            char b[DL_PATH_MAX + 32];
-            snprintf(b, sizeof(b), "dl: root not writable: %s", roots[i]);
-            plog(b);
-        }
-    }
-    if (!s_root[0]) { plog("dl: no writable root; downloads unavailable"); return false; }
-    {
-        char b[DL_PATH_MAX + 48];
-        uint64_t freeb = dl_plat_free_bytes(s_root);
-        if (freeb == DL_FREE_UNKNOWN)
-            snprintf(b, sizeof(b), "dl: root %s (free space unknown)", s_root);
-        else
-            snprintf(b, sizeof(b), "dl: root %s free=%lluMB", s_root,
-                     (unsigned long long)(freeb >> 20));
-        plog(b);
-    }
+    snprintf(s_fallback_root, sizeof(s_fallback_root), "%s",
+             jf_data_path("jellyfin_offline"));
+    // Whatever session exists already (a saved login) -- or none, which
+    // keeps the queue held until login.
     dl_service_refresh_auth();
-
-    s_run = true;
-    static char name[] = "dl_worker";   // sysThreadCreate takes char*
-    s32 rc = sysThreadCreate(&s_thread, worker_fn, NULL, 1500, 65536, 0, name);
-    if (rc != 0) {
-        char b[48];
-        snprintf(b, sizeof(b), "dl: worker create failed 0x%08x", (u32)rc);
-        plog(b);
-        s_run = false;
-        s_thread = 0;
-        return false;
-    }
-    return true;
+    return dl_svc_start(s_roots, 2);
 }
 
-void dl_service_stop(void) {
-    if (!s_thread) return;
-    s_run = false;
-    // The active transfer sees the suspension at its next read and parks
-    // the item back in the queue with its data.
-    dl_set_suspended(true);
-    u64 tret;
-    sysThreadJoin(s_thread, &tret);
-    s_thread = 0;
-    dl_set_suspended(false);
-    dl_manager_shutdown();
-}
+void dl_service_stop(void) { dl_svc_stop(); }
 
-const char *dl_service_root(void) { return s_root; }
+void dl_service_refresh_auth(void) { dl_svc_set_session(g_token, jf_device_id()); }
+
+const char *dl_service_root(void) { return dl_svc_root(); }
+
+int dl_download_item(const JFItem *item, const XMBItemDetail *detail,
+                     const JFMediaSource *source) {
+    StreamPrefs prefs;
+    stream_prefs_current(&prefs);
+    DlRequestInput in = { g_server, jf_device_id(), item, detail, source, &prefs };
+    static DlRequest rq;   // ~5 KB, UI thread
+    if (!dl_request_build(&in, &rq)) return DL_E_INVALID;
+    DlResult r = dl_enqueue(&rq.meta, rq.url, 0, &rq.extras);
+    char b[96];
+    snprintf(b, sizeof(b), "dl: request %.8s -> %d", item ? item->id : "?", (int)r);
+    plog(b);
+    return r;
+}

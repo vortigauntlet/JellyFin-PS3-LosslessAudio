@@ -19,7 +19,7 @@ static const char *const k_state_names[DL_STATE_COUNT] = {
 static const char *const k_error_names[DL_ERR_COUNT] = {
     "none", "unreachable", "timeout", "network", "partial", "server",
     "bad_response", "http", "auth", "not_found", "no_space", "disk",
-    "unsupported", "corrupt",
+    "unsupported", "corrupt", "bad_media",
 };
 
 static const char *const k_error_text[DL_ERR_COUNT] = {
@@ -37,6 +37,7 @@ static const char *const k_error_text[DL_ERR_COUNT] = {
     "Could not write to the HDD",
     "Unsupported address (https)",
     "Download data is damaged",
+    "Server sent an incomplete video",
 };
 
 const char *dl_state_name(DlState s) {
@@ -135,6 +136,7 @@ bool dl_error_retryable(DlError e) {
     switch (e) {
     case DL_ERR_UNREACHABLE: case DL_ERR_TIMEOUT: case DL_ERR_NETWORK:
     case DL_ERR_PARTIAL:     case DL_ERR_SERVER:  case DL_ERR_BAD_RESPONSE:
+    case DL_ERR_BAD_MEDIA:
         return true;
     default:
         return false;
@@ -143,7 +145,11 @@ bool dl_error_retryable(DlError e) {
 
 DlError dl_error_for_http_status(int status) {
     if (status >= 200 && status < 300) return DL_ERR_NONE;
-    if (status == 401 || status == 403) return DL_ERR_AUTH;
+    // 401 is the session: the token is dead and a new login fixes it.  403
+    // is the account: this user may not have this item (parental rating,
+    // library access), which no retry or re-login changes.
+    if (status == 401) return DL_ERR_AUTH;
+    if (status == 403) return DL_ERR_HTTP;
     if (status == 404 || status == 410) return DL_ERR_NOT_FOUND;
     // 408 Request Timeout and 429 Too Many Requests are the server asking us
     // to come back later, not refusing the request.
@@ -338,6 +344,11 @@ int dl_record_format(const DlRecord *r, char *out, int cap) {
     out_ku(&o, "bytes_done",  r->bytes_done);
     out_ku(&o, "bytes_total", r->bytes_total);
     out_ku(&o, "resumable",   r->resumable ? 1 : 0);
+    out_kv(&o, "container",   r->container);
+    out_ku(&o, "expect_secs", r->expect_secs);
+    out_kv(&o, "poster_url",  r->poster_url);
+    out_kv(&o, "backdrop_url", r->backdrop_url);
+    out_ku(&o, "art_tries",   r->art_tries);
     out_raw(&o, "end\n");
     return out_done(&o);
 }
@@ -372,6 +383,15 @@ static bool rec_kv(const char *k, const char *v, void *vctx) {
         if (!parse_u64(v, &r->bytes_done)) return false;
     } else if (strcmp(k, "bytes_total") == 0) {
         if (!parse_u64(v, &r->bytes_total)) return false;
+    } else if (strcmp(k, "container") == 0) {
+        copy_str(r->container, sizeof(r->container), v);
+    } else if (strcmp(k, "expect_secs") == 0) {
+        if (!parse_u32(v, &r->expect_secs)) return false;
+    } else if (strcmp(k, "poster_url") == 0 || strcmp(k, "backdrop_url") == 0) {
+        if (strlen(v) >= DL_ART_URL_MAX) return false;
+        copy_str(k[0] == 'p' ? r->poster_url : r->backdrop_url, DL_ART_URL_MAX, v);
+    } else if (strcmp(k, "art_tries") == 0) {
+        if (!parse_u32(v, &r->art_tries)) return false;
     } else if (strcmp(k, "resumable") == 0) {
         if (!parse_u64(v, &u) || u > 1) return false;
         r->resumable = (uint8_t)u;

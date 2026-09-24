@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 #include "dl_model.h"
 
 // -------------------------------------------------------------------------
@@ -61,6 +62,11 @@ bool dl_store_make_item_dir(const char *id);
 // Deletes the item's known files, then its directory.  True when the
 // directory is gone afterwards.
 bool dl_store_remove_item(const char *id);
+// A small binary file (artwork) written the same atomic way as records:
+// <leaf>.tmp, then swapped in.  A reader never sees half an image.
+bool dl_store_save_blob(const char *id, const char *leaf,
+                        const uint8_t *data, int len);
+
 // Deletes only the partial media (cancel).
 bool dl_store_remove_partial(const char *id);
 

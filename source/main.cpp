@@ -14,6 +14,7 @@
 #include "ui_visuals.h"
 #include "http.h"
 #include "update_check.h"
+#include "dl_service.h"
 #include <unistd.h>   // usleep
 #include "jellyfin_api.h"
 #include "thumbnail_cache.h"
@@ -205,6 +206,13 @@ int main(int argc, const char *argv[]) {
 
     crash_log("10 load_config");
     load_config();
+
+    // Offline downloads: the worker restores every item from the HDD (no
+    // network, off this thread), so what is already downloaded is usable
+    // whatever state the server is in.  It transfers nothing until there is
+    // a session -- a saved login counts; otherwise login releases it below.
+    crash_log("10b dl_service_start");
+    dl_service_start();
     {
         char buf[128];
         snprintf(buf, sizeof(buf), "10 server=%s token_len=%d userid=%s",
@@ -232,6 +240,9 @@ int main(int argc, const char *argv[]) {
             slog_state("LOGIN_OK userid=%s", g_userid);
         }
 
+        // A fresh (or restored) session: queued downloads may run again.
+        dl_service_refresh_auth();
+
         crash_log("13 show_main_menu");
         slog_state("MAIN_MENU_ENTER");
         show_main_menu();
@@ -248,9 +259,14 @@ int main(int argc, const char *argv[]) {
             slog_state("SESSION_EXPIRED");
             jellyfin_session_expired();
         }
+        // Logged out or revoked: g_token is empty now, which holds the queue.
+        dl_service_refresh_auth();
     }
 
     crash_log("14 done");
+    // First, while the network is still up: the active download parks itself
+    // back in the queue with its data (resumes next launch).
+    dl_service_stop();
     update_check_shutdown();
     thumb_cache_shutdown();
     http_end();

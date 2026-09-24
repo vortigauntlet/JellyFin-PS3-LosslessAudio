@@ -24,6 +24,9 @@ tests/test_ac3_map
 tests/test_ac3_decode
 tests/test_media_sources
 tests/test_offline
+tests/track_codec_host.o
+tests/test_dts_hd
+tests/test_dts_xll_dump
 tests/tones51.ac3
 tests/decoded.f32
 tests/test_dts_map

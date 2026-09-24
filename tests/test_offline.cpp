@@ -12,10 +12,15 @@
 #include "dl_model.h"
 #include "dl_platform.h"
 #include "dl_store.h"
+#include "dl_request.h"
+#include "dl_service.h"
+#include "dl_ts.h"
+#include "stream_request.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <map>
 #include <string>
 #include <unistd.h>   // truncate
 
@@ -48,6 +53,9 @@ static void begin(const char *name) {
     s_tmp  = fake_mkdtemp();
     s_root = s_tmp + "/offline";
     small_config(&s_cfg);
+    // A server with no artwork unless a test says otherwise, so image
+    // requests never consume the media responses a test scripted.
+    { FakeResp nf; nf.status = 404; g_fake_routes["/Images/"] = nf; }
     dl_set_suspended(false);
     dl_playback_end();
     dl_set_auth_header("X-Emby-Authorization: MediaBrowser Token=\"t\"");
@@ -176,8 +184,8 @@ static void test_error_policy(void) {
     s_test = "error policy"; printf("- %s\n", s_test);
     CHECK(dl_error_for_http_status(200) == DL_ERR_NONE);
     CHECK(dl_error_for_http_status(206) == DL_ERR_NONE);
-    CHECK(dl_error_for_http_status(401) == DL_ERR_AUTH);
-    CHECK(dl_error_for_http_status(403) == DL_ERR_AUTH);
+    CHECK(dl_error_for_http_status(401) == DL_ERR_AUTH);     // session: hold queue
+    CHECK(dl_error_for_http_status(403) == DL_ERR_HTTP);     // account: permanent
     CHECK(dl_error_for_http_status(404) == DL_ERR_NOT_FOUND);
     CHECK(dl_error_for_http_status(410) == DL_ERR_NOT_FOUND);
     CHECK(dl_error_for_http_status(400) == DL_ERR_HTTP);
@@ -965,7 +973,7 @@ static void test_failure_retry(void) {
 
     begin("permanent HTTP errors fail at once");
     struct { int status; DlError err; } perm[] = {
-        { 401, DL_ERR_AUTH }, { 403, DL_ERR_AUTH }, { 404, DL_ERR_NOT_FOUND },
+        { 403, DL_ERR_HTTP }, { 404, DL_ERR_NOT_FOUND }, { 410, DL_ERR_NOT_FOUND },
         { 400, DL_ERR_HTTP },
     };
     for (unsigned i = 0; i < sizeof(perm) / sizeof(perm[0]); i++) {
@@ -1597,6 +1605,894 @@ static void test_write_batching(void) {
     CHECK(fake_file_matches(item_file("wd", DL_FILE_MEDIA).c_str(), g_fake_total));
 }
 
+
+// =========================================================================
+// Stage 3 fixtures: a Jellyfin item as the item page holds it
+// =========================================================================
+
+static const char *SERVER = "http://192.168.1.2:8096";
+static const char *DEVICE = "dev-1234";
+
+static JFTracks fixture_tracks(int default_audio) {
+    JFTracks t;
+    memset(&t, 0, sizeof(t));
+    const char *labels[] = { "English - DTS-HD MA - 7.1 - Default", "English - TRUEHD - 7.1",
+                             "English - AC3 - 5.1", "Japanese - EAC3 - 5.1",
+                             "Commentary - AAC - Stereo" };
+    for (int i = 0; i < 5; i++) {
+        t.audio[i].index = i + 1;
+        snprintf(t.audio[i].label, sizeof(t.audio[i].label), "%s", labels[i]);
+    }
+    t.n_audio = 5;
+    t.default_audio = default_audio;
+    t.subs[0].index = 9;
+    snprintf(t.subs[0].label, sizeof(t.subs[0].label), "English - SRT");
+    t.n_subs = 1;
+    return t;
+}
+
+static JFItem fixture_item(const char *id = "0123456789abcdef0123456789abcdef",
+                           const char *type = "Episode") {
+    JFItem it;
+    memset(&it, 0, sizeof(it));
+    snprintf(it.id, sizeof(it.id), "%s", id);
+    snprintf(it.name, sizeof(it.name), "Pilot");
+    snprintf(it.type, sizeof(it.type), "%s", type);
+    return it;
+}
+
+static JFMediaSource fixture_source(int default_audio, const char *id = "src-b a&b",
+                                    const char *live = "") {
+    JFMediaSource s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.id, sizeof(s.id), "%s", id);
+    snprintf(s.live_stream_id, sizeof(s.live_stream_id), "%s", live);
+    snprintf(s.label, sizeof(s.label), "1080p H.264");
+    s.runtime_secs = 2820;
+    s.tracks = fixture_tracks(default_audio);
+    return s;
+}
+
+static const char kEpisodeJson[] =
+    "{\"Name\":\"Pilot\",\"Id\":\"0123456789abcdef0123456789abcdef\","
+    "\"RunTimeTicks\":28200000000,\"ProductionYear\":2008,\"IndexNumber\":3,"
+    "\"ParentIndexNumber\":1,\"SeriesName\":\"Some Show\",\"SeriesId\":\"show9\","
+    "\"ParentBackdropItemId\":\"show9\",\"BackdropImageTags\":[],"
+    "\"MediaStreams\":[{\"Index\":0,\"Type\":\"Video\"}],"
+    "\"People\":[{\"Name\":\"A Person\",\"Id\":\"p1\"}]}";
+
+static XMBItemDetail fixture_detail(void) {
+    XMBItemDetail d;
+    memset(&d, 0, sizeof(d));
+    snprintf(d.overview, sizeof(d.overview), "Two lines\nof plot");
+    snprintf(d.video_info, sizeof(d.video_info), "1080p H264 SDR");
+    snprintf(d.audio_info, sizeof(d.audio_info), "English DTS 7.1");
+    jellyfin_parse_item_identity(kEpisodeJson, &d.identity);
+    return d;
+}
+
+static StreamPrefs prefs_of(int q, bool hd, int surround_mode, u32 dw = 1920, u32 dh = 1080) {
+    StreamPrefs p;
+    p.quality = vquality_sanitize(q);   // what vquality_get() would hold
+    p.hd1080 = hd;
+    p.surround = surround_mode > 0;
+    p.surround_hd = surround_mode == 2;
+    p.display_w = dw;
+    p.display_h = dh;
+    return p;
+}
+
+// What show_player() streams for this item on Play, from the start: its
+// initial track rule, the shared decision, its session.
+static std::string playback_url(const JFItem &it, const JFMediaSource &src,
+                                const StreamPrefs &p, const char *session,
+                                unsigned long long ticks, StreamRequest *out_rq = NULL) {
+    StreamSelection sel;
+    sel.item_id = it.id;
+    sel.source = &src;
+    sel.tracks = &src.tracks;
+    stream_select_initial(&src.tracks, true, &sel.cur_audio, &sel.cur_sub);
+    StreamRequest rq;
+    stream_request_resolve(&p, &sel, &rq);
+    char url[1024];
+    stream_url_build(url, sizeof(url), &rq, SERVER, DEVICE, session, ticks);
+    if (out_rq) *out_rq = rq;
+    return url;
+}
+
+static bool build_request(const JFItem &it, const XMBItemDetail *d, const JFMediaSource *src,
+                          const StreamPrefs &p, DlRequest *out, const char *server = NULL) {
+    DlRequestInput in = { server ? server : SERVER, DEVICE, &it, d, src, &p };
+    return dl_request_build(&in, out);
+}
+
+static std::map<std::string, std::string> query_of(const std::string &url, std::string *path) {
+    std::map<std::string, std::string> q;
+    size_t qm = url.find('?');
+    if (path) *path = url.substr(0, qm);
+    if (qm == std::string::npos) return q;
+    std::string rest = url.substr(qm + 1);
+    size_t i = 0;
+    while (i <= rest.size()) {
+        size_t amp = rest.find('&', i);
+        if (amp == std::string::npos) amp = rest.size();
+        std::string kv = rest.substr(i, amp - i);
+        size_t eq = kv.find('=');
+        if (!kv.empty()) q[kv.substr(0, eq)] = eq == std::string::npos ? "" : kv.substr(eq + 1);
+        i = amp + 1;
+    }
+    return q;
+}
+
+// =========================================================================
+// Stream selection: shared, unchanged, identical for downloads
+// =========================================================================
+
+static void test_stream_golden(void) {
+    s_test = "playback URL unchanged by the refactor (goldens)"; printf("- %s\n", s_test);
+    // Produced by the pre-refactor build_stream_url() (23bdb45), compiled on
+    // the host with its globals stubbed.  The refactored path must match
+    // byte for byte; it also matched on all 31,104 combinations of quality,
+    // 1080p toggle, surround mode, display, track, subtitle, version, session
+    // and offset when the move was made.
+    struct G { const char *name; int q, hd, sur, surhd; u32 dw, dh; const char *sess;
+               int ca, cs, src; unsigned long long tk; const char *url; } golden[] = {
+    { "auto 720p stereo, default track", 0, 0, 0, 0, 1920, 1080, "sess1", 2, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=baseline&Level=31&MaxWidth=1280&MaxHeight=720&VideoBitrate=4000000&AllowVideoStreamCopy=true&AudioCodec=mp3&AudioBitrate=192000&AudioSampleRate=48000&MaxAudioChannels=2&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=3&PlaySessionId=sess1" },
+    { "auto + 1080p toggle", 0, 1, 0, 0, 1920, 1080, "sess1", 2, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=high&Level=42&MaxWidth=1920&MaxHeight=1080&VideoBitrate=10000000&AllowVideoStreamCopy=true&AudioCodec=mp3&AudioBitrate=192000&AudioSampleRate=48000&MaxAudioChannels=2&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=3&PlaySessionId=sess1" },
+    { "480p on a 576-line display", 3, 0, 0, 0, 720, 576, "sess1", 2, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=baseline&Level=31&MaxWidth=720&MaxHeight=480&VideoBitrate=1500000&AllowVideoStreamCopy=true&AudioCodec=mp3&AudioBitrate=192000&AudioSampleRate=48000&MaxAudioChannels=2&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=3&PlaySessionId=sess1" },
+    { "360p", 4, 0, 0, 0, 1920, 1080, "", 2, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=baseline&Level=31&MaxWidth=640&MaxHeight=360&VideoBitrate=700000&AllowVideoStreamCopy=true&AudioCodec=mp3&AudioBitrate=192000&AudioSampleRate=48000&MaxAudioChannels=2&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=3" },
+    { "Max 25 Mbps, AC-3 5.1", 8, 0, 1, 0, 1920, 1080, "sess1", 2, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=high&Level=42&MaxWidth=1920&MaxHeight=1080&VideoBitrate=25000000&AllowVideoStreamCopy=true&AudioCodec=ac3&AudioBitrate=640000&AudioSampleRate=48000&MaxAudioChannels=6&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=3&PlaySessionId=sess1" },
+    { "Original (direct play), DTS copy", 5, 0, 1, 1, 1920, 1080, "sess1", 0, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=high&Level=42&MaxWidth=1920&MaxHeight=1080&VideoBitrate=25000000&AllowVideoStreamCopy=true&AudioCodec=ac3,dts,mp3&AudioSampleRate=48000&MaxAudioChannels=8&MaxFramerate=30&AllowAudioStreamCopy=true&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=1&PlaySessionId=sess1" },
+    { "TrueHD copy, subtitles burned in", 1, 0, 1, 1, 1920, 1080, "sess1", 1, 0, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=high&Level=42&MaxWidth=1920&MaxHeight=1080&VideoBitrate=10000000&AllowVideoStreamCopy=true&AudioCodec=ac3,truehd,mp3&AudioSampleRate=48000&MaxAudioChannels=8&MaxFramerate=30&AllowAudioStreamCopy=true&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=2&SubtitleStreamIndex=9&SubtitleMethod=Encode&PlaySessionId=sess1" },
+    { "5.1 without HD copy on a DTS track", 2, 0, 1, 0, 1920, 1080, "sess1", 0, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=baseline&Level=31&MaxWidth=1280&MaxHeight=720&VideoBitrate=4000000&AllowVideoStreamCopy=true&AudioCodec=ac3&AudioBitrate=640000&AudioSampleRate=48000&MaxAudioChannels=6&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=1&PlaySessionId=sess1" },
+    { "HD mode on a non-HD track = AC-3", 6, 0, 1, 1, 1920, 1080, "sess1", 2, -1, 1, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=high&Level=42&MaxWidth=1920&MaxHeight=1080&VideoBitrate=20000000&AllowVideoStreamCopy=true&AudioCodec=ac3&AudioBitrate=640000&AudioSampleRate=48000&MaxAudioChannels=6&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-b%20a%26b&StartTimeTicks=0&AudioStreamIndex=3&PlaySessionId=sess1" },
+    { "live stream source, resume at 1h", 2, 0, 0, 0, 1280, 720, "sess1", 2, -1, 2, 36000000000ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=baseline&Level=31&MaxWidth=1280&MaxHeight=720&VideoBitrate=4000000&AllowVideoStreamCopy=true&AudioCodec=mp3&AudioBitrate=192000&AudioSampleRate=48000&MaxAudioChannels=2&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=src-c&StartTimeTicks=36000000000&LiveStreamId=live%2F1&AudioStreamIndex=3&PlaySessionId=sess1" },
+    { "no version chosen, no session", 2, 0, 0, 0, 1280, 720, "", -1, -1, 0, 0ULL,
+      "http://192.168.1.2:8096/Videos/item42/stream.ts?VideoCodec=h264&Profile=baseline&Level=31&MaxWidth=1280&MaxHeight=720&VideoBitrate=4000000&AllowVideoStreamCopy=true&AudioCodec=mp3&AudioBitrate=192000&AudioSampleRate=48000&MaxAudioChannels=2&MaxFramerate=30&AllowAudioStreamCopy=false&DeviceId=dev-1234&Static=false&MediaSourceId=item42&StartTimeTicks=0" },
+    };
+    JFTracks t;
+    memset(&t, 0, sizeof(t));
+    const char *labels[] = { "English - DTS-HD MA - 7.1 - Default", "English - TRUEHD - 7.1",
+                             "English - AC3 - 5.1" };
+    for (int i = 0; i < 3; i++) {
+        t.audio[i].index = i + 1;
+        snprintf(t.audio[i].label, sizeof(t.audio[i].label), "%s", labels[i]);
+    }
+    t.n_audio = 3; t.default_audio = 2;
+    t.subs[0].index = 9; snprintf(t.subs[0].label, sizeof(t.subs[0].label), "English - SRT");
+    t.n_subs = 1;
+    JFMediaSource src; memset(&src, 0, sizeof(src));
+    snprintf(src.id, sizeof(src.id), "src-b a&b"); src.tracks = t;
+    JFMediaSource live = src;
+    snprintf(live.id, sizeof(live.id), "src-c");
+    snprintf(live.live_stream_id, sizeof(live.live_stream_id), "live/1");
+    for (unsigned i = 0; i < sizeof(golden) / sizeof(golden[0]); i++) {
+        const G &g = golden[i];
+        StreamPrefs p = prefs_of(g.q, g.hd, g.sur ? (g.surhd ? 2 : 1) : 0, g.dw, g.dh);
+        StreamSelection sel = { "item42", g.src == 1 ? &src : g.src == 2 ? &live : NULL,
+                                &t, g.ca, g.cs };
+        StreamRequest rq;
+        stream_request_resolve(&p, &sel, &rq);
+        char url[1024];
+        stream_url_build(url, sizeof(url), &rq, SERVER, DEVICE, g.sess, g.tk);
+        if (strcmp(url, g.url) != 0) printf("    %s:\n     got %s\n    want %s\n", g.name, url, g.url);
+        CHECK(strcmp(url, g.url) == 0);
+    }
+}
+
+static void test_download_matches_playback(void) {
+    s_test = "download = playback's stream decision"; printf("- %s\n", s_test);
+    JFItem it = fixture_item();
+    XMBItemDetail d = fixture_detail();
+    u32 disp[][2] = { { 1920, 1080 }, { 1280, 720 }, { 720, 576 } };
+    int combos = 0;
+    for (int q = 0; q < VQ_COUNT; q++)
+    for (int hd = 0; hd < 2; hd++)
+    for (int sm = 0; sm < 3; sm++)
+    for (int di = 0; di < 3; di++)
+    for (int da = 0; da < 5; da++)            // every default-track kind
+    for (int live = 0; live < 2; live++) {
+        StreamPrefs p = prefs_of(q, hd, sm, disp[di][0], disp[di][1]);
+        JFMediaSource src = fixture_source(da, "src-a", live ? "live-1" : "");
+        StreamRequest prq;
+        std::string purl = playback_url(it, src, p, "sess-9", 0, &prq);
+        DlRequest dr;
+        CHECK(build_request(it, &d, &src, p, &dr));
+        // The decision itself: identical in every field.
+        const StreamRequest &drq = dr.decision;
+        CHECK(drq.max_w == prq.max_w && drq.max_h == prq.max_h);
+        CHECK(!strcmp(drq.profile, prq.profile) && !strcmp(drq.level, prq.level));
+        CHECK(drq.vbitrate == prq.vbitrate);                    // copy vs transcode
+        CHECK(!strcmp(drq.acodec, prq.acodec) && drq.abitrate == prq.abitrate);
+        CHECK(drq.achans == prq.achans);
+        CHECK((drq.hd_codec == NULL) == (prq.hd_codec == NULL));
+        if (drq.hd_codec && prq.hd_codec) CHECK(!strcmp(drq.hd_codec, prq.hd_codec));
+        CHECK(drq.audio_idx == prq.audio_idx && drq.sub_idx == prq.sub_idx);
+        CHECK(!strcmp(drq.source_id, prq.source_id));
+        CHECK(!strcmp(drq.live_stream_id, prq.live_stream_id));
+        // The URL: same path, same parameters, except the session.
+        std::string ppath, dpath;
+        auto pq = query_of(purl, &ppath);
+        auto dq = query_of(dr.url, &dpath);
+        CHECK(ppath == dpath);
+        CHECK(pq.count("PlaySessionId") == 1 && dq.count("PlaySessionId") == 0);
+        pq.erase("PlaySessionId");
+        CHECK(pq == dq);
+        CHECK(dq["StartTimeTicks"] == "0");
+        combos++;
+    }
+    printf("    %d combinations identical\n", combos);
+    // A playback that resumes differs in StartTimeTicks and nothing else.
+    StreamPrefs p = prefs_of(VQ_1080P_25, false, 2);
+    JFMediaSource src = fixture_source(1);
+    auto pq = query_of(playback_url(it, src, p, "", 36000000000ULL), NULL);
+    DlRequest dr;
+    CHECK(build_request(it, &d, &src, p, &dr));
+    auto dq = query_of(dr.url, NULL);
+    CHECK(pq["StartTimeTicks"] == "36000000000" && dq["StartTimeTicks"] == "0");
+    pq.erase("StartTimeTicks"); dq.erase("StartTimeTicks");
+    CHECK(pq == dq);
+}
+
+static void test_download_url_shape(void) {
+    s_test = "download URL: whole title, no session, no token"; printf("- %s\n", s_test);
+    JFItem it = fixture_item();
+    XMBItemDetail d = fixture_detail();
+    JFMediaSource src = fixture_source(2);
+    DlRequest dr;
+    CHECK(build_request(it, &d, &src, prefs_of(VQ_720P, false, 0), &dr));
+    std::string path;
+    auto q = query_of(dr.url, &path);
+    CHECK(path == std::string(SERVER) + "/Videos/" + it.id + "/stream.ts");   // MPEG-TS
+    CHECK(q["VideoCodec"] == "h264" && q["Static"] == "false");
+    CHECK(q["StartTimeTicks"] == "0");
+    CHECK(q.count("PlaySessionId") == 0);
+    CHECK(q["DeviceId"] == DEVICE);
+    CHECK(q["MediaSourceId"] == "src-b%20a%26b");
+    CHECK(q["AudioStreamIndex"] == "3");                  // the default track
+    CHECK(q.count("SubtitleStreamIndex") == 0);           // subtitles off, as on Play
+    CHECK(strstr(dr.url, "Token") == NULL && strstr(dr.url, "api_key") == NULL);
+    // Nothing guessed: without the version (and so its tracks) there is no
+    // request, because Play would have used those tracks.
+    CHECK(!build_request(it, &d, NULL, prefs_of(VQ_720P, false, 0), &dr));
+    JFItem bad = fixture_item("../etc");
+    CHECK(!build_request(bad, &d, &src, prefs_of(VQ_720P, false, 0), &dr));
+    JFItem noname = fixture_item(); noname.name[0] = '\0';
+    CHECK(!build_request(noname, &d, &src, prefs_of(VQ_720P, false, 0), &dr));
+    CHECK(!build_request(it, &d, &src, prefs_of(VQ_720P, false, 0), &dr, ""));
+    std::string huge = "http://" + std::string(DL_URL_MAX, 'h');
+    CHECK(!build_request(it, &d, &src, prefs_of(VQ_720P, false, 0), &dr, huge.c_str()));
+    // An https server builds, but the manager refuses it (no TLS here).
+    CHECK(build_request(it, &d, &src, prefs_of(VQ_720P, false, 0), &dr, "https://secure.host"));
+    begin("request with an https server is refused");
+    CHECK(dl_enqueue(&dr.meta, dr.url, 0, &dr.extras) == DL_E_INVALID);
+    CHECK(build_request(it, &d, &src, prefs_of(VQ_720P, false, 0), &dr));
+    DlExtras bad_x = dr.extras;
+    bad_x.container = "mpegts-too-long";
+    CHECK(dl_enqueue(&dr.meta, dr.url, 0, &bad_x) == DL_E_INVALID);
+    bad_x = dr.extras;
+    bad_x.poster_url = "https://no.tls/x.jpg";
+    CHECK(dl_enqueue(&dr.meta, dr.url, 0, &bad_x) == DL_E_INVALID);
+    CHECK(dl_enqueue(&dr.meta, dr.url, 0, &dr.extras) == DL_OK);
+}
+
+static void test_request_gating(void) {
+    s_test = "playback gating on URLs from the shared builder"; printf("- %s\n", s_test);
+    JFItem it = fixture_item();
+    JFMediaSource aac = fixture_source(4);     // default track: AAC stereo
+    JFMediaSource thd = fixture_source(1);     // default track: TrueHD
+    for (int q = 0; q < VQ_COUNT; q++) {
+        vquality_t vq = vquality_sanitize(q);
+        const bool low = vq == VQ_480P || vq == VQ_360P;
+        CHECK(dl_stream_is_light(playback_url(it, aac, prefs_of(q, false, 0), "s", 0).c_str()) == low);
+        CHECK(dl_stream_is_light(playback_url(it, aac, prefs_of(q, true, 1), "s", 0).c_str()) == low);
+        // 5.1 with an HD track copied: heavy at every quality, 480p included.
+        CHECK(!dl_stream_is_light(playback_url(it, thd, prefs_of(q, false, 2), "s", 0).c_str()));
+    }
+}
+
+// =========================================================================
+// Metadata
+// =========================================================================
+
+static void test_item_identity(void) {
+    s_test = "item identity parse"; printf("- %s\n", s_test);
+    JFItemIdentity id;
+    CHECK(jellyfin_parse_item_identity(kEpisodeJson, &id));
+    CHECK(!strcmp(id.series_name, "Some Show") && !strcmp(id.series_id, "show9"));
+    CHECK(id.season == 1 && id.episode == 3);
+    CHECK(id.year == 2008 && id.runtime_secs == 2820);
+    CHECK(!id.has_backdrop && !strcmp(id.parent_backdrop_id, "show9"));
+    // A movie: no series, no numbers -- and "ParentIndexNumber" must not be
+    // read as the episode number.
+    const char *movie = "{\"Name\":\"Film\",\"ProductionYear\":1999,\"RunTimeTicks\":81000000000,"
+                        "\"BackdropImageTags\":[\"abc\"]}";
+    CHECK(jellyfin_parse_item_identity(movie, &id));
+    CHECK(id.series_name[0] == '\0' && id.season == -1 && id.episode == -1);
+    CHECK(id.year == 1999 && id.runtime_secs == 8100 && id.has_backdrop);
+    CHECK(jellyfin_parse_item_identity("{\"ParentIndexNumber\":4}", &id));
+    CHECK(id.season == 4 && id.episode == -1);
+    CHECK(jellyfin_parse_item_identity("{}", &id));
+    CHECK(id.runtime_secs == 0 && id.year == 0 && id.season == -1);
+    CHECK(!jellyfin_parse_item_identity("", &id));
+    CHECK(!jellyfin_parse_item_identity(NULL, &id));
+}
+
+static void test_request_metadata(void) {
+    s_test = "request metadata"; printf("- %s\n", s_test);
+    JFItem it = fixture_item();
+    XMBItemDetail d = fixture_detail();
+    JFMediaSource src = fixture_source(1);    // TrueHD default
+    DlRequest dr;
+    CHECK(build_request(it, &d, &src, prefs_of(VQ_1080P, false, 2), &dr));
+    const DlMeta &m = dr.meta;
+    CHECK(!strcmp(m.id, it.id) && !strcmp(m.title, "Pilot") && !strcmp(m.type, "Episode"));
+    CHECK(!strcmp(m.series, "Some Show") && !strcmp(m.series_id, "show9"));
+    CHECK(m.season == 1 && m.episode == 3 && m.year == 2008 && m.runtime_secs == 2820);
+    CHECK(!strcmp(m.overview, "Two lines\nof plot"));
+    // Media information describes the FILE the request will produce.
+    CHECK(!strcmp(m.container, "ts") && !strcmp(m.video_codec, "h264"));
+    CHECK(!strcmp(m.audio_codec, "truehd") && m.audio_channels == 8);
+    CHECK(m.width == 1920 && m.height == 1080 && m.video_bitrate == 10000000);
+    CHECK(!strcmp(m.media_source_id, "src-b a&b") && m.audio_stream_index == 2);
+    CHECK(!strcmp(m.quality, "High"));
+    CHECK(!strcmp(m.audio_info, "English - TRUEHD - 7.1"));   // the track downloaded
+    CHECK(!strcmp(m.video_info, "1080p H264 SDR"));
+    CHECK(m.poster[0] == '\0' && m.backdrop[0] == '\0');      // until they exist
+    // Artwork: the episode's own Primary; the series' backdrop it inherits.
+    CHECK(strstr(dr.poster_url, "/Items/0123456789abcdef0123456789abcdef/Images/Primary?") != NULL);
+    CHECK(strstr(dr.backdrop_url, "/Items/show9/Images/Backdrop?") != NULL);
+    CHECK(strstr(dr.poster_url, "Token") == NULL);
+    CHECK(dr.extras.expect_secs == 2820 && !strcmp(dr.extras.container, "ts"));
+    // Round trip through meta.txt.
+    char text[4096];
+    DlMeta back;
+    CHECK(dl_meta_format(&m, text, sizeof(text)) > 0 && dl_meta_parse(text, &back));
+    CHECK(back.season == 1 && back.episode == 3 && !strcmp(back.series, "Some Show"));
+
+    s_test = "request metadata, optional fields missing"; printf("- %s\n", s_test);
+    JFItem mv = fixture_item("fedcba9876543210fedcba9876543210", "Movie");
+    JFMediaSource msrc = fixture_source(4);
+    msrc.runtime_secs = 5400;
+    CHECK(build_request(mv, NULL, &msrc, prefs_of(VQ_720P, false, 0), &dr));
+    CHECK(dr.meta.series[0] == '\0' && dr.meta.season == -1 && dr.meta.episode == -1);
+    CHECK(dr.meta.year == 0 && dr.meta.overview[0] == '\0');
+    CHECK(dr.meta.runtime_secs == 5400);                  // from the version
+    CHECK(!strcmp(dr.meta.audio_codec, "mp3") && dr.meta.audio_channels == 2);
+    CHECK(dr.backdrop_url[0] == '\0' && dr.extras.backdrop_url == NULL);
+    CHECK(dr.poster_url[0] != '\0');
+}
+
+// =========================================================================
+// Artwork
+// =========================================================================
+
+static FakeResp jpeg_resp(int bytes) {
+    FakeResp r;
+    r.body = fake_jpeg(bytes);
+    r.has_body = true;
+    r.content_type = "image/jpeg";
+    return r;
+}
+
+static FakeResp ts_resp(int packets, double secs, bool chunked = true) {
+    FakeResp r;
+    r.body = fake_ts(packets, secs);
+    r.has_body = true;
+    r.chunked = chunked;
+    r.accept_ranges = !chunked;
+    r.honor_range = !chunked;      // a live transcode ignores Range
+    return r;
+}
+
+static std::string file_bytes(const std::string &path) {
+    std::string out;
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return out;
+    int c;
+    while ((c = fgetc(f)) != EOF) out.push_back((char)c);
+    fclose(f);
+    return out;
+}
+
+// Enqueue the fixture episode exactly as dl_download_item() does.
+static DlResult enqueue_fixture(DlRequest *dr, int quality = VQ_720P, double runtime = -1) {
+    JFItem it = fixture_item();
+    XMBItemDetail d = fixture_detail();
+    if (runtime >= 0) d.identity.runtime_secs = (unsigned)runtime;
+    JFMediaSource src = fixture_source(2);
+    if (runtime >= 0) src.runtime_secs = (unsigned)runtime;   // the fallback too
+    if (!build_request(it, &d, &src, prefs_of(quality, false, 0), dr)) return DL_E_INVALID;
+    return dl_enqueue(&dr->meta, dr->url, 0, &dr->extras);
+}
+
+static const char *FX = "0123456789abcdef0123456789abcdef";
+
+static void test_artwork(void) {
+    begin("artwork stored with the item");
+    g_fake_routes.erase("/Images/");
+    g_fake_routes["/Images/Primary"]  = jpeg_resp(20000);
+    g_fake_routes["/Images/Backdrop"] = jpeg_resp(90000);
+    g_fake_default = ts_resp(3000, 600);
+    DlRequest dr;
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    DlStatus st = status_of(FX);
+    CHECK(st.rec.state == DL_COMPLETED);
+    CHECK(file_bytes(item_file(FX, DL_FILE_POSTER)) == fake_jpeg(20000));
+    CHECK(file_bytes(item_file(FX, DL_FILE_BACKDROP)) == fake_jpeg(90000));
+    DlMeta m;
+    CHECK(dl_load_meta(FX, &m));
+    CHECK(!strcmp(m.poster, DL_FILE_POSTER) && !strcmp(m.backdrop, DL_FILE_BACKDROP));
+    CHECK(st.rec.poster_url[0] == '\0' && st.rec.backdrop_url[0] == '\0');
+    CHECK(g_fake_route_hits == 2);
+    // Artwork requests carry the session, like everything else.
+    int authed = 0;
+    for (auto &r : g_fake_requests)
+        if (r.find("/Images/") != std::string::npos &&
+            r.find("X-Emby-Authorization: ") != std::string::npos) authed++;
+    CHECK(authed == 2);
+
+    begin("artwork failures never fail the film");
+    g_fake_routes.erase("/Images/");
+    FakeResp e500; e500.status = 500;
+    g_fake_routes["/Images/Primary"] = e500;
+    FakeResp html; html.content_type = "text/html"; html.body = "<html>nope</html>"; html.has_body = true;
+    g_fake_routes["/Images/Backdrop"] = html;
+    g_fake_default = ts_resp(3000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    st = status_of(FX);
+    CHECK(st.rec.state == DL_COMPLETED);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_POSTER).c_str()) == -1);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_BACKDROP).c_str()) == -1);
+    CHECK(st.rec.art_tries == 2);
+    CHECK(dl_load_meta(FX, &m) && m.poster[0] == '\0');
+
+    begin("artwork the server does not have is not retried");
+    g_fake_routes.erase("/Images/");
+    FakeResp nf; nf.status = 404;
+    g_fake_routes["/Images/Primary"] = nf;
+    g_fake_routes["/Images/Backdrop"] = nf;
+    FakeResp drop = ts_resp(3000, 600); drop.drop_after = 100000;
+    g_fake_queue.push_back(drop);
+    g_fake_default = ts_resp(3000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    st = status_of(FX);
+    CHECK(st.rec.poster_url[0] == '\0' && st.rec.backdrop_url[0] == '\0');
+    CHECK(st.rec.art_tries == 0);
+    const int hits = g_fake_route_hits;
+    CHECK(step_after_backoff());
+    CHECK(g_fake_route_hits == hits);                    // not asked again
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+
+    begin("not an image / too big");
+    g_fake_routes.erase("/Images/");
+    FakeResp notimg; notimg.content_type = "image/jpeg"; notimg.body = "GIF89a-not-jpeg"; notimg.has_body = true;
+    g_fake_routes["/Images/Primary"] = notimg;
+    g_fake_routes["/Images/Backdrop"] = jpeg_resp(600 * 1024);   // past the 512 KB buffer
+    g_fake_default = ts_resp(3000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_POSTER).c_str()) == -1);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_BACKDROP).c_str()) == -1);
+
+    begin("artwork gives up after its tries, across restarts");
+    g_fake_routes.erase("/Images/");
+    g_fake_routes["/Images/Primary"] = e500;
+    g_fake_routes["/Images/Backdrop"] = e500;
+    for (int i = 0; i < 6; i++) { FakeResp d2 = ts_resp(3000, 600); d2.drop_after = 50000; g_fake_queue.push_back(d2); }
+    g_fake_default = ts_resp(3000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());                            // tries 2 (both images)
+    restart_app();
+    CHECK(status_of(FX).rec.art_tries == 2);             // persisted
+    CHECK(dl_manager_step());                            // tries 4 -> given up
+    st = status_of(FX);
+    CHECK(st.rec.poster_url[0] == '\0' && st.rec.backdrop_url[0] == '\0');
+    const int h2 = g_fake_route_hits;
+    CHECK(step_after_backoff());
+    CHECK(g_fake_route_hits == h2);
+
+    begin("artwork saved but record not updated (crash) is not re-fetched");
+    g_fake_routes.erase("/Images/");
+    g_fake_routes["/Images/Primary"]  = jpeg_resp(20000);
+    g_fake_routes["/Images/Backdrop"] = jpeg_resp(20000);
+    g_fake_default = ts_resp(3000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    {   // both images already there, urls still pending in the record
+        std::string j = fake_jpeg(1234);
+        CHECK(dl_store_save_blob(FX, DL_FILE_POSTER, (const uint8_t *)j.data(), (int)j.size()));
+        CHECK(dl_store_save_blob(FX, DL_FILE_BACKDROP, (const uint8_t *)j.data(), (int)j.size()));
+    }
+    CHECK(dl_manager_step());
+    CHECK(g_fake_route_hits == 0);
+    CHECK(status_of(FX).rec.poster_url[0] == '\0');
+    CHECK(dl_load_meta(FX, &m) && !strcmp(m.poster, DL_FILE_POSTER) &&
+          !strcmp(m.backdrop, DL_FILE_BACKDROP));
+    CHECK(file_bytes(item_file(FX, DL_FILE_POSTER)) == fake_jpeg(1234));
+
+    begin("artwork already on disk is never re-fetched");
+    g_fake_routes.erase("/Images/");
+    g_fake_routes["/Images/Primary"]  = jpeg_resp(20000);
+    g_fake_routes["/Images/Backdrop"] = jpeg_resp(20000);
+    FakeResp d3 = ts_resp(3000, 600); d3.drop_after = 60000;
+    g_fake_queue.push_back(d3);
+    g_fake_default = ts_resp(3000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());                            // art fetched, media dropped
+    CHECK(g_fake_route_hits == 2);
+    restart_app();                                       // "the console rebooted"
+    CHECK(step_after_backoff());
+    CHECK(g_fake_route_hits == 2);                       // not again
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+    CHECK(dl_load_meta(FX, &m) && !strcmp(m.poster, DL_FILE_POSTER));
+}
+
+// =========================================================================
+// Completion validation (MPEG-TS)
+// =========================================================================
+
+static void test_ts_scan(void) {
+    s_test = "TS scan"; printf("- %s\n", s_test);
+    std::string ts = fake_ts(2000, 600);
+    DlTsScan t;
+    dl_ts_init(&t);
+    // Fed in odd pieces, as flushes do.
+    for (size_t i = 0; i < ts.size(); ) {
+        size_t n = 1 + (i * 7919) % 5000;
+        if (n > ts.size() - i) n = ts.size() - i;
+        dl_ts_feed(&t, (const uint8_t *)ts.data() + i, (int)n);
+        i += n;
+    }
+    CHECK(t.packets == 2000 && t.sync_errors == 0);
+    CHECK(dl_ts_span_secs(&t) >= 599 && dl_ts_span_secs(&t) <= 600);
+    bool shrt;
+    CHECK(dl_ts_plausible(&t, ts.size(), 600, &shrt) && !shrt);
+    CHECK(dl_ts_plausible(&t, ts.size(), 0, &shrt));
+    CHECK(dl_ts_plausible(&t, ts.size(), 670, &shrt));      // within the slack
+    CHECK(!dl_ts_plausible(&t, ts.size(), 7200, &shrt) && shrt);   // ended early
+    CHECK(!dl_ts_plausible(&t, ts.size() + 1, 600, &shrt) && !shrt);
+    // Garbage is not a TS.
+    std::string junk(188 * 100, 'x');
+    dl_ts_init(&t);
+    dl_ts_feed(&t, (const uint8_t *)junk.data(), (int)junk.size());
+    CHECK(t.sync_errors == 100 && !dl_ts_plausible(&t, junk.size(), 0, &shrt));
+    // A TS without video PTS cannot be played.
+    std::string nopts = fake_ts(10, 0);
+    for (size_t i = 0; i < nopts.size(); i += 188) nopts[i + 1] &= ~0x40;
+    dl_ts_init(&t);
+    dl_ts_feed(&t, (const uint8_t *)nopts.data(), (int)nopts.size());
+    CHECK(dl_ts_span_secs(&t) == -1 && !dl_ts_plausible(&t, nopts.size(), 0, &shrt));
+    // Audio PES do not count: only the video decides what time is covered.
+    std::string av = fake_ts(200, 10);
+    {
+        uint8_t *e = (uint8_t *)&av[(size_t)150 * 188 + 4];   // last PES start
+        e[3] = 0xC0;                                            // make it audio...
+        uint64_t pts = 126000 + 90000ULL * 5000;                // ...far in the future
+        e[9]  = (uint8_t)(0x21 | ((pts >> 29) & 0x0E));
+        e[10] = (uint8_t)(pts >> 22);
+        e[11] = (uint8_t)(((pts >> 14) & 0xFE) | 1);
+        e[12] = (uint8_t)(pts >> 7);
+        e[13] = (uint8_t)(((pts << 1) & 0xFE) | 1);
+    }
+    dl_ts_init(&t);
+    dl_ts_feed(&t, (const uint8_t *)av.data(), (int)av.size());
+    CHECK(dl_ts_span_secs(&t) <= 10);
+    // 33-bit PTS wrap mid-file does not collapse the span.
+    std::string wrap = fake_ts(200, 0);
+    for (int k = 0; k < 4; k++) {
+        uint64_t pts = ((1ULL << 33) - 90000ULL * 2 + 90000ULL * k) & ((1ULL << 33) - 1);
+        uint8_t *e = (uint8_t *)&wrap[(size_t)k * 50 * 188 + 4];
+        e[9]  = (uint8_t)(0x21 | ((pts >> 29) & 0x0E));
+        e[10] = (uint8_t)(pts >> 22);
+        e[11] = (uint8_t)(((pts >> 14) & 0xFE) | 1);
+        e[12] = (uint8_t)(pts >> 7);
+        e[13] = (uint8_t)(((pts << 1) & 0xFE) | 1);
+    }
+    dl_ts_init(&t);
+    dl_ts_feed(&t, (const uint8_t *)wrap.data(), (int)wrap.size());
+    CHECK(dl_ts_span_secs(&t) == 3);
+}
+
+static void test_ts_validation(void) {
+    begin("complete transcode verified and kept");
+    g_fake_default = ts_resp(4000, 2820);
+    DlRequest dr;
+    CHECK(enqueue_fixture(&dr, VQ_720P, 2820) == DL_OK);
+    CHECK(dl_manager_step());
+    DlStatus st = status_of(FX);
+    CHECK(st.rec.state == DL_COMPLETED);
+    CHECK(file_bytes(item_file(FX, DL_FILE_MEDIA)) == fake_ts(4000, 2820));
+
+    begin("transcode that died part way is not completed");
+    g_fake_default = ts_resp(4000, 1200);      // 20 of 47 minutes, cleanly chunked
+    CHECK(enqueue_fixture(&dr, VQ_720P, 2820) == DL_OK);
+    CHECK(dl_manager_step());
+    st = status_of(FX);
+    CHECK(st.rec.state == DL_QUEUED && st.rec.error == DL_ERR_BAD_MEDIA);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_MEDIA).c_str()) == -1);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_PART).c_str()) == 0);   // not resumable
+    // Once more, then it is the user's call -- progress does not buy retries.
+    CHECK(step_after_backoff());
+    st = status_of(FX);
+    CHECK(st.rec.state == DL_FAILED && st.rec.error == DL_ERR_BAD_MEDIA);
+    CHECK(st.rec.attempts == DL_MEDIA_MAX_ATTEMPTS);
+    CHECK(!step_after_backoff());
+    g_fake_default = ts_resp(4000, 2820);      // the server is fixed
+    CHECK(dl_retry(FX) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+
+    begin("not a transport stream");
+    FakeResp junk;                              // the byte pattern: no 0x47 sync
+    junk.total = 188 * 1000;
+    g_fake_default = junk;
+    CHECK(enqueue_fixture(&dr, VQ_720P, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.error == DL_ERR_BAD_MEDIA);
+
+    begin("TS with a torn last packet");
+    FakeResp torn = ts_resp(1000, 600, false);
+    torn.body.resize(torn.body.size() - 5);
+    g_fake_default = torn;
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.error == DL_ERR_BAD_MEDIA);
+
+    begin("runtime unknown: structure still checked, length not");
+    g_fake_default = ts_resp(1000, 60);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+
+    begin("byte-resumed TS (Range honoured)");
+    FakeResp first = ts_resp(3000, 600, false);
+    first.drop_after = 188 * 700 + 91;         // mid-packet
+    g_fake_queue.push_back(first);
+    g_fake_default = ts_resp(3000, 600, false);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.bytes_done == 188 * 700 + 91);
+    CHECK(step_after_backoff());
+    CHECK(last_request_has_range(188 * 700 + 91));
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+    CHECK(file_bytes(item_file(FX, DL_FILE_MEDIA)) == fake_ts(3000, 600));
+
+    begin("byte-resumed TS with a torn tail");
+    FakeResp tfirst = ts_resp(3000, 600, false);
+    tfirst.body.resize(tfirst.body.size() - 7);
+    FakeResp tsecond = tfirst;
+    tfirst.drop_after = 188 * 500;
+    g_fake_queue.push_back(tfirst);
+    g_fake_default = tsecond;
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(step_after_backoff());
+    CHECK(last_request_has_range(188 * 500));
+    CHECK(status_of(FX).rec.error == DL_ERR_BAD_MEDIA);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_MEDIA).c_str()) == -1);
+
+    begin("transcode restarted after Range ignored, then validated");
+    FakeResp cut = ts_resp(3000, 600); cut.drop_after = 50000;
+    g_fake_queue.push_back(cut);
+    g_fake_default = ts_resp(3000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.error == DL_ERR_PARTIAL);
+    CHECK(step_after_backoff());
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);   // scanned from byte 0 again
+    CHECK(file_bytes(item_file(FX, DL_FILE_MEDIA)) == fake_ts(3000, 600));
+
+    begin("server transcode failure (500) retried");
+    FakeResp e500; e500.status = 500;
+    g_fake_queue.push_back(e500);
+    g_fake_default = ts_resp(1000, 600);
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of(FX).rec.error == DL_ERR_SERVER && status_of(FX).rec.state == DL_QUEUED);
+    CHECK(step_after_backoff());
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+}
+
+static void test_request_heavy_playback(void) {
+    begin("heavy playback parks a requested download; it resumes after");
+    JFItem it = fixture_item();
+    JFMediaSource src = fixture_source(2);
+    static std::string heavy;
+    heavy = playback_url(it, src, prefs_of(VQ_1080P_25, false, 0), "s", 0);
+    g_fake_default = ts_resp(3000, 600, false);
+    g_fake_default.on_body = [](int64_t sent) {
+        static bool done; if (sent < 1000) done = false;
+        if (!done && sent >= 100000) { done = true; dl_playback_begin(heavy.c_str()); }
+    };
+    DlRequest dr;
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_manager_step());
+    DlStatus st = status_of(FX);
+    CHECK(st.rec.state == DL_QUEUED && st.rec.error == DL_ERR_NONE);
+    CHECK(dl_plat_file_size(item_file(FX, DL_FILE_PART).c_str()) == (int64_t)st.rec.bytes_done);
+    DlRecord disk;
+    CHECK(dl_store_load_record(FX, &disk) && disk.state == DL_QUEUED);   // persisted
+    CHECK(!dl_manager_step());
+    g_fake_default.on_body = nullptr;
+    dl_playback_end();
+    CHECK(dl_manager_step());
+    CHECK(last_request_has_range(st.rec.bytes_done));
+    CHECK(status_of(FX).rec.state == DL_COMPLETED);
+    CHECK(file_bytes(item_file(FX, DL_FILE_MEDIA)) == fake_ts(3000, 600));
+}
+
+// =========================================================================
+// Session / auth
+// =========================================================================
+
+static void test_auth_hold(void) {
+    begin("no session: nothing transfers");
+    dl_set_auth_header("");
+    CHECK(dl_auth_held());
+    DlMeta m = meta_for("noauth");
+    CHECK(dl_enqueue(&m, URL, 0) == DL_OK);
+    CHECK(!dl_manager_step());
+    CHECK(g_fake_connects == 0);
+
+    begin("sign-in expired: queue held, nothing failed, resumes after login");
+    FakeResp e401; e401.status = 401;
+    g_fake_queue.push_back(e401);
+    DlMeta a = meta_for("auth_a"), b = meta_for("auth_b");
+    CHECK(dl_enqueue(&a, URL, 0) == DL_OK);
+    CHECK(dl_enqueue(&b, URL, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    DlStatus st = status_of("auth_a");
+    CHECK(st.rec.state == DL_QUEUED && st.rec.error == DL_ERR_AUTH);
+    CHECK(st.rec.attempts == 0 && st.rec.http_status == 401);
+    CHECK(dl_auth_held());
+    const int connects = g_fake_connects;
+    CHECK(!dl_manager_step());                          // b is not tried either
+    CHECK(!step_after_backoff());
+    CHECK(g_fake_connects == connects);
+    CHECK(status_of("auth_b").rec.state == DL_QUEUED);
+    char line[512];
+    CHECK(dl_svc_auth_header(line, sizeof(line), "fresh-token", DEVICE));
+    dl_set_auth_header(line);                           // logged in again
+    CHECK(!dl_auth_held());
+    CHECK(run_worker() == 2);
+    CHECK(status_of("auth_a").rec.state == DL_COMPLETED);
+    CHECK(status_of("auth_b").rec.state == DL_COMPLETED);
+    CHECK(g_fake_requests.back().find("Token=\"fresh-token\"") != std::string::npos);
+    // Held across a restart too: the record says queued, and a restart
+    // without a session transfers nothing.
+    s_test = "auth header"; printf("- %s\n", s_test);
+    CHECK(dl_svc_auth_header(line, sizeof(line), "tok", "dev-9"));
+    CHECK(!strcmp(line, "X-Emby-Authorization: MediaBrowser Client=\"PS3\", Device=\"PS3\","
+                        " DeviceId=\"dev-9\", Version=\"0.1\", Token=\"tok\""));
+    CHECK(!dl_svc_auth_header(line, sizeof(line), "", "dev-9") && line[0] == '\0');
+    CHECK(!dl_svc_auth_header(line, sizeof(line), NULL, "dev-9"));
+    CHECK(!dl_svc_auth_header(line, 20, "tok", "dev-9") && line[0] == '\0');
+}
+
+// =========================================================================
+// Service lifecycle
+// =========================================================================
+
+static void seed_store(const std::string &root) {
+    // An earlier session of the app: one completed, one mid-download.
+    CHECK(dl_manager_init(root.c_str(), &s_cfg));
+    dl_set_auth_header("X-Emby-Authorization: MediaBrowser Token=\"t\"");
+    DlMeta done = meta_for("seed_done", "Done Film"), part = meta_for("seed_part", "Half Film");
+    CHECK(dl_enqueue(&done, URL, 0) == DL_OK);
+    CHECK(dl_enqueue(&part, URL, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    FakeResp drop; drop.drop_after = 120000;
+    g_fake_queue.push_back(drop);
+    CHECK(dl_manager_step());
+    DlRecord r;
+    CHECK(dl_store_load_record("seed_part", &r));
+    r.state = DL_DOWNLOADING;                       // the app died mid-transfer
+    CHECK(dl_store_save_record(&r));
+    dl_manager_shutdown();
+    dl_set_auth_header("");
+}
+
+static void test_service_lifecycle(void) {
+    begin("service: start once, restore on the worker, session gate");
+    const std::string root = s_root;
+    seed_store(root);
+    const char *roots[] = { "/proc/not/writable/offline", root.c_str() };
+    g_fake_thread_starts = g_fake_thread_joins = 0;
+    CHECK(dl_svc_start(roots, 2));
+    CHECK(dl_svc_start(roots, 2));                  // idempotent
+    CHECK(g_fake_thread_starts == 1);               // one worker, ever
+    CHECK(dl_svc_started());
+    CHECK(!dl_manager_ready());                     // restore is the worker's job
+    CHECK(dl_svc_root()[0] == '\0');
+    g_fake_default.refuse = true;                   // the server is down at boot
+    g_fake_connects = 0;
+    CHECK(dl_svc_tick() == 0);                      // restore
+    CHECK(dl_manager_ready());
+    CHECK(!strcmp(dl_svc_root(), root.c_str()));    // fell back past the bad root
+    CHECK(g_fake_connects == 0);                    // restore touched no network
+    // Completed item usable without the server.
+    DlStatus lib[8];
+    CHECK(dl_list(lib, 8, true) == 1 && !strcmp(lib[0].rec.id, "seed_done"));
+    char path[DL_PATH_MAX];
+    CHECK(dl_media_path("seed_done", path, sizeof(path)));
+    CHECK(fake_file_matches(path, g_fake_total));
+    // The interrupted one is back in the queue with its bytes.
+    DlStatus st = status_of("seed_part");
+    CHECK(st.rec.state == DL_QUEUED && st.rec.bytes_done == 120000);
+    // No session yet: ticks idle, no connection attempted.
+    for (int i = 0; i < 3; i++) CHECK(dl_svc_tick() > 0);
+    CHECK(g_fake_connects == 0);
+    // Session arrives, server still down: tries, fails as unreachable.
+    dl_svc_set_session("tok", DEVICE);
+    CHECK(dl_svc_tick() == 0);
+    CHECK(status_of("seed_part").rec.error == DL_ERR_UNREACHABLE);
+    CHECK(dl_list(lib, 8, true) == 1);              // library untouched
+    // Server back: resumes from its bytes.
+    g_fake_default.refuse = false;
+    g_fake_now_ms += 400000;
+    CHECK(dl_svc_tick() == 0);
+    CHECK(last_request_has_range(120000));
+    CHECK(g_fake_requests.back().find("Token=\"tok\"") != std::string::npos);
+    CHECK(status_of("seed_part").rec.state == DL_COMPLETED);
+    CHECK(dl_svc_tick() > 0);                       // idle again
+    // Logout holds the queue.
+    DlMeta later = meta_for("after_logout");
+    CHECK(dl_enqueue(&later, URL, 0) == DL_OK);
+    dl_svc_set_session("", DEVICE);
+    const int c = g_fake_connects;
+    CHECK(dl_svc_tick() > 0 && g_fake_connects == c);
+
+    s_test = "service: stop and restart"; printf("- %s\n", s_test);
+    // While stop waits for the worker, the worker must be told to stop:
+    // an attempt it would start now is refused.
+    static bool refused_during_join;
+    refused_during_join = false;
+    g_fake_on_join = []() { refused_during_join = !dl_manager_step(); };
+    dl_svc_set_session("tok", DEVICE);                 // queue live again
+    dl_svc_stop();
+    g_fake_on_join = nullptr;
+    CHECK(refused_during_join);
+    CHECK(g_fake_thread_joins == 1);
+    CHECK(!dl_svc_started() && !dl_manager_ready());
+    CHECK(dl_svc_root()[0] == '\0');
+    CHECK(dl_enqueue(&later, URL, 0) == DL_E_NOT_READY);
+    dl_svc_stop();                                  // twice: harmless
+    CHECK(g_fake_thread_joins == 1);
+    CHECK(dl_svc_start(roots, 2));                  // a new launch
+    CHECK(g_fake_thread_starts == 2);
+    CHECK(dl_svc_tick() == 0 && dl_manager_ready());
+    CHECK(status_of("seed_done").rec.state == DL_COMPLETED);
+    CHECK(status_of("after_logout").rec.state == DL_QUEUED);
+    dl_svc_stop();
+
+    s_test = "service: thread cannot start / no writable root"; printf("- %s\n", s_test);
+    g_fake_thread_fail = true;
+    CHECK(!dl_svc_start(roots, 2) && !dl_svc_started());
+    g_fake_thread_fail = false;
+    const char *bad[] = { "/proc/nope/a", "/proc/nope/b" };
+    CHECK(dl_svc_start(bad, 2));
+    CHECK(dl_svc_tick() == 0);
+    CHECK(!dl_manager_ready() && dl_svc_root()[0] == '\0');
+    CHECK(dl_svc_tick() == 1000);                   // idles, does not spin
+    dl_svc_stop();
+    // Leave the manager as begin() expects to find it.
+    CHECK(dl_manager_init(s_root.c_str(), &s_cfg));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "-v") == 0) g_fake_verbose = true;
 
@@ -1639,6 +2535,20 @@ int main(int argc, char **argv) {
     test_playback_heavy_stops();
     test_playback_light_paced();
     test_write_batching();
+
+    // Stage 3
+    test_stream_golden();
+    test_download_matches_playback();
+    test_download_url_shape();
+    test_request_gating();
+    test_item_identity();
+    test_request_metadata();
+    test_artwork();
+    test_ts_scan();
+    test_ts_validation();
+    test_request_heavy_playback();
+    test_auth_hold();
+    test_service_lifecycle();
 
     if (!s_tmp.empty()) fake_rmtree(s_tmp);
     printf("offline downloads: %d checks, %d failed\n", s_checks, s_failed);
