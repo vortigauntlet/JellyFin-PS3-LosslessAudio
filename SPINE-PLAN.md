@@ -1037,3 +1037,21 @@ spine10-uisfx at 12:26. spine11 overwrote it at 12:45; it is kept as
 
 Clean serial build: 121 objects, 48 warnings, `0480`; 12 host tests pass.
 EBOOT sha256 `1eb0a24f…`, 1,731,216 bytes; `outputs/EBOOT.BIN.spine12`.
+
+### spine13 — user reverts + 3D wordmark, deployed 2026-09-24
+
+spine12 on the TV: everything working, including sounds, the boot animation,
+the peek (9 opens logged) and `verify+flush after music ... px=0 vram=0`.
+Requested in 03a9a53:
+
+- Music: the cover-art halo and floor wash are removed. The album accent tint
+  (bars, artist, seek) stays.
+- Version picker: the RECOMMENDED / OTHER VERSIONS modal and the
+  "Recommended" selector label are reverted to the plain list and "Version".
+- L1: no blue eyebrow on library, Search or Settings tabs. It repeated the tab
+  name; only the white title shows now. Home keeps its row eyebrow.
+- JELLYFIN wordmark: two darkened-ramp extrusion layers over the drop shadow.
+
+Clean serial build: 121 objects, 47 warnings (the version picker's
+format-truncation site is gone with it), `0480`; 12 host tests pass.
+`outputs/EBOOT.BIN.spine13`, 1,725,344 bytes.
