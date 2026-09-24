@@ -1200,6 +1200,21 @@ void wave_draw(void) {
             rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
             rsxSetBlendEnable(context, GCM_TRUE);
 
+            // Body then rim, layer by layer, furthest first -- and the rim is
+            // ADDITIVE, as the design draws it (rimMat, AdditiveBlending) and
+            // as stages 1-6 shipped it (9d2fec3).  rimColor is light to ADD:
+            // it is near-black wherever the rim weight or the key is low.
+            // 14428bb put this pass on the standard blend at alpha 255 while
+            // chasing the strobe, which painted those near-black values
+            // opaque over the body -- the dark tubes along every rolled edge.
+            // It was never the strobe (that was the reuse-frame legacy write,
+            // see the empty `else if (jellywave)` above), so the design's
+            // blend comes back.  The rim follows ITS OWN body rather than all
+            // rims going last, because there is no depth buffer: a nearer
+            // layer has to be able to cover a further layer's edge.  The
+            // standard function is restored after the loop, below, for the
+            // rest of the UI.
+
             // Draw the finished JellyWave stream uploaded from CPU staging.
             //
             // IMPORTANT: s_jw_off/s_jw_cnt describe the CPU-built stream;
@@ -1215,6 +1230,15 @@ void wave_draw(void) {
                     const u32 count = s_jw_cnt[slot][pass];
                     if (!count)
                         continue;
+
+                    if (pass == 0)
+                        rsxSetBlendFunc(context,
+                            GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+                            GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+                    else
+                        rsxSetBlendFunc(context,          // src*a + dst
+                            GCM_SRC_ALPHA, GCM_ONE,
+                            GCM_SRC_ALPHA, GCM_ONE);
 
                     rsxDrawVertexArray(context,
                         GCM_TYPE_TRIANGLE_STRIP,
