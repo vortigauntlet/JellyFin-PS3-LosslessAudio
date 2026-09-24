@@ -4,6 +4,7 @@
 #include "http.h"
 #include "timing.h"
 #include "jf_paths.h"
+#include "lclog.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,6 +101,24 @@ void stream_rx_stats(u64 *bytes, u64 *wait_us, u32 *calls) {
 
 static void sb_reset(void) { s_sb_n = 0; s_sb_p = 0; }
 
+// Look at the socket without consuming anything: MSG_PEEK leaves every byte
+// for stream_read.  Only call this while no other thread is reading `sock`.
+void stream_probe(int sock, char *out, int outsz) {
+    static u8 peek[64 * 1024];
+    const int n = netRecv(sock, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT);
+    const int e = n < 0 ? net_errno : 0;
+    const char *st =
+        n > 0 ? "data_waiting"
+      : n == 0 ? "PEER_CLOSED"
+      : (e == NET_EAGAIN || e == NET_EWOULDBLOCK || e == NET_ETIMEDOUT) ? "idle_open"
+      : "ERROR";
+    snprintf(out, outsz,
+             "sock=%d %s peek=%d net_errno=%d buffered=%d carry=%d chunked=%d "
+             "chunk_left=%d rx_total=%llu",
+             sock, st, n, e, s_sb_n - s_sb_p, s_carry_n, (int)s_chunked,
+             s_chunk_remain, (unsigned long long)s_rx_bytes);
+}
+
 // Read the two network knobs once per connection.  Both default to what
 // Movian uses on this console.
 static int netcfg_kb(const char *name, int def_kb, int max_kb) {
@@ -124,6 +143,23 @@ static int sb_fill(int sock) {
     u64 dt = timing_get_us() - t0;
     s_rx_wait_us += dt;
     s_rx_calls++;
+    if (n < 0) {
+        // Every n < 0 is treated as a receive timeout and retried, so a real
+        // socket error (reset, not-connected) would otherwise look exactly
+        // like a stalled server.  Say which it was -- rate-limited, since a
+        // genuine timeout fires every 5 ms while the server is quiet.
+        // netRecv is the sys_net export: its errno is net_errno (BSD codes),
+        // not newlib's errno.
+        const int e = net_errno;
+        if (e != NET_EAGAIN && e != NET_EWOULDBLOCK && e != NET_ETIMEDOUT) {
+            static int s_err_log = 0;
+            if (s_err_log < 20) {
+                s_err_log++;
+                lc_logf("stream: netRecv ERROR rc=%d (0x%08x) net_errno=%d (not a timeout)",
+                        n, (unsigned)n, e);
+            }
+        }
+    }
     if (n <= 0) return n;
     s_rx_bytes += (u64)n;
     if (dt > 50000) {
@@ -382,6 +418,7 @@ int stream_read(int sock, u8 *buf, int size) {
             int n = sb_read(sock, buf + got, size - got);
             if (n == 0) {
                 plog("net_error: rc=0 (closed)");
+                lc_logf("stream: peer closed (body)");
                 return -1;
             }
             if (n < 0) return stream_save_carry(buf, got);   // timeout: resume later
@@ -392,7 +429,10 @@ int stream_read(int sock, u8 *buf, int size) {
         if (s_ctrail > 0) {
             u8 c;
             int n = sb_getc(sock, &c);
-            if (n == 0) return -1;
+            if (n == 0) {
+                lc_logf("stream: peer closed (chunk trailer)");
+                return -1;
+            }
             if (n <  0) return stream_save_carry(buf, got);   // timeout: resume later
             s_ctrail--;
             continue;
@@ -401,7 +441,10 @@ int stream_read(int sock, u8 *buf, int size) {
         if (s_chunk_remain <= 0) {
             u8 c;
             int n = sb_getc(sock, &c);
-            if (n == 0) return -1;
+            if (n == 0) {
+                lc_logf("stream: peer closed (chunk header)");
+                return -1;
+            }
             if (n <  0) return stream_save_carry(buf, got);   // timeout: resume later
             if (c == '\n') {
                 int llen = s_chdr_n;
@@ -410,7 +453,12 @@ int stream_read(int sock, u8 *buf, int size) {
                 s_chdr[llen] = '\0';
                 s_chunk_remain = (int)strtol(s_chdr, NULL, 16);
                 s_chdr_n = 0;
-                if (s_chunk_remain == 0) return -1;
+                if (s_chunk_remain == 0) {
+                    // The server ended the response on purpose: a 0-length
+                    // chunk is the end of the body, not a network failure.
+                    lc_logf("stream: server sent final 0-length chunk (response ended)");
+                    return -1;
+                }
             } else if (s_chdr_n < (int)sizeof(s_chdr) - 1) {
                 s_chdr[s_chdr_n++] = (char)c;
             }
@@ -422,6 +470,7 @@ int stream_read(int sock, u8 *buf, int size) {
         int n = sb_read(sock, buf + got, want);
         if (n == 0) {
             plog("net_error: rc=0 (closed)");
+                lc_logf("stream: peer closed (body)");
             return -1;
         }
         if (n < 0) return stream_save_carry(buf, got);   // timeout: resume later

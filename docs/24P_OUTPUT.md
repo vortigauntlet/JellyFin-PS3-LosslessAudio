@@ -182,8 +182,62 @@ hangs, power it off. The next launch disables 24p by itself, or you can write
   confirmation prompt was invisible. It is now redrawn once the new vblank has
   been measured. Flipping is safe at that point: the 09-18 hang happened only
   because the vblank had stopped.
-- Playback then ended (`playing=0`) instead of continuing at 59.94. The likely
-  cause is the stream stalling during the ~20 s pause. Not yet investigated.
+- Playback then ended (`playing=0`) and the app returned to Home instead of
+  continuing at 59.94. The cause is **not known yet**. A stream stall during the
+  ~20 s pause is one possibility, not a finding. The lifecycle trace below is
+  there to find the real cause.
+
+## Lifecycle trace for the next test
+
+Every line starts with `lc t=<ms>` (timebase milliseconds), so this command
+prints one ordered timeline of the whole session:
+
+```
+grep "lc t=\|playing=0 reason=\|24p:\|playstate:\|stop_transcode:" player_log.txt
+```
+
+| Line | Where | What it shows |
+|---|---|---|
+| `play-session CREATED psid=` | player.cpp, after PlaybackInfo | The PlaySessionId this playback uses |
+| `stream CONNECTED sock=` | player.cpp, after stream_open | The HTTP stream is open |
+| `session[before_24p]`, `session[after_24p]` | player.cpp, around `d24_session_begin` | Player state plus a non-consuming `MSG_PEEK` of the socket |
+| `24p: phase mode_switch_begin` / `_verified` / `_failed` | display_24p.cpp | The switch starts and is measured, or fails |
+| `24p: phase prompt_redrawn_after_switch` | display_24p.cpp | The post-switch redraw returned (flip completed) |
+| `24p: phase confirm_wait_begin`, `confirm_wait Ns` | display_24p.cpp, once a second | A `session[...]` snapshot for each second of the wait |
+| `24p: phase confirm_wait_end ans= ... (TIMEOUT)` | display_24p.cpp | Answer, elapsed time, and whether it timed out |
+| `24p: revert begin` / `revert done` | display_24p.cpp `revert()` | Revert to 59.94 and the rate it landed on |
+| `24p: session_begin returned` | player.cpp | Whether the session continues at 24p |
+| `sysutil: event status=` | main.cpp | Every sysutil event (XMB, exit request), not just EXIT_GAME |
+| `stream: peer closed (...)` | stream.cpp | The server closed the TCP connection |
+| `stream: server sent final 0-length chunk` | stream.cpp | The server ended the HTTP response on purpose |
+| `stream: netRecv ERROR net_errno=` | stream.cpp | A socket error that the old code silently treated as a timeout |
+| `playback: decode thread STARTED` | player.cpp | Decode thread spawned after the 24p phase |
+| `decode: first packet after spawn` / `no data for Nms` / `stream_read FAILED` / `thread exit` | player_threads.cpp | Whether data still flows once playback resumes |
+| `session[after_preroll]`, `playback: START`, `first frame displayed` | player.cpp | Playback actually resumed |
+| `playback: STOP cause=` | player.cpp, main-loop exit | Which loop condition ended playback |
+| `play-session DESTROY psid=` | player.cpp | The report of the stop and the transcode kill |
+| `show_player: RETURN to UI` | player.cpp | Control goes back to the calling screen (Home, if launched from Home) |
+
+How the trace separates the possible causes:
+
+- **A. Player alive, stream stalls:** the socket shows `idle_open` during the
+  wait, then `decode: no data for Nms` keeps repeating, with no `stream_read
+  FAILED`.
+- **B. Player explicitly stopped:** `playback: STOP cause=user_stop`, or a
+  `playing=0 reason=` line from the player itself.
+- **C. Play session destroyed:** `play-session DESTROY` or `stop_transcode:`
+  appears *before* `playback: STOP`, or a `playstate:` report fails.
+- **D. UI navigation to Home:** a `sysutil: event` line during the wait, or
+  `show_player: RETURN to UI` with no STOP line before it.
+- **E. Network/HTTP teardown:** `PEER_CLOSED` or `ERROR` in a
+  `session[confirm_wait Ns]` probe, then `stream: peer closed` or `final
+  0-length chunk`, then `decode: stream_read FAILED` and
+  `playing=0 reason=stream_eof`.
+- **F. Something else:** none of the above. `STOP cause=vdec_error` would be one
+  example.
+
+Before the test, delete `jf_24p_confirmed.txt`: the last run's timeout wrote `0`
+to it, and with that value the app will not try the switch again.
 
 ## Still unproven
 

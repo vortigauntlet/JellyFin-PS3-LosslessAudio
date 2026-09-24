@@ -41,12 +41,18 @@ s32 videoConfigure2(u32 videoOut, videoConfiguration2 *cfg, void *option, u32 wa
 void d24_boot_check(void);
 
 // Callbacks the player supplies, so this module never draws or reads the pad
-// itself.  draw_prompt must draw AND flip AND wait for the flip; it is only
-// ever called while the ORIGINAL mode is up.  poll_answer returns 1 for
+// itself.  draw_prompt must draw AND flip AND wait for the flip; it is called
+// while the ORIGINAL mode is up, and once more only after the new mode's vblank
+// has been measured ticking.  poll_answer returns 1 for
 // "yes, I can see it", -1 for "no", 0 for nothing yet.
+//
+// lifecycle (may be NULL) is told each phase of the switch -- and, during the
+// confirmation wait, once a second -- so the player can log the state of the
+// playback session alongside it.  It must only log: no drawing, no GPU.
 typedef struct {
 	void (*draw_prompt)(const char *line1, const char *line2);
 	int  (*poll_answer)(void);
+	void (*lifecycle)(const char *phase);
 } d24_ui;
 
 // Call after the prefill (frame rate known) and timing_register_vblank(),
