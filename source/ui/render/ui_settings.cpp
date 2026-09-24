@@ -13,6 +13,7 @@
 #include "surround.h"
 #include "centermix.h"
 #include "statsovl.h"
+#include "dl_manager.h"   // Downloads / Offline Library rows
 
 static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
     { "Log Out", "Debug Logging", "Screen Size", "1080p Playback (Alpha)",
@@ -20,6 +21,7 @@ static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
 #if ENABLE_PLAYER_STATS
     , "Player Stats Overlay"
 #endif
+    , "Downloads", "Offline Library"
     };
 // ICON_BUG is reused for the stats row: it is the same diagnostics family as
 // Debug Logging, and the Tabler font here is a 20-glyph subset (see
@@ -30,6 +32,9 @@ static const int   SETTINGS_ICONS[XMB_SETTINGS_COUNT]  =
 #if ENABLE_PLAYER_STATS
     , ICON_BUG
 #endif
+    // Downloads: the stacked-cards glyph (a queue); Offline: play.  Both are
+    // already in the 20-glyph icon subset.
+    , ICON_COLLECTIONS, ICON_PLAY
     };
 
 #define SET_PANEL_H 96
@@ -213,6 +218,29 @@ void xmb_draw_settings(void) {
                     val, 18, statsovl_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
 #endif
+        if (i == XMB_SET_ROW_DOWNLOADS || i == XMB_SET_ROW_OFFLINE) {
+            // Right-aligned tally.  dl_counts is a lock and a walk of the
+            // slot table -- no copies, no disk -- so it is fine per frame.
+            int active = 0, completed = 0, failed = 0;
+            dl_counts(&active, &completed, &failed);
+            char val[32];
+            bool lit;
+            if (!dl_manager_ready()) { snprintf(val, sizeof(val), "Unavailable"); lit = false; }
+            else if (i == XMB_SET_ROW_DOWNLOADS) {
+                if (active)      snprintf(val, sizeof(val), "%d active", active);
+                else if (failed) snprintf(val, sizeof(val), "%d failed", failed);
+                else             snprintf(val, sizeof(val), "None");
+                lit = active > 0;
+            } else {
+                if (completed) snprintf(val, sizeof(val), "%d", completed);
+                else           snprintf(val, sizeof(val), "Empty");
+                lit = completed > 0;
+            }
+            int vw = ttf_text_width(val, 18, sel);
+            drawTTF((u32)(list_x + XMB_LIST_W - 24 - vw),
+                    (u32)(iy + (SET_ROW_H - 18) / 2 - 2),
+                    val, 18, lit ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
+        }
     }
 
     // Version footer — skip it if a large overscan inset has squeezed the

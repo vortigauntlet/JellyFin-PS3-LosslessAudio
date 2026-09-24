@@ -16,6 +16,7 @@
 #include "dl_service.h"
 #include "dl_ts.h"
 #include "dl_library.h"
+#include "dl_ui.h"
 #include "stream_local.h"
 #include "stream_request.h"
 
@@ -2986,6 +2987,283 @@ static void test_offline_startup_path(void) {
     CHECK(dl_manager_init(s_root.c_str(), &s_cfg));
 }
 
+
+// =========================================================================
+// Stage 5: what the screens say and do
+// =========================================================================
+
+static DlStatus st_of(DlState state, uint64_t done = 0, uint64_t total = 0,
+                      uint32_t retry_ms = 0, DlError err = DL_ERR_NONE,
+                      const char *url = "http://h/x") {
+    DlStatus st;
+    memset(&st, 0, sizeof(st));
+    dl_record_init(&st.rec);
+    snprintf(st.rec.id, sizeof(st.rec.id), "abc");
+    snprintf(st.rec.title, sizeof(st.rec.title), "A Film");
+    snprintf(st.rec.url, sizeof(st.rec.url), "%s", url);
+    st.rec.state = state;
+    st.rec.bytes_done = done;
+    st.rec.bytes_total = total;
+    st.rec.error = err;
+    st.retry_in_ms = retry_ms;
+    st.active = state == DL_DOWNLOADING;
+    return st;
+}
+
+static std::string label_of(const DlStatus *st, bool can, DlUiContext cx) {
+    char b[64];
+    dl_ui_item_label(st, can, &cx, b, sizeof(b));
+    return b;
+}
+
+static void test_ui_item_button(void) {
+    s_test = "item page button"; printf("- %s\n", s_test);
+    DlUiContext ok = { false, false, true };
+    // Not in the list.
+    CHECK(dl_ui_item_action(NULL, true, &ok) == DL_UI_START);
+    CHECK(label_of(NULL, true, ok) == "Download");
+    CHECK(dl_ui_item_action(NULL, false, &ok) == DL_UI_NONE);   // no version loaded
+    CHECK(label_of(NULL, false, ok) == "Can't download");
+    // Service not usable: nothing is offered, whatever the state.
+    DlUiContext down = { false, false, false };
+    DlStatus done = st_of(DL_COMPLETED, 900, 900);
+    CHECK(dl_ui_item_action(NULL, true, &down) == DL_UI_NONE);
+    CHECK(dl_ui_item_action(&done, true, &down) == DL_UI_NONE);
+    CHECK(label_of(NULL, true, down) == "Downloads unavailable");
+    // Each state.
+    DlStatus q = st_of(DL_QUEUED);
+    CHECK(dl_ui_item_action(&q, true, &ok) == DL_UI_PAUSE && label_of(&q, true, ok) == "Queued");
+    DlUiContext held = { false, true, true }, streaming = { true, false, true };
+    CHECK(label_of(&q, true, held) == "Queued (sign in)");
+    CHECK(label_of(&q, true, streaming) == "Queued (streaming)");
+    DlStatus qr = st_of(DL_QUEUED, 0, 0, 4000, DL_ERR_UNREACHABLE);
+    CHECK(label_of(&qr, true, ok) == "Retrying...");
+    DlStatus d = st_of(DL_DOWNLOADING, 820, 1000);
+    CHECK(dl_ui_item_action(&d, true, &ok) == DL_UI_PAUSE);
+    CHECK(label_of(&d, true, ok) == "Downloading 82%");
+    DlStatus dt = st_of(DL_DOWNLOADING, 5000, 0);            // a transcode: no total
+    CHECK(label_of(&dt, true, ok) == "Downloading");
+    DlStatus p = st_of(DL_PAUSED, 420, 1000);
+    CHECK(dl_ui_item_action(&p, true, &ok) == DL_UI_RESUME && label_of(&p, true, ok) == "Paused 42%");
+    DlStatus p0 = st_of(DL_PAUSED);
+    CHECK(label_of(&p0, true, ok) == "Paused");
+    CHECK(dl_ui_item_action(&done, true, &ok) == DL_UI_PLAY_OFFLINE);
+    CHECK(dl_ui_item_action(&done, false, &ok) == DL_UI_PLAY_OFFLINE);   // needs no version
+    CHECK(label_of(&done, true, ok) == "Play offline");
+    DlStatus f = st_of(DL_FAILED, 0, 0, 0, DL_ERR_NO_SPACE), c = st_of(DL_CANCELLED);
+    CHECK(dl_ui_item_action(&f, true, &ok) == DL_UI_RETRY && label_of(&f, true, ok) == "Retry download");
+    CHECK(dl_ui_item_action(&c, true, &ok) == DL_UI_RETRY);
+    CHECK(dl_ui_item_action(&f, false, &ok) == DL_UI_NONE && label_of(&f, false, ok) == "Can't download");
+    // Every request error has words; OK has none.
+    CHECK(dl_ui_result_text(DL_OK)[0] == '\0');
+    for (int r = DL_E_NOT_READY; r <= DL_E_STATE; r++) CHECK(dl_ui_result_text(r)[0] != '\0');
+    CHECK(!strcmp(dl_ui_result_text(DL_E_NO_SPACE), "Not enough HDD space"));
+    CHECK(dl_ui_result_text(999)[0] != '\0');
+}
+
+static DlUiRow row_of(const DlStatus &st, DlUiContext cx = { false, false, true }) {
+    DlUiRow r;
+    dl_ui_row(&st, &cx, &r);
+    return r;
+}
+
+static void test_ui_rows(void) {
+    s_test = "Downloads list rows"; printf("- %s\n", s_test);
+    const uint64_t GB = 1024ull * 1024 * 1024, MB = 1024ull * 1024;
+    DlUiRow r = row_of(st_of(DL_DOWNLOADING, 1288490188ull, 3650722201ull));
+    CHECK(!strcmp(r.status, "Downloading") && r.emphasis && !r.warning);
+    CHECK(!strcmp(r.size, "1.1 GB of 3.3 GB"));
+    CHECK(r.permille == 352);
+    r = row_of(st_of(DL_DOWNLOADING, 340 * MB, 0));             // transcode
+    CHECK(r.permille == -1 && !strcmp(r.size, "340 MB"));        // no bar, no total
+    r = row_of(st_of(DL_QUEUED));
+    CHECK(!strcmp(r.status, "Waiting...") && r.permille == -1 && r.size[0] == '\0');
+    r = row_of(st_of(DL_QUEUED, 0, 0, 7200, DL_ERR_UNREACHABLE));
+    CHECK(!strcmp(r.status, "Retrying in 8s -- Server unreachable") && r.warning);
+    r = row_of(st_of(DL_QUEUED, 100, 1000), { false, true, true });
+    CHECK(!strcmp(r.status, "Waiting for sign-in") && r.warning && r.permille == 100);
+    r = row_of(st_of(DL_QUEUED, 100, 1000), { true, false, true });
+    CHECK(!strcmp(r.status, "Paused while streaming") && !r.warning);
+    r = row_of(st_of(DL_PAUSED, 2 * GB, 4 * GB));
+    CHECK(!strcmp(r.status, "Paused") && r.permille == 500 && !strcmp(r.size, "2.0 GB of 4.0 GB"));
+    r = row_of(st_of(DL_COMPLETED, 18 * GB, 18 * GB));
+    CHECK(!strcmp(r.status, "Downloaded") && !strcmp(r.size, "18 GB") && r.permille == -1);
+    r = row_of(st_of(DL_FAILED, 0, 0, 0, DL_ERR_BAD_MEDIA));
+    CHECK(!strcmp(r.status, "Failed -- Server sent an incomplete video") && r.warning);
+    r = row_of(st_of(DL_CANCELLED, 5, 10));
+    CHECK(!strcmp(r.status, "Cancelled") && r.size[0] == '\0');
+    DlStatus untitled = st_of(DL_QUEUED);
+    untitled.rec.title[0] = '\0';
+    r = row_of(untitled);
+    CHECK(!strcmp(r.title, "abc"));                              // falls back to the id
+    // Every error the manager can record reads as words in a failed row.
+    for (int e = 1; e < DL_ERR_COUNT; e++) {
+        r = row_of(st_of(DL_FAILED, 0, 0, 0, (DlError)e));
+        CHECK(strlen(r.status) > strlen("Failed -- "));
+    }
+
+    s_test = "Downloads list actions"; printf("- %s\n", s_test);
+    struct { DlState s; DlUiAction p, q; } t[] = {
+        { DL_QUEUED,      DL_UI_PAUSE,        DL_UI_CANCEL },
+        { DL_DOWNLOADING, DL_UI_PAUSE,        DL_UI_CANCEL },
+        { DL_PAUSED,      DL_UI_RESUME,       DL_UI_CANCEL },
+        { DL_COMPLETED,   DL_UI_PLAY_OFFLINE, DL_UI_REMOVE },
+        { DL_FAILED,      DL_UI_RETRY,        DL_UI_REMOVE },
+        { DL_CANCELLED,   DL_UI_RETRY,        DL_UI_REMOVE },
+    };
+    for (auto &x : t) {
+        DlStatus st = st_of(x.s);
+        CHECK(dl_ui_row_primary(&st) == x.p && dl_ui_row_secondary(&st) == x.q);
+        CHECK(dl_ui_action_label(x.p)[0] && dl_ui_action_label(x.q)[0]);
+    }
+    DlStatus corrupt = st_of(DL_FAILED, 0, 0, 0, DL_ERR_CORRUPT, "");
+    CHECK(dl_ui_row_primary(&corrupt) == DL_UI_NONE);           // no request to repeat
+    CHECK(dl_ui_action_label(DL_UI_NONE)[0] == '\0');
+    // Asking first: deleting a finished film, or cancelling with data in hand.
+    DlStatus fin = st_of(DL_COMPLETED, 10, 10), half = st_of(DL_DOWNLOADING, 10, 20),
+             empty = st_of(DL_QUEUED), failed = st_of(DL_FAILED);
+    CHECK(dl_ui_action_needs_confirm(DL_UI_REMOVE, &fin));
+    CHECK(!dl_ui_action_needs_confirm(DL_UI_REMOVE, &failed));
+    CHECK(dl_ui_action_needs_confirm(DL_UI_CANCEL, &half));
+    CHECK(!dl_ui_action_needs_confirm(DL_UI_CANCEL, &empty));
+    CHECK(!dl_ui_action_needs_confirm(DL_UI_PAUSE, &half));
+    // Banner priority: unusable > signed out > streaming > nothing.
+    DlUiContext b1 = { true, true, false }, b2 = { true, true, true }, b3 = { true, false, true },
+                b4 = { false, false, true };
+    CHECK(strstr(dl_ui_queue_banner(&b1), "unavailable") != NULL);
+    CHECK(strstr(dl_ui_queue_banner(&b2), "Sign in") != NULL);
+    CHECK(strstr(dl_ui_queue_banner(&b3), "stream") != NULL);
+    CHECK(dl_ui_queue_banner(&b4)[0] == '\0');
+}
+
+static void test_ui_offline_and_helpers(void) {
+    s_test = "Offline library lines"; printf("- %s\n", s_test);
+    DlMeta m;
+    dl_meta_init(&m);
+    snprintf(m.id, sizeof(m.id), "ep1");
+    snprintf(m.title, sizeof(m.title), "Pilot");
+    snprintf(m.series, sizeof(m.series), "Some Show");
+    m.season = 1; m.episode = 3; m.runtime_secs = 2820;
+    char t[128], sub[160];
+    dl_ui_offline_lines(&m, true, 1288490188ull, t, sizeof(t), sub, sizeof(sub));
+    CHECK(!strcmp(t, "Pilot"));
+    CHECK(!strcmp(sub, "Some Show  S1 E3  \xB7  47 min  \xB7  1.1 GB"));
+    DlMeta mv;
+    dl_meta_init(&mv);
+    snprintf(mv.id, sizeof(mv.id), "mv1");
+    snprintf(mv.title, sizeof(mv.title), "A Film");
+    mv.year = 1999; mv.runtime_secs = 8100;
+    dl_ui_offline_lines(&mv, true, 812 * 1024, t, sizeof(t), sub, sizeof(sub));
+    CHECK(!strcmp(sub, "1999  \xB7  2h 15m  \xB7  812 KB"));
+    // Stale metadata: title from the record, only what is certain.
+    dl_ui_offline_lines(&m, false, 1024, t, sizeof(t), sub, sizeof(sub));
+    CHECK(!strcmp(t, "Pilot") && !strcmp(sub, "1 KB"));
+    m.title[0] = '\0';
+    dl_ui_offline_lines(&m, false, 0, t, sizeof(t), sub, sizeof(sub));
+    CHECK(!strcmp(t, "ep1"));
+    m.season = -1;
+    dl_ui_offline_lines(&m, true, 0, t, sizeof(t), sub, sizeof(sub));
+    CHECK(strncmp(sub, "Some Show  \xB7", 12) == 0);             // no S-1 E3
+
+    s_test = "byte formatting"; printf("- %s\n", s_test);
+    char b[24];
+    struct { uint64_t v; const char *s; } fb[] = {
+        { 0, "0 KB" }, { 1, "1 KB" }, { 1024, "1 KB" }, { 1025, "2 KB" },
+        { 1024ull * 1024 - 1, "1024 KB" }, { 1024ull * 1024, "1 MB" },
+        { 1024ull * 1024 * 1024 - 1, "1023 MB" }, { 1024ull * 1024 * 1024, "1.0 GB" },
+        { 1610612736ull, "1.5 GB" }, { 10ull << 30, "10 GB" }, { 5000ull << 30, "5000 GB" },
+    };
+    for (auto &x : fb) {
+        dl_ui_format_bytes(x.v, b, sizeof(b));
+        if (strcmp(b, x.s)) printf("    %llu -> %s (want %s)\n", (unsigned long long)x.v, b, x.s);
+        CHECK(!strcmp(b, x.s));
+    }
+
+    s_test = "list selection window"; printf("- %s\n", s_test);
+    int top = 0;
+    CHECK(dl_ui_clamp_selection(5, 0, 6, &top) == 0 && top == 0);          // empty
+    CHECK(dl_ui_clamp_selection(-3, 10, 6, &top) == 0 && top == 0);
+    CHECK(dl_ui_clamp_selection(7, 10, 6, &top) == 7 && top == 2);         // scroll down
+    CHECK(dl_ui_clamp_selection(1, 10, 6, &top) == 1 && top == 1);         // back up
+    top = 9;
+    CHECK(dl_ui_clamp_selection(9, 3, 6, &top) == 2 && top == 0);          // list shrank
+    top = 0;
+    CHECK(dl_ui_clamp_selection(4, 5, 0, &top) == 4 && top == 4);          // tiny window
+}
+
+static void test_ui_flow(void) {
+    begin("item page -> Downloads -> Offline, through the real manager");
+    // The item page's DOWNLOAD, exactly as dl_download_item builds it.
+    DlUiContext cx = { false, false, true };
+    DlStatus st;
+    CHECK(!dl_find(FX, &st));
+    CHECK(dl_ui_item_action(NULL, true, &cx) == DL_UI_START);
+    g_fake_default = ts_resp(3000, 600);
+    DlRequest dr;
+    CHECK(enqueue_fixture(&dr, VQ_720P, 600) == DL_OK);
+    CHECK(dl_find(FX, &st) && label_of(&st, true, cx) == "Queued");
+    // Pressed again while queued: Pause (not a second copy).
+    CHECK(dl_ui_item_action(&st, true, &cx) == DL_UI_PAUSE);
+    CHECK(dl_pause(FX) == DL_OK);
+    CHECK(dl_find(FX, &st) && dl_ui_item_action(&st, true, &cx) == DL_UI_RESUME);
+    CHECK(dl_resume(FX) == DL_OK);
+    // Mid-transfer, the list row shows live progress.
+    static bool checked;
+    checked = false;
+    g_fake_default.on_body = [](int64_t sent) {
+        if (checked || sent < 200000) return;
+        checked = true;
+        DlStatus s2;
+        DlUiContext c2 = { false, false, true };
+        CHECK(dl_find(FX, &s2) && s2.rec.state == DL_DOWNLOADING);
+        CHECK(label_of(&s2, true, c2).rfind("Downloading", 0) == 0);
+        DlUiRow r;
+        dl_ui_row(&s2, &c2, &r);
+        CHECK(r.emphasis && !strcmp(r.status, "Downloading"));
+    };
+    CHECK(dl_manager_step());
+    CHECK(checked);
+    CHECK(dl_find(FX, &st) && st.rec.state == DL_COMPLETED);
+    CHECK(label_of(&st, true, cx) == "Play offline");
+    CHECK(dl_ui_row_primary(&st) == DL_UI_PLAY_OFFLINE);
+    // ...and the Offline library lists it with its lines.
+    char ids[4][DL_ID_MAX];
+    CHECK(dl_library_ids(ids, 4) == 1 && !strcmp(ids[0], FX));
+    DlLibraryEntry e;
+    CHECK(dl_library_get(FX, &e));
+    char t[128], sub[160];
+    dl_ui_offline_lines(&e.meta, e.meta_ok, e.bytes, t, sizeof(t), sub, sizeof(sub));
+    CHECK(!strcmp(t, "Pilot") && strstr(sub, "Some Show  S1 E3") != NULL);
+    // Settings tallies.
+    int a = -1, c = -1, f = -1;
+    dl_counts(&a, &c, &f);
+    CHECK(a == 0 && c == 1 && f == 0);
+    DlMeta q = meta_for("queued1");
+    CHECK(dl_enqueue(&q, URL, 0) == DL_OK);
+    FakeResp nf; nf.status = 404;
+    g_fake_queue.push_back(nf);
+    DlMeta bad = meta_for("bad1");
+    CHECK(dl_enqueue(&bad, URL, 0) == DL_OK);
+    CHECK(dl_pause("queued1") == DL_OK);
+    CHECK(dl_manager_step());                               // bad1 -> 404 -> failed
+    dl_counts(&a, &c, &f);
+    CHECK(a == 1 && c == 1 && f == 1);
+    dl_counts(NULL, NULL, NULL);                            // NULLs are fine
+    char all[8][DL_ID_MAX];
+    CHECK(dl_ids(all, 8) == 3 && !strcmp(all[0], FX) && !strcmp(all[1], "queued1") &&
+          !strcmp(all[2], "bad1"));                         // queue order
+    CHECK(dl_ids(all, 2) == 2);
+    // Delete from Offline: asks first, then it is gone everywhere.
+    CHECK(dl_ui_action_needs_confirm(DL_UI_REMOVE, &st));
+    CHECK(dl_remove(FX) == DL_OK);
+    CHECK(dl_library_ids(ids, 4) == 0 && !dl_find(FX, &st));
+    CHECK(dl_ui_item_action(NULL, true, &cx) == DL_UI_START);   // Download again
+    dl_manager_shutdown();
+    dl_counts(&a, &c, &f);
+    CHECK(a == 0 && c == 0 && f == 0 && dl_ids(all, 8) == 0);
+    CHECK(dl_manager_init(s_root.c_str(), &s_cfg));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "-v") == 0) g_fake_verbose = true;
 
@@ -3051,6 +3329,12 @@ int main(int argc, char **argv) {
     test_local_plan();
     test_local_playback_gate();
     test_offline_startup_path();
+
+    // Stage 5
+    test_ui_item_button();
+    test_ui_rows();
+    test_ui_offline_and_helpers();
+    test_ui_flow();
 
     if (!s_tmp.empty()) fake_rmtree(s_tmp);
     printf("offline downloads: %d checks, %d failed\n", s_checks, s_failed);

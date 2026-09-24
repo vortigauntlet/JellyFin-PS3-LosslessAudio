@@ -463,7 +463,33 @@ bool dl_find(const char *id, DlStatus *out) {
     return s != NULL;
 }
 
-int dl_completed_ids(char (*ids)[DL_ID_MAX], int max) {
+static int ids_in_order(char (*ids)[DL_ID_MAX], int max, bool completed_only);
+
+int dl_ids(char (*ids)[DL_ID_MAX], int max) { return ids_in_order(ids, max, false); }
+int dl_completed_ids(char (*ids)[DL_ID_MAX], int max) { return ids_in_order(ids, max, true); }
+
+void dl_counts(int *active, int *completed, int *failed) {
+    int a = 0, c = 0, f = 0;
+    if (s_ready) {
+        LOCK();
+        for (int i = 0; i < DL_MAX_ITEMS; i++) {
+            const Slot *s = &s_slots[i];
+            if (!s->used || s->removing) continue;
+            switch (s->rec.state) {
+            case DL_QUEUED: case DL_DOWNLOADING: case DL_PAUSED: a++; break;
+            case DL_COMPLETED: c++; break;
+            case DL_FAILED: f++; break;
+            default: break;
+            }
+        }
+        UNLOCK();
+    }
+    if (active) *active = a;
+    if (completed) *completed = c;
+    if (failed) *failed = f;
+}
+
+static int ids_in_order(char (*ids)[DL_ID_MAX], int max, bool completed_only) {
     if (!s_ready) return 0;
     LOCK();
     int n = 0;
@@ -473,7 +499,7 @@ int dl_completed_ids(char (*ids)[DL_ID_MAX], int max) {
         for (int i = 0; i < DL_MAX_ITEMS; i++) {
             const Slot *s = &s_slots[i];
             if (!s->used || s->removing || s->rec.seq <= last ||
-                s->rec.state != DL_COMPLETED)
+                (completed_only && s->rec.state != DL_COMPLETED))
                 continue;
             if (!best || s->rec.seq < best->rec.seq) best = s;
         }

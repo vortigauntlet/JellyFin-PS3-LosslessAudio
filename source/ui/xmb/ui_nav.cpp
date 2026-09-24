@@ -172,6 +172,10 @@ static bool xmb_input_settings(void) {
         if (g_settings_sel == 6)                                        // Player Stats Overlay
             statsovl_set_enabled(!statsovl_enabled());
 #endif
+        // Offline downloads (Stage 5): full-screen overlays, like the info
+        // page -- they own input until Circle, then the tab resumes.
+        if (g_settings_sel == XMB_SET_ROW_DOWNLOADS) xmb_show_downloads();
+        if (g_settings_sel == XMB_SET_ROW_OFFLINE)   xmb_show_offline();
     }
     return false;
 }

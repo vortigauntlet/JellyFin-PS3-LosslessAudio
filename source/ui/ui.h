@@ -142,6 +142,20 @@ void ui_run_xmb(void);
 // -------------------------------------------------------
 int  get_input(char *out, int max_len, const char *prompt, bool is_password);
 
+// -------------------------------------------------------
+// Offline downloads (xmb/ui_downloads.cpp, Stage 5)
+// -------------------------------------------------------
+// Full-screen overlays that own input until Circle.  Settings opens both;
+// main.cpp offers the Offline library when sign-in fails.
+void xmb_show_downloads(void);
+void xmb_show_offline(void);
+// Two-option confirm, the safe option first and selected.  True = action.
+bool xmb_dl_confirm(const char *title, const char *line, const char *safe,
+                    const char *action);
+// If there are downloads to play, ask whether to open them.  True when the
+// Offline library was opened (the caller then retries sign-in as before).
+bool xmb_offer_offline_after_login_failure(void);
+
 // One-time setup: upload font bitmap, configure RSX blend.
 void ui_init(void);
 void ui_cleanup(void);

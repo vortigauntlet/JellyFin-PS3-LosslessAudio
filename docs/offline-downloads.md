@@ -1,18 +1,20 @@
 # Offline Downloads — Design & Implementation
 
-Status: **Stages 1–4 implemented**: storage model, queue, state machine,
-persistence, resumable transfer, Jellyfin integration, service lifecycle, and
-(Stage 4) the offline library model, the offline startup path, and local
-playback through the existing player. Host-tested and compiled into the PS3
-build. **Not yet user-visible:** there is no DOWNLOAD FOR OFFLINE button and
-no Offline section (both Stage 5), so nothing is enqueued and nothing
-launches `show_player_offline()`. What the build does differently at runtime:
+Status: **Stages 1–5 implemented**: storage model, queue, state machine,
+persistence, resumable transfer, Jellyfin integration, service lifecycle, the
+offline library, the offline startup path, local playback through the existing
+player, and (Stage 5) the UI: a DOWNLOAD button on the item page, a Downloads
+list with progress, and an Offline library (§12). Host-tested and compiled into
+the PS3 build; not yet run on a console. What the build does at runtime:
 
 * it starts the download service after `load_config()`. The worker creates
-  the store root on the HDD (§4), restores it, and then idles;
+  the store root on the HDD (§4), restores it, and then idles until something
+  is queued;
 * the player reports its streams to the download manager (§5a);
 * the info screen's existing item fetch also parses series/season/episode/
-  year/runtime (§7b). No extra request is made.
+  year/runtime (§7b). No extra request is made;
+* Settings gains two rows, **Downloads** and **Offline Library** (§12b);
+* a failed sign-in offers the Offline library when it has anything (§12b).
 
 ## 1. Goal
 
@@ -448,7 +450,7 @@ left as a measured decision for later, not assumed.
 | 2 | network transfer, progress, retry, resume, cancellation, yielding to playback, batched writes | **done** (service built, not started; player gate live) |
 | 3 | Jellyfin integration: shared stream decision, request builder, metadata + artwork, TS validation, service lifecycle, session hold | **done** (no UI entry point yet) |
 | 4 | offline library, offline startup path, playback of `media.ts` through the existing player (`stream_open` on a local file) | **done** (§11; nothing launches it until Stage 5) |
-| 5 | UI: item-page action, Downloads list with progress, Offline section | |
+| 5 | UI: item-page action, Downloads list with progress, Offline section | **done** (§12) |
 
 ## 9. Tests
 
@@ -544,9 +546,13 @@ are equivalent, meaning the behaviour cannot change:
 
 ## 10. Remaining work
 
-* **Stage 5:** the DOWNLOAD FOR OFFLINE action on the info screen (it calls
-  `dl_download_item(item, &detail, &versions.source[version_sel])`), the
-  Downloads list, and the Offline section.
+* **UI follow-ups** (deliberately left out of Stage 5):
+  * posters in the Downloads and Offline lists. `poster.jpg` is on disk, but
+    decoding it on the UI thread would stall a frame per row, so the lists are
+    text until a background decode (like the library grid's) is wired to them;
+  * a Downloads/Offline entry on the tab bar. Stage 5 uses Settings rows so
+    the XMB spine is untouched (§12b);
+  * "download the whole season" from a series page.
 * **To verify on hardware** (nothing here has run on a console yet):
   * that `/dev_hdd0/jellyfin_offline` is writable (the log says which root
     won);
@@ -561,6 +567,12 @@ are equivalent, meaning the behaviour cannot change:
     * VDEC entering at the PAT and keyframe found by the index;
     * the frame-buffer re-grab when a file's ceiling is larger than the
       current quality setting's.
+  * Stage 5 on the console:
+    * the item page's Play + Download row at 480p/576p output (the button is
+      a fixed 250 px beside Play);
+    * the whole path end to end: DOWNLOAD, the Downloads list during a stream,
+      then Offline playback with the network unplugged;
+    * the sign-in-failure offer with the server down.
 
 ## 11. Stage 4: offline library, startup path, local playback
 
@@ -729,3 +741,109 @@ completed-id query, restore publication):
 **Online playback unchanged:** the Stage 3 goldens (byte-identical playback
 URLs) still pass, and the player diff substitutes only `stream_close` and
 `stream_set_timeout` on the online path.
+
+## 12. Stage 5: the UI
+
+Three entry points, all drawn by existing overlay patterns (a blocking loop
+over the wave background that owns input until Circle, like
+`xmb_resume_choice` and the info page). The XMB spine, the tab bar and
+JellyWave are untouched.
+
+### 12a. One pure model (`dl_ui.{h,cpp}`)
+
+Every word the screens show and every decision about what a button press does
+lives in `dl_ui`, which has no PS3 dependency and is pinned by the host tests.
+The screens only draw what it returns and forward the resulting `DlUiAction`
+to the manager (`dl_pause`, `dl_resume`, `dl_retry`, `dl_cancel`,
+`dl_remove`), to `dl_download_item`, or to `show_player_offline`.
+
+* `DlUiContext {playback_block, auth_held, ready}` is read once per refresh
+  from `dl_playback_blocking()`, `dl_auth_held()` and `dl_manager_ready()`.
+* **Item page:** `dl_ui_item_action` / `dl_ui_item_label` map the item's
+  record (or none) to one action and one label: Download, Queued, Queued
+  (sign in), Queued (streaming), Retrying..., Downloading 42%, Paused 42%,
+  Play offline, Retry download, Can't download, Downloads unavailable.
+* **Downloads list:** `dl_ui_row` gives a row its title, status line
+  ("Downloading", "Waiting...", "Retrying in 8s -- Server unreachable",
+  "Waiting for sign-in", "Paused while streaming", "Paused", "Downloaded",
+  "Failed -- Not enough HDD space", "Cancelled"), size ("1.2 GB of 2.9 GB"),
+  progress (or no bar for a transcode of unknown length) and colour.
+  `dl_ui_row_primary` (Cross) and `dl_ui_row_secondary` (Square) give the
+  actions. A failed item rebuilt from damaged files has no request to retry,
+  so it offers no Retry. It must be downloaded again from its page.
+* **Confirmation:** `dl_ui_action_needs_confirm` asks before deleting a
+  finished download and before cancelling one that has bytes on disk. Nothing
+  else asks. The dialog's default is the safe option.
+* **Offline library:** `dl_ui_offline_lines` gives "Pilot" /
+  "The Expanse  S1 E1  ·  47 min  ·  1.2 GB" and falls back to the title and
+  size for an entry whose metadata is stale.
+* Helpers: `dl_ui_format_bytes`, `dl_ui_clamp_selection` (keeps the selection
+  and scroll window valid when the list shrinks under it).
+
+Two small manager queries were added for the screens, with no new state:
+`dl_ids` (every id, queue order) and `dl_counts` (active / completed /
+failed). `dl_completed_ids` now shares their implementation.
+
+### 12b. Where the screens live
+
+* **Item page** (`ui_info.cpp`): a DOWNLOAD button sits beside Play on the
+  same row (Right from Play, Left back). It shows for Movie, Episode and Video
+  items. It downloads the version on screen (`versions.source[version_sel]`),
+  the one Play would stream, through the shared stream decision (§7a). The
+  button shows the label, a progress bar while downloading, and a 3 s toast
+  under it ("Added to Downloads (Settings > Downloads)", or why not). The
+  record is polled with `dl_find` every 250 ms; nothing else is fetched.
+  Play offline goes through the existing resume prompt.
+* **Settings** (`ui_settings.cpp`, `ui_nav.cpp`): two rows, **Downloads**
+  ("2 active", "1 failed", "None") and **Offline Library** ("3", "Empty"),
+  both "Unavailable" when there is no writable store. Settings was chosen over
+  a new tab so the spine is not touched, and because it is reachable when the
+  server is not.
+* **Sign-in failure** (`main.cpp`): if `do_login()` fails and the library is
+  not empty (after up to 1.5 s for the restore, §6), a dialog offers
+  "Try again" (default, the old flow exactly) or "Open Offline". Leaving the
+  Offline list returns to sign-in with the server URL kept.
+
+### 12c. The screens (`ui/xmb/ui_downloads.cpp`)
+
+* **Downloads:** up to as many rows as fit above the hints bar, with a
+  scroll indicator past that. A banner under the title says when the queue as a
+  whole is held ("Downloads pause while you stream -- they resume
+  afterwards", "Sign in to continue downloads"). The list is re-read about
+  four times a second, and only the visible rows are fetched (`dl_find`).
+  Refresh runs after input, and an action pressed in the same frame as a
+  scroll is ignored, so a press never acts on a row the user has not seen.
+* **Offline:** the completed, verified items (`dl_library_ids`). Metadata is
+  read (`dl_library_get`) only when the list or scroll window changes. Cross
+  plays through `show_player_offline` (§11c); Square deletes, after a confirm.
+  An empty library says how to add something.
+* No network work, and no per-frame allocation. Posters are not drawn (§10).
+
+Host previews of every screen are in `tools/ui_preview` (frames 8–16,
+`preview_offline.cpp`, which renders from the real `dl_ui` model).
+
+### 12d. Stage 5 tests
+
+* **Item button:** each state with and without a downloadable version, in
+  each context (not ready, signed out, streaming, retry pending): its label
+  and its action; and the result text for every error code.
+* **Rows:** each state's status, size, bar and colour; transcodes with no
+  total; the retry countdown (rounded up); the held-queue variants; every
+  recorded error reading as words; primary and
+  secondary actions; Retry hidden for a record with no request; which actions
+  confirm; the queue banner.
+* **Offline lines and helpers:** episodes, films, stale metadata, runtimes
+  under and over an hour, a missing season; byte formatting at each unit
+  boundary; selection clamping when scrolling, when the list shrinks or
+  empties, and with a zero-row window.
+* **Flow through the real manager:** DOWNLOAD from the item page, progress
+  and pause/resume as the list shows them, completion into the Offline
+  library, delete, and `dl_ids` / `dl_counts` agreeing with the list at each
+  step.
+
+Totals: 45,815 checks pass. ASan/UBSan are clean, and a strict clang pass
+(`-Wshadow -Wconversion`) gives 0 warnings. Mutation testing planted 20 breaks
+in `dl_ui` and the new manager queries; all 20 are caught.
+
+**Build:** clean PS3 build with 0 errors. The warning set is identical to
+`main`'s (45).

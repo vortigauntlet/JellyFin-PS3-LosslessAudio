@@ -106,6 +106,12 @@ DlResult dl_remove(const char *id);    // deletes everything for the item
 // Snapshots, in queue order.  completed_only gives the Offline library.
 int  dl_list(DlStatus *out, int max, bool completed_only);
 bool dl_find(const char *id, DlStatus *out);
+// Ids of every item in queue order (the Downloads list reads its visible
+// rows with dl_find, instead of snapshotting all ~2 KB statuses).
+int  dl_ids(char (*ids)[DL_ID_MAX], int max);
+// Cheap tallies for a label, no copies: queued/downloading/paused count as
+// active; completed as records (dl_library verifies the files).
+void dl_counts(int *active, int *completed, int *failed);
 // Ids of COMPLETED items in queue order -- just the ids (the offline
 // library, dl_library.h, verifies each one).
 int  dl_completed_ids(char (*ids)[DL_ID_MAX], int max);

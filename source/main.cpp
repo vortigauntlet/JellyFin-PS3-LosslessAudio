@@ -236,7 +236,15 @@ int main(int argc, const char *argv[]) {
 
         if (!g_token[0]) {
             crash_log("12 do_login");
-            if (!do_login()) { g_server[0] = '\0'; continue; }
+            if (!do_login()) {
+                // Signed out and the server will not have us (unreachable,
+                // or a bad password): what is already downloaded still plays.
+                // Opening it keeps the server URL, so sign-in can be retried
+                // straight after; declining keeps the old flow exactly.
+                if (xmb_offer_offline_after_login_failure()) continue;
+                g_server[0] = '\0';
+                continue;
+            }
             slog_state("LOGIN_OK userid=%s", g_userid);
         }
 

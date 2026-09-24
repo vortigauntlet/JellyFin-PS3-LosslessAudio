@@ -286,7 +286,11 @@ extern char g_tab_name_filter[XMB_TAB_COUNT][4];
 // The "Player Stats Overlay" row only exists when the diagnostics module is
 // compiled in — a build with ENABLE_PLAYER_STATS 0 has nothing for it to
 // toggle, so the row goes away rather than sitting there doing nothing.
-#define XMB_SETTINGS_COUNT (6 + ENABLE_PLAYER_STATS)  // selectable settings entries
+// Offline downloads (Stage 5) are the LAST two rows, after every existing one,
+// so no existing row changes its index.
+#define XMB_SET_ROW_DOWNLOADS (6 + ENABLE_PLAYER_STATS)
+#define XMB_SET_ROW_OFFLINE   (7 + ENABLE_PLAYER_STATS)
+#define XMB_SETTINGS_COUNT (8 + ENABLE_PLAYER_STATS)  // selectable settings entries
 extern int   g_settings_sel;       // highlighted settings entry
 extern bool  g_settings_confirm;   // true while the logout confirm prompt is up
 extern bool  g_overscan_calib;     // true while the overscan calibration screen is up
