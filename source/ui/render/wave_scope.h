@@ -46,6 +46,26 @@
 #define WSC_LAG_MAX  180
 #define WSC_AC_N     96
 #define WSC_PERIODIC 0.55f
+
+// KEY (2026-09-26, "snap on key changes").  Each periodic frame's pitch is
+// folded to a pitch class and accumulated in a slowly decaying histogram
+// (~6 s); the strongest class is the tonal centre.  A different class that
+// has led for WSC_KEY_HOLD and by WSC_KEY_MARGIN is a key change: one event.
+// Approximate on purpose -- it only has to notice that the harmony MOVED.
+#define WSC_KEY_TAU    6.0f
+#define WSC_KEY_HOLD   2.5f
+#define WSC_KEY_MARGIN 1.25f
+
+// BASS GLIDE ("808 glide bend").  A low-passed copy of the 12 kHz trace,
+// decimated to 1.5 kHz, autocorrelated over 37..125 Hz: when the bass is
+// clearly pitched its pitch is tracked, and the rate it slides at (octaves a
+// second, smoothed) is handed on.  An octave jump is ignored, not a glide.
+#define WSC_BASS_RING  256
+#define WSC_BASS_DEC   8
+#define WSC_BLAG_MIN   12
+#define WSC_BLAG_MAX   40
+#define WSC_BASS_N     96
+#define WSC_BASS_PER   0.60f
 #define WSC_DECIM    4          // 48 kHz -> 12 kHz
 #define WSC_POINTS   32         // waveform points handed to the renderer
 
@@ -65,18 +85,44 @@ typedef struct {
     int   dn;
     float ring[WSC_RING];
     int   wr;
+    float blp;                  // bass low-pass on the 12 kHz trace
+    int   bdn;
+    float bring[WSC_BASS_RING];
+    int   bwr;
     // written by wsc_frame (UI thread, same lock)
     float bal, width, peak;
     float wave[WSC_POINTS];
     float lin[WSC_RING];        // scratch: the ring, oldest first
     int   period;               // last periodic lag, 0 = aperiodic
+    float pch[12];              // pitch-class histogram
+    int   key, cand;            // current key (-1 none), candidate
+    float cand_t;
+    float bpitch, bglide;       // bass pitch (log2 Hz), glide (oct/s)
+    int   bvalid;
 } wsc_state;
 
 typedef struct {
     float balance;              // -1..1
     float width;                // 0..1
     float wave[WSC_POINTS];     // -1..1, tapered
+    int   key;                  // 0..11 (C..B) tonal centre, -1 unknown
+    int   key_changed;          // 1 on the frame the key changes
+    float bass_glide;           // octaves / s the bass is sliding (+ up)
 } wsc_out;
+
+// log2 without libm (see wave_audio.h's wa_log2)
+static inline float wsc_log2(float x)
+{
+    union { float f; unsigned int u; } v;
+    int e;
+    float m;
+    if (!(x > 1e-12f)) return -40.0f;
+    v.f = x;
+    e = (int)((v.u >> 23) & 0xFF) - 128;
+    v.u = (v.u & 0x007FFFFFu) | 0x3F800000u;
+    m = v.f;
+    return (float)e + (-0.34484843f * m + 2.02466578f) * m - 0.67487759f;
+}
 
 static inline float wsc_clamp(float v, float lo, float hi)
 {
@@ -93,6 +139,11 @@ static inline void wsc_init(wsc_state *s)
     s->l2 = s->r2 = s->m2 = s->s2 = 0.0f;
     s->frames = 0; s->dacc = 0.0f; s->dn = 0; s->wr = 0;
     s->bal = 0.0f; s->width = 0.0f; s->peak = WSC_PEAK_FLOOR;
+    s->blp = 0.0f; s->bdn = 0; s->bwr = 0;
+    for (i = 0; i < WSC_BASS_RING; i++) s->bring[i] = 0.0f;
+    for (i = 0; i < 12; i++) s->pch[i] = 0.0f;
+    s->key = -1; s->cand = -1; s->cand_t = 0.0f;
+    s->bpitch = 0.0f; s->bglide = 0.0f; s->bvalid = 0;
     for (i = 0; i < WSC_RING; i++) s->ring[i] = 0.0f;
     for (i = 0; i < WSC_POINTS; i++) s->wave[i] = 0.0f;
 }
@@ -116,6 +167,13 @@ static inline void wsc_push(wsc_state *s, const float *lr, int n)
         }
         if (++s->dn >= WSC_DECIM) {
             s->ring[s->wr] = s->dacc * (1.0f / (float)WSC_DECIM);
+            // the bass trace: ~200 Hz low-pass, then 1.5 kHz
+            s->blp += (s->ring[s->wr] - s->blp) * 0.10f;
+            if (++s->bdn >= WSC_BASS_DEC) {
+                s->bdn = 0;
+                s->bring[s->bwr] = s->blp;
+                s->bwr = (s->bwr + 1) & (WSC_BASS_RING - 1);
+            }
             s->wr = (s->wr + 1) & (WSC_RING - 1);
             s->dacc = 0.0f; s->dn = 0;
         }
@@ -194,6 +252,66 @@ static inline void wsc_frame(wsc_state *s, float dt, float present, wsc_out *o)
             start = WSC_RING - WSC_SPAN;
         }
         s->period = lag;
+        // --- the key: fold this frame's pitch into the histogram ------------
+        {
+            const float kd = 1.0f / (1.0f + dt / WSC_KEY_TAU);
+            int best = 0;
+            for (k = 0; k < 12; k++) s->pch[k] *= kd;
+            if (lag && present > 0.0f) {
+                const float semis = 12.0f * wsc_log2((12000.0f / (float)lag) / 261.63f);
+                int pc = (int)(semis + (semis >= 0.0f ? 0.5f : -0.5f)) % 12;
+                if (pc < 0) pc += 12;
+                s->pch[pc] += dt;
+            }
+            for (k = 1; k < 12; k++) if (s->pch[k] > s->pch[best]) best = k;
+            o->key_changed = 0;
+            if (s->pch[best] > 0.5f && best != s->key) {
+                if (best == s->cand) s->cand_t += dt; else { s->cand = best; s->cand_t = 0.0f; }
+                if (s->cand_t >= WSC_KEY_HOLD &&
+                    (s->key < 0 || s->pch[best] > WSC_KEY_MARGIN * s->pch[s->key])) {
+                    if (s->key >= 0) o->key_changed = 1;
+                    s->key = best; s->cand_t = 0.0f;
+                }
+            } else {
+                s->cand = -1; s->cand_t = 0.0f;
+            }
+            o->key = s->key;
+        }
+        // --- the bass glide --------------------------------------------------
+        {
+            float bx[WSC_BASS_RING], br[WSC_BLAG_MAX + 2], bbest = 0.0f, e0 = 0.0f;
+            int bl = 0, L, n, rdb = s->bwr;
+            for (k = 0; k < WSC_BASS_RING; k++) { bx[k] = s->bring[rdb]; rdb = (rdb + 1) & (WSC_BASS_RING - 1); }
+            for (n = WSC_BASS_RING - WSC_BASS_N; n < WSC_BASS_RING; n++) e0 += bx[n] * bx[n];
+            for (L = WSC_BLAG_MIN - 1; L <= WSC_BLAG_MAX + 1; L++) {
+                float num = 0.0f, e1 = 0.0f;
+                for (n = WSC_BASS_RING - WSC_BASS_N; n < WSC_BASS_RING; n++) {
+                    num += bx[n] * bx[n - L]; e1 += bx[n - L] * bx[n - L];
+                }
+                br[L] = (e0 + e1) > 1e-10f ? 2.0f * num / (e0 + e1) : 0.0f;
+                if (L >= WSC_BLAG_MIN && L <= WSC_BLAG_MAX && br[L] > bbest) { bbest = br[L]; bl = L; }
+            }
+            if (bl && bbest >= WSC_BASS_PER && present > 0.0f && e0 > 1e-6f) {
+                const float y0 = br[bl - 1], y1 = br[bl], y2 = br[bl + 1];
+                const float den = y0 - 2.0f * y1 + y2;
+                float off = den < -1e-6f ? 0.5f * (y0 - y2) / den : 0.0f;
+                if (off > 0.5f) off = 0.5f;
+                if (off < -0.5f) off = -0.5f;
+                {
+                    const float lp = wsc_log2(1500.0f / ((float)bl + off));
+                    if (s->bvalid && dt > 0.0f) {
+                        float d = lp - s->bpitch;
+                        if (d > 0.5f || d < -0.5f) d = 0.0f;          // an octave jump, not a slide
+                        s->bglide += (d / dt - s->bglide) * wsc_k(dt, 0.08f);
+                    }
+                    s->bpitch = lp; s->bvalid = 1;
+                }
+            } else {
+                s->bvalid = 0;
+                s->bglide *= 1.0f / (1.0f + dt / 0.20f);
+            }
+            o->bass_glide = wsc_clamp(s->bglide, -4.0f, 4.0f);
+        }
         // resample [start, start + span) into the points, box-averaged
         for (i = 0; i < WSC_POINTS; i++) {
             const float f0 = (float)start + (float)span * (float)i / (float)WSC_POINTS;

@@ -20,6 +20,11 @@ void wave_snow_obstacles(const int *xywh, int n);
 // buffer, same blends as wave_draw()'s own pass; nothing is rebuilt or
 // uploaded.  GPU phase only (before the frame's rsxSync), after wave_draw().
 void wave_draw_front(int x, int y, int w, int h);
+
+// The music screen's album colour: a gentle per-channel pull of the ribbons
+// toward the cover's accent (0x00RRGGBB), kept inside the purple/blue family.
+// strength ~0.3 is a hint; 0 (or rgb 0) clears it.
+void wave_set_album_tint(unsigned int rgb, float strength);
 void wave_reset(void);
 
 // True when CPU framebuffer writes are cheap (emulator): the whole XMB

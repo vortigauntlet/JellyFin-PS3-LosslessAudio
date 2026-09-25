@@ -381,6 +381,7 @@ static void test_features(void)
     // tint follows the brightness, slowly, and is 0 at rest
     memset(&st, 0, sizeof st); st.rim = 1.0f;
     memset(&sc, 0, sizeof sc);
+    sc.key = -1;                          /* no tonal centre: brightness alone */
     memset(&in, 0, sizeof in); in.scope = &sc;
     wdf_map(&st, &in, DT, &d);
     CHECK(d.tint == 0.0f, "tint at rest");
@@ -477,6 +478,57 @@ static void test_beat_calm(void)
     }
 }
 
+static void test_hints(void)
+{
+    static wsc_state s;
+    wsc_out o;
+    int f, changes = 0, k0 = -2, k1 = -2;
+
+    // key: 5 s of A (220 Hz) then 6 s of C (261.63 Hz)
+    wsc_init(&s);
+    for (f = 0; f < 60 * 5; f++) { gen(0, 0.4f, 220.0f); wsc_push(&s, buf, BLK); wsc_frame(&s, DT, 1.0f, &o); changes += o.key_changed; }
+    k0 = o.key;
+    for (f = 0; f < 60 * 6; f++) { gen(0, 0.4f, 261.63f); wsc_push(&s, buf, BLK); wsc_frame(&s, DT, 1.0f, &o); changes += o.key_changed; }
+    k1 = o.key;
+    printf("  hints: key A -> %d, then C -> %d, %d change event(s)\n", k0, k1, changes);
+    CHECK(k0 == 9 && k1 == 0 && changes == 1, "key tracking (want 9 then 0, one change)");
+
+    // bass glide: a 50 -> 100 Hz slide over 1 s reads as ~ +1 octave/s
+    {
+        float g = 0.0f, ph = 0.0f; int i;
+        wsc_init(&s);
+        for (f = 0; f < 90; f++) {
+            const float hz = f < 30 ? 50.0f : (f < 90 ? 50.0f * powf(2.0f, (float)(f - 30) / 60.0f) : 100.0f);
+            for (i = 0; i < BLK; i++) {
+                ph += hz / RATE; if (ph > 1.0f) ph -= 1.0f;
+                buf[2 * i] = buf[2 * i + 1] = 0.6f * sinf(2.0f * 3.14159265f * ph);
+            }
+            wsc_push(&s, buf, BLK); wsc_frame(&s, DT, 1.0f, &o);
+            if (f > 60 && f < 88) g += o.bass_glide / 27.0f;
+        }
+        printf("  hints: 808 slide 50 -> 100 Hz in 1 s reads %.2f octaves/s\n", g);
+        CHECK(g > 0.6f && g < 1.4f, "bass glide %.2f", g);
+    }
+
+    // hats: air-band hits light glints on the far ribbon's rim only
+    {
+        wdf_state st; wdf_look d; wdf_in in; float gain[80], best = 1.0f; int i;
+        static wsc_out sc;
+        memset(&st, 0, sizeof st); st.rim = 1.0f;
+        memset(&sc, 0, sizeof sc);
+        memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+        for (f = 0; f < 120; f++) {
+            in.air = (f % 8) < 2 ? 0.8f : 0.3f;          // 16th-note hats
+            wdf_map(&st, &in, DT, &d);
+        }
+        CHECK(wdf_rim_glow(&d, 0, gain, 80) == 0, "hat glints on the near ribbon");
+        wdf_rim_glow(&d, 2, gain, 80);
+        for (i = 0; i < 80; i++) if (gain[i] > best) best = gain[i];
+        printf("  hints: hi-hat rim glint peak x%.2f (limit x%.2f)\n", best, 1.0f + WDF_HAT_RIM);
+        CHECK(best > 1.05f && best <= 1.0f + WDF_HAT_RIM + 1e-4f, "hat glint %.2f", best);
+    }
+}
+
 static void report_cost(void)
 {
     static wsc_state s;
@@ -514,6 +566,7 @@ int main(void)
     printf("-- organism --\n"); test_organism();
     printf("-- features --\n"); test_features();
     printf("-- beat lock + calm --\n"); test_beat_calm();
+    printf("-- hints --\n"); test_hints();
     printf("-- cost --\n");    report_cost();
     if (failures) { printf("\nFAILED: %d check(s)\n", failures); return 1; }
     printf("\nOK\n");

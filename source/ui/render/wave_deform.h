@@ -97,6 +97,9 @@ typedef struct {
     float section;          // -1 calm .. +1 peak (chorus / drop)
     float bloom;            // 0..1, a drop's glow burst, decays
     float calm;             // 0..1, a vocal-led passage: the wave softens, particles slow
+    float hat, hat_ph;      // hi-hat glints along the far ribbon's rim
+    float bend;             // 808 glide: the near ribbon tilts with the slide, -1..1
+    float width;            // stereo width: the ribbons spread apart in depth, 0..1
     int   live;             // 0 = add nothing, glow nothing
 } wdf_look;
 
@@ -111,6 +114,7 @@ typedef struct {
     float centroid;     // wa_features.centroid: 0 dark .. 1 bright
     float bass_rel;     // wa_features.bass_rel: absolute bass vs its own peak (0 = none of it)
     float mid_rel;      // wa_features.mid_rel
+    float air;          // wa_features.band_fast[WA_AIR]: the hi-hats live here
     const wsc_out *scope;   // may be NULL
 } wdf_in;
 
@@ -124,6 +128,8 @@ typedef struct {
     float shimmer, shimmer_ph;
     float drama;
     float calm, orate;              // vocal calm; onsets per second, smoothed
+    float air_recent, hat, hat_ph;  // hi-hat detector
+    float key_hue, bend;
     float tint;                     // smoothed centroid
     float e_mid, e_long, sect;      // section energy
     float calm_t, bloom, bloom_ref; // drop detection
@@ -161,6 +167,19 @@ typedef struct {
 // lets go in ~0.6 s, so a drum fill ends it at once.
 #define WDF_CALM_GAIN   0.40f    // deformation x (1 - this x calm)
 #define WDF_CALM_SPEED  0.35f    // ripple speed x (1 - this x calm)
+
+// 2026-09-26 hints (all small on purpose):
+//   HATS   a fast rise in the air band (a hi-hat) lights glints that hop along
+//          the far ribbon's RIM only -- rolls read as a shimmer on the edge
+//   KEY    the tonal centre (wave_scope.h) picks a hue on the circle of
+//          fifths, blended into the tint; a key change eases it over ~0.35 s
+//          with a faint glow -- the "snap"
+//   BEND   an 808 sliding in pitch tilts the near ribbon with the slide
+//   WIDTH  a wide mix spreads the ribbons apart in depth (ui_wave.cpp)
+#define WDF_HAT_GAIN    6.0f
+#define WDF_HAT_RIM     0.35f    // peak rim gain of a glint
+#define WDF_KEY_TINT    0.45f
+#define WDF_BEND_A      0.014f
 
 static inline float wdf_clamp(float v, float lo, float hi)
 {
@@ -242,6 +261,7 @@ static inline void wdf_rest(wdf_look *o)
     o->rim = 1.0f;
     o->tint = o->section = o->bloom = 0.0f;
     o->calm = 0.0f;
+    o->hat = o->hat_ph = o->bend = o->width = 0.0f;
     o->live = 0;
 }
 
@@ -425,10 +445,40 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
     o->gain     = st->drama * wdf_clamp(ev_str, 0.75f, 1.25f) * (1.0f + 0.25f * st->sect)
                 * (1.0f - WDF_CALM_GAIN * st->calm);
     o->calm     = st->calm;
+    // hi-hats: the air band's rise over its own recent level
+    {
+        const float a = wdf_clamp(in->air, 0.0f, 1.0f);
+        const float h = wdf_clamp((a - st->air_recent) * WDF_HAT_GAIN, 0.0f, 1.0f) * present;
+        st->air_recent += (a - st->air_recent) * wdf_k(dt, a > st->air_recent ? 0.20f : 0.06f);
+        if (h > st->hat + 0.25f) st->hat_ph = wdf_wrap(st->hat_ph + 0.137f);   // a new hit hops
+        st->hat += (h - st->hat) * wdf_k(dt, h > st->hat ? 0.01f : 0.12f);
+        st->hat_ph = wdf_wrap(st->hat_ph + dt * 0.9f);
+        if (present <= 0.0f && st->hat < 1e-3f) st->hat = 0.0f;
+        o->hat = st->hat; o->hat_ph = st->hat_ph;
+    }
+    // key -> hue on the circle of fifths; a change eases (the snap) + glows
+    {
+        float target = 0.0f;
+        if (in->scope && in->scope->key >= 0 && present > 0.0f) {
+            const int k5 = (in->scope->key * 7) % 12;
+            target = ((float)k5 / 11.0f) * 2.0f - 1.0f;
+            if (in->scope->key_changed && st->bloom < 0.35f) st->bloom = 0.35f;
+        }
+        st->key_hue += (target - st->key_hue) * wdf_k(dt, 0.35f);
+        if (present <= 0.0f && st->key_hue * st->key_hue < 1e-6f) st->key_hue = 0.0f;
+    }
+    // 808 glide -> bend
+    {
+        const float g = in->scope ? wdf_clamp(in->scope->bass_glide * 0.30f, -1.0f, 1.0f) * present : 0.0f;
+        st->bend += (g - st->bend) * wdf_k(dt, 0.06f);
+        if (present <= 0.0f && st->bend * st->bend < 1e-6f) st->bend = 0.0f;
+        o->bend = st->bend;
+    }
+    o->width = in->scope ? wdf_clamp(in->scope->width, 0.0f, 1.0f) * present : 0.0f;
     // brightness -> tint, slow so a hi-hat does not flicker the colour
     st->tint += (wdf_clamp(in->centroid, 0.0f, 1.0f) - st->tint) * wdf_k(dt, 1.2f);
     if (st->warm < 3) st->tint = wdf_clamp(in->centroid, 0.0f, 1.0f);
-    o->tint    = wdf_clamp((st->tint - 0.5f) * 2.2f, -1.0f, 1.0f) * present;
+    o->tint    = wdf_clamp((st->tint - 0.5f) * 2.2f + WDF_KEY_TINT * st->key_hue, -1.0f, 1.0f) * present;
     o->section = st->sect;
     o->bloom   = st->bloom < 1e-3f ? 0.0f : st->bloom;
     o->mid_a    = st->mid_a;
@@ -458,7 +508,8 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
     o->live = (o->gain > 0.0f && (o->mid_a > 0.0f || o->pulse > 0.0f
                                   || o->swell_a != 0.0f || anywarp))
            || o->wave_a > 0.0f || o->tilt != 0.0f || o->shimmer > 0.0f || o->rim != 1.0f
-           || anywarp || o->tint != 0.0f || o->bloom > 0.0f;
+           || anywarp || o->tint != 0.0f || o->bloom > 0.0f
+           || o->hat > 0.0f || o->bend != 0.0f || o->width > 0.0f;
 }
 
 // One warp's contribution at u for a layer, including its echo.
@@ -529,6 +580,7 @@ static inline void wdf_apply2(const wdf_look *d, int layer, float *disp,
                * (d->wave[i] + (d->wave[i + 1] - d->wave[i]) * fr);
         }
         x += d->tilt * wl * c;
+        if (layer == 0) x += WDF_BEND_A * d->bend * c;    // the 808's slide
         disp[k] += wdf_softclip(x, lo, hi);
     }
 }
@@ -541,6 +593,23 @@ static inline void wdf_apply(const wdf_look *d, int layer, float *disp, int n)
 // The travelling glow: a per-station brightness gain along the band (station
 // i at u = i/(n-1)), >= 1.  Returns 0 when every gain is exactly 1 (the
 // caller then skips the multiply altogether).
+// The hi-hat glints: a rim-only gain per station, far ribbon only.  Returns 0
+// when every gain is exactly 1.
+static inline int wdf_rim_glow(const wdf_look *d, int layer, float *gain, int n)
+{
+    int i;
+    float du;
+    if (!d || !d->live || layer != 2 || !(d->hat > 0.01f) || !gain || n < 2) return 0;
+    du = 1.0f / (float)(n - 1);
+    for (i = 0; i < n; i++) {
+        float s = wdf_sin2pi(7.0f * (float)i * du - d->hat_ph);
+        s = s > 0.0f ? s * s * s : 0.0f;
+        s *= s;                                         // narrow glints
+        gain[i] = 1.0f + WDF_HAT_RIM * d->hat * s;
+    }
+    return 1;
+}
+
 static inline int wdf_glow(const wdf_look *d, int layer, float *gain, int n)
 {
     int i, j, any = 0;

@@ -255,6 +255,8 @@ static void music_cover_gpu(const char *art_id, int ax, int ay, int A, float alp
 static void music_accent_update(const char *art_id, int A) {
     s_mpal = g_spine_on ? ui_art_palette(art_id, music_art_bitmap(art_id, A))
                         : ui_art_fallback();
+    // the ribbons take a hint of the album's colour
+    wave_set_album_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.30f);
 }
 
 // -------------------------------------------------------
@@ -1275,6 +1277,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
     }
 
     music_stop();
+    wave_set_album_tint(0u, 0.0f);            // back to the plain palette
     // Home's posters went blank after an album was played (they stayed fine
     // in the TV tab): nothing cached before or during this screen is trusted
     // on the way out.  See thumb_cache_verify_and_flush().

@@ -420,7 +420,7 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 1.10f, 0.60f };   // beat share 
 //   * the bass layer keeps more of its sustained level, so an 808's tail holds
 //     the wave up instead of it dropping straight back
 #define WRM_RISE_BASE       1.60f    // rising stiffness x this at energy 0
-#define WRM_RISE_ENERGY     1.80f    // ... plus this x energy_eff (1.2 before; soft-attack 808s, v8)
+#define WRM_RISE_ENERGY     1.20f    // ... plus this x energy_eff (1.8 tried in v8: worse bass -- reverted)
 #define WRM_ATT_ENERGY      0.60f    // attacks shortened by up to this fraction
 #define WRM_SUS_ENERGY     (-0.20f)  // bass sustain weight + this x energy_eff: LESS, headroom for the hits
 

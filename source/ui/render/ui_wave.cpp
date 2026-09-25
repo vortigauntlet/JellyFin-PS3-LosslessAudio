@@ -139,7 +139,26 @@ struct jw_look {
     float          thick;
     wrm_accent_set acc;
     wdf_look       def;
+    float          album[3];     // the album's colour pull, per channel (1 = none)
 };
+
+// The album colour (music screen): a gentle per-channel pull toward the
+// cover's accent, inside the purple/blue family.  1,1,1 = none.
+static float s_album_rgb[3] = { 1.0f, 1.0f, 1.0f };
+void wave_set_album_tint(unsigned int rgb, float strength)
+{
+    if (strength <= 0.0f || !rgb) { s_album_rgb[0] = s_album_rgb[1] = s_album_rgb[2] = 1.0f; return; }
+    const float r = (float)((rgb >> 16) & 0xFF), g = (float)((rgb >> 8) & 0xFF), b = (float)(rgb & 0xFF);
+    const float m = (r + g + b) * (1.0f / 3.0f) + 1.0f;
+    float k[3] = { r / m, g / m, b / m };
+    for (int i = 0; i < 3; i++) {
+        float v = 1.0f + strength * (k[i] - 1.0f);
+        if (v < 0.90f) v = 0.90f;
+        if (v > 1.10f) v = 1.10f;
+        s_album_rgb[i] = v;
+    }
+    if (s_album_rgb[1] > 1.03f) s_album_rgb[1] = 1.03f;     // never toward green
+}
 
 static void jw_look_now(jw_look *k)
 {
@@ -149,6 +168,7 @@ static void jw_look_now(jw_look *k)
     k->thick  = s_thick;
     k->acc    = s_acc;
     k->def    = s_def;
+    k->album[0] = s_album_rgb[0]; k->album[1] = s_album_rgb[1]; k->album[2] = s_album_rgb[2];
 }
 
 
@@ -644,14 +664,16 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
                        u32 *repaired_out, u32 *dropped_out)
 {
     // G: the travelling glow's gain at this station (1 = none).
-    #define JW_EMIT(Q, A, USE_RIM, G) do {                      \
+    #define JW_EMIT(Q, A, USE_RIM, G) JW_EMIT2(Q, A, USE_RIM, G, G)
+    // GR: the rim's own gain (the glow times the hi-hat glints)
+    #define JW_EMIT2(Q, A, USE_RIM, G, GR) do {                 \
         const jw_vert *q_ = (Q);                                \
         dst[n].x = q_->x;                                       \
         dst[n].y = q_->y;                                       \
         dst[n].z = 0.0f;                                        \
         dst[n].w = 1.0f;                                        \
         dst[n].rgba = (USE_RIM)                                 \
-            ? jw_rim_rgba(q_, rimg * (G), tint)                 \
+            ? jw_rim_rgba(q_, rimg * (GR), tint)                \
             : jw_body_rgba(q_, (A), (G), tint);                 \
         n++;                                                    \
     } while (0)
@@ -668,6 +690,8 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         tint[2] = 1.0f + 0.03f * dk + 0.10f * br;
     }
     (void)s_tint_rgb;
+    // the album's colour, a hint on top
+    tint[0] *= look->album[0]; tint[1] *= look->album[1]; tint[2] *= look->album[2];
     for (int slot = 0; slot < JW_LAYERS; slot++) {
         const int       li = JW_LAYERS - 1 - slot;
         // The audio look for this layer, on a copy: disp_gain scales the
@@ -681,6 +705,12 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         Lk.disp_gain *= look->amp[li];
         Lk.bright    *= look->lum * look->lum3[li];
         Lk.scale     *= look->thick;
+        // stereo width: a wide mix spreads the ribbons further apart.
+        // VERTICALLY only: pushing a ribbon deeper moves it toward the
+        // horizon, i.e. UP the screen (the framing test caught that); a
+        // larger negative y offset only moves it down, away from the content.
+        if (look->def.live && look->def.width > 0.0f)
+            Lk.y_off *= 1.0f + 0.25f * look->def.width;
         const jw_layer *L  = &Lk;
         int order[JW_SECTION];
         int pass, s, i;
@@ -693,6 +723,8 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         wdf_apply2(&look->def, li, disp, sy[li == 0 ? 1 : li - 1], WF_SAMPLES);
         float glow[JW_STATIONS];
         const bool glow_on = wdf_glow(&look->def, li, glow, JW_STATIONS) != 0;
+        float rimg_st[JW_STATIONS];
+        const bool rim_on = wdf_rim_glow(&look->def, li, rimg_st, JW_STATIONS) != 0;
         if (!jw_build_layer(L, disp, WF_SAMPLES, aspect, scratch, JW_VERTS))
             continue;
 
@@ -735,9 +767,10 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
                 started = 1;
 
                 for (i = 0; i < JW_STATIONS; i++) {
-                    const float g_ = glow_on ? glow[i] : 1.0f;
-                    JW_EMIT(&scratch[i * JW_SECTION + j],  L->alpha, pass, g_);
-                    JW_EMIT(&scratch[i * JW_SECTION + j2], L->alpha, pass, g_);
+                    const float g_  = glow_on ? glow[i] : 1.0f;
+                    const float gr_ = rim_on ? g_ * rimg_st[i] : g_;
+                    JW_EMIT2(&scratch[i * JW_SECTION + j],  L->alpha, pass, g_, gr_);
+                    JW_EMIT2(&scratch[i * JW_SECTION + j2], L->alpha, pass, g_, gr_);
                 }
 
                 tail = &scratch[(JW_STATIONS - 1) * JW_SECTION + j2];
@@ -747,6 +780,7 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         }
     }
     #undef JW_EMIT
+    #undef JW_EMIT2
     return n;
 }
 
@@ -1875,6 +1909,15 @@ void wave_draw_front(int x, int y, int w, int h) {
             rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE,
                                      GCM_SRC_ALPHA, GCM_ONE);
         rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_off[slot][pass], count);
+    }
+    // The ribbon LIGHTS the cover where it passes: its body once more,
+    // added at a constant 9% -- a hint, not a glow (the same constant-alpha
+    // blend the card opacity uses, proven on this console).
+    if (s_jw_cnt[slot][0]) {
+        rsxSetBlendColor(context, (u32)23 << 24, 0);
+        rsxSetBlendFunc(context, GCM_CONSTANT_ALPHA, GCM_ONE,
+                                 GCM_CONSTANT_ALPHA, GCM_ONE);
+        rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_off[slot][0], s_jw_cnt[slot][0]);
     }
     // hud_dim's teardown, as wave_draw() ends: COLOR0 back to stride 0, POS
     // left bound; the full scissor and the UI's standard blend.
