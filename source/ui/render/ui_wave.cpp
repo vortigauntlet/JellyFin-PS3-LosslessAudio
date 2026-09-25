@@ -415,6 +415,8 @@ static u32 s_jw_draws    = 0;
 static u32 s_jw_off[JW_LAYERS][2];
 static u32 s_jw_cnt[JW_LAYERS][2];
 static int s_jw_have_geom = 0;     // 0 until the first build lands
+static u32 s_jw_vo_frame  = 0;     // the buffer wave_draw() drew from this frame
+static bool s_jw_drawn    = false; // ... and whether it drew JellyWave at all
 
 // --- the snow field (wave_snow.h), while music plays -------------------------
 //
@@ -445,6 +447,21 @@ static bool        s_mote_amb_req = false; // wave_snow_ambient() this frame
 static u64         s_mote_us = 0;
 
 void wave_snow_ambient(void) { s_mote_amb_req = true; }
+
+static ws_rect s_obst_px[WS_OBST_MAX];   // x0,y0,x1,y1 in px (y down) until built
+static int     s_obst_n = 0;
+void wave_snow_obstacles(const int *xywh, int n)
+{
+    if (!xywh || n < 0) n = 0;
+    if (n > WS_OBST_MAX) n = WS_OBST_MAX;
+    for (int i = 0; i < n; i++) {
+        s_obst_px[i].x0 = (float)xywh[4 * i];
+        s_obst_px[i].y0 = (float)xywh[4 * i + 1];
+        s_obst_px[i].x1 = (float)(xywh[4 * i] + xywh[4 * i + 2]);
+        s_obst_px[i].y1 = (float)(xywh[4 * i + 1] + xywh[4 * i + 3]);
+    }
+    s_obst_n = n;
+}
 
 static void motes_init(void)
 {
@@ -512,6 +529,19 @@ static u32 motes_build(float aspect)
     }
 
     ws_ctl c;
+    ws_rect obst[WS_OBST_MAX];
+    {
+        const float Wd = (float)display_width, Hd = (float)display_height;
+        for (int i = 0; i < s_obst_n; i++) {      // px (y down) -> clip (y up)
+            obst[i].x0 = 2.0f * s_obst_px[i].x0 / Wd - 1.0f;
+            obst[i].x1 = 2.0f * s_obst_px[i].x1 / Wd - 1.0f;
+            obst[i].y0 = 1.0f - 2.0f * s_obst_px[i].y1 / Hd;
+            obst[i].y1 = 1.0f - 2.0f * s_obst_px[i].y0 / Hd;
+        }
+    }
+    c.obst    = s_obst_n ? obst : 0;
+    c.n_obst  = s_obst_n;
+    s_obst_n  = 0;                            // one frame only
     c.wv      = s_wv;
     c.band_y  = 1.0f - 2.0f * WAVE_BASEY[0];
     c.sway    = lvl[0];
@@ -1219,6 +1249,7 @@ static inline void wave_vtx(float x, float y, u8 r, u8 g, u8 b) {
 }
 
 void wave_draw(void) {
+    s_jw_drawn = false;
     if (ui_cpu_bg()) { wave_draw_cpu(); return; }
     if (!s_wave_fp_buf) return;
     const bool jellywave = s_wave_jelly && !strobe_test_disable_jellywave();
@@ -1646,6 +1677,8 @@ void wave_draw(void) {
                 rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
                     vo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
             }
+            s_jw_vo_frame = vo;
+            s_jw_drawn    = true;
         }
 
         // Release the colour array.  Everything the UI draws after the
@@ -1761,6 +1794,63 @@ bool wave_gpu_blend_ready(void) { return s_wave_varray && s_wave_blend; }
 // the centre, linear between.  That is exactly what the GPU interpolates
 // across two quads, so THREE columns of vertices reproduce it with no
 // approximation at all -- and no reads.  Six vertices, submitted inline.
+// See ui_wave.h.  Everything here is wave_draw()'s own sequence for ONE
+// layer: its programs, its bindings (the buffer it drew from this frame --
+// the same RSX-local stream, already fenced and uploaded, only read again),
+// body on the standard blend then the rim additive, and hud_dim's teardown.
+// Nothing touches the stage, the upload or the reuse guard.
+void wave_draw_front(int x, int y, int w, int h) {
+    if (!s_jw_drawn || !s_wave_fp_buf || ui_cpu_bg()) return;
+    const int slot = JW_LAYERS - 1;               // the near ribbon is drawn last
+    if (!s_jw_cnt[slot][0]) return;
+    const int W = (int)display_width, H = (int)display_height;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > W) w = W - x;
+    if (y + h > H) h = H - y;
+    if (w <= 0 || h <= 0) return;
+
+    rsxVertexProgram  *vpo = (rsxVertexProgram*)  wave_vp_data;
+    rsxFragmentProgram *fpo = (rsxFragmentProgram*) wave_fp_data;
+    void *vp_ucode; u32 vp_size;
+    rsxVertexProgramGetUCode(vpo, &vp_ucode, &vp_size);
+    rsxLoadVertexProgram(context, vpo, vp_ucode);
+    rsxSetVertexAttribOutputMask(context, vpo->output_mask);
+    rsxLoadFragmentProgramLocation(context, fpo, s_wave_fp_offset, GCM_LOCATION_RSX);
+    rsxSetDepthTestEnable(context, GCM_FALSE);
+    rsxSetDepthWriteEnable(context, GCM_FALSE);
+
+    const u32 vo = s_jw_vo_frame;
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
+        vo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
+        vo + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_TEX0, 0,
+        0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxSetScissor(context, (u16)x, (u16)y, (u16)w, (u16)h);
+    rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
+    rsxSetBlendEnable(context, GCM_TRUE);
+    rsxInvalidateVertexCache(context);
+    for (int pass = 0; pass < 2; pass++) {
+        const u32 count = s_jw_cnt[slot][pass];
+        if (!count) continue;
+        if (pass == 0)
+            rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+                                     GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+        else
+            rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE,
+                                     GCM_SRC_ALPHA, GCM_ONE);
+        rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_off[slot][pass], count);
+    }
+    // hud_dim's teardown, as wave_draw() ends: COLOR0 back to stride 0, POS
+    // left bound; the full scissor and the UI's standard blend.
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
+        vo + 16, 0, 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+    rsxSetScissor(context, 0, 0, (u16)W, (u16)H);
+    rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+                             GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+}
+
 void wave_draw_divider_gpu(int y_px, u8 r, u8 g, u8 b, u8 peak_alpha) {
     if (!s_wave_fp_buf) return;
 

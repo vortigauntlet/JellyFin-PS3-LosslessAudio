@@ -363,6 +363,7 @@ static int play_one_track(u32 start_secs, bool gapless) {
     // 256 KB, ~6.5 s at 320 kbps: when the download finishes this is what
     // covers setting up the next track without a gap.
     static u8 mp3[262144];
+    #define MP3_MIN_AHEAD 16384
     int  buf_pos = 0, buf_len = 0;
     bool eof = false;
     u64  last_prog_us = timing_get_us();
@@ -406,13 +407,23 @@ static int play_one_track(u32 start_secs, bool gapless) {
             if (rd < 0) eof = true;
             else if (rd > 0) {
                 buf_len += 188;
-                if (buf_len - buf_pos < 8192) continue;    // buffer more first
+                if (buf_len - buf_pos < MP3_MIN_AHEAD) continue;   // buffer more first
             }
         }
 
         // Decode while there's data and the ring has room for a frame.
         bool progressed = false;
-        while (buf_pos < buf_len) {
+        // WHOLE FRAMES ONLY.  minimp3 treats a frame cut off by the end of
+        // the buffer as junk: it skips it and resyncs, losing audio.  The
+        // loop used to decode right up to the last buffered byte after every
+        // 188-byte read, which at the start of a track (ring empty) dropped
+        // ~18% of the frames -- measured on the server's own transcode: 150.3 s
+        // decoded of a 184.6 s track.  The music jumped forward: the
+        // "sped-up first second" after a skip or an Up Next pick.  Keep
+        // MP3_MIN_AHEAD buffered (many frames, and minimp3's sync lookahead)
+        // until the stream has ended; with it the same file decodes to the
+        // exact sample.
+        while (buf_len - buf_pos >= (eof ? 1 : MP3_MIN_AHEAD)) {
             if (mring_space() < 1300) break;   // ring nearly full
             mp3dec_frame_info_t info;
             short pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];

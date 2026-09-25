@@ -8,6 +8,18 @@ void wave_draw(void);
 // Particles on, the snow field drifts there too (it fades out on any screen
 // that does not ask -- playback, the item details page).  One frame only.
 void wave_snow_ambient(void);
+
+// The screen's solid boxes for this frame, in pixels ({x, y, w, h} x n, n <=
+// 6): near particles bounce off them, far ones pass behind (wave_snow.h).
+// Call before wave_draw(); applies to that frame only.
+void wave_snow_obstacles(const int *xywh, int n);
+
+// Draw the NEAR JellyWave ribbon again, clipped to (x, y, w, h) px, over
+// whatever was drawn since wave_draw() this frame -- so the ribbon passes in
+// front of the album cover where it rises across it.  Same geometry, same
+// buffer, same blends as wave_draw()'s own pass; nothing is rebuilt or
+// uploaded.  GPU phase only (before the frame's rsxSync), after wave_draw().
+void wave_draw_front(int x, int y, int w, int h);
 void wave_reset(void);
 
 // True when CPU framebuffer writes are cheap (emulator): the whole XMB

@@ -38,7 +38,9 @@
 #include <stdint.h>
 
 #define WS_MAX        900
-#define WS_COUNT_DEF  700
+#define WS_COUNT_DEF  450         // 700 before: "a bit less overwhelming, more spread out"
+#define WS_GRID_X     30          // stratified spawn: one jittered cell per particle
+#define WS_GRID_Y     15
 
 #define WS_X_EDGE     1.12f       // spawn/wrap margin past the screen, clip units
 #define WS_Y_EDGE     1.12f
@@ -59,10 +61,24 @@
 // depth of field, in pixels at 1080p (the renderer scales by display height)
 #define WS_FOCUS_Z    0.45f
 #define WS_R_SHARP    1.3f        // in-focus core radius
-#define WS_R_NEAR    16.0f        // extra radius at the nearest (bokeh)
+#define WS_R_NEAR    11.0f        // extra radius at the nearest (bokeh); 16 before
 #define WS_R_FAR      0.9f
 
 #define WS_WV         16          // wave velocity samples across the screen
+
+// OBSTACLES.  The screen's solid things -- the cover, the text block, the
+// Up Next panel, the controls -- as rectangles in clip space (y up).  A
+// particle NEARER than WS_COLLIDE_Z cannot enter one: it is pushed back to
+// the surface it crossed, the part of its motion heading in is reflected
+// (WS_RESTITUTION) and the flow then carries it along the edge; each hit
+// leaves a brief glint.  Further particles pass behind, so the boxes sit IN
+// the space rather than on top of it.  ~4 rectangle tests per near particle.
+#define WS_OBST_MAX     6
+#define WS_COLLIDE_Z    0.62f
+#define WS_RESTITUTION  0.55f
+#define WS_SPARK_TAU    0.25f
+
+typedef struct { float x0, y0, x1, y1; } ws_rect;
 
 typedef struct {
     float sway;     // 0..1 lows: stronger, faster swirl
@@ -72,6 +88,8 @@ typedef struct {
     const float *wv;  // WS_WV vertical velocities of the wave (clip units/s,
                       // +up) at evenly spaced x over [-1,1]; NULL = none
     float band_y;     // the wave's resting centre, clip y
+    const ws_rect *obst;  // obstacles, clip space; NULL = none
+    int   n_obst;
 } ws_ctl;
 
 // 2026-09-25 v3: "less like snow and more like swirling floatiness that
@@ -94,6 +112,7 @@ typedef struct {
     float    ph[WS_MAX];            // sway / twinkle phase
     float    hue[WS_MAX];           // 0 violet .. 1 blue
     float    age[WS_MAX], life[WS_MAX];
+    float    spark[WS_MAX];         // impact glint, 0..1, decays
     uint32_t rng;
 } ws_state;
 
@@ -130,16 +149,24 @@ static inline float ws_sin2pi(float t)
 static inline float ws_pick_z(uint32_t *s)
 {
     const float u = ws_rand(s);
-    return u < 0.12f ? 0.02f + 0.20f * (u / 0.12f)             // ~12% near: the bokeh
-                     : 0.22f + 0.78f * ((u - 0.12f) / 0.88f);  // the rest, mid to far
+    return u < 0.08f ? 0.02f + 0.20f * (u / 0.08f)             // ~8% near: the bokeh
+                     : 0.22f + 0.78f * ((u - 0.08f) / 0.92f);  // the rest, mid to far
 }
 
 static inline void ws_spawn(ws_state *st, int i, int anywhere)
 {
     uint32_t *r = &st->rng;
-    st->x[i]  = -WS_X_EDGE + 2.0f * WS_X_EDGE * ws_rand(r);
-    st->y[i]  = anywhere ? (-WS_Y_EDGE + 2.0f * WS_Y_EDGE * ws_rand(r))
-                         : WS_Y_EDGE - 0.05f * ws_rand(r);
+    // Stratified: particle i always respawns somewhere in ITS cell of a
+    // jittered grid, so the field stays evenly spread instead of clumping.
+    {
+        const int   cx = i % WS_GRID_X, cy = (i / WS_GRID_X) % WS_GRID_Y;
+        const float cw = 2.0f * WS_X_EDGE / (float)WS_GRID_X;
+        const float ch = 2.0f * WS_Y_EDGE / (float)WS_GRID_Y;
+        st->x[i] = -WS_X_EDGE + cw * ((float)cx + ws_rand(r));
+        st->y[i] = anywhere ? (-WS_Y_EDGE + ch * ((float)cy + ws_rand(r)))
+                            : WS_Y_EDGE - 0.05f * ws_rand(r);
+    }
+    st->spark[i] = 0.0f;
     st->z[i]  = ws_pick_z(r);
     st->vx[i] = 0.0f;
     st->vy[i] = 0.0f;
@@ -227,8 +254,42 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
         // the push: Brownian jostle, damped
         st->vx[i] = st->vx[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
         st->vy[i] = st->vy[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
-        st->x[i] += (WS_WIND * 0.3f * (0.5f + 0.5f * near) + sw + st->vx[i]) * dt;
-        st->y[i] += (st->vy[i] + swv - fall) * dt;
+        {
+            const float fu = WS_WIND * 0.3f * (0.5f + 0.5f * near) + sw;   // the flow, x
+            const float fv = swv - fall;                                    // and y
+            st->x[i] += (fu + st->vx[i]) * dt;
+            st->y[i] += (st->vy[i] + fv) * dt;
+            st->spark[i] *= 1.0f / (1.0f + dt / WS_SPARK_TAU);
+            if (c->obst && c->n_obst > 0 && z < WS_COLLIDE_Z) {
+                // the particle's own size, so its edge (not its centre) touches
+                const float rpx = WS_R_SHARP + 1.2f * near
+                                + WS_R_NEAR * (z < 0.22f ? ((0.22f - z) / 0.22f) * ((0.22f - z) / 0.22f) : 0.0f);
+                const float ry = rpx * (1.0f / 540.0f), rx = rpx * (1.0f / 960.0f);
+                int k;
+                for (k = 0; k < c->n_obst && k < WS_OBST_MAX; k++) {
+                    const ws_rect *o = &c->obst[k];
+                    const float x0 = o->x0 - rx, x1 = o->x1 + rx, y0 = o->y0 - ry, y1 = o->y1 + ry;
+                    const float px = st->x[i], py = st->y[i];
+                    if (px <= x0 || px >= x1 || py <= y0 || py >= y1) continue;
+                    {
+                        const float dl = px - x0, dr = x1 - px, db = py - y0, dtp = y1 - py;
+                        const float nx = fu + st->vx[i], ny = fv + st->vy[i];
+                        float m = dl; int side = 0;
+                        if (dr < m) { m = dr; side = 1; }
+                        if (db < m) { m = db; side = 2; }
+                        if (dtp < m) { m = dtp; side = 3; }
+                        if (side == 0) { st->x[i] = x0; if (nx > 0.0f) st->vx[i] = -nx * WS_RESTITUTION - fu; }
+                        else if (side == 1) { st->x[i] = x1; if (nx < 0.0f) st->vx[i] = -nx * WS_RESTITUTION - fu; }
+                        else if (side == 2) { st->y[i] = y0; if (ny > 0.0f) st->vy[i] = -ny * WS_RESTITUTION - fv; }
+                        else { st->y[i] = y1; if (ny < 0.0f) st->vy[i] = -ny * WS_RESTITUTION - fv; }
+                        {
+                            const float sp = (side < 2 ? (nx < 0.0f ? -nx : nx) : (ny < 0.0f ? -ny : ny)) * 8.0f;
+                            if (sp > st->spark[i]) st->spark[i] = sp > 1.0f ? 1.0f : sp;
+                        }
+                    }
+                }
+            }
+        }
         st->age[i] += dt;
 
         // run out of life: reborn anywhere (fading in); every edge wraps
@@ -272,7 +333,8 @@ static inline int ws_shade(const ws_state *st, const ws_ctl *c, float alpha,
 
         // a big soft disc spreads its light: dim it by its area, or the near
         // ones would read as fog
-        float a = (0.30f + 0.62f * focus) * (1.0f - 0.78f * nearb) * (1.0f - 0.55f * farf);
+        float a = 0.80f * (0.30f + 0.62f * focus) * (1.0f - 0.82f * nearb) * (1.0f - 0.55f * farf)
+                + 0.45f * st->spark[i];   // the glint of a hit
         // highs: each particle twinkles on its own phase
         const float sp = 0.5f + 0.5f * ws_sin2pi(st->ph[i] * 3.7f + st->t * (1.3f + 1.7f * st->hue[i]));
         a *= 1.0f + tw * (0.9f * sp * sp - 0.2f);

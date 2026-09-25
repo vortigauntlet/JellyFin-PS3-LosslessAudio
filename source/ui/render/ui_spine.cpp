@@ -231,6 +231,7 @@ static void spine_open_column_item(int tab) {
         spine_go(SPINE_L2);
         if (xmb_open_series(it)) init_btns();
     } else if (strcmp(it->type, "MusicAlbum") == 0) {
+        music_screen_origin_from_focus();   // the cover flies out of this card
         music_screen_open_album(it, g_tabs[tab].label);
         init_btns();
     } else if (strcmp(it->type, "BoxSet") == 0 || strcmp(it->type, "Folder") == 0 ||

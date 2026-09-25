@@ -66,7 +66,10 @@ typedef struct {
     u16 slot;
     s16 x, y;                  // top-left of the ink, framebuffer pixels
     s16 clip_top, clip_bot;    // g_cpu_clip_* at the time it was queued
+    s16 clip_left;             // g_text_clip_left at the time it was queued
 } RunDraw;
+
+int g_text_clip_left = 0;
 
 static RunSlot  s_runs[RUN_SLOTS];
 static u32      s_run_count = 0;
@@ -344,8 +347,9 @@ static void queue_run(const RunSlot *r, u32 x, u32 y)
     d->slot     = (u16)(r - s_runs);
     d->x        = (s16)((int)x + r->ox);
     d->y        = (s16)((int)y + r->oy);
-    d->clip_top = (s16)g_cpu_clip_top;
-    d->clip_bot = (s16)g_cpu_clip_bot;
+    d->clip_top  = (s16)g_cpu_clip_top;
+    d->clip_bot  = (s16)g_cpu_clip_bot;
+    d->clip_left = (s16)g_text_clip_left;
     s_st_runs++;
 }
 
@@ -458,7 +462,7 @@ static void submit_queue(void)
     rsxSetBlendEnable(context, GCM_TRUE);
 
     const float W = (float)display_width, H = (float)display_height;
-    int cur_top = -1, cur_bot = -1;
+    int cur_top = -1, cur_bot = -1, cur_left = -1;
 
     for (u32 q = 0; q < s_queued; q++) {
         const RunDraw *d = &s_queue[q];
@@ -472,10 +476,12 @@ static void submit_queue(void)
         if (top < 0) top = 0;
         if (bot <= 0 || bot > (int)display_height) bot = (int)display_height;
         if (bot <= top) { top = 0; bot = (int)display_height; }
-        if (top != cur_top || bot != cur_bot) {
-            rsxSetScissor(context, 0, (u16)top,
-                          (u16)display_width, (u16)(bot - top));
-            cur_top = top; cur_bot = bot;
+        int left = d->clip_left;
+        if (left < 0 || left >= (int)display_width) left = 0;
+        if (top != cur_top || bot != cur_bot || left != cur_left) {
+            rsxSetScissor(context, (u16)left, (u16)top,
+                          (u16)((int)display_width - left), (u16)(bot - top));
+            cur_top = top; cur_bot = bot; cur_left = left;
         }
 
         bind_run(r);

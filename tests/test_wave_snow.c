@@ -13,7 +13,7 @@ static ws_sprite sp[WS_MAX];
 int main(void)
 {
     static float wv[WS_WV];
-    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f, 0, -0.3f };
+    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f, 0, -0.3f, 0, 0 };
     int i, f, near = 0, vis;
     ws_init(&st, WS_COUNT_DEF, 1234u);
     for (i = 0; i < st.n; i++) near += st.z[i] < 0.22f;
@@ -69,6 +69,30 @@ int main(void)
         printf("  snow: wave lift near %.4f far %.4f\n", near_vy, far_vy);
         CHECK(near_vy > far_vy + 0.005f, "the wave does not carry the particles near it");
         c.wv = 0;
+    }
+
+    // obstacles: after a minute nothing near enough to collide is inside the
+    // box, while far particles still pass behind it
+    {
+        static const ws_rect box = { -0.70f, -0.30f, -0.10f, 0.45f };
+        int inside_near = 0, inside_far = 0, hits = 0, f2;
+        c.obst = &box; c.n_obst = 1;
+        for (f2 = 0; f2 < 60 * 60; f2++) {
+            ws_step(&st, &c, 1.0f / 60.0f);
+            for (i = 0; i < st.n; i++) if (st.spark[i] > 0.5f) hits++;
+        }
+        for (i = 0; i < st.n; i++) {
+            const int in = st.x[i] > box.x0 + 0.01f && st.x[i] < box.x1 - 0.01f &&
+                           st.y[i] > box.y0 + 0.01f && st.y[i] < box.y1 - 0.01f;
+            if (!in) continue;
+            if (st.z[i] < WS_COLLIDE_Z) inside_near++; else inside_far++;
+        }
+        printf("  snow: obstacle -> %d near particles inside (want 0), %d far behind it, %d glint-frames\n",
+               inside_near, inside_far, hits);
+        CHECK(inside_near == 0, "%d colliding particles got inside the box", inside_near);
+        CHECK(inside_far > 0, "no far particle passes behind the box");
+        CHECK(hits > 0, "no impact ever glints");
+        c.obst = 0; c.n_obst = 0;
     }
 
     // presence 0 draws nothing; presence 1 draws most of them

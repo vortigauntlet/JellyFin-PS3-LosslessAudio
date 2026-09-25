@@ -77,6 +77,12 @@ void ui_text_gpu_begin(void);
 // fence itself -- see ui_text_gpu_flush_fenced().
 void ui_text_gpu_flush(void);
 
+// Left clip edge (px) for text queued from now on; 0 = none.  Recorded per
+// run like the vertical band, so a run queued with it set is scissored at
+// that x when the batch flushes -- the music screen uses it to slide text out
+// from BEHIND the cover.  Reset it to 0 when done.
+extern int g_text_clip_left;
+
 // flush() plus rsxSync(), for the mid-frame case: something is about to draw
 // OVER the text that has been queued so far (the update popup dims the whole
 // screen and then lays an opaque panel on it).  Leaves the window OPEN, so
