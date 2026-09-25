@@ -366,21 +366,41 @@ static inline void wrm_accent(const wrm_accent_set *a, int layer,
 // not move.
 static const float WRM_DB_FLOOR[3] = { 0.18f, 0.28f, 0.28f };
 static const float WRM_DB_RESP[3]  = { 1.40f, 1.00f, 1.00f };
-#define WRM_DB_AMP_QUIET    0.78f
+#define WRM_DB_AMP_QUIET    0.72f   // 0.78 before: more range below rest
 #define WRM_DB_DRIVE_MAX    0.70f
 #define WRM_DB_DRIVE_KEEP   0.20f
 #define WRM_DB_PERTURB_KEEP 0.30f
 #define WRM_DB_LUM_KEEP     0.30f
 #define WRM_DB_ACC_KEEP     0.60f
 
-static const float WRM_DB_ATT[3]     = { 0.060f, 0.045f, 0.015f };
-static const float WRM_DB_REL[3]     = { 0.420f, 0.260f, 0.120f };
+// 2026-09-25 v4: "slightly too subtle, especially in high-BPM songs with lots
+// of bass and songs that are just louder -- more reactive even if less flowy".
+// Two causes.  (1) The bands are self-referenced, so a loud, dense track sits
+// near a CONSTANT high level: its kicks were a steady swell, not beats.  (2) The
+// 420 ms bass release smeared anything faster than ~140 BPM into that swell.
+// So: quicker envelopes, a sustained part that no longer fills the whole
+// range, and PUNCH on top -- each layer's fast level minus its own recent
+// level, which is the beat itself and is loudness-independent -- plus the
+// tempo speeding the base motion up.  Same caps: the framing does not move.
+static const float WRM_DB_ATT[3]     = { 0.025f, 0.030f, 0.012f };
+static const float WRM_DB_REL[3]     = { 0.170f, 0.150f, 0.090f };
+static const float WRM_DB_SUS_W[3]   = { 0.58f, 0.66f, 0.80f };   // sustained share of the range
+static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
+#define WRM_PUNCH_GAIN      3.0f
+#define WRM_PUNCH_TAU       0.30f    // s, the "recent level" the punch is measured from
+#define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
 static const float WRM_DB_AMP_MAX[3] = { 1.75f, 1.65f, 2.10f };   // measured: test_distinct_framing
 static const float WRM_DB_LUM_MAX[3] = { 1.10f, 1.18f, 1.35f };
 
 typedef struct {
     float env[3];
     float lvl[3];      // this frame's shaped level per layer, 0..1 (for the snow)
+    // Set by the caller before wrm_distinct (zero = none): each layer's FAST
+    // level, and the beat estimate.  The punch is fast minus its own recent.
+    float in_fast[3];
+    float tempo_hz, tempo_conf;
+    float recent[3];
+    float punch[3];
     // the sub-bass shock (2026-09-25: "the subbass needs to be more
     // distinctive -- when it bumps, send extra shocks through the whole wave")
     float sub_slow;    // the sub band's recent level
@@ -407,15 +427,15 @@ typedef struct {
 // end of wrm_distinct), so the framing holds.
 #define WRM_SUB_TAU        0.35f
 #define WRM_SUB_THRESH     0.14f
-#define WRM_SUB_REFR       0.28f
+#define WRM_SUB_REFR       0.15f      // 0.28 before: fast kicks each get a ripple
 #define WRM_RIP_ATT        0.10f      // s, the spike's smooth rise
 #define WRM_RIP_DECAY      0.45f      // s, 1/(1+t/this)^2 fall-off
-#define WRM_RIP_END        1.60f      // s, gone (faded to 0 over the last 0.5 s)
+#define WRM_RIP_END        1.20f      // s, gone (faded to 0 over the last 0.5 s)
 #define WRM_RIP_SPREAD     0.70f      // u each crest travels, asymptotically
 #define WRM_RIP_EASE       0.35f      // s, how quickly the spreading eases out
 #define WRM_RIP_W0         0.055f     // half-width at the spike, u
 #define WRM_RIP_W1         0.17f      // extra half-width by the end
-#define WRM_RIP_A          0.28f      // per crest (the spike is two, overlapping)
+#define WRM_RIP_A          0.34f      // per crest (the spike is two, overlapping)
 #define WRM_RIP_PUSH       0.10f      // faint lift toward each layer's cap
 #define WRM_RIP_LUM        0.05f
 #define WRM_ACC_TOTAL_MAX  WRM_DB_ACC_KEEP   // test_distinct_framing measured this
@@ -440,7 +460,13 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
     resp    = wrm_clamp(resp, 0.25f, 2.0f);
     if (!(dt > 0.0f)) dt = 0.0f;
 
-    o->dt_scale = WRM_TS_IDLE;
+    // Tempo: a locked fast beat speeds the base motion up (1.0 at <= 90 BPM
+    // up to WRM_TEMPO_TS_MAX at 180).
+    {
+        const float fast = wrm_clamp((st->tempo_hz - 1.5f) / 1.5f, 0.0f, 1.0f)
+                         * wrm_clamp(st->tempo_conf, 0.0f, 1.0f) * present;
+        o->dt_scale = WRM_TS_IDLE + (WRM_TEMPO_TS_MAX - WRM_TS_IDLE) * fast;
+    }
     o->drive    = wrm_clamp(WRM_DRIVE_IDLE + (o->drive - WRM_DRIVE_IDLE) * WRM_DB_DRIVE_KEEP,
                             WRM_DRIVE_IDLE, WRM_DB_DRIVE_MAX);
     o->perturb  = WM_IDLE_PERTURB + (o->perturb - WM_IDLE_PERTURB) * WRM_DB_PERTURB_KEEP;
@@ -453,8 +479,17 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         const float k   = dt / (tau + dt);
         float s, amp;
         st->env[i] += (x - st->env[i]) * k;
-        s   = wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
-                        * resp * WRM_DB_RESP[i], 0.0f, 1.0f);
+        {
+            const float xf = wrm_clamp(st->in_fast[i], 0.0f, 1.0f);
+            float p;
+            st->recent[i] += (xf - st->recent[i]) * (dt / (WRM_PUNCH_TAU + dt));
+            p = wrm_clamp((xf - st->recent[i]) * WRM_PUNCH_GAIN * resp, 0.0f, 1.0f);
+            // fast in, a little slower out, so a hit reads as a hit
+            st->punch[i] += (p - st->punch[i]) * (p > st->punch[i] ? 1.0f : dt / (0.06f + dt));
+        }
+        s   = wrm_clamp(wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
+                                  * resp * WRM_DB_RESP[i], 0.0f, 1.0f) * WRM_DB_SUS_W[i]
+                        + st->punch[i] * WRM_DB_PUNCH_W[i], 0.0f, 1.0f);
         amp = WRM_DB_AMP_QUIET + (WRM_DB_AMP_MAX[i] - WRM_DB_AMP_QUIET) * s;
         st->lvl[i] = s;
         if (present <= 0.0f) {

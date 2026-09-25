@@ -1182,8 +1182,34 @@ static void test_distinct_bands(void)
     }
     printf("  distinct: bass only -> amp %.2f/%.2f/%.2f lum %.2f/%.2f/%.2f\n",
            o.amp[0], o.amp[1], o.amp[2], lum3[0], lum3[1], lum3[2]);
-    CHECK(o.amp[0] > 1.6f && o.amp[1] < 1.0f && o.amp[2] < 1.0f,
+    CHECK(o.amp[0] > 1.28f && o.amp[1] < 1.0f && o.amp[2] < 1.0f,
           "bass does not stand out on its own layer");
+
+    // A LOUD, fast kick (the v4 complaint): the bass band sits high all the
+    // time (self-referenced loud track) and the fast level pulses at 170 BPM.
+    // The bass layer must swing hard with every beat, not sit on a swell.
+    {
+        float lo = 9.0f, hi = 0.0f;
+        memset(&st, 0, sizeof st);
+        st.tempo_hz = 2.83f; st.tempo_conf = 1.0f;
+        src[0] = 0.72f; src[1] = 0.5f; src[2] = 0.3f;
+        for (n = 0; n < 60 * 6; n++) {
+            const int ph = n % 21;                 // 21 frames = 170 BPM at 60 fps
+            st.in_fast[0] = ph < 4 ? 0.95f : 0.62f;
+            st.in_fast[1] = 0.5f; st.in_fast[2] = 0.3f;
+            wrm_map(NULL, &o);
+            wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+            if (n > 60 * 3) {
+                if (o.amp[0] < lo) lo = o.amp[0];
+                if (o.amp[0] > hi) hi = o.amp[0];
+            }
+            CHECK(o.amp[0] <= WRM_DB_AMP_MAX[0] + 1e-4f, "punch passes the cap");
+        }
+        printf("  distinct: loud 170 BPM kick -> bass layer swings %.2f..%.2f, ts %.2f\n",
+               lo, hi, o.dt_scale);
+        CHECK(hi - lo > 0.35f, "a loud fast kick barely moves the bass layer (%.2f)", hi - lo);
+        CHECK(o.dt_scale > 1.2f, "a fast locked tempo does not speed the wave");
+    }
 
     // Highs alone: attack within a few frames, release within ~0.3 s.
     memset(&st, 0, sizeof st);
