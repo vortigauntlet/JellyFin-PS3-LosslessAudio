@@ -45,6 +45,7 @@ int main(int argc, char **argv)
     stat hit = {0}, lat = {0}, pdv[3] = {{0}}, amp[3] = {{0}}, lvl[3] = {{0}}, pun[3] = {{0}}, drama = {0}, defr = {0}, swing = {0};
     double motion[3] = {0}, capf[3] = {0}, prev[3] = {1, 1, 1};
     double tssum = 0, tsmax = 0, esum = 0, lvsum = 0, dnsum = 0, dbsum = 0;
+    double c01 = 0, c00 = 0, c11 = 0;
     long onsets = 0, nfr = 0; double bhz = 0, bconf = 0;
     float win[30]; int wi = 0;
     double sub_med = 0, sub_med2 = 0, sub_fast2 = 0, sub_fast = 0;
@@ -60,11 +61,11 @@ int main(int argc, char **argv)
         wrm_map_gain(&wm.p, gain, &o);
         float src[3];
         src[0] = ft.band[WA_SUB] > ft.band[WA_BASS] ? ft.band[WA_SUB] : ft.band[WA_BASS];
-        src[1] = 0.5f * (ft.band[WA_LOWMID] + ft.band[WA_MID]);
+        src[1] = 0.20f * ft.band[WA_LOWMID] + 0.60f * ft.band[WA_MID] + 0.20f * ft.band[WA_HIGH];
         src[2] = ft.band_fast[WA_HIGH] > ft.band_fast[WA_AIR] ? ft.band_fast[WA_HIGH] : ft.band_fast[WA_AIR];
         const float present = ft.silence >= 0.999f ? 0.0f : 1.0f - ft.silence;
         db.in_fast[0] = ft.band_fast[WA_SUB] > ft.band_fast[WA_BASS] ? ft.band_fast[WA_SUB] : ft.band_fast[WA_BASS];
-        db.in_fast[1] = 0.5f * (ft.band_fast[WA_LOWMID] + ft.band_fast[WA_MID]);
+        db.in_fast[1] = 0.20f * ft.band_fast[WA_LOWMID] + 0.60f * ft.band_fast[WA_MID] + 0.20f * ft.band_fast[WA_HIGH];
         db.in_fast[2] = src[2];
         db.tempo_hz = ft.beat_hz; db.tempo_conf = ft.beat_conf; db.energy = ft.level;
 #ifdef WRM_HAS_FEATURES
@@ -88,7 +89,13 @@ int main(int argc, char **argv)
             motion[l] += fabs(o.amp[l] - prev[l]); prev[l] = o.amp[l];
             if (o.amp[l] >= WRM_DB_AMP_MAX[l] - 0.03f) capf[l]++;
         }
-        st_add(&drama, d.gain); tssum += o.dt_scale; if (o.dt_scale > tsmax) tsmax = o.dt_scale; st_add(&pdv[0], db.pdev[0]); st_add(&pdv[1], db.pdev[1]); st_add(&pdv[2], db.pdev[2]);
+        st_add(&drama, d.gain);
+        {   /* separation: correlation of the bass and vocal layers' movement */
+            static float pa0 = 1, pa1 = 1;
+            const double d0 = o.amp[0] - pa0, d1 = o.amp[1] - pa1;
+            c01 += d0 * d1; c00 += d0 * d0; c11 += d1 * d1;
+            pa0 = o.amp[0]; pa1 = o.amp[1];
+        } tssum += o.dt_scale; if (o.dt_scale > tsmax) tsmax = o.dt_scale; st_add(&pdv[0], db.pdev[0]); st_add(&pdv[1], db.pdev[1]); st_add(&pdv[2], db.pdev[2]);
         if (nfr % 6 == 0) {
             float disp[72]; memset(disp, 0, sizeof disp);
             wdf_apply(&d, 0, disp, 72);
@@ -140,6 +147,8 @@ int main(int argc, char **argv)
     printf("    punch dev %.3f %.3f %.3f\n", st_mean(&pdv[0]), st_mean(&pdv[1]), st_mean(&pdv[2]));
     printf("    HIT: bass rise per beat %.3f+-%.3f, 80%% reached in %.0f ms\n", st_mean(&hit), st_sd(&hit), st_mean(&lat));
     printf("    level %.2f (rms_ref %.1f)  density %.2f  energy_eff %.2f\n", lvsum/nfr, dbsum/nfr, dnsum/nfr, esum/((double)frames/800));
+    printf("    SEPARATION: bass/vocal layer movement correlation %.2f (lower = more distinct)\n",
+           c01 / sqrt(c00 * c11 + 1e-12));
     printf("    TEMPO: wave speed x%.2f average, x%.2f max  (beat %.0f BPM)\n", tssum/nfr, tsmax, bhz/nfr*60);
     return 0;
 }

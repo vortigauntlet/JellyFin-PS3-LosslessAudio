@@ -317,11 +317,11 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
     }
 
     // --- the drama curve: loud is disproportionately more ------------------
-    loud = wdf_clamp(0.45f * lows + 0.30f * mids + 0.25f * highs, 0.0f, 1.0f);
+    loud = wdf_clamp(0.60f * lows + 0.15f * mids + 0.25f * highs, 0.0f, 1.0f);   // v8: the vocal layer no longer pumps, so the lows carry the drama
     {
         const float en = wdf_clamp(in->energy, 0.0f, 1.0f);
         const float d = present * (0.25f + 0.75f * loud * loud) * (1.0f + 0.8f * loud * loud * loud)
-                      * (1.0f + 0.9f * en);          // a loud master is more dramatic
+                      * (1.0f + 1.1f * en);          // a loud master is more dramatic (0.9 before v8)
         st->drama += (d - st->drama) * wdf_k(dt, d > st->drama ? 0.08f : 0.45f);
     }
 

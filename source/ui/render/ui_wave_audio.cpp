@@ -202,7 +202,10 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
             {
                 float src[3];
                 src[0] = f.band[WA_SUB] > f.band[WA_BASS] ? f.band[WA_SUB] : f.band[WA_BASS];
-                src[1] = 0.5f * (f.band[WA_LOWMID] + f.band[WA_MID]);
+                // The vocal layer: mostly 700 Hz - 2 kHz with a little of the
+                // presence band, and only a fifth of the low-mids -- where a
+                // distorted 808's and a kick's harmonics live.
+                src[1] = 0.20f * f.band[WA_LOWMID] + 0.60f * f.band[WA_MID] + 0.20f * f.band[WA_HIGH];
                 src[2] = f.band_fast[WA_HIGH] > f.band_fast[WA_AIR]
                        ? f.band_fast[WA_HIGH] : f.band_fast[WA_AIR];
                 const float present = f.silence >= 0.999f ? 0.0f : 1.0f - f.silence;
@@ -210,7 +213,8 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                 const float resp = s_gain <= 1.0f ? 0.8f : (s_gain < 2.0f ? 1.0f : 1.25f);
                 s_db.in_fast[0] = f.band_fast[WA_SUB] > f.band_fast[WA_BASS]
                                 ? f.band_fast[WA_SUB] : f.band_fast[WA_BASS];
-                s_db.in_fast[1] = 0.5f * (f.band_fast[WA_LOWMID] + f.band_fast[WA_MID]);
+                s_db.in_fast[1] = 0.20f * f.band_fast[WA_LOWMID] + 0.60f * f.band_fast[WA_MID]
+                                + 0.20f * f.band_fast[WA_HIGH];
                 s_db.in_fast[2] = src[2];
                 s_db.tempo_hz   = f.beat_hz;
                 s_db.tempo_conf = f.beat_conf;

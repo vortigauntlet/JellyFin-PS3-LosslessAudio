@@ -382,10 +382,10 @@ static const float WRM_DB_RESP[3]  = { 1.40f, 1.00f, 1.00f };
 // range, and PUNCH on top -- each layer's fast level minus its own recent
 // level, which is the beat itself and is loudness-independent -- plus the
 // tempo speeding the base motion up.  Same caps: the framing does not move.
-static const float WRM_DB_ATT[3]     = { 0.025f, 0.030f, 0.012f };
-static const float WRM_DB_REL[3]     = { 0.170f, 0.150f, 0.090f };
+static const float WRM_DB_ATT[3]     = { 0.025f, 0.018f, 0.012f };   // vocal: syllable-quick (v8)
+static const float WRM_DB_REL[3]     = { 0.170f, 0.110f, 0.090f };
 static const float WRM_DB_SUS_W[3]   = { 0.58f, 0.66f, 0.80f };   // sustained share of the range
-static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
+static const float WRM_DB_PUNCH_W[3] = { 1.00f, 1.10f, 0.60f };   // beat share (vocal 0.85 -> 1.1, v8)
 #define WRM_PUNCH_GAIN      3.0f
 #define WRM_PUNCH_TAU       0.30f    // s, the "recent level" the punch is measured from
 // CONTRAST NORMALISATION (2026-09-25, loudness-war masters).  A brickwalled
@@ -420,7 +420,7 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
 //   * the bass layer keeps more of its sustained level, so an 808's tail holds
 //     the wave up instead of it dropping straight back
 #define WRM_RISE_BASE       1.60f    // rising stiffness x this at energy 0
-#define WRM_RISE_ENERGY     1.20f    // ... plus this x energy_eff
+#define WRM_RISE_ENERGY     1.80f    // ... plus this x energy_eff (1.2 before; soft-attack 808s, v8)
 #define WRM_ATT_ENERGY      0.60f    // attacks shortened by up to this fraction
 #define WRM_SUS_ENERGY     (-0.20f)  // bass sustain weight + this x energy_eff: LESS, headroom for the hits
 
@@ -437,6 +437,15 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
 #define WRM_FALL_ENERGY     1.10f    // falling stiffness x (1 + this x energy_eff)
 #define WRM_RECENT_UP       0.35f    // s: the recent level rises at about the old rate (a held 808 must not read as punch for long)
 #define WRM_RECENT_DN       0.12f    // s: and falls quickly, so the next hit meets a low reference
+
+// VOCAL SEPARATION (v8: "the visual separation on vocals needs to be
+// better").  All three layers were pumping with the beat: the loud-master
+// punch boost applied to each alike, and the vocal layer's band carried the
+// 808's harmonics.  Now the boost is weighted per layer (the bass takes it
+// all), and the vocal layer ducks under a landing bass hit -- so between the
+// kicks it moves with the voice, and on them the bass layer owns the moment.
+static const float WRM_ENERGY_PUNCH_W[3] = { 1.00f, 0.60f, 0.60f };
+#define WRM_VOCAL_DUCK      0.60f    // vocal punch x (1 - this x bass punch)
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
 #define WRM_TEMPO_TAU       1.50f    // s, the tempo speed-up eases in and out
 #define WRM_PUNCH_ATT       0.030f   // s, a hit swells in over ~2 frames, not one
@@ -607,7 +616,9 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
                 b = wrm_clamp(b, 1.0f, WRM_PUNCH_BOOST_MAX);
                 st->boost[i] = b;
                 p = wrm_clamp(d * WRM_PUNCH_GAIN * resp * b
-                              * (1.0f + WRM_ENERGY_PUNCH * st->energy_eff), 0.0f, 1.0f);
+                              * (1.0f + WRM_ENERGY_PUNCH * WRM_ENERGY_PUNCH_W[i] * st->energy_eff),
+                              0.0f, 1.0f);
+                if (i == 1) p *= 1.0f - WRM_VOCAL_DUCK * st->punch[0];   // layer 0 is done first
             }
             // fast in, a little slower out, so a hit reads as a hit
             {

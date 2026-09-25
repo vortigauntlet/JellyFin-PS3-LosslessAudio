@@ -119,7 +119,7 @@ static const float WA_FLUX_W[WA_BANDS] = {
 // Attack is faster than release everywhere, because that is how hearing
 // works: onsets are sharp and decays are gradual, and a symmetric envelope
 // makes music look like it is breathing backwards.
-#define WA_TAU_FAST_A   0.025f
+#define WA_TAU_FAST_A   0.012f     // 25 ms before: 2 frames to 80% of a hit, not 3 (v8)
 #define WA_TAU_FAST_R   0.070f
 #define WA_TAU_MED_A    0.110f
 #define WA_TAU_MED_R    0.280f
