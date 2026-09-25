@@ -539,6 +539,22 @@ static u32 motes_build(float aspect)
             obst[i].y1 = 1.0f - 2.0f * s_obst_px[i].y0 / Hd;
         }
     }
+    // The youngest live warp becomes the particles' shockwave ring.
+    c.ring_a = 0.0f; c.ring_x = c.ring_y = c.ring_r = 0.0f;
+    {
+        int best = -1;
+        for (int j = 0; j < WDF_WARPS; j++)
+            if (s_def.live && s_def.warp_a[j] > 0.0f && s_def.warp_age[j] < WDF_WARP_LIFE &&
+                (best < 0 || s_def.warp_age[j] < s_def.warp_age[best]))
+                best = j;
+        if (best >= 0) {
+            const float age = s_def.warp_age[best];
+            c.ring_x = 2.0f * (s_def.warp_x[best] + s_def.warp_dir[best] * 0.10f * age) - 1.0f;
+            c.ring_y = 1.0f - 2.0f * WAVE_BASEY[0];
+            c.ring_r = 0.95f * age;
+            c.ring_a = (s_def.warp_a[best] / WDF_WARP_A) * wdf_warp_env(age) * 0.9f;
+        }
+    }
     c.obst    = s_obst_n ? obst : 0;
     c.n_obst  = s_obst_n;
     s_obst_n  = 0;                            // one frame only
@@ -593,18 +609,24 @@ static u32 motes_build(float aspect)
 
 // The rim pass colour, times the treble's rim gain (exactly the old colour at
 // rest: the gain is only applied while the deformation is live).
-static inline u32 jw_body_rgba(const jw_vert *q, int a, float g)
+// Per-channel gains (the tint) times a brightness gain (the glow / rim).
+// Exactly the stored colour when every gain is 1.
+static float s_tint_rgb[3] = { 1.0f, 1.0f, 1.0f };   // set per build, see jw_generate
+static inline u8 jw_c8(float v) { return v >= 255.0f ? 255 : (u8)v; }
+static inline u32 jw_body_rgba(const jw_vert *q, int a, float g, const float *t)
 {
-    if (g == 1.0f) return WAVE_RGBA(q->r, q->g, q->b, a);
-    int r = (int)((float)q->r * g), gg = (int)((float)q->g * g), b = (int)((float)q->b * g);
-    return WAVE_RGBA(r > 255 ? 255 : r, gg > 255 ? 255 : gg, b > 255 ? 255 : b, a);
+    if (g == 1.0f && t[0] == 1.0f && t[1] == 1.0f && t[2] == 1.0f)
+        return WAVE_RGBA(q->r, q->g, q->b, a);
+    return WAVE_RGBA(jw_c8((float)q->r * g * t[0]), jw_c8((float)q->g * g * t[1]),
+                     jw_c8((float)q->b * g * t[2]), a);
 }
 
-static inline u32 jw_rim_rgba(const jw_vert *q, float g)
+static inline u32 jw_rim_rgba(const jw_vert *q, float g, const float *t)
 {
-    if (g == 1.0f) return WAVE_RGBA(q->rr, q->rg, q->rb, 255);
-    int r = (int)((float)q->rr * g), gg = (int)((float)q->rg * g), b = (int)((float)q->rb * g);
-    return WAVE_RGBA(r > 255 ? 255 : r, gg > 255 ? 255 : gg, b > 255 ? 255 : b, 255);
+    if (g == 1.0f && t[0] == 1.0f && t[1] == 1.0f && t[2] == 1.0f)
+        return WAVE_RGBA(q->rr, q->rg, q->rb, 255);
+    return WAVE_RGBA(jw_c8((float)q->rr * g * t[0]), jw_c8((float)q->rg * g * t[1]),
+                     jw_c8((float)q->rb * g * t[2]), 255);
 }
 
 // Build the complete JellyWave stream into dst, starting at index n (the
@@ -628,12 +650,23 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         dst[n].z = 0.0f;                                        \
         dst[n].w = 1.0f;                                        \
         dst[n].rgba = (USE_RIM)                                 \
-            ? jw_rim_rgba(q_, rimg * (G))                       \
-            : jw_body_rgba(q_, (A), (G));                       \
+            ? jw_rim_rgba(q_, rimg * (G), tint)                 \
+            : jw_body_rgba(q_, (A), (G), tint);                 \
         n++;                                                    \
     } while (0)
 
     const float rimg = look->def.live ? look->def.rim : 1.0f;
+    // Tint: a dark mix leans violet, a bright one blue -- both inside the
+    // palette, a few percent per channel.  Local: this runs on the worker.
+    float tint[3] = { 1.0f, 1.0f, 1.0f };
+    if (look->def.live && look->def.tint != 0.0f) {
+        const float t = look->def.tint;
+        const float dk = t < 0.0f ? -t : 0.0f, br = t > 0.0f ? t : 0.0f;
+        tint[0] = 1.0f + 0.12f * dk - 0.08f * br;
+        tint[1] = 1.0f - 0.06f * dk + 0.06f * br;
+        tint[2] = 1.0f + 0.03f * dk + 0.10f * br;
+    }
+    (void)s_tint_rgb;
     for (int slot = 0; slot < JW_LAYERS; slot++) {
         const int       li = JW_LAYERS - 1 - slot;
         // The audio look for this layer, on a copy: disp_gain scales the

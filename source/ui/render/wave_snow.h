@@ -90,7 +90,15 @@ typedef struct {
     float band_y;     // the wave's resting centre, clip y
     const ws_rect *obst;  // obstacles, clip space; NULL = none
     int   n_obst;
+    // a beat's shockwave: a ring expanding from (ring_x, ring_y) in clip
+    // space, radius ring_r (measured in screen-x units), strength ring_a (0 =
+    // none).  Particles it passes glint, and are nudged outward VERY slightly.
+    float ring_x, ring_y, ring_r, ring_a;
 } ws_ctl;
+
+#define WS_RING_W     0.09f       // the ring's half-thickness
+#define WS_RING_PUSH  0.035f      // outward nudge at full strength, clip units/s
+#define WS_ASPECT     1.7777778f
 
 // 2026-09-25 v3: "less like snow and more like swirling floatiness that
 // reacts to the wave".  No fall any more: every particle rides a slowly
@@ -260,6 +268,29 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
             st->x[i] += (fu + st->vx[i]) * dt;
             st->y[i] += (st->vy[i] + fv) * dt;
             st->spark[i] *= 1.0f / (1.0f + dt / WS_SPARK_TAU);
+            if (c->ring_a > 0.0f) {
+                const float dx = (st->x[i] - c->ring_x) * WS_ASPECT, dy = st->y[i] - c->ring_y;
+                const float d2 = dx * dx + dy * dy;
+                // |d - r| < w, tested on squares to keep the sqrt off the
+                // common path; the few inside the band take one
+                const float lo = c->ring_r - WS_RING_W, hi = c->ring_r + WS_RING_W;
+                if (d2 < hi * hi && (lo <= 0.0f || d2 > lo * lo)) {
+                    float d = d2, gx, gy, w;
+                    {   // sqrt: bit estimate + two Newton steps
+                        union { float f; uint32_t u; } v; v.f = d2 > 1e-12f ? d2 : 1e-12f;
+                        v.u = (v.u >> 1) + 0x1FBD1DF5u;
+                        d = v.f; d = 0.5f * (d + d2 / d); d = 0.5f * (d + d2 / d);
+                    }
+                    w = 1.0f - (d > c->ring_r ? d - c->ring_r : c->ring_r - d) / WS_RING_W;
+                    if (w > 0.0f) {
+                        const float gl = c->ring_a * w;
+                        if (gl > st->spark[i]) st->spark[i] = gl > 1.0f ? 1.0f : gl;
+                        gx = d > 1e-4f ? dx / d : 0.0f; gy = d > 1e-4f ? dy / d : 0.0f;
+                        st->vx[i] += gx * WS_RING_PUSH * gl * (1.0f / WS_ASPECT) * par * 4.0f * dt;
+                        st->vy[i] += gy * WS_RING_PUSH * gl * par * 4.0f * dt;
+                    }
+                }
+            }
             if (c->obst && c->n_obst > 0 && z < WS_COLLIDE_Z) {
                 // the particle's own size, so its edge (not its centre) touches
                 const float rpx = WS_R_SHARP + 1.2f * near

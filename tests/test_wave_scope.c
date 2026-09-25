@@ -91,6 +91,24 @@ static void test_scope(void)
     CHECK(fabsf(quiet - loud) < 0.15f, "waveform size follows loudness (%.2f vs %.2f)", quiet, loud);
     CHECK(o.wave[0] == 0.0f && o.wave[WSC_POINTS - 1] == 0.0f, "waveform ends are not pinned");
 
+    // pitch-synchronous: a held 173 Hz note (not a divisor of the frame, so
+    // its phase is different every frame) draws the same shape every frame
+    {
+        float prev[WSC_POINTS], dot = 0.0f, na = 0.0f, nb = 0.0f;
+        int f2;
+        run(&s, &o, 0, 0.5f, 173.0f, 60, 1.0f);
+        memcpy(prev, o.wave, sizeof prev);
+        for (f2 = 0; f2 < 30; f2++) {
+            run(&s, &o, 0, 0.5f, 173.0f, 1, 1.0f);
+            for (i = 0; i < WSC_POINTS; i++) { dot += o.wave[i] * prev[i]; na += o.wave[i] * o.wave[i]; nb += prev[i] * prev[i]; }
+            memcpy(prev, o.wave, sizeof prev);
+        }
+        printf("  scope: held 173 Hz note -> period %d samples (%.0f Hz), frame-to-frame similarity %.3f\n",
+               s.period, s.period ? 12000.0f / s.period : 0.0f, dot / sqrtf(na * nb + 1e-12f));
+        CHECK(s.period > 0 && fabsf(12000.0f / s.period - 173.0f) < 12.0f, "period not found (%d)", s.period);
+        CHECK(dot / sqrtf(na * nb + 1e-12f) > 0.98f, "a held note's shape does not hold still");
+    }
+
     // silence (present 0): everything eases back to neutral
     run(&s, &o, 0, 0.0f, 180.0f, 120, 0.0f);
     printf("  scope: silence    -> balance %+.3f width %.3f wave %.3f\n", o.balance, o.width, wave_peak(&o));
@@ -351,6 +369,60 @@ static void test_organism(void)
     }
 }
 
+static void test_features(void)
+{
+    static wsc_out sc;
+    wdf_state st;
+    wdf_look  d;
+    wdf_in    in;
+    int f, blooms = 0;
+    float s_lo = 9, s_hi = -9;
+
+    // tint follows the brightness, slowly, and is 0 at rest
+    memset(&st, 0, sizeof st); st.rim = 1.0f;
+    memset(&sc, 0, sizeof sc);
+    memset(&in, 0, sizeof in); in.scope = &sc;
+    wdf_map(&st, &in, DT, &d);
+    CHECK(d.tint == 0.0f, "tint at rest");
+    in.present = 1.0f; in.centroid = 0.9f;
+    for (f = 0; f < 240; f++) wdf_map(&st, &in, DT, &d);
+    {
+        const float bright = d.tint;
+        in.centroid = 0.1f;
+        wdf_map(&st, &in, DT, &d);
+        const float one = d.tint;
+        for (f = 0; f < 240; f++) wdf_map(&st, &in, DT, &d);
+        printf("  features: tint bright %+.2f, one frame after going dark %+.2f, settled dark %+.2f\n",
+               bright, one, d.tint);
+        CHECK(bright > 0.6f && d.tint < -0.6f, "tint does not follow the brightness");
+        CHECK(one > bright - 0.1f, "tint jumps instead of easing");
+    }
+
+    // sections: 20 s calm, then a drop; then 30 s steady
+    memset(&st, 0, sizeof st); st.rim = 1.0f;
+    memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+    for (f = 0; f < 60 * 60; f++) {
+        const float v = f < 60 * 20 ? 0.15f : 0.75f;
+        in.lvl[0] = in.lvl[1] = in.lvl[2] = v;
+        in.punch[0] = in.punch[1] = in.punch[2] = f < 60 * 20 ? 0.0f : 0.4f;
+        wdf_map(&st, &in, DT, &d);
+        if (d.bloom > 0.99f) blooms++;
+        if (f > 60 * 5 && f < 60 * 20 && d.section < s_lo) s_lo = d.section;
+        if (f > 60 * 20 && f < 60 * 25 && d.section > s_hi) s_hi = d.section;
+    }
+    printf("  features: calm -> drop: section %+.2f then %+.2f, blooms %d, section after 40 s steady %+.2f\n",
+           s_lo, s_hi, blooms, d.section);
+    CHECK(blooms == 1, "a drop gave %d blooms", blooms);
+    CHECK(s_hi > 0.5f, "the drop does not read as a peak");
+    CHECK(d.section > -0.2f && d.section < 0.3f, "a steady song does not settle to neutral");
+    {   // and a steady song never blooms
+        memset(&st, 0, sizeof st); st.rim = 1.0f;
+        blooms = 0;
+        for (f = 0; f < 60 * 60; f++) { wdf_map(&st, &in, DT, &d); if (d.bloom > 0.99f) blooms++; }
+        CHECK(blooms == 0, "a steady song bloomed %d times", blooms);
+    }
+}
+
 static void report_cost(void)
 {
     static wsc_state s;
@@ -386,6 +458,7 @@ int main(void)
     printf("-- scope --\n");   test_scope();
     printf("-- deform --\n");  test_deform();
     printf("-- organism --\n"); test_organism();
+    printf("-- features --\n"); test_features();
     printf("-- cost --\n");    report_cost();
     if (failures) { printf("\nFAILED: %d check(s)\n", failures); return 1; }
     printf("\nOK\n");

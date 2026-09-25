@@ -32,7 +32,20 @@
 #ifndef WAVE_SCOPE_H
 #define WAVE_SCOPE_H
 
-#define WSC_RING     256        // decimated mono samples kept (~21 ms at 12 kHz)
+#define WSC_RING     512        // decimated mono samples kept (~43 ms at 12 kHz)
+#define WSC_SPAN     256        // aperiodic view: the newest ~21 ms
+
+// PITCH-SYNCHRONOUS VIEW (2026-09-25: "the waveform should hold still").
+// Like an oscilloscope's trigger: the period is estimated by a normalised
+// autocorrelation over the newest WSC_AC_N samples (lags for ~67 Hz ..
+// 1 kHz); when the signal is clearly periodic the view is exactly two periods
+// starting at a rising zero crossing, so a held note draws the SAME shape
+// every frame.  Otherwise (noise, dense chords) it falls back to the newest
+// WSC_SPAN samples as before.  ~48k flops a frame.
+#define WSC_LAG_MIN  12
+#define WSC_LAG_MAX  180
+#define WSC_AC_N     96
+#define WSC_PERIODIC 0.55f
 #define WSC_DECIM    4          // 48 kHz -> 12 kHz
 #define WSC_POINTS   32         // waveform points handed to the renderer
 
@@ -55,6 +68,8 @@ typedef struct {
     // written by wsc_frame (UI thread, same lock)
     float bal, width, peak;
     float wave[WSC_POINTS];
+    float lin[WSC_RING];        // scratch: the ring, oldest first
+    int   period;               // last periodic lag, 0 = aperiodic
 } wsc_state;
 
 typedef struct {
@@ -133,14 +148,62 @@ static inline void wsc_frame(wsc_state *s, float dt, float present, wsc_out *o)
         s->width += (wid_raw - s->width) * wsc_k(dt, WSC_TAU_WIDTH);
     }
 
-    // The newest WSC_RING samples, oldest first, box-averaged into points.
     {
-        const int per = WSC_RING / WSC_POINTS;
-        int rd = s->wr;                           // oldest
+        int k, rd = s->wr, lag = 0, start = 0, span = WSC_SPAN;
+        float *x = s->lin;
+        for (k = 0; k < WSC_RING; k++) { x[k] = s->ring[rd]; rd = (rd + 1) & (WSC_RING - 1); }
+
+        // the period: the smallest lag within 90% of the best correlation
+        {
+            const int end = WSC_RING - 1;
+            float best = 0.0f, r[WSC_LAG_MAX + 1];
+            int L;
+            for (L = WSC_LAG_MIN; L <= WSC_LAG_MAX; L++) {
+                float num = 0.0f, e0 = 0.0f, e1 = 0.0f;
+                int n;
+                for (n = end - WSC_AC_N + 1; n <= end; n++) {
+                    const float a = x[n], b = x[n - L];
+                    num += a * b; e0 += a * a; e1 += b * b;
+                }
+                r[L] = (e0 + e1) > 1e-12f ? 2.0f * num / (e0 + e1) : 0.0f;   // <= 1
+                if (r[L] > best) best = r[L];
+            }
+            if (best >= WSC_PERIODIC) {
+                for (L = WSC_LAG_MIN; L <= WSC_LAG_MAX; L++)
+                    if (r[L] >= 0.9f * best) {
+                        // walk to the local peak of this lobe
+                        while (L < WSC_LAG_MAX && r[L + 1] > r[L]) L++;
+                        lag = L;
+                        break;
+                    }
+            }
+        }
+        if (lag) {
+            // two periods ending as late as possible, starting on a rising
+            // zero crossing (DC removed over the window first)
+            float m = 0.0f;
+            int t, t0;
+            span = 2 * lag;
+            t0 = WSC_RING - span;                  // latest possible start
+            for (k = t0 - lag; k < WSC_RING; k++) m += x[k];
+            m *= 1.0f / (float)(WSC_RING - (t0 - lag));
+            start = t0;
+            for (t = t0; t > t0 - lag && t > 0; t--)
+                if (x[t - 1] - m < 0.0f && x[t] - m >= 0.0f) { start = t; break; }
+        } else {
+            start = WSC_RING - WSC_SPAN;
+        }
+        s->period = lag;
+        // resample [start, start + span) into the points, box-averaged
         for (i = 0; i < WSC_POINTS; i++) {
-            float a = 0.0f;
-            for (j = 0; j < per; j++) { a += s->ring[rd]; rd = (rd + 1) & (WSC_RING - 1); }
-            pts[i] = a * (1.0f / (float)per);
+            const float f0 = (float)start + (float)span * (float)i / (float)WSC_POINTS;
+            const float f1 = (float)start + (float)span * (float)(i + 1) / (float)WSC_POINTS;
+            int a0 = (int)f0, a1 = (int)f1;
+            float acc = 0.0f;
+            if (a1 <= a0) a1 = a0 + 1;
+            if (a1 > WSC_RING) a1 = WSC_RING;
+            for (j = a0; j < a1; j++) acc += x[j];
+            pts[i] = acc / (float)(a1 - a0);
             mean += pts[i];
         }
         mean *= 1.0f / (float)WSC_POINTS;

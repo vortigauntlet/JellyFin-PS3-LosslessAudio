@@ -92,6 +92,9 @@ typedef struct {
     float warp_x[WDF_WARPS], warp_a[WDF_WARPS], warp_age[WDF_WARPS], warp_dir[WDF_WARPS];
     float shimmer, shimmer_ph;
     float rim;              // rim brightness gain, exactly 1 at rest
+    float tint;             // -1 dark (violet) .. +1 bright (blue); 0 at rest
+    float section;          // -1 calm .. +1 peak (chorus / drop)
+    float bloom;            // 0..1, a drop's glow burst, decays
     int   live;             // 0 = add nothing, glow nothing
 } wdf_look;
 
@@ -102,6 +105,8 @@ typedef struct {
     float onset_strength;
     float tempo_hz, tempo_conf;
     float present;      // 0 at rest .. 1 with audio
+    float energy;       // wrm_db_state.energy_eff: loud, compressed = high
+    float centroid;     // wa_features.centroid: 0 dark .. 1 bright
     const wsc_out *scope;   // may be NULL
 } wdf_in;
 
@@ -114,7 +119,27 @@ typedef struct {
     int   wn;
     float shimmer, shimmer_ph;
     float drama;
+    float tint;                     // smoothed centroid
+    float e_mid, e_long, sect;      // section energy
+    float calm_t, bloom, bloom_ref; // drop detection
+    int   bloom_armed;              // re-armed once the rise has settled
+    int   warm;                     // frames since the state was zeroed
 } wdf_state;
+
+// SECTIONS (2026-09-25).  MilkDrop-style players switch presets when the
+// music's energy shifts; here the same signal eases the wave's character
+// instead.  A mid-term (~1.5 s) and a long-term (~12 s) average of the level
+// and the beat: their difference says whether this part of the song is
+// calmer or fuller than the song around it.  Calm: longer, slower ripples,
+// more swell, less drama.  Peak: shorter, faster ripples, more drama.  A
+// calm stretch followed by a sharp rise is a DROP: one big central warp and a
+// glow burst -- at most one per WDF_BLOOM_REFR.
+#define WDF_SECT_SCALE  0.12f
+#define WDF_BLOOM_CALM  2.0f     // s of calm before a rise counts as a drop
+#define WDF_BLOOM_RISE  0.10f
+#define WDF_BLOOM_SHARP 0.25f
+#define WDF_BLOOM_REFR  8.0f
+#define WDF_BLOOM_TAU   1.2f
 
 static inline float wdf_clamp(float v, float lo, float hi)
 {
@@ -194,6 +219,7 @@ static inline void wdf_rest(wdf_look *o)
     for (i = 0; i < WDF_WARPS; i++) { o->warp_x[i] = 0.5f; o->warp_a[i] = 0.0f; o->warp_age[i] = 9.0f; o->warp_dir[i] = 1.0f; }
     o->shimmer = o->shimmer_ph = 0.0f;
     o->rim = 1.0f;
+    o->tint = o->section = o->bloom = 0.0f;
     o->live = 0;
 }
 
@@ -210,6 +236,42 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
     highs = wdf_clamp(0.55f * in->lvl[2] + 0.9f * in->punch[2], 0.0f, 1.0f);
     fast  = wdf_clamp((in->tempo_hz - 1.5f) / 1.5f, 0.0f, 1.0f) * wdf_clamp(in->tempo_conf, 0.0f, 1.0f);
 
+    // --- sections (and the drop) --------------------------------------------
+    {
+        const float lv = (in->lvl[0] + in->lvl[1] + in->lvl[2]) * (1.0f / 3.0f);
+        const float pu = (in->punch[0] + in->punch[1] + in->punch[2]) * (1.0f / 3.0f);
+        const float e  = present * (lv + 0.5f * pu);
+        if (st->warm < 2) { st->e_mid = st->e_long = e; }
+        if (st->warm < 1000000) st->warm++;
+        st->e_mid  += (e - st->e_mid)  * wdf_k(dt, 1.5f);
+        st->e_long += (e - st->e_long) * wdf_k(dt, 12.0f);
+        {
+            const float d = st->e_mid - st->e_long;
+            const float sx = wdf_clamp(d / WDF_SECT_SCALE, -1.0f, 1.0f) * present;
+            st->sect += (sx - st->sect) * wdf_k(dt, 1.2f);
+            if (st->sect < -0.3f) st->calm_t += dt;
+            else if (st->sect > 0.0f) st->calm_t -= 2.0f * dt;
+            if (st->calm_t < 0.0f) st->calm_t = 0.0f;
+            st->bloom_ref -= dt;
+            st->bloom *= 1.0f / (1.0f + dt / WDF_BLOOM_TAU);
+            // a drop: a rise after a calm stretch, or a rise sharp enough on its
+            // own (the first drop after an intro has no louder "before")
+            if (d < 0.5f * WDF_BLOOM_RISE) st->bloom_armed = 1;
+            if (present > 0.0f && st->bloom_ref <= 0.0f && st->warm > 180 && st->bloom_armed &&
+                ((st->calm_t >= WDF_BLOOM_CALM && d > WDF_BLOOM_RISE) || d > WDF_BLOOM_SHARP)) {
+                st->bloom = 1.0f;
+                st->bloom_ref = WDF_BLOOM_REFR;
+                st->bloom_armed = 0;
+                st->calm_t = 0.0f;
+                {   // one big warp at the centre
+                    int use = 0, j;
+                    for (j = 0; j < WDF_WARPS; j++) if (st->wage[j] > st->wage[use]) use = j;
+                    st->wx[use] = 0.5f; st->wdir[use] = 1.0f; st->wa[use] = 1.6f; st->wage[use] = 0.0f;
+                }
+            }
+        }
+    }
+
     // --- evolution: slow, incommensurate, independent of the beat ---------
     st->t += dt;
     if (st->t > 100000.0f) st->t -= 100000.0f;
@@ -217,8 +279,9 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         const float t = st->t;
         ev_str = 1.0f + 0.15f * wdf_sin2pi(t / 41.0f) + 0.07f * wdf_sin2pi(t / 17.3f + 0.2f);
         for (i = 0; i < 3; i++) {
-            o->k1m[i] = 1.0f + 0.22f * wdf_sin2pi(t / 53.0f + 0.33f * (float)i)
-                             + 0.06f * wdf_sin2pi(t / 23.0f + 0.51f * (float)i);
+            o->k1m[i] = (1.0f + 0.22f * wdf_sin2pi(t / 53.0f + 0.33f * (float)i)
+                              + 0.06f * wdf_sin2pi(t / 23.0f + 0.51f * (float)i))
+                      * (1.0f - 0.12f * st->sect);    // peak: shorter ripples
             st->phs[i] = wdf_wrap(st->phs[i] + dt * 0.013f
                                   * (1.0f + 0.5f * wdf_sin2pi(t / 71.0f + (float)i * 0.29f)));
             o->phs[i] = st->phs[i];
@@ -231,7 +294,9 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
     // --- the drama curve: loud is disproportionately more ------------------
     loud = wdf_clamp(0.45f * lows + 0.30f * mids + 0.25f * highs, 0.0f, 1.0f);
     {
-        const float d = present * (0.25f + 0.75f * loud * loud) * (1.0f + 0.8f * loud * loud * loud);
+        const float en = wdf_clamp(in->energy, 0.0f, 1.0f);
+        const float d = present * (0.25f + 0.75f * loud * loud) * (1.0f + 0.8f * loud * loud * loud)
+                      * (1.0f + 0.9f * en);          // a loud master is more dramatic
         st->drama += (d - st->drama) * wdf_k(dt, d > st->drama ? 0.08f : 0.45f);
     }
 
@@ -240,13 +305,13 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         const float t = present * (0.30f + 0.70f * mids) * WDF_MID_A;
         st->mid_a += (t - st->mid_a) * wdf_k(dt, t > st->mid_a ? 0.05f : 0.35f);
     }
-    st->mid_ph = wdf_wrap(st->mid_ph + dt * (0.16f + 0.22f * fast + 0.14f * mids));
+    st->mid_ph = wdf_wrap(st->mid_ph + dt * (0.16f + 0.22f * fast + 0.14f * mids) * (1.0f + 0.30f * st->sect));
     st->sec_ph = wdf_wrap(st->sec_ph + dt * (0.07f + 0.15f * fast));
 
     // lows -> the swell, through an underdamped spring: inertia, overshoot,
     // rolls on after the peak
     {
-        const float target = present * lows * WDF_SWELL_A;
+        const float target = present * lows * WDF_SWELL_A * (1.0f - 0.20f * st->sect);
         const float w = 6.2831853f * 0.9f, zw = 2.0f * 0.45f * w;
         float left = dt;
         while (left > 0.0f) {
@@ -299,7 +364,13 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         if (st->sw_x * st->sw_x + st->sw_v * st->sw_v < 1e-8f) { st->sw_x = 0.0f; st->sw_v = 0.0f; }
     }
 
-    o->gain     = st->drama * wdf_clamp(ev_str, 0.75f, 1.25f);
+    o->gain     = st->drama * wdf_clamp(ev_str, 0.75f, 1.25f) * (1.0f + 0.25f * st->sect);
+    // brightness -> tint, slow so a hi-hat does not flicker the colour
+    st->tint += (wdf_clamp(in->centroid, 0.0f, 1.0f) - st->tint) * wdf_k(dt, 1.2f);
+    if (st->warm < 3) st->tint = wdf_clamp(in->centroid, 0.0f, 1.0f);
+    o->tint    = wdf_clamp((st->tint - 0.5f) * 2.2f, -1.0f, 1.0f) * present;
+    o->section = st->sect;
+    o->bloom   = st->bloom < 1e-3f ? 0.0f : st->bloom;
     o->mid_a    = st->mid_a;
     o->mid_ph   = st->mid_ph;
     o->sec_ph   = st->sec_ph;
@@ -327,7 +398,7 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
     o->live = (o->gain > 0.0f && (o->mid_a > 0.0f || o->pulse > 0.0f
                                   || o->swell_a != 0.0f || anywarp))
            || o->wave_a > 0.0f || o->tilt != 0.0f || o->shimmer > 0.0f || o->rim != 1.0f
-           || anywarp;
+           || anywarp || o->tint != 0.0f || o->bloom > 0.0f;
 }
 
 // One warp's contribution at u for a layer, including its echo.
@@ -436,12 +507,16 @@ static inline int wdf_glow(const wdf_look *d, int layer, float *gain, int n)
             g += (d->warp_a[j] / WDF_WARP_A) * env * (t1 + t2);
         }
         g *= WDF_GLOW_A * WDF_LAYER[layer];
+        if (d->bloom > 0.0f) {
+            const float c = 2.0f * u - 1.0f;
+            g += d->bloom * 0.30f * WDF_LAYER[layer] * (1.0f - c * c);
+        }
         if (d->shimmer > 0.0f) {
             float s = wdf_sin2pi(2.6f * u - d->shimmer_ph + 0.2f * (float)layer);
             s = s > 0.0f ? s * s : 0.0f;
             g += d->shimmer * s * s;
         }
-        if (g > WDF_GLOW_A + WDF_SHIMMER_A) g = WDF_GLOW_A + WDF_SHIMMER_A;
+        if (g > WDF_GLOW_A + WDF_SHIMMER_A + 0.15f) g = WDF_GLOW_A + WDF_SHIMMER_A + 0.15f;
         gain[i] = 1.0f + g;
         any |= g > 0.0f;
     }

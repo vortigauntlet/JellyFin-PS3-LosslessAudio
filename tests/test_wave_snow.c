@@ -1,5 +1,6 @@
 // Host test for render/wave_snow.h.
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include "wave_snow.h"
 
@@ -13,7 +14,7 @@ static ws_sprite sp[WS_MAX];
 int main(void)
 {
     static float wv[WS_WV];
-    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f, 0, -0.3f, 0, 0 };
+    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f, 0, -0.3f, 0, 0, 0, 0, 0, 0 };
     int i, f, near = 0, vis;
     ws_init(&st, WS_COUNT_DEF, 1234u);
     for (i = 0; i < st.n; i++) near += st.z[i] < 0.22f;
@@ -93,6 +94,40 @@ int main(void)
         CHECK(inside_far > 0, "no far particle passes behind the box");
         CHECK(hits > 0, "no impact ever glints");
         c.obst = 0; c.n_obst = 0;
+    }
+
+    // a beat ring: particles it passes glint; the push is VERY subtle --
+    // measured against the same field stepped WITHOUT the ring
+    {
+        static ws_state ref;
+        float off = 0.0f, worst = 0.0f;
+        int glint = 0, f2;
+        for (f2 = 0; f2 < 120; f2++) ws_step(&st, &c, 1.0f / 60.0f);
+        for (i = 0; i < st.n; i++) st.spark[i] = 0.0f;
+        ref = st;
+        for (f2 = 0; f2 < 60; f2++) {
+            ws_ctl cr = c;
+            cr.ring_x = 0.0f; cr.ring_y = -0.5f; cr.ring_a = 1.0f;
+            cr.ring_r = 0.95f * (float)f2 / 60.0f;
+            ws_step(&st, &cr, 1.0f / 60.0f);
+            ws_step(&ref, &c, 1.0f / 60.0f);
+        }
+        for (i = 0; i < st.n; i++) {
+            float dx = st.x[i] - ref.x[i], dy = st.y[i] - ref.y[i];
+            // a particle that wrapped in one field and not the other is not
+            // a push: measure across the wrap
+            if (dx >  WS_X_EDGE) dx -= 2.0f * WS_X_EDGE;
+            if (dx < -WS_X_EDGE) dx += 2.0f * WS_X_EDGE;
+            if (dy >  WS_Y_EDGE) dy -= 2.0f * WS_Y_EDGE;
+            if (dy < -WS_Y_EDGE) dy += 2.0f * WS_Y_EDGE;
+            const float d = sqrtf(dx * dx + dy * dy);
+            if (st.spark[i] > 0.2f) glint++;
+            off += d; if (d > worst) worst = d;
+        }
+        printf("  snow: beat ring -> %d particles glinting; pushed %.4f on average, %.4f at most\n",
+               glint, off / st.n, worst);
+        CHECK(glint > st.n / 10, "the ring touches too few particles (%d)", glint);
+        CHECK(worst < 0.03f, "the ring shoves particles too far (%.4f)", worst);
     }
 
     // presence 0 draws nothing; presence 1 draws most of them

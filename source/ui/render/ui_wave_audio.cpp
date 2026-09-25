@@ -214,6 +214,7 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                 s_db.in_fast[2] = src[2];
                 s_db.tempo_hz   = f.beat_hz;
                 s_db.tempo_conf = f.beat_conf;
+                s_db.energy     = f.level;
                 wrm_distinct(&s_db, src, f.band_fast[WA_SUB], present, resp, dt,
                              &s_out, s_lum3);
                 if (s_db.kick > s_kick) s_kick = s_db.kick;   // held until the snow takes it
@@ -232,6 +233,8 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                     in.tempo_hz       = f.beat_hz;
                     in.tempo_conf     = f.beat_conf;
                     in.present        = present;
+                    in.energy         = s_db.energy_eff;
+                    in.centroid       = f.centroid;
                     in.scope          = &sc;
                     wdf_map(&s_wdf, &in, dt, &s_def);
                 }

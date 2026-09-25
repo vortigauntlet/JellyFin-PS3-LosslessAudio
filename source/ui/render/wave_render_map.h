@@ -388,6 +388,26 @@ static const float WRM_DB_SUS_W[3]   = { 0.58f, 0.66f, 0.80f };   // sustained s
 static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
 #define WRM_PUNCH_GAIN      3.0f
 #define WRM_PUNCH_TAU       0.30f    // s, the "recent level" the punch is measured from
+// CONTRAST NORMALISATION (2026-09-25, loudness-war masters).  A brickwalled
+// mix has small beats relative to its sustained level, so the same punch gain
+// that works on dynamic music leaves it tame.  Each layer tracks its own
+// typical punch (mean |fast - recent|, ~4 s) and a song whose beats are
+// smaller than WRM_PUNCH_REF_DEV has them scaled up to match, by up to
+// WRM_PUNCH_BOOST_MAX.  Dynamic music (at or above the reference) is untouched.
+#define WRM_PUNCH_REF_DEV   0.050f
+#define WRM_PUNCH_BOOST_MAX 3.0f
+#define WRM_PUNCH_DEV_TAU   4.0f
+#define WRM_PUNCH_DEV_FLOOR 0.006f
+
+// ENERGY.  A loud, compressed master should look MORE energetic than a quiet,
+// dynamic one, not merely as lively.  energy_eff rises only above a
+// mid-loudness master (so a -12 LUFS mix is untouched) and with how
+// compressed the beats are; it raises the beat gain and stiffens the height
+// spring.  With a locked tempo, each layer's release is also held under the
+// beat period so a fast beat never smears into a swell.
+#define WRM_ENERGY_PUNCH    0.80f    // punch gain x (1 + this x energy_eff)
+#define WRM_ENERGY_SPRING   0.35f    // spring Hz x (1 + this x energy_eff)
+#define WRM_REL_OF_PERIOD   0.40f
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
 #define WRM_TEMPO_TAU       1.50f    // s, the tempo speed-up eases in and out
 #define WRM_PUNCH_ATT       0.030f   // s, a hit swells in over ~2 frames, not one
@@ -411,6 +431,10 @@ typedef struct {
     float tempo_hz, tempo_conf;
     float recent[3];
     float punch[3];
+    float energy;      // set by the caller: 0..1 absolute loudness (wa_features.level)
+    float energy_eff;  // loudness x compression, what the mapping uses (read by the look)
+    float pdev[3];     // each layer's typical |fast - recent|: its own contrast
+    float boost[3];    // the contrast boost applied, 1 .. WRM_PUNCH_BOOST_MAX
     // the physical part: each layer's height rides a spring-damper toward
     // its target, so it has momentum and a soft settle instead of following
     // the envelope rigidly; the tempo speed-up eases too
@@ -492,9 +516,21 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
     o->lum      = 1.0f + (o->lum - 1.0f) * WRM_DB_LUM_KEEP;
     for (i = 0; i < WM_PULSES; i++) o->acc.a[i] *= WRM_DB_ACC_KEEP;
 
+    {
+        const float loud = wrm_clamp((st->energy - 0.55f) / 0.40f, 0.0f, 1.0f);
+        const float pd   = (st->pdev[0] + st->pdev[1] + st->pdev[2]) * (1.0f / 3.0f);
+        const float comp = wrm_clamp((WRM_PUNCH_REF_DEV - pd) / 0.025f, 0.0f, 1.0f);
+        const float e    = present * wrm_clamp(0.65f * loud + 0.35f * comp * loud + 0.15f * comp, 0.0f, 1.0f);
+        st->energy_eff += (e - st->energy_eff) * (dt / (2.0f + dt));
+    }
     for (i = 0; i < 3; i++) {
         const float x   = wrm_clamp(src ? src[i] : 0.0f, 0.0f, 1.0f);
-        const float tau = (x > st->env[i]) ? WRM_DB_ATT[i] : WRM_DB_REL[i];
+        float rel = WRM_DB_REL[i];
+        if (st->tempo_conf > 0.35f && st->tempo_hz > 0.5f) {
+            const float cap = WRM_REL_OF_PERIOD / st->tempo_hz;
+            if (cap < rel) rel = cap < 0.06f ? 0.06f : cap;
+        }
+        const float tau = (x > st->env[i]) ? WRM_DB_ATT[i] : rel;
         const float k   = dt / (tau + dt);
         float s, amp;
         st->env[i] += (x - st->env[i]) * k;
@@ -502,7 +538,18 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
             const float xf = wrm_clamp(st->in_fast[i], 0.0f, 1.0f);
             float p;
             st->recent[i] += (xf - st->recent[i]) * (dt / (WRM_PUNCH_TAU + dt));
-            p = wrm_clamp((xf - st->recent[i]) * WRM_PUNCH_GAIN * resp, 0.0f, 1.0f);
+            {
+                const float d  = xf - st->recent[i];
+                const float ad = d < 0.0f ? -d : d;
+                float b;
+                if (!(st->pdev[i] > 0.0f)) st->pdev[i] = WRM_PUNCH_REF_DEV;   // zeroed state
+                st->pdev[i] += (ad - st->pdev[i]) * (dt / (WRM_PUNCH_DEV_TAU + dt));
+                b = WRM_PUNCH_REF_DEV / (st->pdev[i] > WRM_PUNCH_DEV_FLOOR ? st->pdev[i] : WRM_PUNCH_DEV_FLOOR);
+                b = wrm_clamp(b, 1.0f, WRM_PUNCH_BOOST_MAX);
+                st->boost[i] = b;
+                p = wrm_clamp(d * WRM_PUNCH_GAIN * resp * b
+                              * (1.0f + WRM_ENERGY_PUNCH * st->energy_eff), 0.0f, 1.0f);
+            }
             // fast in, a little slower out, so a hit reads as a hit
             st->punch[i] += (p - st->punch[i])
                           * (p > st->punch[i] ? dt / (WRM_PUNCH_ATT + dt) : dt / (0.09f + dt));
@@ -518,7 +565,7 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
             st->ax[i] = 1.0f; st->av[i] = 0.0f;
         } else {
             const float target = 1.0f + present * (amp - 1.0f);
-            const float w  = 6.2831853f * WRM_SPRING_HZ[i];
+            const float w  = 6.2831853f * WRM_SPRING_HZ[i] * (1.0f + WRM_ENERGY_SPRING * st->energy_eff);
             const float zw = 2.0f * WRM_SPRING_ZETA[i] * w;
             float left = dt;
             if (st->ax[i] == 0.0f) { st->ax[i] = 1.0f; st->av[i] = 0.0f; }   // zeroed state

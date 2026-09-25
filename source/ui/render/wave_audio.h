@@ -150,6 +150,27 @@ static const float WA_FLUX_W[WA_BANDS] = {
 #define WA_FLUX_SCALE   0.10f      // excess over threshold that reads as 1.0
 #define WA_REFRACTORY   0.115f     // seconds; caps at ~520 onsets/minute
 
+// DENSE, LOUD MIXES (2026-09-25).  Measured on a -3.1 LUFS trap master (LRA
+// 1.2): 33 onsets a minute against ~105 for dynamic material, because a
+// threshold at 1.9x the running mean is out of reach when the mean itself is
+// always high.  So the broadband threshold is ALSO allowed to sit at the mean
+// plus a multiple of the flux's own spread, whichever is lower -- sparse music
+// keeps the ratio rule, dense music gets a bar it can clear -- and a second
+// detector watches the low bands alone (the 808 / kick), with its own
+// mean-plus-spread threshold, so a kick counts even under constant hats.
+#define WA_FLUX_DEV_K   2.2f
+#define WA_KICK_DEV_K   2.0f
+#define WA_KICK_FLOOR   0.020f
+#define WA_KICK_SCALE   0.08f
+
+// Absolute loudness: rms_ref (the level the bands are referenced to) on a
+// dB scale.  Everything else here is self-referenced on purpose; this is the
+// one signal that says how LOUD the master is, so the mapping can give a
+// loudness-war mix the energy it has.  In the analyser's own units, measured
+// on real masters: a -12 LUFS master reads about -7, a -3 LUFS one about +2.
+#define WA_LEVEL_DB_LO  (-16.0f)
+#define WA_LEVEL_DB_HI  (2.0f)
+
 // --- beat estimate --------------------------------------------------------
 // Not a beat tracker.  It only has to be right about fast versus slow, and it
 // only moves the wave's drift rate between 0.7x and 1.6x (spec section 2.4).
@@ -191,6 +212,8 @@ typedef struct {
     float beat_hz;          // estimated beat rate, 0 when not locked
     float beat_conf;        // 0..1
     float silence;          // 0 = audio present, 1 = fully silent
+    float level;            // 0..1, ABSOLUTE loudness (see WA_LEVEL_DB_*)
+    float density;          // 0..1, onsets per second, smoothed (0 .. ~4/s)
 } wa_features;
 
 typedef struct {
@@ -208,7 +231,9 @@ typedef struct {
     float rms_ref, rms_lvl;
 
     // onsets and beat
-    float flux_avg;
+    float flux_avg, flux_dev;
+    float kick_avg, kick_dev;       // the low-band detector
+    float density;                  // onsets per second, smoothed
     float since_onset;              // seconds since the last onset fired
     float beat_period;              // seconds, 0 until first locked
     float beat_conf;
@@ -293,6 +318,21 @@ static inline float wa_env(float y, float x, float dt, float tau_a, float tau_r)
 // logarithm across the two decades in the middle -- which is the range
 // musical dynamics actually occupy.  Its fixed point is the useful part: at
 // x == ref it returns exactly 0.5.
+// log2 without libm: exponent from the bits, a quadratic on the mantissa
+// (error < 0.01, plenty for a loudness meter).
+static inline float wa_log2(float x)
+{
+    union { float f; uint32_t u; } v;
+    float m;
+    int   e;
+    if (!(x > 1e-12f)) return -40.0f;
+    v.f = x;
+    e = (int)((v.u >> 23) & 0xFF) - 127;
+    v.u = (v.u & 0x007FFFFFu) | 0x3F800000u;       // mantissa in [1,2)
+    m = v.f;
+    return (float)e + (-0.34484843f * m + 2.02466578f) * m - 0.67487759f;
+}
+
 static inline float wa_compress(float x, float ref)
 {
     float d;
@@ -433,6 +473,8 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
             out->band_fast[i] = wa_clamp01(s->fast[i]);
         }
         out->rms = wa_clamp01(s->rms_lvl);
+        out->level = 0.0f;
+        out->density = 0.0f;
         out->flux = 0.0f; out->onset = 0.0f; out->onset_strength = 0.0f;
         out->centroid = 0.5f;
         out->beat_hz = (s->beat_period > 0.0f) ? 1.0f / s->beat_period : 0.0f;
@@ -472,20 +514,47 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
     if (flux > 1.0f) flux = 1.0f;
 
     s->since_onset += dt;
-    thresh = s->flux_avg * WA_FLUX_RATIO + WA_FLUX_FLOOR;
-    fired  = (flux > thresh) && (s->since_onset >= WA_REFRACTORY);
+    {
+        const float t_ratio = s->flux_avg * WA_FLUX_RATIO;
+        const float t_dev   = s->flux_avg + WA_FLUX_DEV_K * s->flux_dev;
+        thresh = (t_dev < t_ratio ? t_dev : t_ratio) + WA_FLUX_FLOOR;
+    }
+    // the low-band (kick) detector
+    float kick = 0.0f, kthresh;
+    {
+        int b;
+        for (b = 0; b < 2 && b < WA_BANDS; b++) {        // SUB, BASS
+            const float d = s->fast[b] - s->slow[b];
+            if (d > 0.0f) kick += d;
+        }
+        kthresh = s->kick_avg + WA_KICK_DEV_K * s->kick_dev + WA_KICK_FLOOR;
+    }
+    const int fired_b = (flux > thresh);
+    const int fired_k = (kick > kthresh);
+    fired  = (fired_b || fired_k) && (s->since_onset >= WA_REFRACTORY);
 
-    // The running mean is updated AFTER the comparison, so a single loud
+    // The running means are updated AFTER the comparison, so a single loud
     // onset cannot raise the bar it is being judged against in the same
     // frame.  Symmetric tau: this is a threshold reference, not a musical
     // envelope, and an asymmetric one would ratchet upward on dense material
     // until nothing could clear it.
-    s->flux_avg += (flux - s->flux_avg) * wa_k(dt, WA_TAU_FLUX);
+    {
+        const float k = wa_k(dt, WA_TAU_FLUX);
+        const float fd = flux > s->flux_avg ? flux - s->flux_avg : s->flux_avg - flux;
+        const float kd = kick > s->kick_avg ? kick - s->kick_avg : s->kick_avg - kick;
+        s->flux_avg += (flux - s->flux_avg) * k;
+        s->flux_dev += (fd - s->flux_dev) * k;
+        s->kick_avg += (kick - s->kick_avg) * k;
+        s->kick_dev += (kd - s->kick_dev) * k;
+    }
 
     out->onset = 0.0f;
     out->onset_strength = 0.0f;
+    s->density += ((fired ? 1.0f / (dt > 1e-4f ? dt : 1e-4f) : 0.0f) - s->density) * wa_k(dt, 2.5f);
     if (fired) {
-        float excess = (flux - thresh) * (1.0f / WA_FLUX_SCALE);
+        float excess = fired_b ? (flux - thresh) * (1.0f / WA_FLUX_SCALE) : 0.0f;
+        const float kx = fired_k ? (kick - kthresh) * (1.0f / WA_KICK_SCALE) : 0.0f;
+        if (kx > excess) excess = kx;
         out->onset = 1.0f;
         out->onset_strength = wa_clamp01(excess);
 
@@ -558,6 +627,9 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
         out->band_fast[i] = wa_clamp01(s->fast[i]);
     }
     out->rms       = wa_clamp01(s->rms_lvl);
+    out->level     = wa_clamp01((6.0206f * wa_log2(s->rms_ref) - WA_LEVEL_DB_LO)
+                                / (WA_LEVEL_DB_HI - WA_LEVEL_DB_LO));
+    out->density   = wa_clamp01(s->density * 0.25f);
     out->flux      = wa_clamp01(flux);
     out->centroid  = wa_clamp01(cent);
     out->beat_hz   = (s->beat_period > 0.0f) ? 1.0f / s->beat_period : 0.0f;
