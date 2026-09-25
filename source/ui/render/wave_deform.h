@@ -50,6 +50,7 @@
 #define WAVE_DEFORM_H
 
 #include "wave_scope.h"
+#include "wave_render_map.h"     // wrm_tempo_speed: the ripples keep the wave's pace
 
 // amplitudes, in the solver's displacement units (as the accents)
 #define WDF_MID_A      0.030f
@@ -234,7 +235,10 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
     lows  = wdf_clamp(0.6f * in->lvl[0] + 0.7f * in->punch[0], 0.0f, 1.0f);
     mids  = wdf_clamp(0.5f * in->lvl[1] + 0.8f * in->punch[1], 0.0f, 1.0f);
     highs = wdf_clamp(0.55f * in->lvl[2] + 0.9f * in->punch[2], 0.0f, 1.0f);
-    fast  = wdf_clamp((in->tempo_hz - 1.5f) / 1.5f, 0.0f, 1.0f) * wdf_clamp(in->tempo_conf, 0.0f, 1.0f);
+    // 0 at the resting pace .. 1 at the fastest, from the same mapping as the
+    // base motion, so the ripples travel at the wave's own pace
+    fast  = wdf_clamp((wrm_tempo_speed(in->tempo_hz, in->tempo_conf, in->energy) - 0.85f) / 0.65f,
+                      0.0f, 1.0f) * present;
 
     // --- sections (and the drop) --------------------------------------------
     {

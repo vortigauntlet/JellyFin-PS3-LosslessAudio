@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 
     stat hit = {0}, lat = {0}, pdv[3] = {{0}}, amp[3] = {{0}}, lvl[3] = {{0}}, pun[3] = {{0}}, drama = {0}, defr = {0}, swing = {0};
     double motion[3] = {0}, capf[3] = {0}, prev[3] = {1, 1, 1};
-    double esum = 0, lvsum = 0, dnsum = 0, dbsum = 0;
+    double tssum = 0, tsmax = 0, esum = 0, lvsum = 0, dnsum = 0, dbsum = 0;
     long onsets = 0, nfr = 0; double bhz = 0, bconf = 0;
     float win[30]; int wi = 0;
     double sub_med = 0, sub_med2 = 0, sub_fast2 = 0, sub_fast = 0;
@@ -79,7 +79,7 @@ int main(int argc, char **argv)
         in.centroid = ft.centroid;
         wdf_look d; wdf_map(&wdf, &in, dt, &d);
         if (d.bloom > 0.99f) printf("    DROP at %d:%02d\n", (int)(pos / 48000 / 60), (int)(pos / 48000 % 60));
-        { static long ts = 0; if (++ts % 1800 == 0 && getenv("SECT")) printf("    t=%3lds section %+.2f tint %+.2f\n", pos / 48000, d.section, d.tint); }
+        { static long ts = 0; if (++ts % 1800 == 0 && getenv("SECT")) printf("    t=%3lds section %+.2f tint %+.2f  beat %.0f BPM conf %.2f (ac %.0f @ %.2f, iv %.0f @ %.2f)\n", pos / 48000, d.section, d.tint, ft.beat_hz * 60, ft.beat_conf, wa.ac_hz * 60, wa.ac_conf, wa.beat_period > 0 ? 60 / wa.beat_period : 0, wa.beat_conf); }
 
         if (pos < 48000 * 5) continue;            /* skip the first 5 s: calibration */
         nfr++;
@@ -88,7 +88,7 @@ int main(int argc, char **argv)
             motion[l] += fabs(o.amp[l] - prev[l]); prev[l] = o.amp[l];
             if (o.amp[l] >= WRM_DB_AMP_MAX[l] - 0.03f) capf[l]++;
         }
-        st_add(&drama, d.gain); st_add(&pdv[0], db.pdev[0]); st_add(&pdv[1], db.pdev[1]); st_add(&pdv[2], db.pdev[2]);
+        st_add(&drama, d.gain); tssum += o.dt_scale; if (o.dt_scale > tsmax) tsmax = o.dt_scale; st_add(&pdv[0], db.pdev[0]); st_add(&pdv[1], db.pdev[1]); st_add(&pdv[2], db.pdev[2]);
         if (nfr % 6 == 0) {
             float disp[72]; memset(disp, 0, sizeof disp);
             wdf_apply(&d, 0, disp, 72);
@@ -140,5 +140,6 @@ int main(int argc, char **argv)
     printf("    punch dev %.3f %.3f %.3f\n", st_mean(&pdv[0]), st_mean(&pdv[1]), st_mean(&pdv[2]));
     printf("    HIT: bass rise per beat %.3f+-%.3f, 80%% reached in %.0f ms\n", st_mean(&hit), st_sd(&hit), st_mean(&lat));
     printf("    level %.2f (rms_ref %.1f)  density %.2f  energy_eff %.2f\n", lvsum/nfr, dbsum/nfr, dnsum/nfr, esum/((double)frames/800));
+    printf("    TEMPO: wave speed x%.2f average, x%.2f max  (beat %.0f BPM)\n", tssum/nfr, tsmax, bhz/nfr*60);
     return 0;
 }

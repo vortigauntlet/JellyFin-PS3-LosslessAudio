@@ -168,6 +168,24 @@ static const float WA_FLUX_W[WA_BANDS] = {
 // one signal that says how LOUD the master is, so the mapping can give a
 // loudness-war mix the energy it has.  In the analyser's own units, measured
 // on real masters: a -12 LUFS master reads about -7, a -3 LUFS one about +2.
+// TEMPO BY AUTOCORRELATION (2026-09-25: "make the wave move faster with the
+// BPM").  The interval tracker below matches single onset gaps, which on real
+// mixes (hats, triplets, half-time 808s) settled everything near 120 BPM at
+// low confidence.  So, as dedicated beat trackers do: the last WA_ODF_N
+// frames of the continuous onset signal (flux + kick, unthresholded, blurred
+// +-2 frames) are autocorrelated every WA_ODF_EVERY frames over 60..200 BPM;
+// each lag scores r(L) times a gentle preference around WA_ODF_PREF BPM,
+// which settles half- vs double-time (a bonus for r(2L), r(3L) was tried and
+// systematically picked half-time: the slower tempo's multiples are beat lags
+// too); parabolic interpolation refines the peak.  When
+// that is confident it provides beat_hz / beat_conf; otherwise the interval
+// tracker's answer stands.
+#define WA_ODF_N       384
+#define WA_ODF_EVERY   20
+#define WA_ODF_PREF    120.0f
+#define WA_ODF_OCT     1.3f      // preference width, octaves
+#define WA_ODF_MIN_CONF 0.18f
+
 #define WA_LEVEL_DB_LO  (-16.0f)
 #define WA_LEVEL_DB_HI  (2.0f)
 
@@ -234,6 +252,10 @@ typedef struct {
     float flux_avg, flux_dev;
     float kick_avg, kick_dev;       // the low-band detector
     float density;                  // onsets per second, smoothed
+    float odf[WA_ODF_N];            // the onset signal, one sample per frame
+    int   odf_w, odf_n, odf_tick;
+    float fps;                      // frame rate, smoothed
+    float ac_hz, ac_conf;           // the autocorrelation's tempo
     float since_onset;              // seconds since the last onset fired
     float beat_period;              // seconds, 0 until first locked
     float beat_conf;
@@ -439,6 +461,66 @@ static inline void wa_push(wa_state *s, const float *pcm, int frames, int channe
 //
 // Non-finite or non-positive dt leaves the state untouched and reports the
 // previous frame's features.
+// See WA_ODF_*.  Returns 1 and sets *hz / *conf when it has an answer.
+static inline int wa_tempo_ac(const wa_state *s, float *hz, float *conf)
+{
+    static float x[WA_ODF_N];
+    float r[WA_ODF_N / 2 + 1], mean = 0.0f, r0 = 0.0f, best = -1.0f;
+    int   n = s->odf_n, i, L, lmin, lmax, bl = 0;
+    if (n < WA_ODF_N / 2 || !(s->fps > 10.0f)) return 0;
+    for (i = 0; i < n; i++) {
+        x[i] = s->odf[(s->odf_w - n + i + WA_ODF_N) % WA_ODF_N];
+        mean += x[i];
+    }
+    mean /= (float)n;
+    // blur by +-2 frames: a beat that falls between two frames otherwise
+    // correlates at only half strength at either integer lag
+    {
+        float y[WA_ODF_N];
+        for (i = 0; i < n; i++) {
+            float a = 0.0f, ws = 0.0f; int k;
+            for (k = -2; k <= 2; k++) {
+                const int j = i + k;
+                const float wk = (float)(3 - (k < 0 ? -k : k));
+                if (j < 0 || j >= n) continue;
+                a += wk * x[j]; ws += wk;
+            }
+            y[i] = a / ws;
+        }
+        for (i = 0; i < n; i++) x[i] = y[i];
+    }
+    for (i = 0; i < n; i++) { x[i] -= mean; r0 += x[i] * x[i]; }
+    if (r0 < 1e-9f) return 0;
+    lmin = (int)(s->fps * 60.0f / 200.0f);
+    lmax = (int)(s->fps * 60.0f / 60.0f + 0.5f);
+    if (lmin < 2) lmin = 2;
+    if (3 * lmax + 1 > n / 2) lmax = n / 6 - 1;
+    for (L = 1; L <= 3 * lmax + 1 && L <= WA_ODF_N / 2; L++) {
+        float a = 0.0f;
+        for (i = L; i < n; i++) a += x[i] * x[i - L];
+        r[L] = a / r0 * ((float)n / (float)(n - L));     // unbiased-ish
+    }
+    for (L = lmin; L <= lmax; L++) {
+        const float bpm = s->fps * 60.0f / (float)L;
+        const float oc  = (wa_log2(bpm) - wa_log2(WA_ODF_PREF)) / WA_ODF_OCT;
+        const float w   = 1.0f / (1.0f + 0.5f * oc * oc);
+        const float sc  = r[L] * w;
+        if (sc > best) { best = sc; bl = L; }
+    }
+    if (bl <= lmin || bl >= lmax || r[bl] <= 0.0f) return 0;
+    {
+        // parabolic peak of r around bl
+        const float y0 = r[bl - 1], y1 = r[bl], y2 = r[bl + 1];
+        const float den = y0 - 2.0f * y1 + y2;
+        float off = den < -1e-6f ? 0.5f * (y0 - y2) / den : 0.0f;
+        if (off > 0.5f) off = 0.5f;
+        if (off < -0.5f) off = -0.5f;
+        *hz   = s->fps / ((float)bl + off);
+        *conf = wa_clamp01(r[bl] * 1.6f);
+    }
+    return 1;
+}
+
 static inline void wa_frame(wa_state *s, float dt, wa_features *out)
 {
     float e[WA_BANDS];
@@ -595,6 +677,32 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
     }
     s->beat_conf = wa_clamp01(s->beat_conf);
 
+    // --- tempo by autocorrelation (see WA_ODF_*) --------------------------
+    if (dt > 0.0f) {
+        s->fps += ((1.0f / dt) - s->fps) * (s->fps > 1.0f ? 0.02f : 1.0f);
+        s->odf[s->odf_w] = flux + kick;
+        s->odf_w = (s->odf_w + 1) % WA_ODF_N;
+        if (s->odf_n < WA_ODF_N) s->odf_n++;
+        if (++s->odf_tick >= WA_ODF_EVERY) {
+            float hz, cf;
+            s->odf_tick = 0;
+            if (wa_tempo_ac(s, &hz, &cf)) {
+                // a small change is smoothed in; a jump needs confidence
+                if (s->ac_hz > 0.0f) {
+                    float rel = (hz - s->ac_hz) / s->ac_hz;
+                    if (rel < 0.0f) rel = -rel;
+                    if (rel < 0.08f) s->ac_hz += (hz - s->ac_hz) * 0.35f;
+                    else if (cf > s->ac_conf * 0.9f) s->ac_hz = hz;
+                } else {
+                    s->ac_hz = hz;
+                }
+                s->ac_conf += (cf - s->ac_conf) * 0.4f;
+            } else {
+                s->ac_conf *= 0.8f;
+            }
+        }
+    }
+
     // --- spectral centroid ------------------------------------------------
     // Weighted mean of the band INDEX, which is a proxy for log frequency
     // because the edges are roughly geometric.  Scale-invariant (numerator
@@ -634,6 +742,19 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
     out->centroid  = wa_clamp01(cent);
     out->beat_hz   = (s->beat_period > 0.0f) ? 1.0f / s->beat_period : 0.0f;
     out->beat_conf = wa_clamp01(s->beat_conf);
+    if (s->ac_hz > 0.0f && s->ac_conf >= WA_ODF_MIN_CONF && s->ac_conf * 1.2f >= out->beat_conf * 0.5f) {
+        float hz = s->ac_hz;
+        // Octave check: at frame rate a beat between two frames alternates
+        // early/late, which half-time matches exactly.  When the interval
+        // tracker is sure, it decides the octave.
+        if (s->beat_period > 0.0f && s->beat_conf >= 0.6f) {
+            const float ih = 1.0f / s->beat_period, q = hz / ih;
+            if (q > 0.44f && q < 0.56f) hz *= 2.0f;
+            else if (q > 1.8f && q < 2.2f) hz *= 0.5f;
+        }
+        out->beat_hz   = hz;
+        out->beat_conf = wa_clamp01(s->ac_conf * 1.4f > out->beat_conf ? s->ac_conf * 1.4f : out->beat_conf);
+    }
     out->silence   = wa_clamp01(s->silence);
 }
 

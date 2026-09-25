@@ -494,6 +494,33 @@ typedef struct {
 #define WRM_RIP_LUM        0.05f
 #define WRM_ACC_TOTAL_MAX  WRM_DB_ACC_KEEP   // test_distinct_framing measured this
 
+// WAVE SPEED FROM THE MUSIC (2026-09-25: "make the wave move faster with the
+// BPM").  The base motion's time scale, from the tempo -- 0.85x at 70 BPM,
+// 1.0x at 100, 1.2x at 130, 1.4x at 160, 1.5x at 190 -- trusted in
+// proportion to the beat confidence (from 0.2 up), then up to +25% for a
+// loud, dense master, whose pace lives in its density as much as its BPM
+// (a rage track's autocorrelation honestly reads its triplet grid, 2/3 of
+// the pulse).  Capped at WRM_TS_MAX, the ceiling the framing was measured at.
+// Shared with wave_deform.h, so the ripples travel at the same pace.
+static inline float wrm_tempo_speed(float hz, float conf, float energy)
+{
+    static const float BPM[5] = { 70.0f, 100.0f, 130.0f, 160.0f, 190.0f };
+    static const float TS[5]  = { 0.85f, 1.00f, 1.20f, 1.40f, 1.50f };
+    float bpm = hz * 60.0f, t = 1.0f, g, e;
+    int i;
+    if (!(hz > 0.0f)) bpm = 100.0f;
+    if (bpm <= BPM[0]) t = TS[0];
+    else if (bpm >= BPM[4]) t = TS[4];
+    else for (i = 0; i < 4; i++)
+        if (bpm < BPM[i + 1]) { t = TS[i] + (TS[i + 1] - TS[i]) * (bpm - BPM[i]) / (BPM[i + 1] - BPM[i]); break; }
+    g = (conf - 0.2f) / 0.35f;
+    g = g < 0.0f ? 0.0f : (g > 1.0f ? 1.0f : g);
+    g = g * g * (3.0f - 2.0f * g);
+    e = energy < 0.0f ? 0.0f : (energy > 1.0f ? 1.0f : energy);
+    t = (1.0f + (t - 1.0f) * g) * (1.0f + 0.25f * e);
+    return t > WRM_TS_MAX ? WRM_TS_MAX : t;
+}
+
 static inline float wrm_smooth01(float x)
 {
     x = wrm_clamp(x, 0.0f, 1.0f);
@@ -514,12 +541,11 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
     resp    = wrm_clamp(resp, 0.25f, 2.0f);
     if (!(dt > 0.0f)) dt = 0.0f;
 
-    // Tempo: a locked fast beat speeds the base motion up (1.0 at <= 90 BPM
-    // up to WRM_TEMPO_TS_MAX at 180).
+    // Tempo (and energy) set the base motion's pace: wrm_tempo_speed().
     {
-        const float fast = wrm_clamp((st->tempo_hz - 1.5f) / 1.5f, 0.0f, 1.0f)
-                         * wrm_clamp(st->tempo_conf, 0.0f, 1.0f) * present;
-        const float tgt  = WRM_TS_IDLE + (WRM_TEMPO_TS_MAX - WRM_TS_IDLE) * fast;
+        const float tgt  = present > 0.0f
+                         ? wrm_tempo_speed(st->tempo_hz, st->tempo_conf, st->energy_eff)
+                         : WRM_TS_IDLE;
         if (!(st->ts >= WRM_TS_IDLE)) st->ts = WRM_TS_IDLE;
         st->ts += (tgt - st->ts) * (dt / (WRM_TEMPO_TAU + dt));
         if (present <= 0.0f && st->ts - WRM_TS_IDLE < 1e-4f) st->ts = WRM_TS_IDLE;
