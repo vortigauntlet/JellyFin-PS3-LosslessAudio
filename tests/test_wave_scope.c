@@ -522,6 +522,7 @@ static void test_hints(void)
             wdf_map(&st, &in, DT, &d);
         }
         CHECK(wdf_rim_glow(&d, 0, gain, 80) == 0, "hat glints on the near ribbon");
+        CHECK(wdf_rim_glow(&d, 1, gain, 80) == 1, "no hat glints on the middle ribbon");
         wdf_rim_glow(&d, 2, gain, 80);
         for (i = 0; i < 80; i++) if (gain[i] > best) best = gain[i];
         printf("  hints: hi-hat rim glint peak x%.2f (limit x%.2f)\n", best, 1.0f + WDF_HAT_RIM);

@@ -444,8 +444,13 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 1.10f, 0.60f };   // beat share 
 // 808's harmonics.  Now the boost is weighted per layer (the bass takes it
 // all), and the vocal layer ducks under a landing bass hit -- so between the
 // kicks it moves with the voice, and on them the bass layer owns the moment.
-static const float WRM_ENERGY_PUNCH_W[3] = { 1.00f, 0.60f, 0.60f };
-#define WRM_VOCAL_DUCK      0.60f    // vocal punch x (1 - this x bass punch)
+// v9 ("the bass still looks weaker than the good build"): the ribbons pumping
+// TOGETHER on a kick was much of the hit.  Measured as the three ribbons'
+// mean rise per beat, the v8 duck (0.6) and weights (0.35 / 0.6) cost
+// SLAM PUNK 0.517 -> 0.445; duck 0.15 with weights 0.9 / 1.0 gives 0.517
+// back with the vocals still apart (bass/vocal correlation 0.04 - 0.08).
+static const float WRM_ENERGY_PUNCH_W[3] = { 1.00f, 0.90f, 1.00f };   // v9: the whole-wave hit is back
+#define WRM_VOCAL_DUCK      0.15f    // vocal punch x (1 - this x bass punch); 0.6 thinned the whole-wave hit 12-14%
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
 #define WRM_TEMPO_TAU       1.50f    // s, the tempo speed-up eases in and out
 #define WRM_PUNCH_ATT       0.030f   // s, a hit swells in over ~2 frames, not one

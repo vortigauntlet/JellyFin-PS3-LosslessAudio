@@ -256,7 +256,7 @@ static void music_accent_update(const char *art_id, int A) {
     s_mpal = g_spine_on ? ui_art_palette(art_id, music_art_bitmap(art_id, A))
                         : ui_art_fallback();
     // the ribbons take a hint of the album's colour
-    wave_set_album_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.30f);
+    wave_set_album_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.55f);
 }
 
 // -------------------------------------------------------

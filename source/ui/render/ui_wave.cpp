@@ -153,11 +153,11 @@ void wave_set_album_tint(unsigned int rgb, float strength)
     float k[3] = { r / m, g / m, b / m };
     for (int i = 0; i < 3; i++) {
         float v = 1.0f + strength * (k[i] - 1.0f);
-        if (v < 0.90f) v = 0.90f;
-        if (v > 1.10f) v = 1.10f;
+        if (v < 0.84f) v = 0.84f;
+        if (v > 1.16f) v = 1.16f;
         s_album_rgb[i] = v;
     }
-    if (s_album_rgb[1] > 1.03f) s_album_rgb[1] = 1.03f;     // never toward green
+    if (s_album_rgb[1] > 1.05f) s_album_rgb[1] = 1.05f;     // never much toward green
 }
 
 static void jw_look_now(jw_look *k)
@@ -685,9 +685,9 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
     if (look->def.live && look->def.tint != 0.0f) {
         const float t = look->def.tint;
         const float dk = t < 0.0f ? -t : 0.0f, br = t > 0.0f ? t : 0.0f;
-        tint[0] = 1.0f + 0.12f * dk - 0.08f * br;
-        tint[1] = 1.0f - 0.06f * dk + 0.06f * br;
-        tint[2] = 1.0f + 0.03f * dk + 0.10f * br;
+        tint[0] = 1.0f + 0.20f * dk - 0.14f * br;       // v9: stronger (was 0.12 / 0.08)
+        tint[1] = 1.0f - 0.10f * dk + 0.08f * br;
+        tint[2] = 1.0f + 0.05f * dk + 0.16f * br;
     }
     (void)s_tint_rgb;
     // the album's colour, a hint on top
@@ -710,7 +710,7 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         // horizon, i.e. UP the screen (the framing test caught that); a
         // larger negative y offset only moves it down, away from the content.
         if (look->def.live && look->def.width > 0.0f)
-            Lk.y_off *= 1.0f + 0.25f * look->def.width;
+            Lk.y_off *= 1.0f + 0.50f * look->def.width;
         const jw_layer *L  = &Lk;
         int order[JW_SECTION];
         int pass, s, i;
@@ -1914,7 +1914,7 @@ void wave_draw_front(int x, int y, int w, int h) {
     // added at a constant 9% -- a hint, not a glow (the same constant-alpha
     // blend the card opacity uses, proven on this console).
     if (s_jw_cnt[slot][0]) {
-        rsxSetBlendColor(context, (u32)23 << 24, 0);
+        rsxSetBlendColor(context, (u32)46 << 24, 0);      // 18% (v9: 9% went unnoticed)
         rsxSetBlendFunc(context, GCM_CONSTANT_ALPHA, GCM_ONE,
                                  GCM_CONSTANT_ALPHA, GCM_ONE);
         rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_off[slot][0], s_jw_cnt[slot][0]);

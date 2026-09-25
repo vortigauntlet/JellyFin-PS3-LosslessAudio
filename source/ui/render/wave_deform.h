@@ -176,10 +176,10 @@ typedef struct {
 //          with a faint glow -- the "snap"
 //   BEND   an 808 sliding in pitch tilts the near ribbon with the slide
 //   WIDTH  a wide mix spreads the ribbons apart in depth (ui_wave.cpp)
-#define WDF_HAT_GAIN    6.0f
-#define WDF_HAT_RIM     0.35f    // peak rim gain of a glint
-#define WDF_KEY_TINT    0.45f
-#define WDF_BEND_A      0.014f
+#define WDF_HAT_GAIN    9.0f
+#define WDF_HAT_RIM     0.80f    // peak rim gain of a glint (v9: 0.35 went unnoticed)
+#define WDF_KEY_TINT    0.80f
+#define WDF_BEND_A      0.028f
 
 static inline float wdf_clamp(float v, float lo, float hi)
 {
@@ -462,14 +462,14 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         if (in->scope && in->scope->key >= 0 && present > 0.0f) {
             const int k5 = (in->scope->key * 7) % 12;
             target = ((float)k5 / 11.0f) * 2.0f - 1.0f;
-            if (in->scope->key_changed && st->bloom < 0.35f) st->bloom = 0.35f;
+            if (in->scope->key_changed && st->bloom < 0.60f) st->bloom = 0.60f;
         }
         st->key_hue += (target - st->key_hue) * wdf_k(dt, 0.35f);
         if (present <= 0.0f && st->key_hue * st->key_hue < 1e-6f) st->key_hue = 0.0f;
     }
     // 808 glide -> bend
     {
-        const float g = in->scope ? wdf_clamp(in->scope->bass_glide * 0.30f, -1.0f, 1.0f) * present : 0.0f;
+        const float g = in->scope ? wdf_clamp(in->scope->bass_glide * 0.45f, -1.0f, 1.0f) * present : 0.0f;
         st->bend += (g - st->bend) * wdf_k(dt, 0.06f);
         if (present <= 0.0f && st->bend * st->bend < 1e-6f) st->bend = 0.0f;
         o->bend = st->bend;
@@ -599,13 +599,15 @@ static inline int wdf_rim_glow(const wdf_look *d, int layer, float *gain, int n)
 {
     int i;
     float du;
-    if (!d || !d->live || layer != 2 || !(d->hat > 0.01f) || !gain || n < 2) return 0;
+    float k;
+    if (!d || !d->live || layer < 1 || !(d->hat > 0.01f) || !gain || n < 2) return 0;
+    k = layer == 2 ? 1.0f : 0.5f;                       // far ribbon full, middle half
     du = 1.0f / (float)(n - 1);
     for (i = 0; i < n; i++) {
-        float s = wdf_sin2pi(7.0f * (float)i * du - d->hat_ph);
+        float s = wdf_sin2pi(7.0f * (float)i * du - d->hat_ph - 0.21f * (float)layer);
         s = s > 0.0f ? s * s * s : 0.0f;
         s *= s;                                         // narrow glints
-        gain[i] = 1.0f + WDF_HAT_RIM * d->hat * s;
+        gain[i] = 1.0f + WDF_HAT_RIM * k * d->hat * s;
     }
     return 1;
 }

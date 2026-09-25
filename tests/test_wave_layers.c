@@ -1134,7 +1134,7 @@ static void test_distinct_framing(void)
             L.disp_gain *= WRM_DB_AMP_MAX[l];
             L.bright    *= WRM_LUM_MAX * WRM_DB_LUM_MAX[l];
             L.scale     *= WRM_THICK_MAX;
-            if (fr & 1) L.y_off *= 1.25f;                        // full stereo spread
+            if (fr & 1) L.y_off *= 1.50f;                        // full stereo spread
             for (k = 0; k < WF_SAMPLES; k++)
                 dsp[k] = f.sy[l][k] + WRM_ACC_H * WRM_DB_ACC_KEEP * WRM_ACC_LAYER[l]
                        + WDF_POS_MAX * WDF_LAYER[l];   // + JellyWave 2.0's whole allowance
