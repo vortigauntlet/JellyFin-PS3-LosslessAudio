@@ -76,7 +76,7 @@ int main(int argc, char **argv)
         for (int i = 0; i < 3; i++) { in.lvl[i] = db.lvl[i]; in.punch[i] = db.punch[i]; }
         in.onset = ft.onset; in.onset_strength = ft.onset_strength;
         in.tempo_hz = ft.beat_hz; in.tempo_conf = ft.beat_conf; in.present = present; in.scope = &so; in.energy = db.energy_eff; esum += db.energy_eff;
-        in.centroid = ft.centroid;
+        in.centroid = ft.centroid; in.bass_rel = ft.bass_rel; in.mid_rel = ft.mid_rel;
         wdf_look d; wdf_map(&wdf, &in, dt, &d);
         if (d.bloom > 0.99f) printf("    DROP at %d:%02d\n", (int)(pos / 48000 / 60), (int)(pos / 48000 % 60));
         { static long ts = 0; if (++ts % 1800 == 0 && getenv("SECT")) printf("    t=%3lds section %+.2f tint %+.2f  beat %.0f BPM conf %.2f (ac %.0f @ %.2f, iv %.0f @ %.2f)\n", pos / 48000, d.section, d.tint, ft.beat_hz * 60, ft.beat_conf, wa.ac_hz * 60, wa.ac_conf, wa.beat_period > 0 ? 60 / wa.beat_period : 0, wa.beat_conf); }

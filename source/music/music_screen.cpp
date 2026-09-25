@@ -99,6 +99,12 @@ static bool  s_have_origin = false;     // the album tile's rect is known
 static int   s_ox = 0, s_oy = 0, s_os = 0;
 static bool  s_origin_pending = false;  // set by the opener for the next open
 
+// The text lines as drawn (x, y, w, h px), recorded by draw_now_playing() so
+// the particles can flow BETWEEN the lines instead of round one big box.
+// One frame late when read, which no particle can notice.
+static int   s_txt_box[4][4];
+static int   s_txt_n = 0;
+
 static inline float ease_cubic(float t) {          // ease-out
     t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
     const float u = 1.0f - t;
@@ -757,9 +763,23 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     draw_visualizer(tx, title_top - 18, (int)(W * 0.265f), (int)(H * 0.11f), ta, clip_x);
 
     draw_clipped((u32)tx, (u32)title_top, t->name, UIS_TF(32), fa(XMB_WHITE, ta), col_w, true);
+    s_txt_n = 0;
+#define TXT_BOX(y_, str_, px_, bold_, h_) do {                                     \
+        int w_ = ttf_text_width((str_), (px_), (bold_));                         \
+        if (w_ > col_w) w_ = col_w;                                              \
+        if (s_txt_n < 4 && w_ > 0) {                                             \
+            s_txt_box[s_txt_n][0] = tx1; s_txt_box[s_txt_n][1] = (y_);           \
+            s_txt_box[s_txt_n][2] = w_;  s_txt_box[s_txt_n][3] = (h_);           \
+            s_txt_n++;                                                           \
+        }                                                                        \
+    } while (0)
+    TXT_BOX(title_top, t->name, UIS_TF(32), true, UIS_H(36));
     if (t->artist[0])
+    {
         draw_clipped((u32)tx, (u32)(title_top + UIS_H(48)), t->artist, UIS_TF(20),
                      fa(s_mpal.accent, ta), col_w);
+        TXT_BOX(title_top + UIS_H(48), t->artist, UIS_TF(20), false, UIS_H(22));
+    }
     {
         char line[160] = "";
         if (ctx->title[0]) snprintf(line, sizeof(line), "%s", ctx->title);
@@ -769,8 +789,11 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                      line[0] ? " \xC2\xB7 " : "", ctx->year);
         }
         if (line[0])
+        {
             draw_clipped((u32)tx, (u32)(title_top + UIS_H(80)), line, UIS_TF(15),
                          fa(XMB_TEXT_DIM, ta), col_w);
+            TXT_BOX(title_top + UIS_H(80), line, UIS_TF(15), false, UIS_H(17));
+        }
     }
     {
         // "Track 7 of 13 · Electronic · 320 kbps FLAC" (play-order position)
@@ -784,6 +807,8 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
             n += snprintf(meta + n, sizeof(meta) - n, " \xC2\xB7 %s", src);
         draw_clipped((u32)tx, (u32)(title_top + UIS_H(128)), meta, UIS_TF(14),
                      fa(XMB_TEXT_FAINT, ta), col_w);
+        TXT_BOX(title_top + UIS_H(128), meta, UIS_TF(14), false, UIS_H(16));
+#undef TXT_BOX
     }
     g_text_clip_left = 0;
 
@@ -1147,24 +1172,32 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         int cvx, cvy, cvA; float cval;
         cover_geom(&cvx, &cvy, &cvA, &cval);
         {
-            // The particles treat the screen's boxes as solid (wave_snow.h):
-            // the cover, the text block, the Up Next panel, the controls.
+            // The particles treat the screen's solid things as solid
+            // (wave_snow.h): the cover, EACH text line (tight to its glyphs,
+            // so particles drift through the gaps between them), the Up Next
+            // panel, and each transport control.
             const int W = (int)display_width, H = (int)display_height;
             int px, py0, py1; float pa;
             panel_geom(&px, &py0, &py1, &pa);
-            int ob[4 * 4], n = 0;
-            if (cval > 0.5f) { ob[4*n] = cvx; ob[4*n+1] = cvy; ob[4*n+2] = cvA; ob[4*n+3] = cvA; n++; }
-            if (s_e_text > 0.5f) {
-                const int tx1 = cover_x1() + cover_A1() + UIS_W(56);
-                const int tt  = cover_y1() + (int)(H * 0.15f);
-                ob[4*n] = tx1; ob[4*n+1] = tt - UIS_H(12);
-                ob[4*n+2] = W - (int)(W * 0.30f) - UIS_W(30) - tx1; ob[4*n+3] = UIS_H(150); n++;
-            }
-            if (pa > 0.5f) { ob[4*n] = px; ob[4*n+1] = py0; ob[4*n+2] = W - px; ob[4*n+3] = py1 - py0; n++; }
+            int ob[4 * 12], n = 0;
+            #define OB(x_, y_, w_, h_) do { if (n < 12) { ob[4*n] = (x_); ob[4*n+1] = (y_); \
+                                             ob[4*n+2] = (w_); ob[4*n+3] = (h_); n++; } } while (0)
+            if (cval > 0.5f) OB(cvx, cvy, cvA, cvA);
+            if (s_e_text > 0.5f)
+                for (int i = 0; i < s_txt_n; i++)
+                    OB(s_txt_box[i][0], s_txt_box[i][1], s_txt_box[i][2], s_txt_box[i][3]);
+            if (pa > 0.5f) OB(px, py0, W - px, py1 - py0);
             if (s_ctl_a * s_e_ctl > 0.5f) {
-                ob[4*n] = W / 2 - UIS_W(220); ob[4*n+1] = (int)(H * 0.815f) - UIS_H(36);
-                ob[4*n+2] = UIS_W(440); ob[4*n+3] = UIS_H(72); n++;
+                static const int T_OFF[6] = { -130, -72, 0, 72, 130, 182 };
+                static const int T_HALF[6] = { 12, 14, 30, 14, 12, 11 };
+                const int cx = W / 2, cy = (int)(H * 0.815f);
+                for (int i = 0; i < 6; i++) {
+                    const int hx = i == 2 ? T_HALF[i] : UIS_W(T_HALF[i]);
+                    const int hy = i == 2 ? T_HALF[i] : UIS_H(T_HALF[i]);
+                    OB(cx + UIS_W(T_OFF[i]) - hx, cy - hy, 2 * hx, 2 * hy);
+                }
             }
+            #undef OB
             wave_snow_obstacles(ob, n);
         }
         wave_draw();

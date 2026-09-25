@@ -14,7 +14,7 @@ static ws_sprite sp[WS_MAX];
 int main(void)
 {
     static float wv[WS_WV];
-    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f, 0, -0.3f, 0, 0, 0, 0, 0, 0 };
+    ws_ctl c = { 0.5f, 0.5f, 0.0f, 0.5f, 0, -0.3f, 0, 0, 0, 0, 0, 0, 0 };
     int i, f, near = 0, vis;
     ws_init(&st, WS_COUNT_DEF, 1234u);
     for (i = 0; i < st.n; i++) near += st.z[i] < 0.22f;

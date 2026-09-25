@@ -423,6 +423,60 @@ static void test_features(void)
     }
 }
 
+static void test_beat_calm(void)
+{
+    static wsc_out sc;
+    wdf_state st;
+    wdf_look  d;
+    wdf_in    in;
+    int f, n = 0, na = 0;
+    float err = 0.0f, adv = 0.0f, prev = -1.0f;
+
+    // beat lock: 120 BPM, trusted, an onset every 30 frames -- the ripple
+    // advances WDF_BEAT_WL per beat and sits on the grid at each beat
+    memset(&st, 0, sizeof st); st.rim = 1.0f;
+    memset(&sc, 0, sizeof sc);
+    memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+    in.tempo_hz = 2.0f; in.tempo_conf = 1.0f;
+    for (f = 0; f < 60 * 20; f++) {
+        in.onset = (f % 30) == 0; in.onset_strength = 0.8f;
+        in.lvl[0] = 0.6f; in.punch[0] = (f % 30) < 4 ? 0.8f : 0.0f;
+        wdf_map(&st, &in, DT, &d);
+        if (f > 60 * 12 && (f % 30) == 0) {
+            float q = d.mid_ph / WDF_BEAT_WL, e = q - floorf(q + 0.5f);
+            err += fabsf(e); n++;
+            if (prev >= 0.0f) { adv += fmodf(d.mid_ph - prev + 1.0f, 1.0f); na++; }
+            prev = d.mid_ph;
+        }
+    }
+    printf("  beat lock: ripple %.3f of a wavelength per beat (want %.2f), crest-to-beat error %.3f beats\n",
+           adv / (na ? na : 1), WDF_BEAT_WL, err / (n ? n : 1));
+    CHECK(fabsf(adv / (na ? na : 1) - WDF_BEAT_WL) < 0.05f, "the ripple does not travel in time with the beat");
+    CHECK(err / (n ? n : 1) < 0.08f, "the ripple does not land on the beat");
+
+    // vocal calm: mids alone, no beat -> calm; drums back -> gone quickly
+    memset(&st, 0, sizeof st); st.rim = 1.0f;
+    memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+    in.lvl[1] = 0.7f; in.lvl[0] = 0.1f; in.lvl[2] = 0.1f;
+    in.bass_rel = 0.30f; in.mid_rel = 0.95f;          // the bass has dropped out
+    for (f = 0; f < 60 * 5; f++) wdf_map(&st, &in, DT, &d);
+    {
+        const float calm = d.calm, g_calm = d.gain;
+        float g_drums;
+        in.lvl[0] = 0.7f; in.lvl[2] = 0.5f;
+        in.bass_rel = 0.95f;                          // ... and is back
+        for (f = 0; f < 60 * 3; f++) {
+            in.onset = (f % 30) == 0; in.punch[0] = (f % 30) < 4 ? 0.8f : 0.0f;
+            wdf_map(&st, &in, DT, &d);
+        }
+        g_drums = d.gain;
+        printf("  vocal calm: voice alone %.2f, 3 s after the drums return %.2f (gain %.3f -> %.3f)\n",
+               calm, d.calm, g_calm, g_drums);
+        CHECK(calm > 0.6f, "a vocal-only passage does not calm the wave (%.2f)", calm);
+        CHECK(d.calm < 0.15f, "the calm lingers after the drums return (%.2f)", d.calm);
+    }
+}
+
 static void report_cost(void)
 {
     static wsc_state s;
@@ -459,6 +513,7 @@ int main(void)
     printf("-- deform --\n");  test_deform();
     printf("-- organism --\n"); test_organism();
     printf("-- features --\n"); test_features();
+    printf("-- beat lock + calm --\n"); test_beat_calm();
     printf("-- cost --\n");    report_cost();
     if (failures) { printf("\nFAILED: %d check(s)\n", failures); return 1; }
     printf("\nOK\n");

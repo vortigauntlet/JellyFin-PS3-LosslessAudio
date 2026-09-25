@@ -186,8 +186,8 @@ static const float WA_FLUX_W[WA_BANDS] = {
 #define WA_ODF_OCT     1.3f      // preference width, octaves
 #define WA_ODF_MIN_CONF 0.18f
 
-#define WA_LEVEL_DB_LO  (-16.0f)
-#define WA_LEVEL_DB_HI  (2.0f)
+#define WA_LEVEL_DB_LO  (-22.02f)    // was -16 against a log2 that read +1 high
+#define WA_LEVEL_DB_HI  (-4.02f)
 
 // --- beat estimate --------------------------------------------------------
 // Not a beat tracker.  It only has to be right about fast versus slow, and it
@@ -231,6 +231,8 @@ typedef struct {
     float beat_conf;        // 0..1
     float silence;          // 0 = audio present, 1 = fully silent
     float level;            // 0..1, ABSOLUTE loudness (see WA_LEVEL_DB_*)
+    float bass_rel;         // 0..1, the bass's absolute level vs its own peak (~30 s memory)
+    float mid_rel;          // 0..1, the same for the mids
     float density;          // 0..1, onsets per second, smoothed (0 .. ~4/s)
 } wa_features;
 
@@ -256,6 +258,8 @@ typedef struct {
     int   odf_w, odf_n, odf_tick;
     float fps;                      // frame rate, smoothed
     float ac_hz, ac_conf;           // the autocorrelation's tempo
+    float bass_pk, mid_pk;          // slowly decaying peaks of the absolute band levels
+    float bass_sm, mid_sm;          // those levels, smoothed ~0.5 s
     float since_onset;              // seconds since the last onset fired
     float beat_period;              // seconds, 0 until first locked
     float beat_conf;
@@ -349,7 +353,7 @@ static inline float wa_log2(float x)
     int   e;
     if (!(x > 1e-12f)) return -40.0f;
     v.f = x;
-    e = (int)((v.u >> 23) & 0xFF) - 127;
+    e = (int)((v.u >> 23) & 0xFF) - 128;           // 128: the quadratic below is log2(m) + 1
     v.u = (v.u & 0x007FFFFFu) | 0x3F800000u;       // mantissa in [1,2)
     m = v.f;
     return (float)e + (-0.34484843f * m + 2.02466578f) * m - 0.67487759f;
@@ -557,6 +561,7 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
         out->rms = wa_clamp01(s->rms_lvl);
         out->level = 0.0f;
         out->density = 0.0f;
+        out->bass_rel = out->mid_rel = 0.0f;
         out->flux = 0.0f; out->onset = 0.0f; out->onset_strength = 0.0f;
         out->centroid = 0.5f;
         out->beat_hz = (s->beat_period > 0.0f) ? 1.0f / s->beat_period : 0.0f;
@@ -738,6 +743,26 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
     out->level     = wa_clamp01((6.0206f * wa_log2(s->rms_ref) - WA_LEVEL_DB_LO)
                                 / (WA_LEVEL_DB_HI - WA_LEVEL_DB_LO));
     out->density   = wa_clamp01(s->density * 0.25f);
+    // Absolute band levels against their own peaks: the one place a bass
+    // DROPOUT shows (the self-referenced bands renormalise it away).
+    // e[] is band energy; the amplitude is compared, on a dB-like scale:
+    // rel = 1 at the peak, 0 at 24 dB below it.
+    {
+        const float eb = e[0] + e[1], em = e[2] + e[3];
+        const float kk = wa_k(dt, 0.5f);
+        float pb, pm;
+        s->bass_sm += (eb - s->bass_sm) * kk;
+        s->mid_sm  += (em - s->mid_sm)  * kk;
+        s->bass_pk *= 1.0f / (1.0f + dt / 30.0f);
+        s->mid_pk  *= 1.0f / (1.0f + dt / 30.0f);
+        if (s->bass_sm > s->bass_pk) s->bass_pk = s->bass_sm;
+        if (s->mid_sm  > s->mid_pk)  s->mid_pk  = s->mid_sm;
+        pb = s->bass_pk > 1e-12f ? s->bass_sm / s->bass_pk : 0.0f;
+        pm = s->mid_pk  > 1e-12f ? s->mid_sm  / s->mid_pk  : 0.0f;
+        // amplitude ratio -> dB (6.0206 x log2) -> 0..1 over 24 dB
+        out->bass_rel = wa_clamp01(1.0f + 6.0206f * wa_log2(pb > 1e-9f ? pb : 1e-9f) / 24.0f);
+        out->mid_rel  = wa_clamp01(1.0f + 6.0206f * wa_log2(pm > 1e-9f ? pm : 1e-9f) / 24.0f);
+    }
     out->flux      = wa_clamp01(flux);
     out->centroid  = wa_clamp01(cent);
     out->beat_hz   = (s->beat_period > 0.0f) ? 1.0f / s->beat_period : 0.0f;

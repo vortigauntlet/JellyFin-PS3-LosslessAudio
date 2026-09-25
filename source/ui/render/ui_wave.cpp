@@ -555,6 +555,7 @@ static u32 motes_build(float aspect)
             c.ring_a = (s_def.warp_a[best] / WDF_WARP_A) * wdf_warp_env(age) * 0.9f;
         }
     }
+    c.calm    = s_def.live ? s_def.calm : 0.0f;
     c.obst    = s_obst_n ? obst : 0;
     c.n_obst  = s_obst_n;
     s_obst_n  = 0;                            // one frame only

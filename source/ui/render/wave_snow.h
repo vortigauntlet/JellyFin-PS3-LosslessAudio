@@ -73,7 +73,7 @@
 // (WS_RESTITUTION) and the flow then carries it along the edge; each hit
 // leaves a brief glint.  Further particles pass behind, so the boxes sit IN
 // the space rather than on top of it.  ~4 rectangle tests per near particle.
-#define WS_OBST_MAX     6
+#define WS_OBST_MAX     12        // the cover, each text line, each control, the panel
 #define WS_COLLIDE_Z    0.62f
 #define WS_RESTITUTION  0.55f
 #define WS_SPARK_TAU    0.25f
@@ -94,6 +94,7 @@ typedef struct {
     // space, radius ring_r (measured in screen-x units), strength ring_a (0 =
     // none).  Particles it passes glint, and are nudged outward VERY slightly.
     float ring_x, ring_y, ring_r, ring_a;
+    float calm;       // 0..1: a vocal-led passage -- slower, stiller particles
 } ws_ctl;
 
 #define WS_RING_W     0.09f       // the ring's half-thickness
@@ -208,12 +209,13 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
     st->t += dt;
 
     const float kick  = ws_clampf(c->kick, 0.0f, 1.0f);
-    const float stir  = 1.0f + 1.3f * ws_clampf(c->sway, 0.0f, 1.0f)
+    const float calmk = 1.0f - 0.45f * ws_clampf(c->calm, 0.0f, 1.0f);   // vocal calm: stiller
+    const float stir  = calmk * 1.0f + 1.3f * calmk * ws_clampf(c->sway, 0.0f, 1.0f)
                              + 0.5f * ws_clampf(c->bright, 0.0f, 1.0f);
     const float sway  = WS_SWAY * stir;
     const float T     = st->t * 0.045f;
     const float fric  = 1.0f / (1.0f + WS_FRICTION * dt);
-    const float brown = WS_BROWN * dt;
+    const float brown = WS_BROWN * dt * calmk;
     st->flash = st->flash * (1.0f / (1.0f + dt / WS_FLASH_TAU));
     if (kick * WS_KICK_FLASH > st->flash) st->flash = kick * WS_KICK_FLASH;
 

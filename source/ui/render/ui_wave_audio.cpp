@@ -235,6 +235,8 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                     in.present        = present;
                     in.energy         = s_db.energy_eff;
                     in.centroid       = f.centroid;
+                    in.bass_rel       = f.bass_rel;
+                    in.mid_rel        = f.mid_rel;
                     in.scope          = &sc;
                     wdf_map(&s_wdf, &in, dt, &s_def);
                 }

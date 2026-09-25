@@ -96,6 +96,7 @@ typedef struct {
     float tint;             // -1 dark (violet) .. +1 bright (blue); 0 at rest
     float section;          // -1 calm .. +1 peak (chorus / drop)
     float bloom;            // 0..1, a drop's glow burst, decays
+    float calm;             // 0..1, a vocal-led passage: the wave softens, particles slow
     int   live;             // 0 = add nothing, glow nothing
 } wdf_look;
 
@@ -108,6 +109,8 @@ typedef struct {
     float present;      // 0 at rest .. 1 with audio
     float energy;       // wrm_db_state.energy_eff: loud, compressed = high
     float centroid;     // wa_features.centroid: 0 dark .. 1 bright
+    float bass_rel;     // wa_features.bass_rel: absolute bass vs its own peak (0 = none of it)
+    float mid_rel;      // wa_features.mid_rel
     const wsc_out *scope;   // may be NULL
 } wdf_in;
 
@@ -120,6 +123,7 @@ typedef struct {
     int   wn;
     float shimmer, shimmer_ph;
     float drama;
+    float calm, orate;              // vocal calm; onsets per second, smoothed
     float tint;                     // smoothed centroid
     float e_mid, e_long, sect;      // section energy
     float calm_t, bloom, bloom_ref; // drop detection
@@ -141,6 +145,22 @@ typedef struct {
 #define WDF_BLOOM_SHARP 0.25f
 #define WDF_BLOOM_REFR  8.0f
 #define WDF_BLOOM_TAU   1.2f
+
+// BEAT LOCK (2026-09-25).  With a trusted tempo the main ripple travels
+// WDF_BEAT_WL of a wavelength per beat -- so the wave visibly pulses in
+// time -- and each detected beat pulls the ripple's phase a little toward
+// the beat grid, so the crests land ON the beats rather than merely at the
+// right rate.  Blended in by the tempo confidence; free-running otherwise.
+#define WDF_BEAT_WL     0.5f
+#define WDF_BEAT_PULL   0.30f
+
+// VOCAL CALM.  A passage carried by the mids (voice) while the lows, the
+// highs and the beat fall away -- an a cappella line, a sung intro, a
+// breakdown -- eases the wave: less deformation, slower ripples, and
+// (through wdf_look.calm) slower, stiller particles.  Rises over ~1.5 s,
+// lets go in ~0.6 s, so a drum fill ends it at once.
+#define WDF_CALM_GAIN   0.40f    // deformation x (1 - this x calm)
+#define WDF_CALM_SPEED  0.35f    // ripple speed x (1 - this x calm)
 
 static inline float wdf_clamp(float v, float lo, float hi)
 {
@@ -221,6 +241,7 @@ static inline void wdf_rest(wdf_look *o)
     o->shimmer = o->shimmer_ph = 0.0f;
     o->rim = 1.0f;
     o->tint = o->section = o->bloom = 0.0f;
+    o->calm = 0.0f;
     o->live = 0;
 }
 
@@ -309,7 +330,40 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         const float t = present * (0.30f + 0.70f * mids) * WDF_MID_A;
         st->mid_a += (t - st->mid_a) * wdf_k(dt, t > st->mid_a ? 0.05f : 0.35f);
     }
-    st->mid_ph = wdf_wrap(st->mid_ph + dt * (0.16f + 0.22f * fast + 0.14f * mids) * (1.0f + 0.30f * st->sect));
+    // vocal calm: the mids lead, lows / highs / beat recede
+    {
+        const float side = in->lvl[0] > in->lvl[2] ? in->lvl[0] : in->lvl[2];
+        const float pav  = (in->punch[0] + in->punch[1] + in->punch[2]) * (1.0f / 3.0f);
+        float c;
+        st->orate += ((in->onset > 0.0f ? 1.0f / (dt > 1e-4f ? dt : 1e-4f) : 0.0f) - st->orate)
+                   * wdf_k(dt, 1.0f);
+        // The bands are self-referenced, so neither "the mids lead" nor "the
+        // bass dropped" shows in lvl[] on real mixes: they renormalise.  The
+        // ABSOLUTE levels against their own recent peaks do: the bass well
+        // under its peak (~6+ dB) while the mids stay near theirs, and the
+        // beat's punch gone -- a vocal-led passage.
+        (void)side;
+        c = wdf_clamp((0.80f - in->bass_rel) * 4.0f, 0.0f, 1.0f)
+          * wdf_clamp((in->mid_rel - 0.60f) * 3.0f, 0.0f, 1.0f)
+          * wdf_clamp(1.0f - 2.5f * pav, 0.0f, 1.0f)
+          * wdf_clamp(1.3f - 0.25f * st->orate, 0.0f, 1.0f) * present;   // sung phrases fire onsets too
+        st->calm += (c - st->calm) * wdf_k(dt, c > st->calm ? 1.5f : 0.6f);
+        if (present <= 0.0f && st->calm < 1e-3f) st->calm = 0.0f;
+    }
+    {
+        float spd = (0.16f + 0.22f * fast + 0.14f * mids) * (1.0f + 0.30f * st->sect)
+                  * (1.0f - WDF_CALM_SPEED * st->calm);
+        const float g = wdf_smooth01((in->tempo_conf - 0.35f) / 0.30f) * present * (1.0f - st->calm);
+        if (g > 0.0f && in->tempo_hz > 0.5f)
+            spd = spd * (1.0f - g) + in->tempo_hz * WDF_BEAT_WL * g;
+        st->mid_ph = wdf_wrap(st->mid_ph + dt * spd);
+        if (g > 0.0f && in->onset > 0.0f) {
+            // pull toward the nearest point of the beat grid (multiples of WL)
+            float q = st->mid_ph / WDF_BEAT_WL;
+            float e = q - (float)(int)(q + 0.5f);          // -0.5 .. 0.5 beats
+            st->mid_ph = wdf_wrap(st->mid_ph - e * WDF_BEAT_WL * WDF_BEAT_PULL * g);
+        }
+    }
     st->sec_ph = wdf_wrap(st->sec_ph + dt * (0.07f + 0.15f * fast));
 
     // lows -> the swell, through an underdamped spring: inertia, overshoot,
@@ -368,7 +422,9 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         if (st->sw_x * st->sw_x + st->sw_v * st->sw_v < 1e-8f) { st->sw_x = 0.0f; st->sw_v = 0.0f; }
     }
 
-    o->gain     = st->drama * wdf_clamp(ev_str, 0.75f, 1.25f) * (1.0f + 0.25f * st->sect);
+    o->gain     = st->drama * wdf_clamp(ev_str, 0.75f, 1.25f) * (1.0f + 0.25f * st->sect)
+                * (1.0f - WDF_CALM_GAIN * st->calm);
+    o->calm     = st->calm;
     // brightness -> tint, slow so a hi-hat does not flicker the colour
     st->tint += (wdf_clamp(in->centroid, 0.0f, 1.0f) - st->tint) * wdf_k(dt, 1.2f);
     if (st->warm < 3) st->tint = wdf_clamp(in->centroid, 0.0f, 1.0f);
