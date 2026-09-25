@@ -1,6 +1,7 @@
 #pragma once
 #include <ppu-types.h>
 #include "wave_render_map.h"
+#include "wave_deform.h"
 
 // The audio-reactive wave's console-side glue: it owns the analyser and the
 // motion stage, and it is the only file in this subsystem that knows about
@@ -51,6 +52,11 @@ void wave_audio_shape(float *thick, wrm_accent_set *acc);
 // layer flickers brightest).  Exactly 1.0 at rest.  Multiplies with the single
 // lum from wave_audio_look().
 void wave_audio_lum3(float lum3[3]);
+
+// JellyWave 2.0: this frame's shape deformation (wave_deform.h) -- mids as a
+// travelling ripple, the waveform as fine detail, the beat as a macro pulse,
+// stereo as a lean, treble as the rim gain.  The rest value when off.
+void wave_audio_deform(wdf_look *out);
 
 // Stage B's parameters for the motes (wave_motes.h), NULL when the analyser is
 // off; and how present audio is, 0 at rest .. 1 with music.

@@ -124,6 +124,7 @@ static float    s_lum3[3] = { 1.0f, 1.0f, 1.0f };   // per layer, distinct bands
 // already the rest state.
 static float          s_thick = 1.0f;
 static wrm_accent_set s_acc;
+static wdf_look       s_def;          // JellyWave 2.0 shape; zero = live 0 = nothing
 
 // Everything jw_generate() takes from the audio, as one value.  The build
 // runs on the generation worker, so it must never read the render thread's
@@ -137,6 +138,7 @@ struct jw_look {
     float          lum3[3];
     float          thick;
     wrm_accent_set acc;
+    wdf_look       def;
 };
 
 static void jw_look_now(jw_look *k)
@@ -146,7 +148,9 @@ static void jw_look_now(jw_look *k)
     k->lum3[0] = s_lum3[0]; k->lum3[1] = s_lum3[1]; k->lum3[2] = s_lum3[2];
     k->thick  = s_thick;
     k->acc    = s_acc;
+    k->def    = s_def;
 }
+
 
 // One layer's accented copy of the solver curve, rebuilt per layer just
 // before the loft reads it.  One per thread that can run jw_generate().
@@ -557,6 +561,15 @@ static u32 motes_build(float aspect)
     return n;
 }
 
+// The rim pass colour, times the treble's rim gain (exactly the old colour at
+// rest: the gain is only applied while the deformation is live).
+static inline u32 jw_rim_rgba(const jw_vert *q, float g)
+{
+    if (g == 1.0f) return WAVE_RGBA(q->rr, q->rg, q->rb, 255);
+    int r = (int)((float)q->rr * g), gg = (int)((float)q->rg * g), b = (int)((float)q->rb * g);
+    return WAVE_RGBA(r > 255 ? 255 : r, gg > 255 ? 255 : gg, b > 255 ? 255 : b, 255);
+}
+
 // Build the complete JellyWave stream into dst, starting at index n (the
 // gradient quad owns [0,4)), from one snapshot of the field's sampled
 // displacement.  Writes every layer's draw ranges into off/cnt and returns the
@@ -577,11 +590,12 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         dst[n].z = 0.0f;                                        \
         dst[n].w = 1.0f;                                        \
         dst[n].rgba = (USE_RIM)                                 \
-            ? WAVE_RGBA(q_->rr, q_->rg, q_->rb, 255)            \
+            ? jw_rim_rgba(q_, rimg)                             \
             : WAVE_RGBA(q_->r, q_->g, q_->b, (A));              \
         n++;                                                    \
     } while (0)
 
+    const float rimg = look->def.live ? look->def.rim : 1.0f;
     for (int slot = 0; slot < JW_LAYERS; slot++) {
         const int       li = JW_LAYERS - 1 - slot;
         // The audio look for this layer, on a copy: disp_gain scales the
@@ -603,6 +617,7 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         off[slot][0] = off[slot][1] = 0;
 
         wrm_accent(&look->acc, li, sy[li], disp, WF_SAMPLES);
+        wdf_apply(&look->def, li, disp, WF_SAMPLES);   // JellyWave 2.0 shape
         if (!jw_build_layer(L, disp, WF_SAMPLES, aspect, scratch, JW_VERTS))
             continue;
 
@@ -1108,6 +1123,7 @@ static void wave_draw_cpu(void) {
         wave_audio_look(s_amp, &s_lum);
         wave_audio_lum3(s_lum3);
         wave_audio_shape(&s_thick, &s_acc);
+        wave_audio_deform(&s_def);
         wf_step(&s_field, WAVE_FIELD_DT * ts, pert, drv);
     }
 
@@ -1265,6 +1281,7 @@ void wave_draw(void) {
         wave_audio_look(s_amp, &s_lum);
         wave_audio_lum3(s_lum3);
         wave_audio_shape(&s_thick, &s_acc);
+        wave_audio_deform(&s_def);
         // JellyWave also takes less of the broadband perturbation (0.55x):
         // the fine ripple is what makes a slow wave look agitated rather
         // than floating.  Legacy modes are untouched.

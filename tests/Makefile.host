@@ -52,7 +52,7 @@ DCAHD_SRCS = ../source/audio/dcahd_api.c ../source/audio/dcahd_xll.c \
 DTS_HD_DEPS = $(DTS_STREAM_SRC) $(DTS_MAP_SRC) $(DTS_EXSS_SRC) $(DCA_SRCS) \
               ../source/audio/truehd_map.c $(DCAHD_SRCS)
 
-all: test_ac3_map test_ac3_decode test_media_sources test_subtitles \
+all: test_wave_scope test_ac3_map test_ac3_decode test_media_sources test_subtitles \
      test_subtitles_pgs test_trickplay_info \
      test_dts_map test_dts_decode test_dts_stream test_dts_exss test_track_codec \
      test_truehd_map test_truehd_decode \
@@ -587,6 +587,9 @@ test_utf8: test_utf8.cpp ../source/ui/render/ui_text.cpp \
 # must stay 0).  That trade only holds if the write mask is exact.
 test_circle_blit: test_circle_blit.c ../source/ui/render/circle_blit.h
 	$(CC) $(CFLAGS) -o $@ test_circle_blit.c -lm
+
+test_wave_scope: test_wave_scope.c ../source/ui/render/wave_scope.h ../source/ui/render/wave_deform.h
+	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_scope.c -lm
 
 test_wave_snow: test_wave_snow.c ../source/ui/render/wave_snow.h
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_snow.c -lm

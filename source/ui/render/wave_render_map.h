@@ -389,6 +389,16 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
 #define WRM_PUNCH_GAIN      3.0f
 #define WRM_PUNCH_TAU       0.30f    // s, the "recent level" the punch is measured from
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
+#define WRM_TEMPO_TAU       1.50f    // s, the tempo speed-up eases in and out
+#define WRM_PUNCH_ATT       0.030f   // s, a hit swells in over ~2 frames, not one
+
+// 2026-09-25 v5: "better but more robotic/rigid".  The height now follows its
+// target through a lightly damped spring (per layer: natural frequency, Hz,
+// and damping ratio): quick enough to land every beat, but it carries
+// momentum into the peak and eases out of it.  The output is clamped to the
+// same caps, so the framing is unchanged.
+static const float WRM_SPRING_HZ[3]   = { 3.4f, 3.2f, 4.8f };
+static const float WRM_SPRING_ZETA[3] = { 0.58f, 0.64f, 0.72f };
 static const float WRM_DB_AMP_MAX[3] = { 1.75f, 1.65f, 2.10f };   // measured: test_distinct_framing
 static const float WRM_DB_LUM_MAX[3] = { 1.10f, 1.18f, 1.35f };
 
@@ -401,6 +411,11 @@ typedef struct {
     float tempo_hz, tempo_conf;
     float recent[3];
     float punch[3];
+    // the physical part: each layer's height rides a spring-damper toward
+    // its target, so it has momentum and a soft settle instead of following
+    // the envelope rigidly; the tempo speed-up eases too
+    float ax[3], av[3];
+    float ts;
     // the sub-bass shock (2026-09-25: "the subbass needs to be more
     // distinctive -- when it bumps, send extra shocks through the whole wave")
     float sub_slow;    // the sub band's recent level
@@ -465,7 +480,11 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
     {
         const float fast = wrm_clamp((st->tempo_hz - 1.5f) / 1.5f, 0.0f, 1.0f)
                          * wrm_clamp(st->tempo_conf, 0.0f, 1.0f) * present;
-        o->dt_scale = WRM_TS_IDLE + (WRM_TEMPO_TS_MAX - WRM_TS_IDLE) * fast;
+        const float tgt  = WRM_TS_IDLE + (WRM_TEMPO_TS_MAX - WRM_TS_IDLE) * fast;
+        if (!(st->ts >= WRM_TS_IDLE)) st->ts = WRM_TS_IDLE;
+        st->ts += (tgt - st->ts) * (dt / (WRM_TEMPO_TAU + dt));
+        if (present <= 0.0f && st->ts - WRM_TS_IDLE < 1e-4f) st->ts = WRM_TS_IDLE;
+        o->dt_scale = present > 0.0f ? st->ts : WRM_TS_IDLE;
     }
     o->drive    = wrm_clamp(WRM_DRIVE_IDLE + (o->drive - WRM_DRIVE_IDLE) * WRM_DB_DRIVE_KEEP,
                             WRM_DRIVE_IDLE, WRM_DB_DRIVE_MAX);
@@ -485,7 +504,8 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
             st->recent[i] += (xf - st->recent[i]) * (dt / (WRM_PUNCH_TAU + dt));
             p = wrm_clamp((xf - st->recent[i]) * WRM_PUNCH_GAIN * resp, 0.0f, 1.0f);
             // fast in, a little slower out, so a hit reads as a hit
-            st->punch[i] += (p - st->punch[i]) * (p > st->punch[i] ? 1.0f : dt / (0.06f + dt));
+            st->punch[i] += (p - st->punch[i])
+                          * (p > st->punch[i] ? dt / (WRM_PUNCH_ATT + dt) : dt / (0.09f + dt));
         }
         s   = wrm_clamp(wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
                                   * resp * WRM_DB_RESP[i], 0.0f, 1.0f) * WRM_DB_SUS_W[i]
@@ -495,8 +515,22 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         if (present <= 0.0f) {
             o->amp[i] = 1.0f;                   // rest is exactly rest
             lum3[i]   = 1.0f;
+            st->ax[i] = 1.0f; st->av[i] = 0.0f;
         } else {
-            o->amp[i] = 1.0f + present * (amp - 1.0f);
+            const float target = 1.0f + present * (amp - 1.0f);
+            const float w  = 6.2831853f * WRM_SPRING_HZ[i];
+            const float zw = 2.0f * WRM_SPRING_ZETA[i] * w;
+            float left = dt;
+            if (st->ax[i] == 0.0f) { st->ax[i] = 1.0f; st->av[i] = 0.0f; }   // zeroed state
+            while (left > 0.0f) {                // semi-implicit, stable steps
+                const float h = left > 0.008f ? 0.008f : left;
+                st->av[i] += (w * w * (target - st->ax[i]) - zw * st->av[i]) * h;
+                st->ax[i] += st->av[i] * h;
+                left -= h;
+            }
+            if (st->ax[i] > WRM_DB_AMP_MAX[i]) { st->ax[i] = WRM_DB_AMP_MAX[i]; if (st->av[i] > 0.0f) st->av[i] = 0.0f; }
+            if (st->ax[i] < WRM_DB_AMP_QUIET) { st->ax[i] = WRM_DB_AMP_QUIET; if (st->av[i] < 0.0f) st->av[i] = 0.0f; }
+            o->amp[i] = st->ax[i];
             lum3[i]   = 1.0f + present * (WRM_DB_LUM_MAX[i] - 1.0f) * s;
         }
     }

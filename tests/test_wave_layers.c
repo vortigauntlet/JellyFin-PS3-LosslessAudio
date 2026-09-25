@@ -44,6 +44,7 @@
 #include "../source/ui/render/wave_field.h"
 #include "../source/ui/render/wave_render_map.h"
 #include "../source/ui/render/wave_gel.h"
+#include "../source/ui/render/wave_deform.h"
 
 #define NODES   96
 #define SAMPLES 72
@@ -1134,7 +1135,8 @@ static void test_distinct_framing(void)
             L.bright    *= WRM_LUM_MAX * WRM_DB_LUM_MAX[l];
             L.scale     *= WRM_THICK_MAX;
             for (k = 0; k < WF_SAMPLES; k++)
-                dsp[k] = f.sy[l][k] + WRM_ACC_H * WRM_DB_ACC_KEEP * WRM_ACC_LAYER[l];
+                dsp[k] = f.sy[l][k] + WRM_ACC_H * WRM_DB_ACC_KEEP * WRM_ACC_LAYER[l]
+                       + WDF_POS_MAX * WDF_LAYER[l];   // + JellyWave 2.0's whole allowance
             if (jw_build_layer(&L, dsp, WF_SAMPLES, 16.0f / 9.0f,
                                v, JW_VERTS) != JW_VERTS) { bad++; continue; }
             for (i = 0; i < JW_VERTS; i++) {
@@ -1209,6 +1211,28 @@ static void test_distinct_bands(void)
                lo, hi, o.dt_scale);
         CHECK(hi - lo > 0.35f, "a loud fast kick barely moves the bass layer (%.2f)", hi - lo);
         CHECK(o.dt_scale > 1.2f, "a fast locked tempo does not speed the wave");
+    }
+
+    // Physical, not rigid (v5): the same kick never moves a layer by more
+    // than a small step in one frame -- the spring carries it there.
+    {
+        float prev = 1.0f, maxstep = 0.0f;
+        memset(&st, 0, sizeof st);
+        src[0] = 0.72f; src[1] = 0.5f; src[2] = 0.3f;
+        for (n = 0; n < 60 * 4; n++) {
+            const int ph = n % 21;
+            st.in_fast[0] = ph < 4 ? 0.95f : 0.62f;
+            st.in_fast[1] = 0.5f; st.in_fast[2] = 0.3f;
+            wrm_map(NULL, &o);
+            wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+            if (n > 60) {
+                const float d = fabsf(o.amp[0] - prev);
+                if (d > maxstep) maxstep = d;
+            }
+            prev = o.amp[0];
+        }
+        printf("  distinct: largest one-frame step of the bass layer %.3f\n", maxstep);
+        CHECK(maxstep < 0.10f, "the bass layer still jumps %.3f in one frame", maxstep);
     }
 
     // Highs alone: attack within a few frames, release within ~0.3 s.

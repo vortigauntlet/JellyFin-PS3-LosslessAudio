@@ -100,6 +100,9 @@ static wrm_db_state s_db;                       // per-band envelopes
 static float        s_lum3[3] = { 1.0f, 1.0f, 1.0f };
 static float        s_present = 0.0f;           // 0 at rest .. 1 with audio
 static float        s_kick = 0.0f;              // sub-bass hit waiting for the snow
+static wsc_state    s_sc;                       // stereo + waveform (wave_scope.h)
+static wdf_state    s_wdf;                      // shape deformation (wave_deform.h)
+static wdf_look     s_def;
 
 // Lazy, on the first wave_audio_frame().  NOT at init time: UI-BRIEF rule 2 --
 // ui_init() runs before the logger is loaded, so an init-time plog line is
@@ -121,6 +124,10 @@ static void wave_audio_start(void)
         crash_log("wave: audio-reactive OFF (wa_init)");
         return;
     }
+    wsc_init(&s_sc);
+    memset(&s_wdf, 0, sizeof s_wdf);
+    s_wdf.rim = 1.0f;
+    wdf_rest(&s_def);
     if (!wm_init(&s_wm)) {
         plog("wave: audio-reactive OFF (wm_init failed)");
         crash_log("wave: audio-reactive OFF (wm_init)");
@@ -161,6 +168,7 @@ void wave_audio_push(const float *lr, int n_pairs)
     if (!s_on || !s_mtx_ok || !lr || n_pairs <= 0) return;
     sysMutexLock(s_mtx, 0);
     wa_push(&s_wa, lr, n_pairs, 2);
+    wsc_push(&s_sc, lr, n_pairs);
     sysMutexUnlock(s_mtx);
 }
 
@@ -209,6 +217,24 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                 wrm_distinct(&s_db, src, f.band_fast[WA_SUB], present, resp, dt,
                              &s_out, s_lum3);
                 if (s_db.kick > s_kick) s_kick = s_db.kick;   // held until the snow takes it
+
+                // JellyWave 2.0 shape: stereo + waveform, then each signal's
+                // deformation (wave_deform.h).
+                {
+                    wsc_out sc;
+                    wdf_in  in;
+                    sysMutexLock(s_mtx, 0);
+                    wsc_frame(&s_sc, dt, present, &sc);
+                    sysMutexUnlock(s_mtx);
+                    for (int i = 0; i < 3; i++) { in.lvl[i] = s_db.lvl[i]; in.punch[i] = s_db.punch[i]; }
+                    in.onset          = f.onset;
+                    in.onset_strength = f.onset_strength;
+                    in.tempo_hz       = f.beat_hz;
+                    in.tempo_conf     = f.beat_conf;
+                    in.present        = present;
+                    in.scope          = &sc;
+                    wdf_map(&s_wdf, &in, dt, &s_def);
+                }
             }
 
             // A bounded trace of what the wave is actually being driven with.
@@ -288,6 +314,13 @@ void wave_audio_bands(float lvl[3], float *kick)
         lvl[2] = s_on ? s_db.lvl[2] : 0.0f;
     }
     if (kick) { *kick = s_kick; s_kick = 0.0f; }
+}
+
+void wave_audio_deform(wdf_look *out)
+{
+    if (!out) return;
+    if (!s_started || !s_on) { wdf_rest(out); return; }
+    *out = s_def;
 }
 
 void wave_audio_lum3(float lum3[3])
