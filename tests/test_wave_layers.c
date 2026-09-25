@@ -1213,6 +1213,36 @@ static void test_distinct_bands(void)
         CHECK(o.dt_scale > 1.2f, "a fast locked tempo does not speed the wave");
     }
 
+    // A DOUBLE KICK (v7: "the second one doesn't look distinct enough"):
+    // two hits 150 ms apart on a loud master, once a second.  The layer must
+    // fall visibly between them and the second must rise nearly as far as
+    // the first.
+    {
+        float p1 = 0, p2 = 0, tr = 9, b0 = 9;
+        memset(&st, 0, sizeof st);
+        st.energy = 1.0f; st.tempo_hz = 2.4f; st.tempo_conf = 0.8f;
+        src[0] = 0.70f; src[1] = 0.5f; src[2] = 0.3f;
+        for (n = 0; n < 60 * 8; n++) {
+            const int ph = n % 60;
+            const int hit = (ph < 4) || (ph >= 9 && ph < 13);
+            st.in_fast[0] = hit ? 0.95f : 0.62f;
+            st.in_fast[1] = 0.5f; st.in_fast[2] = 0.3f;
+            wrm_map(NULL, &o);
+            wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
+            if (n >= 60 * 7) {                       /* the last cycle */
+                if (ph >= 55 || ph == 0) { if (o.amp[0] < b0) b0 = o.amp[0]; }
+                if (ph >= 0 && ph <= 8 && o.amp[0] > p1) p1 = o.amp[0];
+                if (ph >= 6 && ph <= 11 && o.amp[0] < tr) tr = o.amp[0];
+                if (ph >= 9 && ph <= 20 && o.amp[0] > p2) p2 = o.amp[0];
+            }
+        }
+        printf("  distinct: double kick -> base %.2f, first %.2f, dip to %.2f, second %.2f "
+               "(dip %.0f%% of the rise, second %.0f%% of the first)\n",
+               b0, p1, tr, p2, 100.0f * (p1 - tr) / (p1 - b0 + 1e-6f), 100.0f * (p2 - tr) / (p1 - b0 + 1e-6f));
+        CHECK((p1 - tr) > 0.35f * (p1 - b0), "the layer does not fall between the two kicks");
+        CHECK((p2 - tr) > 0.30f * (p1 - b0), "the second kick does not rise on its own");
+    }
+
     // Physical, not rigid (v5): the same kick never moves a layer by more
     // than a small step in one frame -- the spring carries it there.
     {

@@ -423,6 +423,20 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
 #define WRM_RISE_ENERGY     1.20f    // ... plus this x energy_eff
 #define WRM_ATT_ENERGY      0.60f    // attacks shortened by up to this fraction
 #define WRM_SUS_ENERGY     (-0.20f)  // bass sustain weight + this x energy_eff: LESS, headroom for the hits
+
+// DOUBLE KICKS (v7: "when a double kick or 808 hits, the second one doesn't
+// look distinct enough").  Two hits 150 ms apart left the layer at its cap
+// with a 13% dip between them: the punch released over 90 ms, the falling
+// spring was soft, and the first hit raised the "recent" level the second
+// was measured against.  So: a shorter punch release (shorter still with
+// energy), a falling spring that stiffens with energy (and is damped more,
+// so it does not bounce), and a recent level that rises slowly but falls
+// quickly -- a hit no longer eats the next one's punch.
+#define WRM_PUNCH_REL       0.060f   // s at energy 0 ...
+#define WRM_PUNCH_REL_E     0.030f   // ... and at full energy
+#define WRM_FALL_ENERGY     1.10f    // falling stiffness x (1 + this x energy_eff)
+#define WRM_RECENT_UP       0.35f    // s: the recent level rises at about the old rate (a held 808 must not read as punch for long)
+#define WRM_RECENT_DN       0.12f    // s: and falls quickly, so the next hit meets a low reference
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
 #define WRM_TEMPO_TAU       1.50f    // s, the tempo speed-up eases in and out
 #define WRM_PUNCH_ATT       0.030f   // s, a hit swells in over ~2 frames, not one
@@ -579,7 +593,10 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         {
             const float xf = wrm_clamp(st->in_fast[i], 0.0f, 1.0f);
             float p;
-            st->recent[i] += (xf - st->recent[i]) * (dt / (WRM_PUNCH_TAU + dt));
+            {
+                const float rt = xf > st->recent[i] ? WRM_RECENT_UP : WRM_RECENT_DN;
+                st->recent[i] += (xf - st->recent[i]) * (dt / (rt + dt));
+            }
             {
                 const float d  = xf - st->recent[i];
                 const float ad = d < 0.0f ? -d : d;
@@ -595,8 +612,9 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
             // fast in, a little slower out, so a hit reads as a hit
             {
                 const float pa = WRM_PUNCH_ATT * (1.0f - WRM_ATT_ENERGY * st->energy_eff);
+                const float pr = WRM_PUNCH_REL + (WRM_PUNCH_REL_E - WRM_PUNCH_REL) * st->energy_eff;
                 st->punch[i] += (p - st->punch[i])
-                              * (p > st->punch[i] ? dt / (pa + dt) : dt / (0.09f + dt));
+                              * (p > st->punch[i] ? dt / (pa + dt) : dt / (pr + dt));
             }
         }
         s   = wrm_clamp(wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
@@ -614,8 +632,10 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
             const float w0 = 6.2831853f * WRM_SPRING_HZ[i] * (1.0f + WRM_ENERGY_SPRING * st->energy_eff);
             // stiffer rising than falling: the hit snaps, the settle stays soft
             const bool  up = target > st->ax[i];
-            const float w  = up ? w0 * (WRM_RISE_BASE + WRM_RISE_ENERGY * st->energy_eff) : w0;
-            const float zw = 2.0f * (up ? 0.72f : WRM_SPRING_ZETA[i]) * w;
+            const float w  = up ? w0 * (WRM_RISE_BASE + WRM_RISE_ENERGY * st->energy_eff)
+                                : w0 * (1.0f + WRM_FALL_ENERGY * st->energy_eff);
+            const float zf = WRM_SPRING_ZETA[i] + (0.85f - WRM_SPRING_ZETA[i]) * st->energy_eff;
+            const float zw = 2.0f * (up ? 0.72f : zf) * w;
             float left = dt;
             if (st->ax[i] == 0.0f) { st->ax[i] = 1.0f; st->av[i] = 0.0f; }   // zeroed state
             while (left > 0.0f) {                // semi-implicit, stable steps
