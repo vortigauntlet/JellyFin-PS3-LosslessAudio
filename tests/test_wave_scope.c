@@ -219,6 +219,138 @@ static void test_deform(void)
     }
 }
 
+// energy of one layer's deformation
+static float def_rms(const wdf_look *d, int l)
+{
+    float disp[N], e = 0.0f; int i;
+    memset(disp, 0, sizeof disp);
+    wdf_apply(d, l, disp, N);
+    for (i = 0; i < N; i++) e += disp[i] * disp[i];
+    return sqrtf(e / N);
+}
+
+static void test_organism(void)
+{
+    static wsc_out sc;
+    wdf_state st;
+    wdf_look  d;
+    wdf_in    in;
+    int f, i, l;
+
+    // deformation continues after the audio peak: one hit, then nothing
+    {
+        float peak = 0.0f, later;
+        memset(&st, 0, sizeof st); st.rim = 1.0f;
+        memset(&sc, 0, sizeof sc);
+        memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+        for (f = 0; f < 60; f++) {
+            const int hit = (f >= 10 && f < 16);
+            in.lvl[0] = hit ? 1.0f : 0.0f; in.punch[0] = hit ? 1.0f : 0.0f;
+            in.onset = (f == 10); in.onset_strength = 1.0f;
+            wdf_map(&st, &in, DT, &d);
+            if (f <= 16 && def_rms(&d, 0) > peak) peak = def_rms(&d, 0);
+        }
+        later = 0.0f;
+        for (f = 0; f < 6; f++) { wdf_map(&st, &in, DT, &d); if (def_rms(&d, 0) > later) later = def_rms(&d, 0); }
+        wdf_map(&st, &in, DT, &d);
+        printf("  organism: hit peak %.4f, 0.8 s after the audio stopped %.4f (swell %+.4f)\n",
+               peak, later, d.swell_a);
+        CHECK(later > 0.25f * peak, "the deformation dies with the audio (%.4f vs %.4f)", later, peak);
+    }
+
+    // nonlinear: full level deforms far more than twice half level
+    {
+        float half, full;
+        for (l = 0; l < 2; l++) {
+            const float v = l ? 1.0f : 0.5f;
+            float acc = 0.0f;
+            memset(&st, 0, sizeof st); st.rim = 1.0f;
+            memset(&sc, 0, sizeof sc);
+            memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+            for (i = 0; i < 3; i++) { in.lvl[i] = v; in.punch[i] = 0.0f; }
+            for (f = 0; f < 600; f++) {
+                wdf_map(&st, &in, DT, &d);
+                if (f >= 300) acc += def_rms(&d, 1);
+            }
+            if (l) full = acc; else half = acc;
+        }
+        printf("  organism: deformation at half level %.4f, full level %.4f (x%.2f)\n",
+               half / 300, full / 300, full / half);
+        CHECK(full > 2.4f * half, "the response is not dramatic enough when loud (x%.2f)", full / half);
+    }
+
+    // a beat warps the layers one after another (volume), near first
+    {
+        int at[3] = { -1, -1, -1 };
+        float best[3] = { 0, 0, 0 };
+        memset(&st, 0, sizeof st); st.rim = 1.0f;
+        memset(&sc, 0, sizeof sc);
+        memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+        for (i = 0; i < 3; i++) in.lvl[i] = 0.6f;
+        for (f = 0; f < 120; f++) wdf_map(&st, &in, DT, &d);   // settle the drama
+        for (f = 0; f < 60; f++) {
+            in.onset = (f == 0); in.onset_strength = 1.0f;
+            wdf_map(&st, &in, DT, &d);
+            for (l = 0; l < 3; l++) {
+                const float w = wdf_warp_at(&d, 0, l, d.warp_x[0]) / WDF_LAYER[l];
+                if (w > best[l]) { best[l] = w; at[l] = f; }
+            }
+        }
+        printf("  organism: warp peaks at frame %d / %d / %d (near / mid / far)\n", at[0], at[1], at[2]);
+        CHECK(at[0] < at[1] && at[1] < at[2], "the beat does not travel through the layers");
+    }
+
+    // evolution: steady audio, and the wave's character still changes
+    {
+        float k_lo = 9, k_hi = 0, g_lo = 9, g_hi = 0, a[N], b[N], dot = 0, na = 0, nb = 0;
+        memset(&st, 0, sizeof st); st.rim = 1.0f;
+        memset(&sc, 0, sizeof sc);
+        memset(&in, 0, sizeof in); in.scope = &sc; in.present = 1.0f;
+        for (i = 0; i < 3; i++) in.lvl[i] = 0.7f;
+        for (f = 0; f < 60 * 600; f++) {
+            wdf_map(&st, &in, DT, &d);
+            if (f > 600) {
+                if (d.k1m[1] < k_lo) k_lo = d.k1m[1];
+                if (d.k1m[1] > k_hi) k_hi = d.k1m[1];
+                if (d.gain < g_lo) g_lo = d.gain;
+                if (d.gain > g_hi) g_hi = d.gain;
+            }
+            if (f == 60 * 60) { memset(a, 0, sizeof a); wdf_apply(&d, 1, a, N); }
+            if (f == 60 * 60 + 60 * 27) { memset(b, 0, sizeof b); wdf_apply(&d, 1, b, N); }
+        }
+        for (i = 0; i < N; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        printf("  organism: over 10 min of steady audio -- wavelength x%.2f..x%.2f, strength %.3f..%.3f, "
+               "shape correlation after 27 s %.2f\n", k_lo, k_hi, g_lo, g_hi, dot / sqrtf(na * nb + 1e-12f));
+        CHECK(k_hi - k_lo > 0.3f && k_lo > 0.7f && k_hi < 1.35f, "the wavelength does not evolve within bounds");
+        CHECK(g_hi / g_lo > 1.3f, "the strength does not evolve");
+        CHECK(dot / sqrtf(na * nb + 1e-12f) < 0.9f, "the wave repeats itself");
+    }
+
+    // the glow: none at rest, and after a beat a pulse runs along the band
+    {
+        float gain[80], g0 = 0, g1 = 0; int p0 = 0, p1 = 0;
+        memset(&st, 0, sizeof st); st.rim = 1.0f;
+        memset(&sc, 0, sizeof sc);
+        memset(&in, 0, sizeof in); in.scope = &sc;
+        wdf_map(&st, &in, DT, &d);
+        CHECK(wdf_glow(&d, 0, gain, 80) == 0, "glow at rest");
+        in.present = 1.0f;
+        for (f = 0; f < 40; f++) {
+            in.onset = (f == 0); in.onset_strength = 1.0f;
+            wdf_map(&st, &in, DT, &d);
+            if (f == 8 || f == 30) {
+                float best = 0; int at = 0;
+                wdf_glow(&d, 0, gain, 80);
+                for (i = 0; i < 80; i++) if (gain[i] > best) { best = gain[i]; at = i; }
+                if (f == 8) { g0 = best; p0 = at; } else { g1 = best; p1 = at; }
+            }
+        }
+        printf("  organism: glow %.2f at station %d, then %.2f at station %d\n", g0, p0, g1, p1);
+        CHECK(g0 > 1.1f && g0 <= 1.0f + WDF_GLOW_A + WDF_SHIMMER_A + 1e-4f, "glow strength %.2f", g0);
+        CHECK(p0 != p1, "the glow does not travel");
+    }
+}
+
 static void report_cost(void)
 {
     static wsc_state s;
@@ -237,9 +369,14 @@ static void report_cost(void)
         wsc_push(&s, buf, BLK);
         wsc_frame(&s, DT, 1.0f, &o);
         wdf_map(&st, &in, DT, &d);
-        for (l = 0; l < 3; l++) { memset(disp, 0, sizeof disp); wdf_apply(&d, l, disp, N); }
+        in.onset = (f % 25) == 0; in.onset_strength = 0.8f;
+        for (l = 0; l < 3; l++) {
+            static float gain[80];
+            memset(disp, 0, sizeof disp); wdf_apply(&d, l, disp, N);
+            wdf_glow(&d, l, gain, 80);
+        }
     }
-    printf("  cost: scope + map + apply(3 layers) = %.1f us/frame on this host "
+    printf("  cost: scope + map + apply + glow (3 layers, beats every 25 frames) = %.1f us/frame on this host "
            "(signal generation included)\n",
            1e6 * (double)(clock() - t0) / CLOCKS_PER_SEC / F);
 }
@@ -248,6 +385,7 @@ int main(void)
 {
     printf("-- scope --\n");   test_scope();
     printf("-- deform --\n");  test_deform();
+    printf("-- organism --\n"); test_organism();
     printf("-- cost --\n");    report_cost();
     if (failures) { printf("\nFAILED: %d check(s)\n", failures); return 1; }
     printf("\nOK\n");

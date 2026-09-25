@@ -1,37 +1,47 @@
-// JellyWave 2.0: deformation -- what each signal does to the curve's SHAPE.
+// JellyWave 2.x: deformation -- the living part of the wave's shape.
 //
-// wave_render_map.h's wrm_distinct() already gives every layer its height
-// (bass on the near layer, mids the middle, highs the far one), the beat
-// punch and the sub-bass ripples.  Height alone is one number per layer; this
-// file is the part that changes the shape along the band, each signal with
-// its own job:
+// wave_render_map.h's wrm_distinct() gives every layer its height (bass on
+// the near layer, mids the middle, highs the far one), the beat punch and the
+// sub-bass ripples.  This file is everything that changes the SHAPE along the
+// band, as several overlapping influences rather than one dominant one:
 //
-//   mids      curvature: a travelling ripple along each layer, plus a smaller
-//             secondary ripple running the other way (the "second wave") --
-//             stronger and quicker with the mids and the beat punch
-//   waveform  fine deformation: the scope trace (wave_scope.h) laid along the
-//             band at a small amplitude, strongest on the finest (far) layer
-//   beat      a brief macro pulse: one broad swell of the whole band on an
-//             onset, eased in and out, never a jolt
-//   stereo    asymmetric motion: the band leans toward the louder side, and
-//             the ripple is stronger on that side than the other
-//   treble    the rim: a brightness gain for the rim pass only
-//             (applied in ui_wave.cpp's emit, not here)
+//   swell     the lows, with INERTIA: a long, low undulation whose strength
+//             rides an underdamped spring (~0.9 Hz), so it keeps rolling after
+//             the bass has passed and never snaps
+//   ripple    the mids: a travelling ripple plus a secondary one running the
+//             other way, PHASE-MODULATED by the curve itself and by the
+//             neighbouring layer's curve -- so it bends with the wave it rides
+//             on and the layers visibly act on each other
+//   warps     the beats: each onset spawns a local distortion (a crest with
+//             troughs either side) that eases in, spreads, drifts and decays
+//             over ~1 s -- a displacement, not a scale -- with a faint echo
+//             0.12 s behind it (the afterimage, without any framebuffer read);
+//             it reaches the near layer first and the far one ~0.14 s later,
+//             which is what makes the three strips read as one volume
+//   waveform  fine deformation from the scope trace, strongest far
+//   pulse     a broad macro swell on the beat, eased in and out
+//   stereo    the band leans toward, and ripples more on, the louder side
+//   treble    the rim-pass brightness gain
+//   glow      a brightness pulse that runs outward along the band from each
+//             warp, layer by layer, plus a faint treble shimmer -- applied as
+//             a per-station colour gain in the emit (wdf_glow)
 //
-// WHERE IT RUNS.  wdf_map() on the UI thread, once per frame, into a small
-// wdf_look value; the renderer copies that into the generation job beside the
-// rest of the look, and wdf_apply() adds the deformation to the layer's copy
-// of the curve on the worker, right after the accents -- the same seam the
-// ripples use.  No new geometry, no new draw, nothing on the upload path.
+// AUDIO SETS THE INTENSITY, TIME SETS THE EVOLUTION.  A few very slow,
+// mutually incommensurate oscillators (periods 17-97 s) keep changing the
+// ripple wavelength per layer, the overall deformation strength, the
+// phase-modulation depth and each layer's phase drift, so the wave never
+// settles into one loop -- within fixed bounds, with or without music.  The
+// audio then scales everything through a NONLINEAR drama curve, so a loud
+// passage is disproportionately more dramatic than a medium one.
 //
-// FRAMING.  Every sample's total deformation is clamped to
-// [-WDF_NEG_MAX, +WDF_POS_MAX] x the layer weight, and test_distinct_framing
-// measures the band with that whole positive allowance added on the crest,
-// on top of the accents, at every layer's height cap.
+// FRAMING.  Every sample's total is soft-clipped into
+// (-WDF_NEG_MAX, +WDF_POS_MAX) x the layer weight -- smoothly, so a loud
+// section rounds off instead of flattening -- and test_distinct_framing
+// measures the band with that whole positive allowance on the crest.
 //
-// REST IS REST.  With no audio every amplitude eases to exactly 0 and
-// wdf_look.live goes false, and wdf_apply() then touches nothing -- the build
-// stays bit-identical to the resting wave.
+// REST IS REST.  With no audio every amplitude eases to exactly 0, live goes
+// false, and wdf_apply()/wdf_glow() touch nothing: the build stays
+// bit-identical to the resting wave.
 //
 // House rules: header-only, pure C, no libm, no PS3 headers, caller-owned
 // state.  tests/test_wave_scope.c.
@@ -45,11 +55,21 @@
 #define WDF_MID_A      0.030f
 #define WDF_SEC        0.40f     // secondary ripple, of the main one
 #define WDF_WAVE_A     0.016f
-#define WDF_PULSE_A    0.022f
+#define WDF_PULSE_A    0.014f
 #define WDF_TILT_A     0.020f
+#define WDF_SWELL_A    0.034f
+#define WDF_WARP_A     0.050f
 #define WDF_POS_MAX    0.022f    // the framing allowance (per sample, x layer weight) -- measured
 #define WDF_NEG_MAX    0.060f
 #define WDF_RIM_GAIN   0.40f
+#define WDF_GLOW_A     0.32f     // peak brightness gain of a travelling glow
+#define WDF_SHIMMER_A  0.10f
+
+#define WDF_WARPS      4
+#define WDF_WARP_LIFE  1.10f     // s
+#define WDF_LAYER_LAG  0.07f     // s, near -> mid -> far
+#define WDF_ECHO_LAG   0.12f     // s
+#define WDF_ECHO       0.35f
 
 static const float WDF_LAYER[3]  = { 1.00f, 0.85f, 0.70f };
 static const float WDF_WAVE_W[3] = { 0.40f, 0.70f, 1.00f };
@@ -59,15 +79,20 @@ static const float WDF_PH[3]     = { 0.00f, 0.31f, 0.62f };
 
 typedef struct {
     float wave[WSC_POINTS];
-    float wave_a;       // waveform amplitude
-    float mid_a;        // ripple amplitude
-    float mid_ph;       // main ripple phase, cycles (travels one way)
-    float sec_ph;       // secondary ripple phase (travels the other)
-    float tilt;         // stereo lean
-    float side;         // stereo: ripple weighting toward the louder side, -1..1
-    float pulse;        // beat macro pulse
-    float rim;          // rim brightness gain, exactly 1 at rest
-    int   live;         // 0 = add nothing
+    float wave_a;           // waveform amplitude
+    float mid_a;            // ripple amplitude (audio only)
+    float mid_ph, sec_ph;   // ripple phases, cycles (travel opposite ways)
+    float k1m[3];           // evolving wavelength multiplier per layer
+    float phs[3];           // evolving per-layer phase drift, cycles
+    float pm;               // phase-modulation depth, cycles per unit of curve
+    float swell_a, swell_ph;
+    float tilt, side;       // stereo
+    float pulse;            // beat macro pulse
+    float gain;             // drama x evolution strength, applied to the dynamic terms
+    float warp_x[WDF_WARPS], warp_a[WDF_WARPS], warp_age[WDF_WARPS], warp_dir[WDF_WARPS];
+    float shimmer, shimmer_ph;
+    float rim;              // rim brightness gain, exactly 1 at rest
+    int   live;             // 0 = add nothing, glow nothing
 } wdf_look;
 
 typedef struct {
@@ -82,6 +107,13 @@ typedef struct {
 
 typedef struct {
     float mid_a, pulse_tgt, pulse, rim, mid_ph, sec_ph;
+    float t;                        // evolution clock, s (never reset)
+    float phs[3];
+    float sw_x, sw_v, swell_ph;     // the inertial swell
+    float wx[WDF_WARPS], wa[WDF_WARPS], wage[WDF_WARPS], wdir[WDF_WARPS];
+    int   wn;
+    float shimmer, shimmer_ph;
+    float drama;
 } wdf_state;
 
 static inline float wdf_clamp(float v, float lo, float hi)
@@ -104,52 +136,157 @@ static inline float wdf_sin2pi(float t)
 
 static inline float wdf_wrap(float p) { return p - (float)(int)p; }
 
+static inline float wdf_smooth01(float x)
+{
+    x = wdf_clamp(x, 0.0f, 1.0f);
+    return x * x * (3.0f - 2.0f * x);
+}
+
+// Smooth bound: linear up to 60% of the limit, then an ever-flatter approach
+// that never reaches it -- a loud crest rounds off, it is never cut flat.
+static inline float wdf_soft(float x, float hi)
+{
+    const float k = 0.6f * hi, r = hi - k;
+    if (x <= k) return x;
+    {
+        const float e = (x - k) / r;
+        return k + r * (e / (1.0f + e));
+    }
+}
+
+static inline float wdf_softclip(float x, float lo, float hi)
+{
+    if (x != x) return 0.0f;
+    return x >= 0.0f ? wdf_soft(x, hi) : -wdf_soft(-x, -lo);
+}
+
+// A warp's envelope at age a (s): eases in over 50 ms, decays, gone at the end.
+static inline float wdf_warp_env(float a)
+{
+    float d;
+    if (a <= 0.0f || a >= WDF_WARP_LIFE) return 0.0f;
+    d = 1.0f + a / 0.22f;
+    return wdf_smooth01(a / 0.05f) / (d * d)
+         * (1.0f - wdf_smooth01((a - (WDF_WARP_LIFE - 0.35f)) / 0.35f));
+}
+
+// Crest with a trough either side (a compact "Mexican hat"), q in half-widths.
+static inline float wdf_hat(float q)
+{
+    const float q2 = q * q;
+    float t = 1.0f - q2 * 0.25f;
+    if (t <= 0.0f) return 0.0f;
+    t *= t;
+    return (1.0f - 2.0f * q2) * t * t;
+}
+
 static inline void wdf_rest(wdf_look *o)
 {
     int i;
     if (!o) return;
     for (i = 0; i < WSC_POINTS; i++) o->wave[i] = 0.0f;
     o->wave_a = o->mid_a = o->mid_ph = o->sec_ph = 0.0f;
+    for (i = 0; i < 3; i++) { o->k1m[i] = 1.0f; o->phs[i] = 0.0f; }
+    o->pm = 0.0f;
+    o->swell_a = o->swell_ph = 0.0f;
     o->tilt = o->side = o->pulse = 0.0f;
+    o->gain = 0.0f;
+    for (i = 0; i < WDF_WARPS; i++) { o->warp_x[i] = 0.5f; o->warp_a[i] = 0.0f; o->warp_age[i] = 9.0f; o->warp_dir[i] = 1.0f; }
+    o->shimmer = o->shimmer_ph = 0.0f;
     o->rim = 1.0f;
     o->live = 0;
 }
 
 static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *o)
 {
-    int i;
-    float present, mids, highs, fast;
+    int i, anywarp = 0;
+    float present, mids, highs, lows, fast, loud, ev_str;
     if (!st || !o) return;
     if (!in) { wdf_rest(o); return; }
     if (!(dt > 0.0f)) dt = 0.0f;
     present = wdf_clamp(in->present, 0.0f, 1.0f);
+    lows  = wdf_clamp(0.6f * in->lvl[0] + 0.7f * in->punch[0], 0.0f, 1.0f);
     mids  = wdf_clamp(0.5f * in->lvl[1] + 0.8f * in->punch[1], 0.0f, 1.0f);
     highs = wdf_clamp(0.55f * in->lvl[2] + 0.9f * in->punch[2], 0.0f, 1.0f);
     fast  = wdf_clamp((in->tempo_hz - 1.5f) / 1.5f, 0.0f, 1.0f) * wdf_clamp(in->tempo_conf, 0.0f, 1.0f);
+
+    // --- evolution: slow, incommensurate, independent of the beat ---------
+    st->t += dt;
+    if (st->t > 100000.0f) st->t -= 100000.0f;
+    {
+        const float t = st->t;
+        ev_str = 1.0f + 0.15f * wdf_sin2pi(t / 41.0f) + 0.07f * wdf_sin2pi(t / 17.3f + 0.2f);
+        for (i = 0; i < 3; i++) {
+            o->k1m[i] = 1.0f + 0.22f * wdf_sin2pi(t / 53.0f + 0.33f * (float)i)
+                             + 0.06f * wdf_sin2pi(t / 23.0f + 0.51f * (float)i);
+            st->phs[i] = wdf_wrap(st->phs[i] + dt * 0.013f
+                                  * (1.0f + 0.5f * wdf_sin2pi(t / 71.0f + (float)i * 0.29f)));
+            o->phs[i] = st->phs[i];
+        }
+        o->pm = 1.0f + 0.4f * wdf_sin2pi(t / 29.0f + 0.1f);
+        st->swell_ph = wdf_wrap(st->swell_ph + dt * (0.030f + 0.018f * wdf_sin2pi(t / 37.0f)));
+        st->shimmer_ph = wdf_wrap(st->shimmer_ph + dt * (0.22f + 0.1f * wdf_sin2pi(t / 97.0f)));
+    }
+
+    // --- the drama curve: loud is disproportionately more ------------------
+    loud = wdf_clamp(0.45f * lows + 0.30f * mids + 0.25f * highs, 0.0f, 1.0f);
+    {
+        const float d = present * (0.25f + 0.75f * loud * loud) * (1.0f + 0.8f * loud * loud * loud);
+        st->drama += (d - st->drama) * wdf_k(dt, d > st->drama ? 0.08f : 0.45f);
+    }
 
     // mids -> the ripple: quick to swell, slower to settle
     {
         const float t = present * (0.30f + 0.70f * mids) * WDF_MID_A;
         st->mid_a += (t - st->mid_a) * wdf_k(dt, t > st->mid_a ? 0.05f : 0.35f);
     }
-    // travelling: both phases always move (a still ripple reads as a bump);
-    // a quicker tempo moves them faster
     st->mid_ph = wdf_wrap(st->mid_ph + dt * (0.16f + 0.22f * fast + 0.14f * mids));
     st->sec_ph = wdf_wrap(st->sec_ph + dt * (0.07f + 0.15f * fast));
 
-    // beat -> macro pulse, eased: the target jumps on the onset and decays,
-    // the pulse follows it with a short second pole so it swells, not snaps
+    // lows -> the swell, through an underdamped spring: inertia, overshoot,
+    // rolls on after the peak
+    {
+        const float target = present * lows * WDF_SWELL_A;
+        const float w = 6.2831853f * 0.9f, zw = 2.0f * 0.45f * w;
+        float left = dt;
+        while (left > 0.0f) {
+            const float h = left > 0.01f ? 0.01f : left;
+            st->sw_v += (w * w * (target - st->sw_x) - zw * st->sw_v) * h;
+            st->sw_x += st->sw_v * h;
+            left -= h;
+        }
+    }
+
+    // beats -> warps (and the broad pulse)
     if (in->onset > 0.0f && present > 0.0f) {
         const float s = 0.45f + 0.55f * wdf_clamp(in->onset_strength, 0.0f, 1.0f);
+        static const float POS[7] = { 0.50f, 0.28f, 0.71f, 0.39f, 0.62f, 0.22f, 0.80f };
+        int use = 0;
+        for (i = 0; i < WDF_WARPS; i++) {
+            if (st->wage[i] >= WDF_WARP_LIFE + 0.3f) { use = i; break; }
+            if (st->wage[i] > st->wage[use]) use = i;
+        }
+        st->wx[use]   = POS[st->wn % 7];
+        st->wdir[use] = (st->wn & 1) ? 1.0f : -1.0f;
+        st->wa[use]   = s;
+        st->wage[use] = 0.0f;
+        st->wn++;
         if (s > st->pulse_tgt) st->pulse_tgt = s;
+    }
+    for (i = 0; i < WDF_WARPS; i++) {
+        if (st->wa[i] <= 0.0f) { st->wage[i] = 9.0f; continue; }
+        st->wage[i] += dt;
+        if (st->wage[i] >= WDF_WARP_LIFE + 3.0f * WDF_LAYER_LAG + WDF_ECHO_LAG) st->wa[i] = 0.0f;
+        else anywarp = 1;
     }
     st->pulse_tgt *= 1.0f / (1.0f + dt / 0.20f);
     st->pulse += (st->pulse_tgt * present - st->pulse) * wdf_k(dt, 0.04f);
 
-    // treble -> the rim, fast in, quick out
+    // treble -> the rim, and the shimmer
     {
         const float t = 1.0f + WDF_RIM_GAIN * highs * present;
         st->rim += (t - st->rim) * wdf_k(dt, t > st->rim ? 0.02f : 0.16f);
+        st->shimmer += (highs * present - st->shimmer) * wdf_k(dt, 0.12f);
     }
 
     if (present <= 0.0f) {
@@ -157,13 +294,25 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         if (st->mid_a < 1e-4f) st->mid_a = 0.0f;
         if (st->pulse < 1e-4f) { st->pulse = 0.0f; st->pulse_tgt = 0.0f; }
         if (st->rim - 1.0f < 1e-4f) st->rim = 1.0f;
+        if (st->drama < 1e-3f) st->drama = 0.0f;
+        if (st->shimmer < 1e-3f) st->shimmer = 0.0f;
+        if (st->sw_x * st->sw_x + st->sw_v * st->sw_v < 1e-8f) { st->sw_x = 0.0f; st->sw_v = 0.0f; }
     }
 
-    o->mid_a  = st->mid_a;
-    o->mid_ph = st->mid_ph;
-    o->sec_ph = st->sec_ph;
-    o->pulse  = st->pulse * WDF_PULSE_A;
-    o->rim    = st->rim;
+    o->gain     = st->drama * wdf_clamp(ev_str, 0.75f, 1.25f);
+    o->mid_a    = st->mid_a;
+    o->mid_ph   = st->mid_ph;
+    o->sec_ph   = st->sec_ph;
+    o->swell_a  = st->sw_x;
+    o->swell_ph = st->swell_ph;
+    o->pulse    = st->pulse * WDF_PULSE_A;
+    o->rim      = st->rim;
+    o->shimmer  = st->shimmer * WDF_SHIMMER_A;
+    o->shimmer_ph = st->shimmer_ph;
+    for (i = 0; i < WDF_WARPS; i++) {
+        o->warp_x[i] = st->wx[i]; o->warp_a[i] = st->wa[i] * WDF_WARP_A;
+        o->warp_age[i] = st->wage[i]; o->warp_dir[i] = st->wdir[i];
+    }
     o->wave_a = present * WDF_WAVE_A * (0.35f + 0.65f * highs);
     if (in->scope) {
         o->tilt = in->scope->balance * WDF_TILT_A * present;
@@ -174,15 +323,42 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         for (i = 0; i < WSC_POINTS; i++) o->wave[i] = 0.0f;
     }
     if (present <= 0.0f) { o->wave_a = 0.0f; o->tilt = 0.0f; o->side = 0.0f; }
-    o->live = (o->mid_a > 0.0f || o->pulse > 0.0f || o->wave_a > 0.0f || o->tilt != 0.0f);
+    // The dynamic terms all ride on gain; the rest stand on their own.
+    o->live = (o->gain > 0.0f && (o->mid_a > 0.0f || o->pulse > 0.0f
+                                  || o->swell_a != 0.0f || anywarp))
+           || o->wave_a > 0.0f || o->tilt != 0.0f || o->shimmer > 0.0f || o->rim != 1.0f
+           || anywarp;
+}
+
+// One warp's contribution at u for a layer, including its echo.
+static inline float wdf_warp_at(const wdf_look *d, int j, int layer, float u)
+{
+    const float age = d->warp_age[j] - (float)layer * WDF_LAYER_LAG;
+    float acc = 0.0f;
+    int   e;
+    if (d->warp_a[j] <= 0.0f) return 0.0f;
+    for (e = 0; e < 2; e++) {
+        const float a   = age - (e ? WDF_ECHO_LAG : 0.0f);
+        const float env = wdf_warp_env(a);
+        if (env <= 0.0f) continue;
+        {
+            const float w  = 0.05f + 0.16f * a;               // spreads as it ages
+            const float xc = d->warp_x[j] + d->warp_dir[j] * 0.10f * a;   // and drifts
+            acc += (e ? WDF_ECHO : 1.0f) * env * wdf_hat((u - xc) / w);
+        }
+    }
+    return acc * d->warp_a[j];
 }
 
 // Add the deformation to one layer's copy of the curve.  disp spans u in
-// [0,1] over n samples, as wave_field.h's do.
-static inline void wdf_apply(const wdf_look *d, int layer, float *disp, int n)
+// [0,1] over n samples, as wave_field.h's do.  couple: the neighbouring
+// layer's curve over the same samples (NULL = none) -- it bends this layer's
+// ripple, which is how the layers act on each other.
+static inline void wdf_apply2(const wdf_look *d, int layer, float *disp,
+                              const float *couple, int n)
 {
-    int k;
-    float du, wl, hi, lo;
+    int k, j;
+    float du, wl, hi, lo, g;
     if (!d || !d->live || !disp || n < 2) return;
     if (layer < 0) layer = 0;
     if (layer > 2) layer = 2;
@@ -190,15 +366,28 @@ static inline void wdf_apply(const wdf_look *d, int layer, float *disp, int n)
     hi = WDF_POS_MAX * wl;
     lo = -WDF_NEG_MAX * wl;
     du = 1.0f / (float)(n - 1);
+    g  = d->gain;
     for (k = 0; k < n; k++) {
         const float u  = (float)k * du;
         const float c  = 2.0f * u - 1.0f;                 // -1 left .. +1 right
+        const float cv = couple ? 0.6f * disp[k] + 0.4f * couple[k] : disp[k];
         float side = 1.0f + 0.8f * d->side * c;
-        float x;
+        float x, dyn;
         if (side < 0.2f) side = 0.2f;
-        x  = d->mid_a * wl * side
-           * (wdf_sin2pi(WDF_K1[layer] * u - d->mid_ph + WDF_PH[layer])
-              + WDF_SEC * wdf_sin2pi(WDF_K2[layer] * u + d->sec_ph - WDF_PH[layer]));
+        // the ripple, bent by the curve it rides on (phase modulation)
+        dyn = d->mid_a * wl * side
+            * (wdf_sin2pi(WDF_K1[layer] * d->k1m[layer] * u - d->mid_ph
+                          + WDF_PH[layer] + d->phs[layer] + d->pm * cv)
+               + WDF_SEC * wdf_sin2pi(WDF_K2[layer] * u + d->sec_ph - WDF_PH[layer]
+                                      - 0.5f * d->pm * cv));
+        // the swell: long, slow, offset per layer
+        dyn += d->swell_a * wl * wdf_sin2pi(0.8f * u + d->swell_ph + 0.12f * (float)layer + d->phs[layer]);
+        // the warps
+        for (j = 0; j < WDF_WARPS; j++) dyn += wl * wdf_warp_at(d, j, layer, u);
+        // the broad beat pulse
+        dyn += d->pulse * wl * (1.0f - c * c);
+        x = dyn * g;
+        // fine detail and the lean are not dramatised
         {
             const float s  = u * (float)(WSC_POINTS - 1);
             int         i  = (int)s;
@@ -208,10 +397,55 @@ static inline void wdf_apply(const wdf_look *d, int layer, float *disp, int n)
             x += d->wave_a * WDF_WAVE_W[layer]
                * (d->wave[i] + (d->wave[i + 1] - d->wave[i]) * fr);
         }
-        x += d->pulse * wl * (1.0f - c * c);              // broad swell, 0 at the ends
-        x += d->tilt * wl * c;                            // lean toward the louder side
-        disp[k] += wdf_clamp(x, lo, hi);
+        x += d->tilt * wl * c;
+        disp[k] += wdf_softclip(x, lo, hi);
     }
+}
+
+static inline void wdf_apply(const wdf_look *d, int layer, float *disp, int n)
+{
+    wdf_apply2(d, layer, disp, 0, n);
+}
+
+// The travelling glow: a per-station brightness gain along the band (station
+// i at u = i/(n-1)), >= 1.  Returns 0 when every gain is exactly 1 (the
+// caller then skips the multiply altogether).
+static inline int wdf_glow(const wdf_look *d, int layer, float *gain, int n)
+{
+    int i, j, any = 0;
+    float du;
+    if (!d || !d->live || !gain || n < 2) return 0;
+    if (layer < 0) layer = 0;
+    if (layer > 2) layer = 2;
+    du = 1.0f / (float)(n - 1);
+    for (i = 0; i < n; i++) {
+        const float u = (float)i * du;
+        float g = 0.0f;
+        for (j = 0; j < WDF_WARPS; j++) {
+            const float a = d->warp_age[j] - (float)layer * WDF_LAYER_LAG;
+            float env, q1, q2, t1, t2, r;
+            if (d->warp_a[j] <= 0.0f) continue;
+            env = wdf_warp_env(a);
+            if (env <= 0.0f) continue;
+            r  = 0.55f * a;                                 // runs outward, both ways
+            q1 = (u - (d->warp_x[j] - r)) * 9.0f;
+            q2 = (u - (d->warp_x[j] + r)) * 9.0f;
+            t1 = 1.0f - q1 * q1; t2 = 1.0f - q2 * q2;
+            t1 = t1 > 0.0f ? t1 * t1 : 0.0f;
+            t2 = t2 > 0.0f ? t2 * t2 : 0.0f;
+            g += (d->warp_a[j] / WDF_WARP_A) * env * (t1 + t2);
+        }
+        g *= WDF_GLOW_A * WDF_LAYER[layer];
+        if (d->shimmer > 0.0f) {
+            float s = wdf_sin2pi(2.6f * u - d->shimmer_ph + 0.2f * (float)layer);
+            s = s > 0.0f ? s * s : 0.0f;
+            g += d->shimmer * s * s;
+        }
+        if (g > WDF_GLOW_A + WDF_SHIMMER_A) g = WDF_GLOW_A + WDF_SHIMMER_A;
+        gain[i] = 1.0f + g;
+        any |= g > 0.0f;
+    }
+    return any;
 }
 
 #endif // WAVE_DEFORM_H

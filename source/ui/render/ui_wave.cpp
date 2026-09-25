@@ -563,6 +563,13 @@ static u32 motes_build(float aspect)
 
 // The rim pass colour, times the treble's rim gain (exactly the old colour at
 // rest: the gain is only applied while the deformation is live).
+static inline u32 jw_body_rgba(const jw_vert *q, int a, float g)
+{
+    if (g == 1.0f) return WAVE_RGBA(q->r, q->g, q->b, a);
+    int r = (int)((float)q->r * g), gg = (int)((float)q->g * g), b = (int)((float)q->b * g);
+    return WAVE_RGBA(r > 255 ? 255 : r, gg > 255 ? 255 : gg, b > 255 ? 255 : b, a);
+}
+
 static inline u32 jw_rim_rgba(const jw_vert *q, float g)
 {
     if (g == 1.0f) return WAVE_RGBA(q->rr, q->rg, q->rb, 255);
@@ -583,15 +590,16 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
                        u32 off[JW_LAYERS][2], u32 cnt[JW_LAYERS][2],
                        u32 *repaired_out, u32 *dropped_out)
 {
-    #define JW_EMIT(Q, A, USE_RIM) do {                         \
+    // G: the travelling glow's gain at this station (1 = none).
+    #define JW_EMIT(Q, A, USE_RIM, G) do {                      \
         const jw_vert *q_ = (Q);                                \
         dst[n].x = q_->x;                                       \
         dst[n].y = q_->y;                                       \
         dst[n].z = 0.0f;                                        \
         dst[n].w = 1.0f;                                        \
         dst[n].rgba = (USE_RIM)                                 \
-            ? jw_rim_rgba(q_, rimg)                             \
-            : WAVE_RGBA(q_->r, q_->g, q_->b, (A));              \
+            ? jw_rim_rgba(q_, rimg * (G))                       \
+            : jw_body_rgba(q_, (A), (G));                       \
         n++;                                                    \
     } while (0)
 
@@ -617,7 +625,10 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         off[slot][0] = off[slot][1] = 0;
 
         wrm_accent(&look->acc, li, sy[li], disp, WF_SAMPLES);
-        wdf_apply(&look->def, li, disp, WF_SAMPLES);   // JellyWave 2.0 shape
+        // JellyWave 2.x shape; the neighbouring layer's curve bends this one
+        wdf_apply2(&look->def, li, disp, sy[li == 0 ? 1 : li - 1], WF_SAMPLES);
+        float glow[JW_STATIONS];
+        const bool glow_on = wdf_glow(&look->def, li, glow, JW_STATIONS) != 0;
         if (!jw_build_layer(L, disp, WF_SAMPLES, aspect, scratch, JW_VERTS))
             continue;
 
@@ -653,15 +664,16 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
                      * Degenerate join, entirely from CPU/main memory.
                      * NEVER read back from the RSX-local destination.
                      */
-                    JW_EMIT(tail, L->alpha, pass);
-                    JW_EMIT(&scratch[0 * JW_SECTION + j], L->alpha, pass);
+                    JW_EMIT(tail, L->alpha, pass, 1.0f);
+                    JW_EMIT(&scratch[0 * JW_SECTION + j], L->alpha, pass, 1.0f);
                 }
 
                 started = 1;
 
                 for (i = 0; i < JW_STATIONS; i++) {
-                    JW_EMIT(&scratch[i * JW_SECTION + j],  L->alpha, pass);
-                    JW_EMIT(&scratch[i * JW_SECTION + j2], L->alpha, pass);
+                    const float g_ = glow_on ? glow[i] : 1.0f;
+                    JW_EMIT(&scratch[i * JW_SECTION + j],  L->alpha, pass, g_);
+                    JW_EMIT(&scratch[i * JW_SECTION + j2], L->alpha, pass, g_);
                 }
 
                 tail = &scratch[(JW_STATIONS - 1) * JW_SECTION + j2];
