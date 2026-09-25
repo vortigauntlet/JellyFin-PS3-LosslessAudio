@@ -49,6 +49,11 @@ void audio_bitstream_begin(int port_channels);
 // failed part-way.
 void audio_bitstream_end(void);
 
+// Once at startup, before anything opens an audio port: if the last session
+// died with the output changed, put back what it journalled; if the output is
+// on a compressed coding with no journal, reset it to LPCM.  See the .cpp.
+void audio_bitstream_recover(void);
+
 bool audio_bitstream_engaged(void);
 
 // NOT a user setting.  It was briefly a Settings row called "5.1 Routing",

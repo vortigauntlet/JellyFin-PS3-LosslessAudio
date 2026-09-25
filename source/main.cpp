@@ -1,3 +1,4 @@
+#include "audio_bitstream.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
@@ -151,6 +152,7 @@ int main(int argc, const char *argv[]) {
     menusnow_load();       // restore the Menu Particles toggle
     statsovl_load();       // restore the player stats overlay toggle
     audio_volume_load();   // restore the saved master volume
+    audio_bitstream_recover();   // undo an output change a crashed session left behind
     ui_sfx_init();         // XMB menu sounds, read from the console flash
     video_log_capabilities();   // what refresh rates does this panel offer?
     audio_out_log_capabilities();  // ...and will this chain take a bitstream?

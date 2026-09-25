@@ -367,6 +367,12 @@ static int play_one_track(u32 start_secs, bool gapless) {
     bool eof = false;
     u64  last_prog_us = timing_get_us();
     int  ret = MCMD_NONE;
+    // Tempo diagnosis ("the first second is sped up" after an Up Next jump):
+    // the stream's real format, and how much actually played in the first
+    // three seconds -- 144000 frames at 48 kHz means real time.
+    const u64 diag_t0 = timing_get_us();
+    const u64 diag_c0 = s_consumed;
+    bool diag_fmt = false, diag_rate = false;
 
     while (running && s_run) {
         int c = take_cmd();
@@ -379,6 +385,13 @@ static int play_one_track(u32 start_secs, bool gapless) {
         // call stalled it for a whole server round trip every ten seconds.
         // That is the dropout you could hear.
         u64 now = timing_get_us();
+        if (!diag_rate && now - diag_t0 >= 3000000ULL) {
+            char d[112];
+            snprintf(d, sizeof d, "music: first 3 s played %llu frames (real time = 144000)%s",
+                     (unsigned long long)(s_consumed - diag_c0), gapless ? " [gapless]" : "");
+            plog(d);
+            diag_rate = true;
+        }
         if (now - last_prog_us >= 10000000ULL) {
             last_prog_us = now;
             jellyfin_report_progress_async(t->id, s_session_id, elapsed_ticks(),
@@ -408,6 +421,14 @@ static int play_one_track(u32 start_secs, bool gapless) {
             if (info.frame_bytes <= 0) break;  // needs more bytes
             buf_pos += info.frame_bytes;
             progressed = true;
+            if (!diag_fmt && samples > 0) {
+                char d[112];
+                snprintf(d, sizeof d, "music: stream %d Hz, %d ch, %d kbps, first frame after %llu ms",
+                         info.hz, info.channels, info.bitrate_kbps,
+                         (unsigned long long)((timing_get_us() - diag_t0) / 1000));
+                plog(d);
+                diag_fmt = true;
+            }
             if (samples > 0) {
                 static float out[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
                 int pairs = frame_to_48k(pcm, samples, info.channels, info.hz,
