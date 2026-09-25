@@ -209,7 +209,8 @@ static const float WA_FLUX_W[WA_BANDS] = {
 #define WA_SILENCE_OUT  0.0040f    // leave above this (~-48 dBFS)
 #define WA_SILENCE_HOLD 0.40f      // seconds below WA_SILENCE_IN before entering
 #define WA_TAU_SIL_IN   1.2f       // calming down
-#define WA_TAU_SIL_OUT  1.8f       // blooming back up; slower on purpose
+#define WA_TAU_SIL_OUT  0.12f      // blooming back up: FAST (was 1.8 s -- measured, the
+                                   // wave took 4.15 s to reach 90% at every song start)
 
 // Defensive bounds on the API's inputs.
 #define WA_DT_MAX       0.50f      // a frame longer than this is a stall

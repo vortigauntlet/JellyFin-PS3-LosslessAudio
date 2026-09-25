@@ -36,7 +36,21 @@ extern void crash_log(const char *msg);   // survives a death plog does not
 extern u32 running;
 
 // ---- PCM ring (interleaved float L/R pairs, power of two) ----
-#define MPCM_CAP 32768          // ~683 ms at 48 kHz
+// 5.5 s at 48 kHz (2 MB).  It was 683 ms, and the gapless handover only
+// starts once a track is fully decoded INTO this ring -- so the next track's
+// five blocking server calls (stopped report, transcode stop, PlaybackInfo,
+// playing report, and the stream open, which waits for the server to start
+// a new transcode) had 683 ms at most before the ring ran dry: the gap.
+#define MPCM_CAP 262144
+
+// Encoder padding at a gapless handover: an MP3 transcode starts with a
+// silent info frame (1152) and the encoder's delay (~1105), and ends padded
+// to a whole frame.  Trimmed at the boundary only, only while the samples are
+// below GAP_TRIM_THRESH (-60 dBFS -- a real quiet passage is far above the
+// decoder's noise floor on digital silence), and never more than
+// GAP_TRIM_MAX from each side.
+#define GAP_TRIM_MAX    2400
+#define GAP_TRIM_THRESH 1.0e-3f
 static float        s_ring[MPCM_CAP * 2];
 static int          s_wr = 0, s_rd = 0;
 static volatile int s_n  = 0;
@@ -45,6 +59,8 @@ static u64          s_read_total   = 0;   // pairs ever read since the last flus
 // Pre-roll: a freshly started track is held until the ring has ~200 ms, so it
 // starts clean instead of stuttering through its first network reads.
 static volatile bool s_hold = false;
+static int  s_trim_lead = 0;          // leading silence still to drop (gapless)
+static bool s_gap_log   = false;      // log the queue at the handover's first samples
 static sys_mutex_t  s_pcm_mtx;
 static bool         s_pcm_mtx_ok = false;
 
@@ -109,10 +125,33 @@ static void mring_flush(void) {
 
 static int mring_space(void) { return MPCM_CAP - s_n; }
 
+static inline bool gap_quiet(float l, float r) {
+    return (l < GAP_TRIM_THRESH && l > -GAP_TRIM_THRESH &&
+            r < GAP_TRIM_THRESH && r > -GAP_TRIM_THRESH);
+}
+
+// Drop the old track's trailing padding from the NEWEST end of the ring (the
+// reader takes from the oldest end, so this never touches what it is on).
+static int mring_trim_tail(int max) {
+    int dropped = 0;
+    sysMutexLock(s_pcm_mtx, 0);
+    while (dropped < max && s_n > 4096) {
+        const int k = (s_wr - 1) & (MPCM_CAP - 1);
+        if (!gap_quiet(s_ring[k * 2], s_ring[k * 2 + 1])) break;
+        s_wr = k; s_n--; s_pushed_total--; dropped++;
+    }
+    sysMutexUnlock(s_pcm_mtx);
+    return dropped;
+}
+
 static void mring_push(const float *lr, int n_pairs) {
     sysMutexLock(s_pcm_mtx, 0);
     for (int i = 0; i < n_pairs; i++) {
         if (s_n >= MPCM_CAP) break;
+        if (s_trim_lead > 0) {                    // the new track's leading padding
+            if (gap_quiet(lr[i * 2], lr[i * 2 + 1])) { s_trim_lead--; continue; }
+            s_trim_lead = 0;
+        }
         s_ring[s_wr * 2    ] = lr[i * 2    ];
         s_ring[s_wr * 2 + 1] = lr[i * 2 + 1];
         s_wr = (s_wr + 1) & (MPCM_CAP - 1);
@@ -308,9 +347,20 @@ static int play_one_track(u32 start_secs, bool gapless) {
         s_src_info[0] = '\0';
         sysMutexUnlock(s_pcm_mtx);
         s_hold = true;
+        s_trim_lead = 0;
+        s_gap_log   = false;
     } else {
         // Everything of the previous track is in the ring already: this one
-        // starts where it ends.
+        // starts where it ends -- minus both tracks' encoder padding.
+        const int tail = mring_trim_tail(GAP_TRIM_MAX);
+        s_trim_lead = GAP_TRIM_MAX;
+        s_gap_log   = true;
+        {
+            char b[96];
+            snprintf(b, sizeof b, "music: gapless handover, %d ms queued, %d padding samples trimmed from the tail",
+                     (int)((long long)s_n * 1000 / 48000), tail);
+            plog(b);
+        }
         sysMutexLock(s_pcm_mtx, 0);
         s_bnd_at      = s_pushed_total;
         s_bnd_pos     = s_pos;
@@ -445,6 +495,13 @@ static int play_one_track(u32 start_secs, bool gapless) {
                 int pairs = frame_to_48k(pcm, samples, info.channels, info.hz,
                                          out, MINIMP3_MAX_SAMPLES_PER_FRAME);
                 mring_push(out, pairs);
+                if (s_gap_log && s_trim_lead == 0) {
+                    char b[80];
+                    snprintf(b, sizeof b, "music: next track's audio arrived with %d ms still queued",
+                             (int)((long long)s_n * 1000 / 48000));
+                    plog(b);
+                    s_gap_log = false;
+                }
             }
         }
 
