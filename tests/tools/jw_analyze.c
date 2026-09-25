@@ -42,7 +42,7 @@ int main(int argc, char **argv)
     memset(&db, 0, sizeof db); memset(&wdf, 0, sizeof wdf); wdf.rim = 1.0f;
     const float gain = 1.8f, resp = 1.0f, dt = 1.0f / 60.0f;
 
-    stat pdv[3] = {{0}}, amp[3] = {{0}}, lvl[3] = {{0}}, pun[3] = {{0}}, drama = {0}, defr = {0}, swing = {0};
+    stat hit = {0}, lat = {0}, pdv[3] = {{0}}, amp[3] = {{0}}, lvl[3] = {{0}}, pun[3] = {{0}}, drama = {0}, defr = {0}, swing = {0};
     double motion[3] = {0}, capf[3] = {0}, prev[3] = {1, 1, 1};
     double esum = 0, lvsum = 0, dnsum = 0, dbsum = 0;
     long onsets = 0, nfr = 0; double bhz = 0, bconf = 0;
@@ -100,6 +100,28 @@ int main(int argc, char **argv)
             float lo = 9, hi = -9; for (int k = 0; k < 30; k++) { if (win[k] < lo) lo = win[k]; if (win[k] > hi) hi = win[k]; }
             st_add(&swing, hi - lo);
         }
+        /* per-hit: from each onset, the bass layer's rise over the next 250 ms
+           and how long it took to reach 80% of it */
+        {
+            static float base = 0, peak = 0, hist[16], pre[9]; static int t = -1, n = 0, pi = 0;
+            pre[pi++ % 9] = o.amp[0];
+            if (ft.onset > 0 && t < 0) {
+                base = o.amp[0];
+                for (int q = 0; q < 9; q++) if (pre[q] < base) base = pre[q];   /* the trough before */
+                peak = o.amp[0]; t = 0; n = 0;
+            }
+            if (t >= 0) {
+                hist[t] = o.amp[0];
+                if (o.amp[0] > peak) peak = o.amp[0];
+                if (++t >= 15) {
+                    const float rise = peak - base;
+                    int k = 0; while (k < 15 && hist[k] < base + 0.8f * rise) k++;
+                    if (rise > 0.02f) { st_add(&hit, rise); st_add(&lat, k * 1000.0 / 60.0); }
+                    else st_add(&hit, 0.0);
+                    t = -1;
+                }
+            }
+        }
         onsets += ft.onset > 0; lvsum += ft.level; dnsum += ft.density; dbsum += 6.0206f*wa_log2(wa.rms_ref);
         bhz += ft.beat_hz; bconf += ft.beat_conf;
         sub_med += src[0]; sub_med2 += src[0] * src[0];
@@ -116,6 +138,7 @@ int main(int argc, char **argv)
     printf("    bass swing per 0.5 s %.2f+-%.2f | drama %.2f+-%.2f | deform rms %.4f+-%.4f\n",
            st_mean(&swing), st_sd(&swing), st_mean(&drama), st_sd(&drama), st_mean(&defr), st_sd(&defr));
     printf("    punch dev %.3f %.3f %.3f\n", st_mean(&pdv[0]), st_mean(&pdv[1]), st_mean(&pdv[2]));
+    printf("    HIT: bass rise per beat %.3f+-%.3f, 80%% reached in %.0f ms\n", st_mean(&hit), st_sd(&hit), st_mean(&lat));
     printf("    level %.2f (rms_ref %.1f)  density %.2f  energy_eff %.2f\n", lvsum/nfr, dbsum/nfr, dnsum/nfr, esum/((double)frames/800));
     return 0;
 }

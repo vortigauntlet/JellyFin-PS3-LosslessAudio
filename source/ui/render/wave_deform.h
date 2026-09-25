@@ -333,7 +333,7 @@ static inline void wdf_map(wdf_state *st, const wdf_in *in, float dt, wdf_look *
         }
         st->wx[use]   = POS[st->wn % 7];
         st->wdir[use] = (st->wn & 1) ? 1.0f : -1.0f;
-        st->wa[use]   = s;
+        st->wa[use]   = s * (1.0f + 0.6f * wdf_clamp(in->energy, 0.0f, 1.0f));   // loud: bigger hits
         st->wage[use] = 0.0f;
         st->wn++;
         if (s > st->pulse_tgt) st->pulse_tgt = s;

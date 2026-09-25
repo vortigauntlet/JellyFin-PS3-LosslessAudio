@@ -1226,13 +1226,13 @@ static void test_distinct_bands(void)
             wrm_map(NULL, &o);
             wrm_distinct(&st, src, 0.0f, 1.0f, 1.0f, 1.0f / 60.0f, &o, lum3);
             if (n > 60) {
-                const float d = fabsf(o.amp[0] - prev);
+                const float d = prev - o.amp[0];      // falling steps only (v6)
                 if (d > maxstep) maxstep = d;
             }
             prev = o.amp[0];
         }
-        printf("  distinct: largest one-frame step of the bass layer %.3f\n", maxstep);
-        CHECK(maxstep < 0.10f, "the bass layer still jumps %.3f in one frame", maxstep);
+        printf("  distinct: largest one-frame FALL of the bass layer %.3f\n", maxstep);
+        CHECK(maxstep < 0.10f, "the bass layer still drops %.3f in one frame", maxstep);
     }
 
     // Highs alone: attack within a few frames, release within ~0.3 s.

@@ -405,9 +405,24 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 0.85f, 0.60f };   // beat share
 // compressed the beats are; it raises the beat gain and stiffens the height
 // spring.  With a locked tempo, each layer's release is also held under the
 // beat period so a fast beat never smears into a swell.
-#define WRM_ENERGY_PUNCH    0.80f    // punch gain x (1 + this x energy_eff)
+#define WRM_ENERGY_PUNCH    2.00f    // punch gain x (1 + this x energy_eff)
 #define WRM_ENERGY_SPRING   0.35f    // spring Hz x (1 + this x energy_eff)
 #define WRM_REL_OF_PERIOD   0.40f
+
+// THE HIT (2026-09-25 v6: "808s still aren't high-energy enough -- reduce
+// the attack, make it dynamic per song").  Measured on the real masters: the
+// bass layer rose 0.33 per beat on a -3 LUFS trap track and took 81 ms to get
+// most of the way, with the average height at 1.21 of a 1.75 cap.  So, scaled
+// by the song's own energy (a dynamic mix keeps close to what it had):
+//   * the height spring is STIFFER ON THE WAY UP than on the way down -- a hit
+//     snaps up, the fall stays the soft, physical settle
+//   * the envelope and punch attacks shorten
+//   * the bass layer keeps more of its sustained level, so an 808's tail holds
+//     the wave up instead of it dropping straight back
+#define WRM_RISE_BASE       1.60f    // rising stiffness x this at energy 0
+#define WRM_RISE_ENERGY     1.20f    // ... plus this x energy_eff
+#define WRM_ATT_ENERGY      0.60f    // attacks shortened by up to this fraction
+#define WRM_SUS_ENERGY     (-0.20f)  // bass sustain weight + this x energy_eff: LESS, headroom for the hits
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
 #define WRM_TEMPO_TAU       1.50f    // s, the tempo speed-up eases in and out
 #define WRM_PUNCH_ATT       0.030f   // s, a hit swells in over ~2 frames, not one
@@ -530,7 +545,8 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
             const float cap = WRM_REL_OF_PERIOD / st->tempo_hz;
             if (cap < rel) rel = cap < 0.06f ? 0.06f : cap;
         }
-        const float tau = (x > st->env[i]) ? WRM_DB_ATT[i] : rel;
+        const float att = WRM_DB_ATT[i] * (1.0f - WRM_ATT_ENERGY * st->energy_eff);
+        const float tau = (x > st->env[i]) ? att : rel;
         const float k   = dt / (tau + dt);
         float s, amp;
         st->env[i] += (x - st->env[i]) * k;
@@ -551,11 +567,15 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
                               * (1.0f + WRM_ENERGY_PUNCH * st->energy_eff), 0.0f, 1.0f);
             }
             // fast in, a little slower out, so a hit reads as a hit
-            st->punch[i] += (p - st->punch[i])
-                          * (p > st->punch[i] ? dt / (WRM_PUNCH_ATT + dt) : dt / (0.09f + dt));
+            {
+                const float pa = WRM_PUNCH_ATT * (1.0f - WRM_ATT_ENERGY * st->energy_eff);
+                st->punch[i] += (p - st->punch[i])
+                              * (p > st->punch[i] ? dt / (pa + dt) : dt / (0.09f + dt));
+            }
         }
         s   = wrm_clamp(wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
-                                  * resp * WRM_DB_RESP[i], 0.0f, 1.0f) * WRM_DB_SUS_W[i]
+                                  * resp * WRM_DB_RESP[i], 0.0f, 1.0f)
+                        * (WRM_DB_SUS_W[i] + (i == 0 ? WRM_SUS_ENERGY * st->energy_eff : 0.0f))
                         + st->punch[i] * WRM_DB_PUNCH_W[i], 0.0f, 1.0f);
         amp = WRM_DB_AMP_QUIET + (WRM_DB_AMP_MAX[i] - WRM_DB_AMP_QUIET) * s;
         st->lvl[i] = s;
@@ -565,8 +585,11 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
             st->ax[i] = 1.0f; st->av[i] = 0.0f;
         } else {
             const float target = 1.0f + present * (amp - 1.0f);
-            const float w  = 6.2831853f * WRM_SPRING_HZ[i] * (1.0f + WRM_ENERGY_SPRING * st->energy_eff);
-            const float zw = 2.0f * WRM_SPRING_ZETA[i] * w;
+            const float w0 = 6.2831853f * WRM_SPRING_HZ[i] * (1.0f + WRM_ENERGY_SPRING * st->energy_eff);
+            // stiffer rising than falling: the hit snaps, the settle stays soft
+            const bool  up = target > st->ax[i];
+            const float w  = up ? w0 * (WRM_RISE_BASE + WRM_RISE_ENERGY * st->energy_eff) : w0;
+            const float zw = 2.0f * (up ? 0.72f : WRM_SPRING_ZETA[i]) * w;
             float left = dt;
             if (st->ax[i] == 0.0f) { st->ax[i] = 1.0f; st->av[i] = 0.0f; }   // zeroed state
             while (left > 0.0f) {                // semi-implicit, stable steps
