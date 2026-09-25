@@ -281,7 +281,12 @@ void audio_set_paced(bool on) { s_paced = on; }
 static bool audio_write_pcm_paced(void) {
     sys_event_t ev;
     if (sysEventQueueReceive(s_audio_eq, &ev, 0) != 0) return false;
-    while (sysEventQueueReceive(s_audio_eq, &ev, 0) == 0) { }   // the backlog is one wake
+    // NO backlog drain here.  A timeout of 0 means WAIT FOREVER on this OS,
+    // not "poll": a drain loop never ends (an event always comes), the port is
+    // never fed, and music_stop() then closes the port under the stuck thread
+    // -- the silent music + crash on leaving of 2026-09-25.  None is needed:
+    // the runway below is measured from the hardware's read cursor, so a
+    // queued event just finds the ring already topped up and writes nothing.
     if (!s_data_start || !s_read_idx_ea || !s_num_blocks) return true;
     const u32 nb = s_num_blocks;
     const u32 rd = (u32)(*(volatile u64 *)(uintptr_t)s_read_idx_ea) % nb;
