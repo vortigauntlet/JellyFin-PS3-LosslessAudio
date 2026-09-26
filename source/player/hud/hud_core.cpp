@@ -90,6 +90,36 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
     // reveal the bar.
     if (s_skip_offered && !g_hud.visible && BTN_PRESSED(cross))
         return HUD_ACTION_SKIP_SEGMENT;
+    // Media keys (Blu-ray remote, keyboard) act at once, bar shown or not, as
+    // on a disc player -- no reveal press first.  PLAY only resumes and PAUSE
+    // only pauses, so pressing either twice is harmless.  There are no
+    // chapters for NEXT/PREV to skip between, so they jump by the largest HUD
+    // increment; SCAN repeats while held.
+    if (BTN_PRESSED(playpause) || (BTN_PRESSED(play) && paused) ||
+        (BTN_PRESSED(pause) && !paused)) {
+        hud_show();
+        return HUD_ACTION_TOGGLE_PAUSE;
+    }
+    if (BTN_PRESSED(stop))     return HUD_ACTION_STOP;
+    if (BTN_PRESSED(audio))    return HUD_ACTION_AUDIO_TRACK;
+    if (BTN_PRESSED(subtitle)) return HUD_ACTION_SUBTITLE;
+    {
+        const bool scan = btn_nav_repeat(btn_cur.ffwd || btn_cur.rew, NAV_media);
+        const bool skip = BTN_PRESSED(next) || BTN_PRESSED(prev);
+        if (scan || skip) {
+            const int step = skip ? s_incr_vals[2] : s_incr_vals[g_hud.incr_idx];
+            g_hud.seek_delta = (btn_cur.rew || btn_cur.prev) ? -step : step;
+            hud_show();
+            return HUD_ACTION_SEEK;
+        }
+    }
+    if (BTN_PRESSED(info)) {
+#if ENABLE_PLAYER_STATS
+        statsovl_set_enabled(!statsovl_enabled());
+#endif
+        hud_show();
+        return HUD_ACTION_NONE;
+    }
 
     // Any button activity wakes the HUD.
     bool was_hidden = !g_hud.visible;

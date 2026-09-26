@@ -1054,6 +1054,13 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
     // ---- TRANSPORT zone ----
     if (BTN_PRESSED(circle) || BTN_PRESSED(start)) return true;
 
+    // Media keys (Blu-ray remote, keyboard).
+    if (BTN_PRESSED(playpause) || BTN_PRESSED(play) || BTN_PRESSED(pause))
+        music_toggle_pause();
+    if (BTN_PRESSED(stop)) return true;
+    if (BTN_PRESSED(next)) music_next();
+    if (BTN_PRESSED(prev)) music_prev();
+
     // D-pad = control focus, X = activate (video-player HUD model);
     // RIGHT past shuffle moves into the Up Next queue.
     if (s_swallow_left) {
@@ -1096,8 +1103,8 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
     // L2/R2 seek — tap for ±10 s, hold to keep scrubbing.
     if (BTN_PRESSED(l1)) music_prev();
     if (BTN_PRESSED(r1)) music_next();
-    if (seek_hold_tick(btn_cur.l2 != 0, 0)) seek_tap(-1);
-    if (seek_hold_tick(btn_cur.r2 != 0, 1)) seek_tap(+1);
+    if (seek_hold_tick(btn_cur.l2 || btn_cur.rew,  0)) seek_tap(-1);
+    if (seek_hold_tick(btn_cur.r2 || btn_cur.ffwd, 1)) seek_tap(+1);
     return false;
 }
 

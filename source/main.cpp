@@ -113,6 +113,7 @@ int main(int argc, const char *argv[]) {
 
     crash_log("3 ioPadInit");
     ioPadInit(7);
+    input_init();
 
     crash_log("4 atexit");
     atexit(program_exit_callback);
