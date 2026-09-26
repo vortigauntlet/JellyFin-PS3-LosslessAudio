@@ -114,6 +114,7 @@ static float        s_kick = 0.0f;              // sub-bass hit waiting for the 
 static wsc_state    s_sc;                       // stereo + waveform (wave_scope.h)
 static wdf_state    s_wdf;                      // shape deformation (wave_deform.h)
 static wdf_look     s_def;
+static wa_features  s_feat;                     // last analyser frame, for viz_frame
 
 // Lazy, on the first wave_audio_frame().  NOT at init time: UI-BRIEF rule 2 --
 // ui_init() runs before the logger is loaded, so an init-time plog line is
@@ -267,6 +268,7 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
 
             sysMutexLock(s_mtx, 0);
             wa_frame(&s_wa, dt, &f);              // reads and clears the tap
+            s_feat = f;
             sysMutexUnlock(s_mtx);
 
             wm_update(&s_wm, &f, dt);             // UI-thread state only
@@ -434,4 +436,20 @@ void wave_audio_shape(float *thick, wrm_accent_set *acc)
     if (!s_started) { wrm_map(NULL, &idle); o = &idle; }
     if (thick) *thick = o->thick;
     if (acc)   *acc   = o->acc;
+}
+
+// viz_frame (viz_frame.h): every preset reads the same frame.  Peeks at the
+// kick without consuming it -- the snow still owns that.  Spectra, dt and
+// paused are filled by the caller.
+void wave_audio_viz(viz_frame *v)
+{
+    if (!v) return;
+    memset(v, 0, sizeof(*v));
+    if (!s_started || !s_on) return;
+    for (int i = 0; i < 6; i++) v->band[i] = s_feat.band[i];
+    for (int i = 0; i < 3; i++) v->lvl3[i] = s_db.lvl[i];
+    v->kick = s_kick;  v->flux = s_feat.flux;  v->centroid = s_feat.centroid;
+    v->beat_hz = s_feat.beat_hz;  v->beat_conf = s_feat.beat_conf;
+    v->stereo_bal = s_sc.bal;  v->stereo_width = s_sc.width;
+    v->presence = s_present;
 }

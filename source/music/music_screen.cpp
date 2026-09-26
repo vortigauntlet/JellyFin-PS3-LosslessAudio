@@ -98,6 +98,14 @@ static u64   s_viz_toast_us = 0;        // "Visualizer: ..." label shown until t
 // the controls down, then the cover recedes into depth.  Each value below is
 // 0 (not there) .. 1 (in place); the cover's can overshoot 1 briefly.
 static float s_e_cover = 1.0f, s_e_text = 1.0f, s_e_panel = 1.0f, s_e_ctl = 1.0f;
+
+// Canyon's layout, like the stock PS3 player's: while the Canyon visualizer
+// is up the cover and its text shrink into the bottom-left corner and Up
+// Next steps aside, so the landscape has the screen.  0 = normal .. 1 =
+// mini; s_mini_e is the eased value everything reads.  It is also the
+// canyon's fade: the canyon comes in over the wave as the cover goes down.
+static float s_mini = 0.0f, s_mini_e = 0.0f;
+#define MINI_MS 650.0f
 static bool  s_have_origin = false;     // the album tile's rect is known
 static int   s_ox = 0, s_oy = 0, s_os = 0;
 static bool  s_origin_pending = false;  // set by the opener for the next open
@@ -159,6 +167,12 @@ static void music_fades_tick(bool focus_ok) {
     float dt = (float)(now - s_fade_us);
     if (dt > 100000.0f) dt = 100000.0f;
     s_fade_us = now;
+    {
+        const float step = dt * 0.001f / MINI_MS;
+        if (viz_mode() == VIZ_CANYON) s_mini += step; else s_mini -= step;
+        s_mini = s_mini < 0.0f ? 0.0f : (s_mini > 1.0f ? 1.0f : s_mini);
+        s_mini_e = s_mini * s_mini * (3.0f - 2.0f * s_mini);
+    }
 
     const bool focus = focus_ok && !s_outro && now - s_last_input_us > FOCUS_AFTER_US;
     if (focus) s_focus_p += dt / FOCUS_IN_US;
@@ -194,10 +208,22 @@ static void music_fades_tick(bool focus_ok) {
     }
 }
 
-// The cover's place when settled.
-static inline int cover_A1(void) { return (int)(display_height * 0.42f); }
+// The cover's place when settled.  cover_A1_full() is the size the TEXTURE
+// and the palette are requested at -- never the animated size, or the
+// thumbnail cache would be asked for a new size every frame of the shrink.
+static inline int cover_A1_full(void) { return (int)(display_height * 0.42f); }
+static inline int cover_A1_mini(void) { return (int)(display_height * 0.17f); }
+static inline int cover_A1(void) {
+    const float f = (float)cover_A1_full(), m = (float)cover_A1_mini();
+    return (int)(f + (m - f) * s_mini_e + 0.5f);
+}
 static inline int cover_x1(void) { return UIS_W(40); }
-static inline int cover_y1(void) { return (int)(display_height * 0.225f); }
+static inline int cover_y1(void) {
+    // mini: its bottom edge above the transport (centred at 0.815 H)
+    const float f = display_height * 0.225f;
+    const float m = display_height * 0.735f - (float)cover_A1_mini();
+    return (int)(f + (m - f) * s_mini_e + 0.5f);
+}
 
 // Where the cover is this frame, and how opaque (the choreography).
 static void cover_geom(int *x, int *y, int *A, float *alpha) {
@@ -225,7 +251,7 @@ static void music_cover_gpu(const char *art_id, int ax, int ay, int A, float alp
     // The TEXTURE is always requested at the settled size: the fly-in only
     // scales the quad, it must not ask the thumbnail cache for a new size
     // every frame.
-    const int A1 = cover_A1();
+    const int A1 = cover_A1_full();
     int rw = A1, rh = A1, cap = thumb_max_square();
     if (rw > cap || rh > cap || (size_t)rw * rh > (size_t)cap * cap) {
         rw = rw < cap ? rw : cap;
@@ -243,6 +269,8 @@ static void music_cover_gpu(const char *art_id, int ax, int ay, int A, float alp
 static void music_accent_update(const char *art_id, int A) {
     s_mpal = g_spine_on ? ui_art_palette(art_id, music_art_bitmap(art_id, A))
                         : ui_art_fallback();
+    // ... and so does the canyon, a little: each song keeps its own preset
+    canyon_set_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.35f);
     // the ribbons take a hint of the album's colour
     wave_set_album_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.70f);   // peak of the cycle
 }
@@ -676,7 +704,8 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     const int A1 = cover_A1();
     // CPU fallback only once settled: a CPU blit at a changing size would ask
     // the thumbnail cache for a new size every frame of the fly-in.
-    if (!s_cover_gpu && cal > 0.5f && A == A1 && !xmb_cpu_blit_thumb(t->art_id, ax, ay, A, A))
+    if (!s_cover_gpu && cal > 0.5f && A == A1 && (s_mini <= 0.0f || s_mini >= 1.0f)
+        && !xmb_cpu_blit_thumb(t->art_id, ax, ay, A, A))
         xmb_draw_letter_tile(t->art_id,
                              ctx->title[0] ? ctx->title : t->name,
                              ax, ay, A);
@@ -700,18 +729,25 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     // Settled layout, then the slide: the column starts tucked behind the
     // cover and is clipped at its right edge until it is clear of it.
     const int tx1       = cover_x1() + A1 + UIS_W(56);
-    ua = s_e_panel * s_up_a;                                   // fades with the screen and focus mode
+    ua = s_e_panel * s_up_a * (1.0f - s_mini_e);                                   // fades with the screen and focus mode
     const int up_x      = W - (int)(W * 0.27f);
     const int col_w     = up_x - UIS_W(30) - tx1;
     const int tuck      = (ax + A / 2) - tx1;                  // < 0: how far behind the cover it starts
     const int tx        = tx1 + (int)((1.0f - ta) * (float)tuck);
-    const int title_top = cover_y1() + (int)(H * 0.15f);
+    // The column scales with the cover (k = 1 normal .. ~0.6 mini) and sits
+    // at the same fraction of its height: 0.15 H of a 0.42 H cover.
+    // Quantised to 0.05 steps: every distinct px is a new set of glyphs in
+    // the text atlas, and a smooth k would mint a new size every frame.
+    const float k       = (float)(int)((1.0f - 0.40f * s_mini_e) * 20.0f + 0.5f) / 20.0f;
+    const int title_top = cover_y1() + (int)((float)cover_A1() * 0.357f);
     const int clip_x    = ta < 0.999f ? ax + A : 0;
     g_text_clip_left = clip_x;
 
-    draw_visualizer(tx, title_top - 18, (int)(W * 0.265f), (int)(H * 0.11f), ta, clip_x);
+    if (s_mini_e < 0.999f)   // the bars step aside for the canyon
+        draw_visualizer(tx, title_top - 18, (int)(W * 0.265f), (int)(H * 0.11f),
+                        ta * (1.0f - s_mini_e), clip_x);
 
-    draw_clipped((u32)tx, (u32)title_top, t->name, UIS_TF(32), fa(XMB_WHITE, ta), col_w, true);
+    draw_clipped((u32)tx, (u32)title_top, t->name, UIS_TF(32) * k, fa(XMB_WHITE, ta), col_w, true);
     s_txt_n = 0;
 #define TXT_BOX(y_, str_, px_, bold_, h_) do {                                     \
         int w_ = ttf_text_width((str_), (px_), (bold_));                         \
@@ -722,12 +758,12 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
             s_txt_n++;                                                           \
         }                                                                        \
     } while (0)
-    TXT_BOX(title_top, t->name, UIS_TF(32), true, UIS_H(36));
+    TXT_BOX(title_top, t->name, UIS_TF(32) * k, true, (int)(UIS_H(36) * k));
     if (t->artist[0])
     {
-        draw_clipped((u32)tx, (u32)(title_top + UIS_H(48)), t->artist, UIS_TF(20),
+        draw_clipped((u32)tx, (u32)(title_top + (int)(UIS_H(48) * k)), t->artist, UIS_TF(20) * k,
                      fa(s_mpal.accent, ta), col_w);
-        TXT_BOX(title_top + UIS_H(48), t->artist, UIS_TF(20), false, UIS_H(22));
+        TXT_BOX(title_top + (int)(UIS_H(48) * k), t->artist, UIS_TF(20) * k, false, (int)(UIS_H(22) * k));
     }
     {
         char line[160] = "";
@@ -739,9 +775,9 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         }
         if (line[0])
         {
-            draw_clipped((u32)tx, (u32)(title_top + UIS_H(80)), line, UIS_TF(15),
+            draw_clipped((u32)tx, (u32)(title_top + (int)(UIS_H(80) * k)), line, UIS_TF(15) * k,
                          fa(XMB_TEXT_DIM, ta), col_w);
-            TXT_BOX(title_top + UIS_H(80), line, UIS_TF(15), false, UIS_H(17));
+            TXT_BOX(title_top + (int)(UIS_H(80) * k), line, UIS_TF(15) * k, false, (int)(UIS_H(17) * k));
         }
     }
     {
@@ -754,9 +790,9 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         const char *src = music_source_info();
         if (src[0])
             n += snprintf(meta + n, sizeof(meta) - n, " \xC2\xB7 %s", src);
-        draw_clipped((u32)tx, (u32)(title_top + UIS_H(128)), meta, UIS_TF(14),
+        draw_clipped((u32)tx, (u32)(title_top + (int)(UIS_H(128) * k)), meta, UIS_TF(14) * k,
                      fa(XMB_TEXT_FAINT, ta), col_w);
-        TXT_BOX(title_top + UIS_H(128), meta, UIS_TF(14), false, UIS_H(16));
+        TXT_BOX(title_top + (int)(UIS_H(128) * k), meta, UIS_TF(14) * k, false, (int)(UIS_H(16) * k));
 #undef TXT_BOX
     }
     g_text_clip_left = 0;
@@ -1206,27 +1242,34 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         // The visualizer: Canyon in place of the wave when selected (and
         // able to start), dimmed while the UI is up so the text stays
         // readable, full strength in focus mode.
+        // It fades: in over the wave on the way in, out over it on the way
+        // back (s_mini_e is the fade), and the wave is only skipped once the
+        // canyon fully covers it.
         bool canyon = false;
-        if (viz_mode() == VIZ_CANYON) {
+        if (viz_mode() == VIZ_CANYON || s_mini_e > 0.001f) {
+            if (s_mini_e < 0.999f) wave_draw();
             int cur_t = music_current_index();
             canyon_track(cur_t < 0 ? 0 : cur_t);
             const float bright = s_scr_a * (0.58f + 0.42f * fade_ease(s_focus_p));
-            canyon = canyon_draw(bright, music_is_paused());
+            canyon = canyon_draw(bright, music_is_paused(), s_mini_e);
+            if (!canyon && s_mini_e >= 0.999f) wave_draw();
+            canyon = canyon && s_mini_e >= 0.999f;   // 'the wave is not on screen'
+        } else {
+            wave_draw();
         }
-        if (!canyon) wave_draw();
         {
             // The accent follows the current track's album.  Same cover size
             // draw_now_playing() uses, so it reads the bitmap on screen.
             int cur = music_current_index();
             if (cur >= count) cur = count - 1;
             if (cur < 0) cur = 0;
-            music_accent_update(s_tracks[cur].art_id, cover_A1());
+            music_accent_update(s_tracks[cur].art_id, cover_A1_full());
             music_cover_gpu(s_tracks[cur].art_id, cvx, cvy, cvA, cval);
             // Depth: the near ribbon passes IN FRONT of the cover wherever it
             // rises across it (the same geometry drawn again, clipped).
             // (Not while Canyon is up: there is no ribbon this frame.)
             if (!canyon && s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
-            music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a);
+            music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a * (1.0f - s_mini_e));
         }
         c_gpu += timing_get_us() - t_gpu0;
 

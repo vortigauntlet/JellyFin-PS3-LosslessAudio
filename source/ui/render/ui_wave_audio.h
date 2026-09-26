@@ -2,6 +2,7 @@
 #include <ppu-types.h>
 #include "wave_render_map.h"
 #include "wave_deform.h"
+#include "viz_frame.h"
 
 // The audio-reactive wave's console-side glue: it owns the analyser and the
 // motion stage, and it is the only file in this subsystem that knows about
@@ -81,3 +82,6 @@ bool wave_audio_active(void);
 int         wave_audio_level(void);
 const char *wave_audio_level_label(void);
 void        wave_audio_set_level(int level);
+
+// Shared per-frame features for every visualizer preset (viz_frame.h).
+void wave_audio_viz(viz_frame *v);

@@ -492,29 +492,42 @@ static inline int cy_emit(const cy_state *s, const cy_preset *p, float aspect,
     // Land, far to near (painter's order: a nearer row only ever covers a
     // farther one when the eye looks along +z from above the first row).
     cnt->land_off = n;
-    float hA[CY_COLS], hB[CY_COLS];
-    for (int i = 0; i < CY_COLS; i++) hA[i] = cy_height(s, p, 0, i, valley_tab);
+    // Each row's heights are computed ONCE and slid through a four-row window
+    // (age-1, age, age+1, age+2): the normals need both neighbours of both
+    // rows of a strip.  This loop is 33k vertices a frame on the PPU; measured
+    // on hardware at 19 ms when every vertex recomputed its neighbours' heights
+    // (each a ring modulo) and read its degenerate copy back out of RSX memory.
+    // The output is byte-identical to that version (tests/test_canyon.c).
+    float rows4[4][CY_COLS];
+    float *hM = rows4[0], *hA = rows4[1], *hB = rows4[2], *hC = rows4[3];
+    for (int i = 0; i < CY_COLS; i++) {
+        hA[i] = cy_height(s, p, 0, i, valley_tab);
+        hB[i] = cy_height(s, p, 1, i, valley_tab);
+        hC[i] = CY_ROWS > 2 ? cy_height(s, p, 2, i, valley_tab) : hB[i];
+    }
+    const float dxs     = 2.0f * (128.0f * p->scale_x / 127.0f);
+    const float nlL     = Ll;
     for (int age = 0; age < CY_ROWS - 1; age++) {
-        // hA = row `age` (farther), hB = row age+1 (nearer).
-        for (int i = 0; i < CY_COLS; i++) hB[i] = cy_height(s, p, age + 1, i, valley_tab);
+        // hA = row `age` (farther), hB = row age+1 (nearer), hM/hC the
+        // rows either side of them (the edge row stands in for a missing one).
         const float zA = (float)(CY_ROWS - 1 - age) - s->frac;
         const float zB = zA - 1.0f;
+        const float *vA = s->hist[(s->head - age + CY_ROWS) % CY_ROWS];
+        const float *vB = s->hist[(s->head - age - 1 + 2 * CY_ROWS) % CY_ROWS];
+        const int haveM = age > 0, haveC = age + 2 < CY_ROWS;
         int first = 1;
         for (int i = 0; i < CY_COLS; i++) {
             for (int side = 0; side < 2; side++) {
                 const float *h = side ? hB : hA;
                 const float z  = side ? zB : zA;
-                const int   a  = age + side;
-                // Normal from central differences (x spacing 2 * 64 * scale / 127).
                 float hl = h[i > 0 ? i - 1 : i], hr = h[i < CY_COLS - 1 ? i + 1 : i];
-                float hn = side ? hA[i] : (a > 0 ? cy_height(s, p, a - 1, i, valley_tab) : h[i]);
-                float hf = side ? (a + 1 < CY_ROWS ? cy_height(s, p, a + 1, i, valley_tab) : h[i]) : hB[i];
-                float dxs = 2.0f * (128.0f * p->scale_x / 127.0f);
+                float hn = side ? hA[i] : (haveM ? hM[i] : h[i]);
+                float hf = side ? (haveC ? hC[i] : h[i]) : hB[i];
                 float nx = -(hr - hl) / dxs, nz = -(hn - hf) / 2.0f, ny = 1.0f;
                 float nl = 1.0f / sqrtf(nx * nx + ny * ny + nz * nz);
-                float lam = (nx * L0 + ny * L1 + nz * L2) * nl * Ll;
+                float lam = (nx * L0 + ny * L1 + nz * L2) * nl * nlL;
                 if (lam < 0.0f) lam = 0.0f;
-                float v   = cy_val(s, a, i);
+                float v   = side ? vB[i] : vA[i];
                 float lum = p->col_bias + p->col_scale * v;
                 if (lum > 1.6f) lum = 1.6f;
                 float shade = (0.12f + lum) * (0.45f + 0.75f * lam);
@@ -542,7 +555,12 @@ static inline int cy_emit(const cy_state *s, const cy_preset *p, float aspect,
             }
         }
         out[n] = out[n - 1]; n++;                                     // degenerate out
-        memcpy(hA, hB, sizeof(hA));
+        // Slide the window one row nearer.
+        float *t = hM; hM = hA; hA = hB; hB = hC; hC = t;
+        if (age + 3 < CY_ROWS)
+            for (int i = 0; i < CY_COLS; i++) hC[i] = cy_height(s, p, age + 3, i, valley_tab);
+        else
+            memcpy(hC, hB, sizeof(rows4[0]));
     }
     cnt->land_n = n - cnt->land_off;
 

@@ -18,6 +18,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 #include <rsx/rsx.h>
 #include <rsx/gcm_sys.h>
@@ -168,6 +169,7 @@ static sv_spec_t s_sv;
 static cy_state  s_st;
 static bool      s_ready = false, s_failed = false;
 static cy_vert  *s_vbuf[2] = { NULL, NULL };
+static cy_vert  *s_stage = NULL;   // cached main memory: cy_emit writes here
 static u32       s_voff[2];
 static u32      *s_fp_buf = NULL;
 static u32       s_fp_off = 0;
@@ -177,6 +179,31 @@ static float     s_L[SV_BINS], s_R[SV_BINS];
 static bool      s_have_spec = false;
 static u64       s_cost_us = 0;
 static u32       s_cost_n = 0;
+static u64       s_emit_us = 0, s_copy_us = 0;
+
+// Cover tint: target from the music screen, current eased toward it.
+static float     s_tint_to[3] = { 0, 0, 0 }, s_tint[3] = { 0, 0, 0 };
+static float     s_tint_amt_to = 0.0f, s_tint_amt = 0.0f;
+
+void canyon_set_tint(u32 rgb, float amount) {
+    if (!rgb) { s_tint_amt_to = 0.0f; return; }
+    s_tint_to[0] = (float)((rgb >> 16) & 0xFF) / 255.0f;
+    s_tint_to[1] = (float)((rgb >>  8) & 0xFF) / 255.0f;
+    s_tint_to[2] = (float)( rgb        & 0xFF) / 255.0f;
+    s_tint_amt_to = amount;
+}
+
+// One colour toward the tint's hue at the colour's OWN luminance, so a dark
+// preset stays dark and a bright line stays bright.
+static void tint3(float *r, float *g, float *b, float amt) {
+    const float L  = 0.30f * *r + 0.59f * *g + 0.11f * *b;
+    float Lt = 0.30f * s_tint[0] + 0.59f * s_tint[1] + 0.11f * s_tint[2];
+    if (Lt < 0.05f) Lt = 0.05f;
+    const float k = L / Lt;
+    *r += (s_tint[0] * k - *r) * amt;
+    *g += (s_tint[1] * k - *g) * amt;
+    *b += (s_tint[2] * k - *b) * amt;
+}
 
 static bool ensure_ready(void) {
     if (s_ready) return true;
@@ -191,6 +218,13 @@ static bool ensure_ready(void) {
         }
         rsxAddressToOffset(s_vbuf[i], &s_voff[i]);
     }
+    // The staging copy.  Measured on hardware (09-27): emitting straight
+    // into RSX memory cost 19 ms/frame -- field-by-field stores to uncached
+    // memory plus the degenerate copies READ back from it -- against ~0.7 ms
+    // for the same maths on the host.  Emit into cached RAM, then one
+    // sequential pass of aligned 64-bit stores (the WaveVert store rules).
+    s_stage = (cy_vert *)memalign(128, CY_MAX_VERTS * sizeof(cy_vert));
+    if (!s_stage) { plog("canyon: staging alloc FAILED"); s_failed = true; return false; }
     rsxFragmentProgram *fpo = (rsxFragmentProgram *)wave_fp_data;
     void *fp_ucode; u32 fp_size;
     rsxFragmentProgramGetUCode(fpo, &fp_ucode, &fp_size);
@@ -213,7 +247,7 @@ static bool ensure_ready(void) {
     return true;
 }
 
-bool canyon_draw(float bright, bool paused) {
+bool canyon_draw(float bright, bool paused, float alpha) {
     if (!ensure_ready()) return false;
     const u64 t0 = timing_get_us();
     float dt = s_last_us ? (float)(t0 - s_last_us) * 1e-6f : 1.0f / 60.0f;
@@ -239,10 +273,51 @@ bool canyon_draw(float bright, bool paused) {
     }
     if (!paused) cy_step(&s_st, &s_cur, dt);
 
+    // Ease the tint (the same time as a preset cross-fade), then apply it to
+    // a copy: the preset itself -- each song's own look -- is never changed.
+    {
+        float k = dt / XFADE_S;
+        if (k > 1.0f) k = 1.0f;
+        if (s_tint_amt <= 0.001f && s_tint_amt_to > 0.0f) {   // first colour: no drift in from black
+            s_tint[0] = s_tint_to[0]; s_tint[1] = s_tint_to[1]; s_tint[2] = s_tint_to[2];
+        }
+        for (int i = 0; i < 3; i++) s_tint[i] += (s_tint_to[i] - s_tint[i]) * k;
+        s_tint_amt += (s_tint_amt_to - s_tint_amt) * k;
+    }
+    cy_preset look = s_cur;
+    if (s_tint_amt > 0.001f) {
+        tint3(&look.col_r,  &look.col_g,  &look.col_b,  s_tint_amt);
+        tint3(&look.fog_r,  &look.fog_g,  &look.fog_b,  s_tint_amt * 0.8f);
+        tint3(&look.line_r, &look.line_g, &look.line_b, s_tint_amt * 0.6f);
+    }
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+
     const u32 slot = (s_slot++) & 1;
     cy_counts c;
     const float aspect = display_height ? (float)display_width / (float)display_height : 16.0f / 9.0f;
-    if (cy_emit(&s_st, &s_cur, aspect, bright, s_vbuf[slot], CY_MAX_VERTS, &c) <= 0) return true;
+    const u64 te = timing_get_us();
+    const int nv = cy_emit(&s_st, &look, aspect, bright, s_stage, CY_MAX_VERTS, &c);
+    if (nv <= 0) return true;
+    const bool fading = alpha < 0.999f;
+    if (fading) {   // in cached RAM, and only for the half second of a fade
+        const u32 a8 = (u32)(alpha * 255.0f + 0.5f);
+        for (int k = c.sky_off; k < c.land_off + c.land_n; k++)
+            s_stage[k].rgba = (s_stage[k].rgba & 0xFFFFFF00u) | a8;
+        for (int k = c.line_off; k < c.line_off + c.line_n; k++) {
+            const u32 a = s_stage[k].rgba & 0xFFu;
+            s_stage[k].rgba = (s_stage[k].rgba & 0xFFFFFF00u) | ((a * a8) / 255u);
+        }
+    }
+    const u64 tc = timing_get_us();
+    {   // 24-byte verts, 128-aligned buffers: always whole 8-byte words.
+        const u64 *src = (const u64 *)s_stage;
+        volatile u64 *dst = (volatile u64 *)s_vbuf[slot];
+        const int words = nv * (int)(sizeof(cy_vert) / 8);
+        for (int k = 0; k < words; k++) dst[k] = src[k];
+    }
+    s_emit_us += tc - te;
+    s_copy_us += timing_get_us() - tc;
 
     rsxVertexProgram   *vpo = (rsxVertexProgram *)  wave_vp_data;
     rsxFragmentProgram *fpo = (rsxFragmentProgram *)wave_fp_data;
@@ -265,7 +340,13 @@ bool canyon_draw(float bright, bool paused) {
     rsxInvalidateVertexCache(context);
 
     // Sky + land opaque, far to near; the line added on top.
-    rsxSetBlendEnable(context, GCM_FALSE);
+    // Opaque normally; while fading, blended over what is already there.
+    if (fading) {
+        rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+                                 GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+        rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
+    }
+    rsxSetBlendEnable(context, fading ? GCM_TRUE : GCM_FALSE);
     rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, (u32)c.sky_off, (u32)c.sky_n);
     rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, (u32)c.land_off, (u32)c.land_n);
     rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE, GCM_SRC_ALPHA, GCM_ONE);
@@ -284,13 +365,16 @@ bool canyon_draw(float bright, bool paused) {
     s_cost_us += timing_get_us() - t0;
     if (++s_cost_n >= 300) {
         char b[160];
-        snprintf(b, sizeof b, "canyon: %lluus/frame (PPU: analyse+terrain+emit) preset=%s rows=%d "
+        snprintf(b, sizeof b, "canyon: %lluus/frame (PPU total; emit %llu, copy %llu) preset=%s rows=%d "
                  "q=%.2f/%.2f/%.2f/%.2f",
-                 (unsigned long long)(s_cost_us / s_cost_n), canyon_preset_name(), s_st.rows_pushed,
+                 (unsigned long long)(s_cost_us / s_cost_n),
+                 (unsigned long long)(s_emit_us / s_cost_n), (unsigned long long)(s_copy_us / s_cost_n),
+                 canyon_preset_name(), s_st.rows_pushed,
                  s_st.quarter[0], s_st.quarter[1], s_st.quarter[2], s_st.quarter[3]);
         plog(b);
         s_cost_us = 0;
         s_cost_n = 0;
+        s_emit_us = s_copy_us = 0;
     }
     return true;
 }

@@ -20,7 +20,13 @@ const char *viz_mode_name(int mode);
 
 // Canyon.  canyon_draw() returns false if the visualizer could not start
 // (allocation failed); the caller then draws the wave instead.
-bool canyon_draw(float bright, bool paused);
+// alpha < 1: the canyon is fading in (or out) OVER whatever the caller drew
+// first -- the music screen keeps the wave underneath until it reaches 1.
+bool canyon_draw(float bright, bool paused, float alpha = 1.0f);
+// The album's accent (0x00RRGGBB, 0 = none): every preset's colours lean
+// `amount` of the way toward its hue at their own brightness, so each song
+// keeps its own preset but takes a hint of the cover.  Eased, no pops.
+void canyon_set_tint(u32 rgb, float amount);
 void canyon_track(int track_index);  // a new song: cross-fade to its preset
 void canyon_next_preset(void);       // Square: cross-fade to the next preset
 const char *canyon_preset_name(void);
