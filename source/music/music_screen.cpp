@@ -26,6 +26,7 @@
 #include "ui_card_gpu.h"   // ui_card_gpu_ready
 #include "ui_text_gpu.h"
 #include "ui_buffering.h"
+#include "ui_canyon.h"       // Canyon visualizer (L2 / R2, Square)
 #include "ui_depth.h"        // depth_last_focus_rect: where the album was
 
 // The album art's accent (render/art_colour.h, sampled once per album from the
@@ -77,6 +78,7 @@ static bool  s_outro = false;
 static u64   s_outro_t0 = 0, s_fade_us = 0, s_last_input_us = 0;
 static u64   s_intro_t0 = 0;
 static bool  s_entry_flipped = false;   // the opener already finished the XMB frame
+static u64   s_viz_toast_us = 0;        // "Visualizer: ..." label shown until then
 
 // --- the choreography (2026-09-25) ------------------------------------------
 //
@@ -959,6 +961,32 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
 
     seek_update();   // commit batched seek taps once they go quiet
 
+    // Visualizer, on Square -- the one button this screen leaves free (L2 / R2
+    // seek, L1 / R1 skip, Triangle / Select / X / O / Start and the d-pad are
+    // all taken).  TAP: Wave <-> Canyon (persisted).  HOLD (0.45 s) while
+    // Canyon is up: its next preset.  The tap acts on RELEASE, so a hold
+    // never also switches the visualizer.
+    if (!s_q_open) {
+        static u64  s_sq_down = 0;
+        static bool s_sq_held = false;
+        const u64 now = timing_get_us();
+        if (BTN_PRESSED(square)) { s_sq_down = now; s_sq_held = false; }
+        if (btn_cur.square && s_sq_down && !s_sq_held && now - s_sq_down >= 450000ULL) {
+            s_sq_held = true;
+            if (viz_mode() == VIZ_CANYON) {
+                canyon_next_preset();
+                s_viz_toast_us = now + 2500000ULL;
+            }
+        }
+        if (!btn_cur.square && s_sq_down) {
+            if (!s_sq_held) {
+                viz_set_mode((viz_mode() + 1) % VIZ_COUNT);
+                s_viz_toast_us = now + 2500000ULL;
+            }
+            s_sq_down = 0;
+        }
+    }
+
     if (s_q_open) {
         int vis = q_vis_rows();
         if (BTN_REPEAT(up)   && s_q_sel > 0)         s_q_sel--;
@@ -1153,7 +1181,17 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             #undef OB
             wave_snow_obstacles(ob, n);
         }
-        wave_draw();
+        // The visualizer: Canyon in place of the wave when selected (and
+        // able to start), dimmed while the UI is up so the text stays
+        // readable, full strength in focus mode.
+        bool canyon = false;
+        if (viz_mode() == VIZ_CANYON) {
+            int cur_t = music_current_index();
+            canyon_track(cur_t < 0 ? 0 : cur_t);
+            const float bright = s_scr_a * (0.58f + 0.42f * fade_ease(s_focus_p));
+            canyon = canyon_draw(bright, music_is_paused());
+        }
+        if (!canyon) wave_draw();
         {
             // The accent follows the current track's album.  Same cover size
             // draw_now_playing() uses, so it reads the bitmap on screen.
@@ -1164,7 +1202,8 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             music_cover_gpu(s_tracks[cur].art_id, cvx, cvy, cvA, cval);
             // Depth: the near ribbon passes IN FRONT of the cover wherever it
             // rises across it (the same geometry drawn again, clipped).
-            if (s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
+            // (Not while Canyon is up: there is no ribbon this frame.)
+            if (!canyon && s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
             music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a);
         }
         c_gpu += timing_get_us() - t_gpu0;
@@ -1210,6 +1249,15 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         // slower than writing it.
         ui_text_gpu_begin();
         draw_now_playing(ctx, s_tracks, count);
+        if (s_viz_toast_us && timing_get_us() < s_viz_toast_us) {
+            char vb[64];
+            if (viz_mode() == VIZ_CANYON)
+                snprintf(vb, sizeof vb, "Visualizer: Canyon - %s", canyon_preset_name());
+            else
+                snprintf(vb, sizeof vb, "Visualizer: %s", viz_mode_name(viz_mode()));
+            draw_clipped((u32)UIS_W(40), (u32)(display_height * 0.12f), vb, UIS_TF(16),
+                         fa(XMB_WHITE, s_scr_a), (int)(display_width * 0.5f));
+        }
         if (s_q_open) {
             // The overlay dims the screen and lays a panel over it: the
             // now-playing text has to be on the framebuffer first.

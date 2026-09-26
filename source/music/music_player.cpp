@@ -23,6 +23,7 @@
 
 #include "music_player.h"
 #include "music_fft.h"
+#include "music_sv.h"          // Canyon visualizer: stereo tap
 #include "ui_wave_audio.h"
 #include "minimp3.h"
 #include "audio.h"
@@ -248,6 +249,10 @@ static int music_read_pcm(float *buf, int n_pairs) {
     // run ~700 ms ahead through the PCM ring — bars must move with what's
     // audible, not with what's buffered.
     music_viz_push(buf, got);
+    // Third consumer: the Canyon visualizer wants L and R separately
+    // (ui_canyon.cpp / sv_spectrum.h).  A copy into a ring, nothing more --
+    // on the AUDIBLE tap, like the bars: Canyon applies its own look-ahead.
+    music_sv_push(buf, got);
     // Second consumer: the XMB's background wave.  See
     // source/ui/render/ui_wave_audio.h.  Cheap (fourteen one-pole filters per
     // sample) and a no-op while the gate is off.  It hears the ring a little
@@ -393,6 +398,7 @@ static int play_one_track(u32 start_secs, bool gapless) {
     if (!gapless) {
         mring_flush();
         music_viz_reset();
+        music_sv_reset();
         sysMutexLock(s_pcm_mtx, 0);
         s_consumed  = 0;
         s_seek_base = start_secs;
@@ -726,6 +732,7 @@ bool music_start(const MusicTrack *tracks, int count, int start_idx) {
     s_src_info[0] = '\0';
     mring_flush();
     music_viz_reset();
+    music_sv_reset();
 
     audio_set_source(music_pcm_avail, music_read_pcm, music_channels);
     audio_open(2);   // music path is stereo by design
