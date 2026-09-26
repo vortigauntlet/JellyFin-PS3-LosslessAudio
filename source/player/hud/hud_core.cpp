@@ -178,11 +178,17 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
         if (BTN_PRESSED(left)) {
             if (g_hud.focus < 0)      g_hud.focus = FOCUS_PP;
             else if (g_hud.focus > 0) g_hud.focus--;
+            // The redesigned HUD has no REW / FF buttons: those stops only
+            // said "back 10s" / "ahead 10s" and confused (user, 09-27).
+            // L2 / R2 seek.  Step over them.
+            if (g_spine_on && g_hud.focus == FOCUS_FF)  g_hud.focus = FOCUS_PP;
+            if (g_spine_on && g_hud.focus == FOCUS_REW) g_hud.focus = FOCUS_PP;
             return HUD_ACTION_NONE;
         }
         if (BTN_PRESSED(right)) {
             if (g_hud.focus < 0)                   g_hud.focus = FOCUS_PP;
             else if (g_hud.focus < FOCUS_COUNT - 1) g_hud.focus++;
+            if (g_spine_on && g_hud.focus == FOCUS_FF)  g_hud.focus = FOCUS_AUDIO;
             return HUD_ACTION_NONE;
         }
     }

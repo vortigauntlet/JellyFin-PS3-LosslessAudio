@@ -188,14 +188,8 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
                          g_hud.cc_active ? XMB_ACCENT_ALT : WHITE,
                          g_hud.cc_active ? 255 : 60, 0, 0);
             }
-            if (slot[i] == FOCUS_VOLUME) {
-                // level meter on the chip's floor
-                const int mx = x + pad, mw = w[i] - 2 * pad, my = cy + ch - UIS_H(6);
-                const int mh = UIS_H(2) > 1 ? UIS_H(2) : 2;
-                v3_fill(mx, my, mw, mh, WHITE, 40);
-                const int fw = mw * audio_get_volume() / 100;
-                if (fw > 0) v3_fill(mx, my, fw, mh, XMB_ACCENT, 255);
-            }
+            // (The volume chip's level meter -- a purple line on its floor --
+            // is gone: it read as a mystery underline.  The % says it.)
             // The volume slider opens above its chip while adjusting.
             if (slot[i] == FOCUS_VOLUME && g_hud.vol_active) {
                 const float cpx = UIS_TF(11.0f);
