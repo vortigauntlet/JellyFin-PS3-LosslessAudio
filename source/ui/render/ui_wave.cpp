@@ -9,6 +9,7 @@
 #include "wave_field.h"
 #include "wave_gel.h"          /* JellyWave: pulls wave_cam.h + wave_light.h */
 #include "wave_snow.h"
+#include "wave_nav.h"          /* the wave answers the pad */
 #include "menusnow.h"         /* Settings > Menu Particles */
 #include "bg_gradient.h"
 #include "timing.h"
@@ -140,7 +141,60 @@ struct jw_look {
     wrm_accent_set acc;
     wdf_look       def;
     float          album[3];     // the album's colour pull, per channel (1 = none)
+    float          art[3];       // a details page's poster colour, same rules
+    float          sky[3];       // day / night and the dusk glow (1 = the night look)
+    wnv_look       nav;          // the pad's pushes and bob (wave_nav.h)
 };
+
+// --- the pad (wave_nav.h) ----------------------------------------------------
+// btn_nav_repeat() reports every navigation step here, first press and repeat
+// tick alike; wave_draw() steps the state on its own clock.  Render thread
+// only, like the rest of this file's statics.
+static wnv_state s_nav;
+static bool      s_nav_init = false;
+static wnv_fx    s_nav_fx   = { 0.0f, 0.0f, 0.0f, 1.0f };
+static u64       s_nav_us   = 0;
+
+void wave_nav_event(int dx, int dy)
+{
+    if (!s_nav_init) { wnv_init(&s_nav); s_nav_init = true; }
+    wnv_event(&s_nav, dx, dy);
+}
+
+static void wave_nav_frame(void)
+{
+    if (!s_nav_init) { wnv_init(&s_nav); s_nav_init = true; }
+    const u64 now = timing_get_us();
+    // A long gap means the wave was not on screen (video playback, a blocking
+    // load): whatever the pad did meanwhile is not the wave's to replay.
+    if (s_nav_us && now - s_nav_us > 500000ULL) wnv_init(&s_nav);
+    const float dt = s_nav_us ? (float)(now - s_nav_us) * 1.0e-6f : 0.0f;
+    s_nav_us = now;
+    wnv_step(&s_nav, dt, &s_nav_fx);
+}
+
+// --- a details page's poster colour ------------------------------------------
+// Same per-channel pull as the album's, but it does not breathe: it eases in
+// over ~1.5 s when the page opens and holds, and eases out when it closes.
+static float s_art_rgb[3] = { 1.0f, 1.0f, 1.0f };
+static float s_art_k      = 0.0f;       // eased 0..1
+static bool  s_art_on     = false;
+static u64   s_art_us     = 0;
+void wave_set_art_tint(unsigned int rgb, float strength)
+{
+    if (strength <= 0.0f || !rgb) { s_art_on = false; return; }
+    const float r = (float)((rgb >> 16) & 0xFF), g = (float)((rgb >> 8) & 0xFF), b = (float)(rgb & 0xFF);
+    const float m = (r + g + b) * (1.0f / 3.0f) + 1.0f;
+    const float k[3] = { r / m, g / m, b / m };
+    for (int i = 0; i < 3; i++) {
+        float v = 1.0f + strength * (k[i] - 1.0f);
+        if (v < 0.80f) v = 0.80f;
+        if (v > 1.20f) v = 1.20f;
+        s_art_rgb[i] = v;
+    }
+    if (s_art_rgb[1] > 1.05f) s_art_rgb[1] = 1.05f;     // never much toward green
+    s_art_on = true;
+}
 
 // The album colour (music screen): a gentle per-channel pull toward the
 // cover's accent, inside the purple/blue family.  1,1,1 = none.
@@ -180,6 +234,27 @@ static void jw_look_now(jw_look *k)
         const float c = 0.5f - 0.5f * wdf_sin2pi(ph + 0.25f);    // 0 .. 1 .. 0
         for (int i = 0; i < 3; i++) k->album[i] = 1.0f + (s_album_rgb[i] - 1.0f) * c;
     }
+    // The poster: in over ~1.5 s, out over ~0.8 s, eased.
+    {
+        const u64 now = timing_get_us();
+        float dt = s_art_us ? (float)(now - s_art_us) * 1.0e-6f : 0.0f;
+        s_art_us = now;
+        if (dt > 0.1f) dt = 0.1f;
+        if (s_art_on) { s_art_k += dt / 1.5f; if (s_art_k > 1.0f) s_art_k = 1.0f; }
+        else          { s_art_k -= dt / 0.8f; if (s_art_k < 0.0f) s_art_k = 0.0f; }
+        const float e = s_art_k * s_art_k * (3.0f - 2.0f * s_art_k);
+        for (int i = 0; i < 3; i++) k->art[i] = 1.0f + (s_art_rgb[i] - 1.0f) * e;
+    }
+    // Day / night (month_bg.h): by night the ribbons are exactly as tuned; by
+    // day a touch brighter and bluer, to sit in the brighter sky; the dusk
+    // glow warms them for the length of the ramp.
+    {
+        const float d = month_bg_day(), g = month_bg_dusk();
+        k->sky[0] = (1.0f + (1.04f - 1.0f) * d) * (1.0f + 0.10f * g);
+        k->sky[1] = (1.0f + (1.10f - 1.0f) * d);
+        k->sky[2] = (1.0f + (1.14f - 1.0f) * d) * (1.0f - 0.04f * g);
+    }
+    wnv_snapshot(&s_nav, &k->nav);
 }
 
 
@@ -250,7 +325,7 @@ static inline void wave_bg_refresh(void) {
     // no-op change to the picture until somebody puts jellyfin_months.ini on
     // the console.  See source/ui/render/month_bg.h for why the numbers are not
     // in the build.
-    s_bg = month_bg_current(XMB_BG_TOP, XMB_BG_BOT);
+    s_bg = month_bg_current(XMB_BG_TOP, XMB_BG_BOT, XMB_ACCENT);
 }
 
 // Sample the background gradient at screen-space (u in [0,1], y in [0,H]),
@@ -596,6 +671,9 @@ static u32 motes_build(float aspect)
     c.twinkle = lvl[2];
     c.kick    = kick;
     c.bright  = (lvl[0] + lvl[1] + lvl[2]) * (1.0f / 3.0f);
+    c.wind_x  = s_nav_fx.wind_x;              // the pad (wave_nav.h)
+    c.wind_y  = s_nav_fx.wind_y;
+    c.jostle  = s_nav_fx.jostle;
     ws_step(&s_snow, &c, dt);
     ws_shade(&s_snow, &c, s_mote_a, s_snow_spr, WS_MAX);
 
@@ -703,6 +781,10 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
     (void)s_tint_rgb;
     // the album's colour, a hint on top
     tint[0] *= look->album[0]; tint[1] *= look->album[1]; tint[2] *= look->album[2];
+    // ... and a details page's poster, and the time of day (1,1,1 at night)
+    tint[0] *= look->art[0] * look->sky[0];
+    tint[1] *= look->art[1] * look->sky[1];
+    tint[2] *= look->art[2] * look->sky[2];
     for (int slot = 0; slot < JW_LAYERS; slot++) {
         const int       li = JW_LAYERS - 1 - slot;
         // The audio look for this layer, on a copy: disp_gain scales the
@@ -722,6 +804,8 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         // larger negative y offset only moves it down, away from the content.
         if (look->def.live && look->def.width > 0.0f)
             Lk.y_off *= 1.0f + 0.50f * look->def.width;
+        // the pad's bob: only ever down (wave_nav.h), so the same argument holds
+        Lk.y_off += look->nav.bob[li];
         const jw_layer *L  = &Lk;
         int order[JW_SECTION];
         int pass, s, i;
@@ -732,6 +816,8 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         wrm_accent(&look->acc, li, sy[li], disp, WF_SAMPLES);
         // JellyWave 2.x shape; the neighbouring layer's curve bends this one
         wdf_apply2(&look->def, li, disp, sy[li == 0 ? 1 : li - 1], WF_SAMPLES);
+        // the pad's pushes: dips only, after the audio so they ride on top
+        wnv_apply(&look->nav, li, disp, WF_SAMPLES);
         float glow[JW_STATIONS];
         const bool glow_on = wdf_glow(&look->def, li, glow, JW_STATIONS) != 0;
         float rimg_st[JW_STATIONS];
@@ -1005,6 +1091,24 @@ static int jwrebuild_setting(void) {
     return v;
 }
 
+// How many times wave_draw_front() lays the near body over the music cover:
+// 1 = as translucent as everywhere else (before 2026-09-26), 2 the default,
+// 3 nearly opaque.  Read once at startup.
+#define JWFRONT_FILE  "jellyfin_jwfront.txt"
+#define JW_FRONT_DEF  2
+static int s_jw_front_body = JW_FRONT_DEF;
+
+static int jwfront_setting(void) {
+    FILE *f = fopen(jf_data_path(JWFRONT_FILE), "r");
+    if (!f) return JW_FRONT_DEF;
+    int v = JW_FRONT_DEF;
+    if (fscanf(f, "%d", &v) != 1) v = JW_FRONT_DEF;
+    fclose(f);
+    if (v < 1) v = 1;
+    if (v > 3) v = 3;
+    return v;
+}
+
 // Gate, with a mode rather than a second file so both can be flipped over FTP
 // without another lookup:
 //
@@ -1160,6 +1264,7 @@ void wave_init(void) {
         int  sp = jwspeed_setting();
         s_jw_speed         = (float)sp / 100.0f;
         s_jw_rebuild_every = jwrebuild_setting();
+        s_jw_front_body    = jwfront_setting();
         s_jw_rebuild_phase = 0;
         s_jw_have_geom     = 0;
         jw_worker_start();
@@ -1171,10 +1276,10 @@ void wave_init(void) {
                  JW_LAYERS, 1 + JW_LAYERS * 2);
         plog(msg);
         snprintf(msg, sizeof(msg),
-                 "wave: JellyWave speed=%d%% rebuild=every %d call%s "
-                 "(%s / %s)",
+                 "wave: JellyWave speed=%d%% rebuild=every %d call%s front=%dx "
+                 "(%s / %s / %s)",
                  sp, s_jw_rebuild_every, s_jw_rebuild_every == 1 ? "" : "s",
-                 JWSPEED_FILE, JWREBUILD_FILE);
+                 s_jw_front_body, JWSPEED_FILE, JWREBUILD_FILE, JWFRONT_FILE);
         plog(msg);
     }
     // Synchronous breadcrumb, and the ONLY one that survives: wave_init() runs
@@ -1404,12 +1509,14 @@ void wave_draw(void) {
         wave_audio_lum3(s_lum3);
         wave_audio_shape(&s_thick, &s_acc);
         wave_audio_deform(&s_def);
+        wave_nav_frame();
         // JellyWave also takes less of the broadband perturbation (0.55x):
         // the fine ripple is what makes a slow wave look agitated rather
-        // than floating.  Legacy modes are untouched.
+        // than floating.  Legacy modes are untouched.  A racing scroll
+        // raises it again (wave_nav.h's shake, 1.0 at rest).
         wf_step(&s_field,
                 WAVE_FIELD_DT * ts * (jellywave ? s_jw_speed : 1.0f),
-                jellywave ? pert * 0.55f : pert, drv);
+                jellywave ? pert * 0.55f * s_nav_fx.perturb : pert, drv);
     }
 
     // Column positions across the screen (x in px, clamped to WAVE_MAX_COLS).
@@ -1909,6 +2016,10 @@ void wave_draw_front(int x, int y, int w, int h) {
     rsxSetScissor(context, (u16)x, (u16)y, (u16)w, (u16)h);
     rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
     rsxSetBlendEnable(context, GCM_TRUE);
+    // The same one-register dither wave_draw() puts over the gradient and the
+    // gel (s_bg_dither), for the same reason: a smooth translucent fill over a
+    // cover is exactly where 8-bit banding shows.  Off again below.
+    if (s_bg_dither) rsxSetDitherEnable(context, GCM_TRUE);
     rsxInvalidateVertexCache(context);
     for (int pass = 0; pass < 2; pass++) {
         const u32 count = s_jw_cnt[slot][pass];
@@ -1919,7 +2030,14 @@ void wave_draw_front(int x, int y, int w, int h) {
         else
             rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE,
                                      GCM_SRC_ALPHA, GCM_ONE);
-        rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_off[slot][pass], count);
+        // Over the cover the body goes down s_jw_front_body times: the same
+        // colour composited again, so its opacity is 1 - (1 - a)^n with no
+        // change of hue -- at the near layer's alpha 150 that is 59% for one
+        // pass, 83% for two (the default), 93% for three.  "Less transparent
+        // in front of the cover", hardware 2026-09-26.
+        const int reps = pass == 0 ? s_jw_front_body : 1;
+        for (int r = 0; r < reps; r++)
+            rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_off[slot][pass], count);
     }
     // The ribbon LIGHTS the cover where it passes: its body once more,
     // added at a constant 9% -- a hint, not a glow (the same constant-alpha
@@ -1937,6 +2055,7 @@ void wave_draw_front(int x, int y, int w, int h) {
     rsxSetScissor(context, 0, 0, (u16)W, (u16)H);
     rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
                              GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+    if (s_bg_dither) rsxSetDitherEnable(context, GCM_FALSE);
 }
 
 void wave_draw_divider_gpu(int y_px, u8 r, u8 g, u8 b, u8 peak_alpha) {

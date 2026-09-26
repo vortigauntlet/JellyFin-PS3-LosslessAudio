@@ -2,6 +2,8 @@
 // (settings, TV sub-screens, collections sub-screens, jump bar, item lists).
 
 #include "menusnow.h"
+#include "month_bg.h"
+#include "ui_wave_audio.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -192,8 +194,12 @@ static bool xmb_input_settings(void) {
             theme_cycle();       // XMB wave -> Golden Age -> any USRDIR/tmp .ini
         if (g_settings_sel == 9)                                        // Menu Particles
             menusnow_set_enabled(!menusnow_enabled());
+        if (g_settings_sel == 10)                                       // Day / Night Palette
+            daynight_set_enabled(!daynight_enabled());
+        if (g_settings_sel == 11)                                       // Wave Intensity
+            wave_audio_set_level((wave_audio_level() + 1) % 4);         // Off -> Normal -> Strong -> Max
 #if ENABLE_PLAYER_STATS
-        if (g_settings_sel == 10)                                       // Player Stats Overlay
+        if (g_settings_sel == 12)                                       // Player Stats Overlay
             statsovl_set_enabled(!statsovl_enabled());
 #endif
     }

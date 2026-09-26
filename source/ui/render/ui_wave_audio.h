@@ -69,3 +69,10 @@ void wave_audio_bands(float lvl[3], float *kick);
 
 // True when the analyser is running (gate on, initialised).  For logging only.
 bool wave_audio_active(void);
+
+// Settings > Wave Intensity: 0 off, 1 normal, 2 strong (the default), 3 max.
+// Persisted in jellyfin_wavereact.txt (the same file FTP has always set) and
+// applied at once, no relaunch.  Render thread.
+int         wave_audio_level(void);
+const char *wave_audio_level_label(void);
+void        wave_audio_set_level(int level);

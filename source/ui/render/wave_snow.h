@@ -95,6 +95,11 @@ typedef struct {
     // none).  Particles it passes glint, and are nudged outward VERY slightly.
     float ring_x, ring_y, ring_r, ring_a;
     float calm;       // 0..1: a vocal-led passage -- slower, stiller particles
+    // The pad (wave_nav.h): wind the way the menu content moves, clip
+    // units/s at the middle depth (near ones go further -- parallax), and
+    // extra Brownian jostle while navigating (0 = none).
+    float wind_x, wind_y;
+    float jostle;
 } ws_ctl;
 
 #define WS_RING_W     0.09f       // the ring's half-thickness
@@ -215,7 +220,9 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
     const float sway  = WS_SWAY * stir;
     const float T     = st->t * 0.045f;
     const float fric  = 1.0f / (1.0f + WS_FRICTION * dt);
-    const float brown = WS_BROWN * dt * calmk;
+    const float brown = WS_BROWN * dt * calmk * (1.0f + ws_clampf(c->jostle, 0.0f, 3.0f));
+    const float wnd_x = ws_clampf(c->wind_x, -0.5f, 0.5f);
+    const float wnd_y = ws_clampf(c->wind_y, -0.5f, 0.5f);
     st->flash = st->flash * (1.0f / (1.0f + dt / WS_FLASH_TAU));
     if (kick * WS_KICK_FLASH > st->flash) st->flash = kick * WS_KICK_FLASH;
 
@@ -265,8 +272,9 @@ static inline void ws_step(ws_state *st, const ws_ctl *c, float dt)
         st->vx[i] = st->vx[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
         st->vy[i] = st->vy[i] * fric + brown * (ws_rand(&st->rng) - 0.5f);
         {
-            const float fu = WS_WIND * 0.3f * (0.5f + 0.5f * near) + sw;   // the flow, x
-            const float fv = swv - fall;                                    // and y
+            const float fu = WS_WIND * 0.3f * (0.5f + 0.5f * near) + sw     // the flow, x
+                           + wnd_x * par;                                  // + the pad's gust
+            const float fv = swv - fall + wnd_y * par;                     // and y
             st->x[i] += (fu + st->vx[i]) * dt;
             st->y[i] += (st->vy[i] + fv) * dt;
             st->spark[i] *= 1.0f / (1.0f + dt / WS_SPARK_TAU);

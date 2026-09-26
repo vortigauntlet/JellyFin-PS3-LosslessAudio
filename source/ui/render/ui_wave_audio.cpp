@@ -79,6 +79,15 @@ static float level_gain(int level)
     return 2.6f;
 }
 
+// Settings > Wave Intensity writes the same file, so FTP and the menu agree.
+static void save_level(int level)
+{
+    FILE *f = fopen(jf_data_path(WAVEAUDIO_FILE), "w");
+    if (!f) return;
+    fprintf(f, "%d\n", level);
+    fclose(f);
+}
+
 // --- state ---------------------------------------------------------------
 // s_wa is written by BOTH threads (wa_push from playback, wa_frame from the
 // UI) and is the only thing the mutex protects.  s_wm is UI-thread only --
@@ -89,6 +98,8 @@ static wm_state     s_wm;
 static sys_mutex_t  s_mtx;
 static bool         s_mtx_ok  = false;
 static bool         s_on      = false;      // gate + init both succeeded
+static bool         s_init_ok = false;      // the analyser is set up (whatever the level)
+static int          s_level   = WAVEAUDIO_DEFAULT;   // 0 off .. 3 max
 static bool         s_started = false;      // one-shot init done
 static u64          s_last_us = 0;
 
@@ -114,11 +125,12 @@ static void wave_audio_start(void)
     wrm_map(NULL, &s_out);                  // idle values, valid from here on
 
     int level = gate_level();
-    if (level == 0) {
-        plog("wave: audio-reactive OFF (jellyfin_wavereact.txt = 0)");
-        crash_log("wave: audio-reactive OFF (gate)");
-        return;
-    }
+    if (level > 3) level = 3;
+    s_level = level;
+    s_gain  = level_gain(level > 0 ? level : WAVEAUDIO_DEFAULT);
+    // The analyser is set up even at level 0 now, so Settings > Wave
+    // Intensity can turn it on without a relaunch.  At 0 nothing is fed and
+    // the published look stays the idle set, exactly as before.
     if (!wa_init(&s_wa, WAVE_AUDIO_RATE)) {
         plog("wave: audio-reactive OFF (wa_init failed)");
         crash_log("wave: audio-reactive OFF (wa_init)");
@@ -144,8 +156,13 @@ static void wave_audio_start(void)
         s_mtx_ok = true;
     }
     s_last_us = timing_get_us();
+    s_init_ok = true;
+    if (level == 0) {
+        plog("wave: audio-reactive OFF (jellyfin_wavereact.txt = 0)");
+        crash_log("wave: audio-reactive OFF (gate)");
+        return;
+    }
     s_on = true;
-    s_gain = level_gain(level);
     {
         char b[96];
         snprintf(b, sizeof b,
@@ -158,6 +175,63 @@ static void wave_audio_start(void)
 }
 
 bool wave_audio_active(void) { return s_on; }
+
+int wave_audio_level(void)
+{
+    if (!s_started) {                       // before the first frame: the file's word
+        const int l = gate_level();
+        return l > 3 ? 3 : l;
+    }
+    return s_level;
+}
+
+const char *wave_audio_level_label(void)
+{
+    static const char *const L[4] = { "Off", "Normal", "Strong", "Max" };
+    const int l = wave_audio_level();
+    return L[l < 0 ? 0 : (l > 3 ? 3 : l)];
+}
+
+// Render thread (the Settings row).  Off -> Normal -> Strong -> Max -> Off.
+void wave_audio_set_level(int level)
+{
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+    save_level(level);
+    if (!s_started) return;                 // wave_audio_start() reads the file
+    s_level = level;
+    if (level > 0) s_gain = level_gain(level);
+    if (level == 0) {
+        if (!s_on) return;
+        // Off: stop feeding (the tap checks s_on) and publish the idle set,
+        // exactly what the gate-off path has always published.
+        s_on = false;
+        wrm_map(NULL, &s_out);
+        wdf_rest(&s_def);
+        s_present = 0.0f;
+        s_kick = 0.0f;
+        s_lum3[0] = s_lum3[1] = s_lum3[2] = 1.0f;
+        plog("wave: audio-reactive OFF (Settings)");
+        return;
+    }
+    if (!s_on && s_init_ok) {
+        // On again: start the analysers from rest, as a launch would.
+        sysMutexLock(s_mtx, 0);
+        wa_init(&s_wa, WAVE_AUDIO_RATE);
+        wsc_init(&s_sc);
+        sysMutexUnlock(s_mtx);
+        wm_init(&s_wm);
+        memset(&s_db, 0, sizeof s_db);
+        memset(&s_wdf, 0, sizeof s_wdf);
+        s_wdf.rim = 1.0f;
+        wdf_rest(&s_def);
+        s_last_us = timing_get_us();
+        s_on = true;
+    }
+    char b[64];
+    snprintf(b, sizeof b, "wave: audio-reactive level %d (Settings)", level);
+    plog(b);
+}
 
 void wave_audio_push(const float *lr, int n_pairs)
 {

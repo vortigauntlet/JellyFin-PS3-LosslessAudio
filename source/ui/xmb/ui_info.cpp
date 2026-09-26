@@ -385,7 +385,12 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             // The artwork's accent, sampled once from main memory before the
             // poster goes to VRAM (render/art_colour.h).  The buffering
             // screen's ring and glow use it when this title is played.
-            ui_art_palette(it->id, &poster);
+            {
+                const art_palette pal = ui_art_palette(it->id, &poster);
+                // ... and the wave takes a hint of it while the page is open
+                // (steady, not breathing; cleared when the page closes).
+                wave_set_art_tint(pal.valid ? pal.accent : 0u, 0.70f);
+            }
             poster_gpu = ui_gpu_tex_upload(GPU_TEX_POSTER, &poster);
             if (poster_gpu) ui_gpu_tex_set_tag(GPU_TEX_POSTER, it->id);
             if (poster_gpu) detail_media_free(&poster);
@@ -776,6 +781,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
     detail_media_free(&poster_cpu);
     ui_gpu_tex_clear(GPU_TEX_POSTER);
     ui_gpu_tex_clear(GPU_TEX_BACKDROP);
+    wave_set_art_tint(0u, 0.0f);          // back to the plain palette
     spine_set_level(back_level);
     slog_state("INFO3_CLOSE");
     g_info_cooldown_until = timing_get_us() + 500000;

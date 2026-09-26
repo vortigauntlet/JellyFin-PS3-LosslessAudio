@@ -28,6 +28,7 @@
 #include "audio.h"
 #include "stream.h"
 #include "plog.h"
+#include "jf_paths.h"           // jf_data_path(): the wave look-ahead file
 extern void crash_log(const char *msg);   // survives a death plog does not
 #include "timing.h"
 #include "jellyfin_api.h"
@@ -114,11 +115,43 @@ static bool             s_stream_unjoined = false;
 // PCM ring + audio source callbacks
 // -------------------------------------------------------
 
+// ---- the wave's look-ahead ----
+// The wave hears the ring s_wave_lead pairs AHEAD of the read cursor.  What it
+// shows reaches the eye late: ~40 ms of hardware DMA after this tap, the
+// frame's accumulation, a rebuild interval and the worker (~25-50 ms), then
+// the flip -- ~100 ms all told, so a drum hit landed about a frame-and-a-half
+// after it was heard.  Feeding it early by the same amount puts the hit on
+// the beat.  jellyfin_wavelead.txt, in ms: absent = 100, 0 = the old tap
+// (what is audible now), at most 400.  Read at music_start().
+//
+// s_wave_fed counts pairs handed to the wave, in s_read_total's coordinates:
+// every pair is fed once, in order, never twice.  When the ring holds less
+// than the lead (a track's first moments) it feeds what there is; if it ever
+// falls behind the read cursor it feeds the pairs being read instead.
+#define WAVELEAD_FILE    "jellyfin_wavelead.txt"
+#define WAVELEAD_DEF_MS  100
+#define WAVELEAD_CHUNK   16384                 // pairs per read call, at most
+static int   s_wave_lead = WAVELEAD_DEF_MS * 48;
+static u64   s_wave_fed  = 0;
+static float s_wave_buf[WAVELEAD_CHUNK * 2];
+
+static int wavelead_setting(void) {
+    FILE *f = fopen(jf_data_path(WAVELEAD_FILE), "r");
+    if (!f) return WAVELEAD_DEF_MS;
+    int v = WAVELEAD_DEF_MS;
+    if (fscanf(f, "%d", &v) != 1) v = WAVELEAD_DEF_MS;
+    fclose(f);
+    if (v < 0) v = 0;
+    if (v > 400) v = 400;
+    return v;
+}
+
 static void mring_flush(void) {
     sysMutexLock(s_pcm_mtx, 0);
     s_wr = s_rd = 0;
     s_n  = 0;
     s_pushed_total = s_read_total = 0;
+    s_wave_fed = 0;
     s_bnd_pending = false;
     sysMutexUnlock(s_pcm_mtx);
 }
@@ -189,18 +222,39 @@ static int music_read_pcm(float *buf, int n_pairs) {
     } else {
         s_consumed += (u64)got;
     }
+    const u64 rt0 = s_read_total;
     s_read_total += (u64)got;
+    // The wave's share, gathered under the same lock (see WAVELEAD_FILE).
+    int wn = 0;
+    if (s_wave_lead > 0) {
+        const u64 rt1 = s_read_total;
+        if (s_wave_fed < rt0) s_wave_fed = rt0;
+        while (s_wave_fed < rt1 && wn < WAVELEAD_CHUNK) {       // behind: what is heard now
+            const int i = (int)(s_wave_fed - rt0);
+            s_wave_buf[wn * 2] = buf[i * 2]; s_wave_buf[wn * 2 + 1] = buf[i * 2 + 1];
+            wn++; s_wave_fed++;
+        }
+        u64 target = rt1 + (u64)s_wave_lead;
+        if (target > rt1 + (u64)s_n) target = rt1 + (u64)s_n;
+        while (s_wave_fed < target && wn < WAVELEAD_CHUNK) {    // ahead, from the ring
+            const int k = (s_rd + (int)(s_wave_fed - rt1)) & (MPCM_CAP - 1);
+            s_wave_buf[wn * 2] = s_ring[k * 2]; s_wave_buf[wn * 2 + 1] = s_ring[k * 2 + 1];
+            wn++; s_wave_fed++;
+        }
+    }
     sysMutexUnlock(s_pcm_mtx);
     // Visualizer tap lives here, not at decode time: these samples hit the
     // hardware DMA ring (~40 ms of latency) now, while the decode cursor can
     // run ~700 ms ahead through the PCM ring — bars must move with what's
     // audible, not with what's buffered.
     music_viz_push(buf, got);
-    // Second consumer of the same tap, for the same reason: the XMB's
-    // background wave reacts to what is audible now.  See
+    // Second consumer: the XMB's background wave.  See
     // source/ui/render/ui_wave_audio.h.  Cheap (fourteen one-pole filters per
-    // sample) and a no-op while the gate is off.
-    wave_audio_push(buf, got);
+    // sample) and a no-op while the gate is off.  It hears the ring a little
+    // AHEAD of what is audible (WAVELEAD_FILE above), so that what it shows
+    // arrives on screen with the sound rather than after it.
+    if (s_wave_lead > 0) wave_audio_push(s_wave_buf, wn);
+    else                 wave_audio_push(buf, got);
     return got;
 }
 
@@ -656,6 +710,13 @@ bool music_start(const MusicTrack *tracks, int count, int start_idx) {
     s_ui_pos    = start_idx;
     s_hold      = true;
     s_shuffle   = false;
+    {
+        const int ms = wavelead_setting();
+        s_wave_lead = ms * 48;             // 48 kHz pairs
+        char b[80];
+        snprintf(b, sizeof b, "music: wave look-ahead %d ms (%s)", ms, WAVELEAD_FILE);
+        plog(b);
+    }
     srand((unsigned)timing_get_us());
     s_cmd       = MCMD_NONE;
     s_paused    = false;

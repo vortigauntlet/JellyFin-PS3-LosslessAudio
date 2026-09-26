@@ -5,6 +5,15 @@
 #include "ui.h"
 #include "timing.h"
 #include "ui_sfx.h"
+#include "ui_wave.h"
+
+// Each d-pad step also reaches the wave (wave_nav.h), with the cursor sound.
+static void nav_step_to_wave(int slot) {
+    if      (slot == NAV_up)    wave_nav_event(0, -1);
+    else if (slot == NAV_down)  wave_nav_event(0,  1);
+    else if (slot == NAV_left)  wave_nav_event(-1, 0);
+    else if (slot == NAV_right) wave_nav_event( 1, 0);
+}
 
 ButtonState btn_cur  = {0};
 ButtonState btn_prev = {0};
@@ -123,12 +132,12 @@ bool btn_nav_repeat(bool held, int slot) {
     if (!active[slot]) {                       // first press
         active[slot]  = true;
         next_us[slot] = now + NAV_DELAY_US;
-        if (slot <= NAV_right) ui_sfx_play(SFX_CURSOR);
+        if (slot <= NAV_right) { ui_sfx_play(SFX_CURSOR); nav_step_to_wave(slot); }
         return true;
     }
     if (now >= next_us[slot]) {                // repeat tick
         next_us[slot] = now + NAV_REPEAT_US;
-        if (slot <= NAV_right) ui_sfx_play(SFX_CURSOR);
+        if (slot <= NAV_right) { ui_sfx_play(SFX_CURSOR); nav_step_to_wave(slot); }
         return true;
     }
     return false;

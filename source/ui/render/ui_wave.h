@@ -25,6 +25,16 @@ void wave_draw_front(int x, int y, int w, int h);
 // toward the cover's accent (0x00RRGGBB), kept inside the purple/blue family.
 // strength ~0.3 is a hint; 0 (or rgb 0) clears it.
 void wave_set_album_tint(unsigned int rgb, float strength);
+
+// A details page's poster colour, the same kind of pull but steady rather
+// than breathing: it eases in when set and out when cleared (rgb 0 or
+// strength 0).  Render thread.
+void wave_set_art_tint(unsigned int rgb, float strength);
+
+// One navigation step, from btn_nav_repeat(): dx -1 left / +1 right, dy -1 up
+// / +1 down.  The wave dips and the particles blow the way the menu content
+// moves; a held scroll shakes it (wave_nav.h).  Render thread.
+void wave_nav_event(int dx, int dy);
 void wave_reset(void);
 
 // True when CPU framebuffer writes are cheap (emulator): the whole XMB
