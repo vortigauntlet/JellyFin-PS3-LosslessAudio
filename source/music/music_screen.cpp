@@ -112,7 +112,7 @@ static bool  s_have_origin = false;     // the album tile's rect is known
 // One cycle here: JellyWave -> JellyDrop -> Canyon -> Off -> JellyWave.
 // JellyWave / JellyDrop / Off are the global wave mode (ui_wave.h, which the
 // menus cycle too, without Canyon); Canyon is this screen's viz mode, drawn
-// over JellyWave.  Holding Square while Canyon is up still picks its preset.
+// over whatever the wave mode is (JellyDrop, the step before it).  Holding Square while Canyon is up still picks its preset.
 static const char *const MVIS_NAME[4] = { "JellyWave", "JellyDrop", "Canyon", "Off" };
 static int music_vis_cur(void) {
     if (viz_mode() == VIZ_CANYON) return 2;
@@ -123,7 +123,11 @@ static void music_vis_cycle(void) {
     switch ((music_vis_cur() + 1) % 4) {
     case 0: viz_set_mode(VIZ_WAVE);   wave_vis_set(WAVE_VIS_JELLYWAVE); break;
     case 1: viz_set_mode(VIZ_WAVE);   wave_vis_set(WAVE_VIS_JELLYDROP); break;
-    case 2: viz_set_mode(VIZ_CANYON); wave_vis_set(WAVE_VIS_JELLYWAVE); break;
+    // Canyon leaves the wave mode as it was: its fade (s_mini_e) draws the
+    // wave underneath, so it must fade in over the JellyDrop it came from --
+    // forcing JellyWave here flashed JellyWave for the half second.  And the
+    // step on to Off sets Off before the fade out, so it fades over nothing.
+    case 2: viz_set_mode(VIZ_CANYON); break;
     default: viz_set_mode(VIZ_WAVE);  wave_vis_set(WAVE_VIS_OFF);       break;
     }
 }
