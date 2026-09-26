@@ -4,7 +4,6 @@
 
 #include "segments.h"
 #include "autoskip.h"
-#include "vmatch.h"         // does a version look like this film?
 #include <stdio.h>
 #include <string.h>
 
@@ -348,9 +347,6 @@ static inline void returning_pump(bool on) {
     buffering_frame();
 }
 
-// Score of the version the PlaybackInfo fallback opened; -100 = no fallback.
-static volatile int s_fallback_score = -100;
-
 // ---- episode chain carry-over (see player.h) -------------------------------
 static bool s_chain_on = false;
 static char s_chain_lang[48]  = "";      // "English", from the audio label's first part
@@ -485,7 +481,6 @@ void show_player(const JFItem *item, u32 resume_secs,
         } pi;
         pi.item = item; pi.msid = media_source_id; pi.ps = &ps;
         pi.done = false; pi.ok = false;
-        s_fallback_score = -100;
         __sync_synchronize();
         sys_ppu_thread_t tid;
         static char tname[] = "jf_pbinfo";
@@ -504,42 +499,27 @@ void show_player(const JFItem *item, u32 resume_secs,
                 // '|'-free names first (our label is cut at 128 bytes, so a
                 // name without a visible '|' is only probably clean), then the
                 // rest in order, at most JW_PB_TRIES in all.
-                // 2026-09-27: ordered by how much each version's filename
-                // looks like THIS film (util/vmatch.h) -- in list order it
-                // played "Avengers Assemble ... Complete", the cartoon series
-                // the indexer had filed under The Avengers.  Versions scoring
-                // below 0 are only tried when nothing scored 0 or more.
                 if (!p->ok) {
                     static JFMediaSources vs;
                     memset(&vs, 0, sizeof vs);
                     if (jellyfin_fetch_media_sources(p->item->id, &vs) && vs.n_sources > 1) {
-                        static int ord[JF_MAX_SOURCES], sc[JF_MAX_SOURCES];
-                        int no = 0;
-                        for (int i = 0; i < vs.n_sources; i++) {
-                            if (p->msid && strcmp(p->msid, vs.source[i].id) == 0) continue;
-                            if (!p->msid && i == 0) continue;     // the default, already failed
-                            sc[i] = version_match_score(vs.source[i].label, p->item->name);
-                            int k = no++;                          // stable insertion by score
-                            while (k > 0 && sc[ord[k - 1]] < sc[i]) { ord[k] = ord[k - 1]; k--; }
-                            ord[k] = i;
-                        }
                         int tried = 0;
-                        for (int o = 0; o < no && !p->ok && tried < 6; o++) {
-                            {
-                                const int i = ord[o];
+                        for (int pass = 0; pass < 2 && !p->ok; pass++)
+                            for (int i = 0; i < vs.n_sources && !p->ok && tried < 6; i++) {
                                 const JFMediaSource *m = &vs.source[i];
-                                if (sc[i] < 0 && sc[ord[0]] >= 0) break;
+                                const bool piped = strchr(m->label, '|') != NULL;
+                                if (piped != (pass == 1)) continue;
+                                if (p->msid && strcmp(p->msid, m->id) == 0) continue;
+                                if (!p->msid && i == 0) continue;     // the default, already failed
                                 tried++;
                                 p->ok = jellyfin_get_playback_info(p->item->id, m->id,
                                             p->ps->session_id, sizeof(p->ps->session_id),
                                             &p->ps->total_secs, NULL, &p->ps->source, true);
                                 char b[200];
-                                snprintf(b, sizeof b, "show_player: version fallback %d/%d id=%.32s score=%d %s",
-                                         tried, vs.n_sources, m->id, sc[i], p->ok ? "OK" : "failed");
+                                snprintf(b, sizeof b, "show_player: version fallback %d/%d id=%.32s %s",
+                                         tried, vs.n_sources, m->id, p->ok ? "OK" : "failed");
                                 plog(b);
-                                if (p->ok) s_fallback_score = sc[i];
                             }
-                        }
                     }
                 }
                 __sync_synchronize();
@@ -715,13 +695,9 @@ void show_player(const JFItem *item, u32 resume_secs,
         return;
     }
     plog("show_player: stream_open OK");
-    // It opened: this is the version to use for this title next time --
-    // unless the fallback picked it without a confident name match (it could
-    // be the wrong film; remembering it made the Avengers cartoon stick).
-    if (ps.source.id[0] && strcmp(ps.source.id, item->id) != 0 &&
-        (s_fallback_score == -100 || s_fallback_score >= 3))
+    // It opened: this is the version to use for this title next time.
+    if (ps.source.id[0] && strcmp(ps.source.id, item->id) != 0)
         vremember_put(item->id, ps.source.id);
-    s_fallback_score = -100;
     lc_logf("stream CONNECTED sock=%d", ps.sock);
     crash_log("p7 stream_open OK");
 
