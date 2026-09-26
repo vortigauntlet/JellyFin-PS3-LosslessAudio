@@ -130,7 +130,7 @@ static void search_thread_fn(void *arg) {
         "%s/Users/%s/Items?searchTerm=%s&Recursive=true"
         "&IncludeItemTypes=Movie,Series,Episode&Limit=%d"
         "&SortBy=SortName&SortOrder=Ascending"
-        "&Fields=Genres,RunTimeTicks,ProductionYear,Container",
+        "&Fields=Genres,RunTimeTicks,ProductionYear,Container,Tags",
         g_server, g_userid, encoded, XMB_ITEMS_MAX);
 
     char dbg[512];

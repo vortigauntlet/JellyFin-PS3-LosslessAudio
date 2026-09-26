@@ -415,6 +415,38 @@ void show_player(const JFItem *item, u32 resume_secs,
                 p->ok = jellyfin_get_playback_info(p->item->id, p->msid, p->ps->session_id,
                                                    sizeof(p->ps->session_id), &p->ps->total_secs,
                                                    NULL, &p->ps->source, true);
+                // VERSION FALLBACK (2026-09-26).  The Gelato plugin on this
+                // server names a temp .strm file after the stream's title,
+                // and a title containing '|' (illegal in a Windows path) makes
+                // PlaybackInfo fail with HTTP 500 -- The Avengers' DEFAULT
+                // version is one, so the film could not be played at all.  A
+                // failing version answers in ~0.1 s, so try the others:
+                // '|'-free names first (our label is cut at 128 bytes, so a
+                // name without a visible '|' is only probably clean), then the
+                // rest in order, at most JW_PB_TRIES in all.
+                if (!p->ok) {
+                    static JFMediaSources vs;
+                    memset(&vs, 0, sizeof vs);
+                    if (jellyfin_fetch_media_sources(p->item->id, &vs) && vs.n_sources > 1) {
+                        int tried = 0;
+                        for (int pass = 0; pass < 2 && !p->ok; pass++)
+                            for (int i = 0; i < vs.n_sources && !p->ok && tried < 6; i++) {
+                                const JFMediaSource *m = &vs.source[i];
+                                const bool piped = strchr(m->label, '|') != NULL;
+                                if (piped != (pass == 1)) continue;
+                                if (p->msid && strcmp(p->msid, m->id) == 0) continue;
+                                if (!p->msid && i == 0) continue;     // the default, already failed
+                                tried++;
+                                p->ok = jellyfin_get_playback_info(p->item->id, m->id,
+                                            p->ps->session_id, sizeof(p->ps->session_id),
+                                            &p->ps->total_secs, NULL, &p->ps->source, true);
+                                char b[200];
+                                snprintf(b, sizeof b, "show_player: version fallback %d/%d id=%.32s %s",
+                                         tried, vs.n_sources, m->id, p->ok ? "OK" : "failed");
+                                plog(b);
+                            }
+                    }
+                }
                 __sync_synchronize();
                 p->done = true;
                 sysThreadExit(0);

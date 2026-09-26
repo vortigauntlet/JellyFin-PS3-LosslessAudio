@@ -204,7 +204,7 @@ static void home_mark_dynamic_stale(void) {
 // or no library of that kind): it is then marked loaded and empty here.
 static bool home_row_url(int r, char *url, size_t cap) {
     HomeRow *row = &s_rows[r];
-    const char *fields = "Genres,RunTimeTicks,ProductionYear,Container";
+    const char *fields = "Genres,RunTimeTicks,ProductionYear,Container,Tags";   // Tags: see is_gelato_stream()
 
     if (r == HR_CONTINUE) {
         snprintf(url, cap,

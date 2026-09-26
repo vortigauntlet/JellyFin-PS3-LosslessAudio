@@ -81,6 +81,27 @@ int xmb_json_first_arr_str(const char *start, int len,
     return 0;
 }
 
+// Gelato's per-stream items.  When Gelato (the debrid plugin feeding this
+// server's libraries) syncs a title's streams -- which it does the moment the
+// title is opened, taking 6-8 s -- it creates one hidden-ish item PER STREAM
+// (16 for a film), tagged "gelato-stream", with the film's own name, poster
+// and provider ids and a null DateCreated.  For a while they list as ordinary
+// children of the library, so the Movies grid showed a recently opened film
+// sixteen times over, and every copy failed to play (PlaybackInfo on a stream
+// item hits Gelato's .strm-path bug: HTTP 500).  They are never something to
+// browse: the title's own item carries every stream as a version.  So they
+// are dropped here, for every list -- which is why the listing queries ask
+// for Tags.  Bounded search; the object is not NUL-terminated at olen.
+static bool is_gelato_stream(const char *obj, int olen) {
+    static const char pat[] = "\"gelato-stream\"";
+    const int n = (int)sizeof(pat) - 1;
+    for (int i = 0; i + n <= olen; i++)
+        if (obj[i] == '"' && memcmp(obj + i, pat, (size_t)n) == 0) return true;
+    return false;
+}
+static unsigned s_gelato_dropped = 0;
+unsigned xmb_gelato_streams_dropped(void) { return s_gelato_dropped; }
+
 int parse_xmb_items(const char *json, XMBItem *arr, int max) {
     return parse_xmb_items_each(json, arr, max, NULL, NULL);
 }
@@ -107,6 +128,8 @@ int parse_xmb_items_each(const char *json, XMBItem *arr, int max,
             p++;
         }
         int olen = (int)(p - obj);
+
+        if (is_gelato_stream(obj, olen)) { s_gelato_dropped++; continue; }
 
         XMBItem it; memset(&it, 0, sizeof(it));
         xmb_json_str_range(obj, olen, "Id",   it.id,   sizeof(it.id));
