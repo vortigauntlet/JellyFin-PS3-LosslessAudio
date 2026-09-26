@@ -122,6 +122,10 @@ static const char *s_d24_title = "";
 
 static bool d24_draw_prompt(const char *line1, const char *line2) {
 #if !BUILD_FOR_RPCS3
+    // Cleared each time: the prompt is redrawn every pass of the 24p confirm
+    // wait with a changing countdown, which would otherwise smear.
+    clearScreen(0x00000000);
+    rsxSync();
     drawHeader();
     drawTextf(40, 100, "%.70s", s_d24_title);
     drawText(40, 130, line1);

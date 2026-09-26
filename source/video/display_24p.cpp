@@ -426,6 +426,17 @@ bool d24_session_begin(const d24_ui *ui)
 		while (ans == 0 && timing_get_us() < until) {
 			sysUtilCheckCallback();
 			ans = ui->poll_answer();
+			// Keep flipping new frames the whole time (2026-09-27): drawn once,
+			// the prompt never appeared on a TV that shows the Blu-ray player's
+			// 24 Hz fine -- the set may only start presenting once it has
+			// locked, which takes seconds, and then wants fresh frames.
+			{
+				char l2[80];
+				const u64 left = (until - timing_get_us()) / 1000000ULL + 1;
+				snprintf(l2, sizeof(l2), "Press X if you can read this.  O = no.  Going back in %llu s",
+				         (unsigned long long)left);
+				ui->draw_prompt("The TV is now at 1080p 24Hz.", l2);
+			}
 			if (timing_get_us() >= next_hb) {
 				char ph[48];
 				snprintf(ph, sizeof(ph), "confirm_wait %llus",
