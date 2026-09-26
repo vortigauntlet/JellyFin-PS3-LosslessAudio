@@ -2,6 +2,7 @@
 // thread spawn, the main display loop, and teardown.  The heavy lifting
 // lives in player_session / player_menu / player_seek / player_display.
 
+#include "segments.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -223,6 +224,26 @@ static void player_draw_next_popup(int auto_secs) {
     int hw = ttf_text_width(hint, hint_px);
     drawTTF((u32)(bx + bw - hw), (u32)(by + bh + 14), hint, hint_px,
             XMB_TEXT_DIM);
+}
+
+// "Skip Intro" badge, bottom right, above where the control bar sits: the X
+// glyph and the label in the same panel style as the NEXT badge.
+static void player_draw_skip_badge(const char *label) {
+    const float label_px = 26.0f;
+    const int   pad_x = 22, pad_y = 14, margin = 48, gap = 14;
+    const int   icon_h = (int)label_px;
+    const int   iw = ps_btn_width('X', icon_h);
+    const int   tw = ttf_text_width(label, label_px);
+    const int   bw = pad_x + iw + gap + tw + pad_x;
+    const int   bh = (int)label_px + 2 * pad_y;
+    const int   bx = (int)display_width - bw - margin;
+    const int   by = (int)display_height - bh - margin * 3;
+
+    drawRect((u32)(bx - 1), (u32)(by - 1), (u32)(bw + 2), (u32)(bh + 2), XMB_HAIRLINE);
+    drawRect((u32)bx, (u32)by, (u32)bw, (u32)bh, XMB_PANEL);
+    drawRect((u32)bx, (u32)by, 3, (u32)bh, XMB_ACCENT);
+    draw_ps_button_vcentered((u32)(bx + pad_x), by + bh / 2, 'X', icon_h, 255);
+    drawTTF((u32)(bx + pad_x + iw + gap), (u32)(by + pad_y), label, label_px, XMB_TEXT, true);
 }
 
 // Drawn while stream_open() waits for the server's response headers.
@@ -510,6 +531,9 @@ void show_player(const JFItem *item, u32 resume_secs,
     // they never picked, and it never matches a bitmap track (track_pref_
     // find_sub requires jf_sub_is_text), so it can never trigger an
     // unexpected transcode.
+    // Intro / credits markers, fetched off this thread (segments.h).
+    segments_start(item->id, ps.source.id);
+
     if (ps.have_tracks && ps.tracks.n_subs > 0) {
         int pref_sub = track_pref_find_sub(&ps.tracks);
         if (pref_sub >= 0) {
@@ -919,7 +943,27 @@ void show_player(const JFItem *item, u32 resume_secs,
         // The HUD owns the D-pad (focus navigation) and X (activates the
         // focused control: play/pause, REW/FF, AUDIO, or CC), returning the
         // action to perform.
+        const double seg_pos = (double)(ps.play_base_us + audio_get_clock_us()) / 1e6;
+        const MediaSegment *skip_seg = ps.paused ? NULL : segments_at(seg_pos);
+        hud_set_skip_offered(skip_seg != NULL);
         HudAction act = hud_handle_input(l2_pressed, r2_pressed, ps.paused);
+        if (act == HUD_ACTION_SKIP_SEGMENT && skip_seg) {
+            segments_skipped();
+            // Credits with a next item queued: go straight to it, as SELECT
+            // on the NEXT badge does.  Otherwise jump to the segment's end.
+            if (skip_seg->type == SEG_OUTRO && have_next) {
+                plog("playing=0 reason=skip_credits_next");
+                s_next_requested = true;
+                ps.playing = false;
+                break;
+            }
+            char line[80];
+            snprintf(line, sizeof(line), "segments: skip %.1f -> %.1f s",
+                     seg_pos, skip_seg->end_secs);
+            plog(line);
+            player_seek_queue_tap(&ps, (int)(skip_seg->end_secs - seg_pos + 0.999));
+            act = HUD_ACTION_NONE;
+        }
         if (act == HUD_ACTION_STOP) {          // O on the redesigned HUD
             plog("playing=0 reason=user_stop_circle");
             user_stopped = true;
@@ -1035,6 +1079,14 @@ void show_player(const JFItem *item, u32 resume_secs,
             rsxSync();
             player_draw_next_popup(auto_secs);
         }
+        if (ps.frame_count > 0 && !hud_is_visible() && !ps.paused) {
+            const MediaSegment *seg = segments_at(
+                (double)(ps.play_base_us + audio_get_clock_us()) / 1e6);
+            if (seg) {
+                if (!next_popup) rsxSync();
+                player_draw_skip_badge(media_segment_skip_label(seg->type));
+            }
+        }
 
         flip();
         flip_queued = true;
@@ -1069,6 +1121,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     }
 
     timing_shutdown();
+    segments_stop();
     hud_shutdown();
 
     // Final position for the server's resume bookmark — read before the

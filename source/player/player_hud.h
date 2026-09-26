@@ -9,7 +9,12 @@ typedef enum {
     HUD_ACTION_SUBTITLE,
     HUD_ACTION_MENU_SELECT,   // hud_menu_choice() gives the chosen entry
     HUD_ACTION_STOP,          // O on the redesigned HUD (spine gate on)
+    HUD_ACTION_SKIP_SEGMENT,  // X on the "Skip Intro" badge (segments.h)
 } HudAction;
+
+// A skippable segment is on screen.  While it is and the bar is hidden, X
+// returns HUD_ACTION_SKIP_SEGMENT instead of revealing the bar.
+void      hud_set_skip_offered(bool offered);
 
 // total_secs: item runtime in seconds (0 = unknown, hides progress)
 // audio_label: current audio track description; NULL or "" defaults to "Audio"

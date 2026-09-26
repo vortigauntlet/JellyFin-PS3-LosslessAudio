@@ -79,8 +79,17 @@ void hud_open_menu(const char *title, const char *const *items,
 
 int hud_menu_choice(void) { return g_hud.menu_choice; }
 
+static bool s_skip_offered = false;
+void hud_set_skip_offered(bool offered) { s_skip_offered = offered; }
+
 HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
     g_hud.seek_delta = 0;
+
+    // The skip badge only shows while the bar is hidden, and then X is its
+    // button -- checked before anything else so the press does not also
+    // reveal the bar.
+    if (s_skip_offered && !g_hud.visible && BTN_PRESSED(cross))
+        return HUD_ACTION_SKIP_SEGMENT;
 
     // Any button activity wakes the HUD.
     bool was_hidden = !g_hud.visible;
