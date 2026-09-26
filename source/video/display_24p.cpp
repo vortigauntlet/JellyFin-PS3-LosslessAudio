@@ -211,6 +211,11 @@ static void revert(const char *why)
 		S.vbfreq_changed = false;
 	}
 	timing_set_display_override(0, 0);
+	// The mode change back drops the scan-out buffer registration just as
+	// the switch did: without this the TV is back at 60 Hz but the head scans
+	// nothing and the screen stays black for the rest of the run (hardware,
+	// 2026-09-27: every failure path but session_end missed it).
+	rsx_rebind_display();
 	S.active = false;
 	remove(F_PENDING);
 	snprintf(b, sizeof(b), "24p: REVERT (%s) rc=0x%08x refresh now 0x%02x (was 0x%02x)%s",
