@@ -956,7 +956,14 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     // ---- Main (display) loop ----
     while (running && ps.playing && !s_vdec_error) {
-        if (flip_queued) waitflip();
+        // Bounded: a display mode change (the 24p check's revert) can leave
+        // no flip pending, and an unbounded wait then froze playback on a
+        // black screen for good (hardware, 2026-09-27).  A normal flip lands
+        // within one vblank, so 250 ms only ever fires in that case.
+        if (flip_queued && !waitflip_timeout(250000)) {
+            static bool s_logged = false;
+            if (!s_logged) { plog("player: flip wait timed out; continuing"); s_logged = true; }
+        }
         flip_queued = false;
         sysUtilCheckCallback();
 
