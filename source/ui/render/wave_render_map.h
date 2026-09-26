@@ -458,8 +458,21 @@ static const float WRM_ENERGY_PUNCH_W[3] = { 1.00f, 0.90f, 1.00f };   // v9: the
 // level against its own last ~3 s says the bass has just arrived: that lifts
 // the near ribbon at once and eases out over ~3 s while the contrast boost and
 // the energy (which need a moment) take over.
-#define WRM_ARRIVAL_H       0.55f    // extra bass-layer level at a full arrival
+#define WRM_ARRIVAL_H       0.65f    // extra bass-layer level at a full arrival
+// v11: measured on Rockstar Lifestyle the drop is a WALL -- one held,
+// distorted 808 at a flat -5..-6 dB for four seconds, no separate kicks
+// under it, the drums proper only at ~35 s.  Nothing to hit, so the drop
+// LANDS: the arrival holds near the top for WRM_ARRIVAL_HOLD, breathing at
+// the tempo so the wall is alive, then eases out as the hits take over.
+#define WRM_ARRIVAL_HOLD    2.5f
+#define WRM_ARRIVAL_BREATH  0.18f    // of the arrival height, at the beat rate
 #define WRM_ARRIVAL_TAU     1.5f     // the arrival hands over to the hits within ~2-3 s
+
+// BEATS KICK THE NEAR RIBBON (v11).  Under a held 808 the bass band barely
+// moves, so its punch cannot show the kicks -- but the beat detector hears
+// them across the spectrum.  Each detected beat sets a floor under the bass
+// layer's punch.
+#define WRM_ONSET_KICK      0.60f    // punch floor at a full-strength beat
 
 #define WRM_VOCAL_DUCK      0.15f    // vocal punch x (1 - this x bass punch); 0.6 thinned the whole-wave hit 12-14%
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
@@ -493,6 +506,9 @@ typedef struct {
     float babs_slow;   // that, over the last ~3 s
     float lvl_slow;    // the absolute loudness, over the last ~3 s
     float arrival;     // 0..1: the bass has just ARRIVED (a drop) -- extra height, easing out
+    float onset, onset_strength;   // set by the caller each frame (wa_features)
+    float arr_hold;    // s the arrival stays up (a drop lands and HOLDS)
+    float arr_ph;      // beat phase of its breathing
     float pdev[3];     // each layer's typical |fast - recent|: its own contrast
     float boost[3];    // the contrast boost applied, 1 .. WRM_PUNCH_BOOST_MAX
     // the physical part: each layer's height rides a spring-damper toward
@@ -566,6 +582,17 @@ static inline float wrm_tempo_speed(float hz, float conf, float energy)
     return t > WRM_TS_MAX ? WRM_TS_MAX : t;
 }
 
+// cos(2 pi t), libm-free (Bhaskara on the folded phase)
+static inline float wdf_like_cos(float t)
+{
+    float f = t + 0.25f, sg = 1.0f, x;
+    f -= (float)(int)f;
+    if (f < 0.0f) f += 1.0f;
+    if (f >= 0.5f) { f -= 0.5f; sg = -1.0f; }
+    x = f * (0.5f - f);
+    return sg * 16.0f * x / (1.25f - 4.0f * x);
+}
+
 static inline float wrm_smooth01(float x)
 {
     x = wrm_clamp(x, 0.0f, 1.0f);
@@ -635,8 +662,22 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         // only a loud master drops: a dynamic mix (Blonde) swings in loudness
         // all the time and must not read every swing as a drop
         a *= present * wrm_clamp((lv - 0.35f) / 0.25f, 0.0f, 1.0f);   // loud enough NOW (a drop gets there in ~0.35 s)
-        // up at once, out over the same few seconds
-        st->arrival = a > st->arrival ? a : st->arrival + (a - st->arrival) * (dt / (1.2f + dt));
+        // up at once; a real drop HOLDS, then eases out
+        if (a > st->arrival) {
+            st->arrival = a;
+        } else if (st->arr_hold > 0.0f) {
+            st->arr_hold -= dt;
+            if (st->arr_hold <= 0.0f) st->arr_hold = -1.0f;   // spent until this arrival ends
+        } else {
+            st->arrival += (a - st->arrival) * (dt / (1.5f + dt));
+        }
+        // only a REAL drop holds -- a big jump that becomes genuinely loud
+        // while it is up (once per arrival); a dynamic song's ordinary
+        // swells get the lift, not the hold
+        if (st->arr_hold == 0.0f && st->arrival > 0.50f && lv > 0.78f) st->arr_hold = WRM_ARRIVAL_HOLD;
+        if (st->arrival < 0.20f && st->arr_hold < 0.0f) st->arr_hold = 0.0f;   // re-armed
+        st->arr_ph += dt * (st->tempo_hz > 0.5f ? st->tempo_hz : 2.0f);
+        if (st->arr_ph > 1.0f) st->arr_ph -= (float)(int)st->arr_ph;
     }
     for (i = 0; i < 3; i++) {
         const float x   = wrm_clamp(src ? src[i] : 0.0f, 0.0f, 1.0f);
@@ -671,8 +712,9 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
                     // rises slowly, FALLS fast: a compressed drop after a
                     // dynamic intro gets its boost within ~1 s (v10)
                     // (fast only on a loud master: a dynamic mix keeps the 4 s memory)
-                    const float tdev = a2 > st->pdev[i] ? WRM_PUNCH_DEV_TAU
-                                     : 1.2f + (WRM_PUNCH_DEV_TAU - 1.2f) * (1.0f - st->energy_eff);
+                    float tdev = a2 > st->pdev[i] ? WRM_PUNCH_DEV_TAU
+                               : 1.2f + (WRM_PUNCH_DEV_TAU - 1.2f) * (1.0f - st->energy_eff);
+                    if (a2 <= st->pdev[i] && st->arrival > 0.2f) tdev = 0.25f;   // a drop: boost now (v11)
                     st->pdev[i] += (a2 - st->pdev[i]) * (dt / (tdev + dt));
                 }
                 b = WRM_PUNCH_REF_DEV / (st->pdev[i] > WRM_PUNCH_DEV_FLOOR ? st->pdev[i] : WRM_PUNCH_DEV_FLOOR);
@@ -684,6 +726,11 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
                 if (i == 1) p *= 1.0f - WRM_VOCAL_DUCK * st->punch[0];   // layer 0 is done first
             }
             // fast in, a little slower out, so a hit reads as a hit
+            if (i == 0 && st->onset > 0.0f) {
+                const float fl = WRM_ONSET_KICK * (0.55f + 0.45f * wrm_clamp(st->onset_strength, 0.0f, 1.0f))
+                               * (0.6f + 0.4f * st->energy_eff);
+                if (fl > p) p = fl;
+            }
             {
                 const float pa = WRM_PUNCH_ATT * (1.0f - WRM_ATT_ENERGY * st->energy_eff);
                 const float pr = WRM_PUNCH_REL + (WRM_PUNCH_REL_E - WRM_PUNCH_REL) * st->energy_eff;
@@ -695,7 +742,9 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
                                   * resp * WRM_DB_RESP[i], 0.0f, 1.0f)
                         * (WRM_DB_SUS_W[i] + (i == 0 ? WRM_SUS_ENERGY * st->energy_eff : 0.0f))
                         + st->punch[i] * (i == 1 ? 0.85f + 0.25f * st->energy_eff : WRM_DB_PUNCH_W[i])
-                        + (i == 0 ? WRM_ARRIVAL_H * st->arrival : 0.0f), 0.0f, 1.0f);
+                        + (i == 0 ? WRM_ARRIVAL_H * st->arrival
+                                    * (1.0f - WRM_ARRIVAL_BREATH * (0.5f + 0.5f * wdf_like_cos(st->arr_ph)))
+                                  : 0.0f), 0.0f, 1.0f);
         amp = WRM_DB_AMP_QUIET + (WRM_DB_AMP_MAX[i] - WRM_DB_AMP_QUIET) * s;
         st->lvl[i] = s;
         if (present <= 0.0f) {

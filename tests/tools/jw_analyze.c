@@ -67,7 +67,7 @@ int main(int argc, char **argv)
         db.in_fast[0] = ft.band_fast[WA_SUB] > ft.band_fast[WA_BASS] ? ft.band_fast[WA_SUB] : ft.band_fast[WA_BASS];
         db.in_fast[1] = 0.20f * ft.band_fast[WA_LOWMID] + 0.60f * ft.band_fast[WA_MID] + 0.20f * ft.band_fast[WA_HIGH];
         db.in_fast[2] = src[2];
-        db.tempo_hz = ft.beat_hz; db.tempo_conf = ft.beat_conf; db.energy = ft.level; db.bass_rel = ft.bass_rel;
+        db.tempo_hz = ft.beat_hz; db.tempo_conf = ft.beat_conf; db.energy = ft.level; db.bass_rel = ft.bass_rel; db.onset = ft.onset; db.onset_strength = ft.onset_strength;
 #ifdef WRM_HAS_FEATURES
         wrm_features(&db, &ft);
 #endif

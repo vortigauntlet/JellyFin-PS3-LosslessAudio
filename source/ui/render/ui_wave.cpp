@@ -153,8 +153,8 @@ void wave_set_album_tint(unsigned int rgb, float strength)
     float k[3] = { r / m, g / m, b / m };
     for (int i = 0; i < 3; i++) {
         float v = 1.0f + strength * (k[i] - 1.0f);
-        if (v < 0.88f) v = 0.88f;                     // ~12% at most (v10)
-        if (v > 1.12f) v = 1.12f;
+        if (v < 0.80f) v = 0.80f;                     // up to ~20%; the cycle below
+        if (v > 1.20f) v = 1.20f;                     // breathes it 0 -> 20% -> 0
         s_album_rgb[i] = v;
     }
     if (s_album_rgb[1] > 1.05f) s_album_rgb[1] = 1.05f;     // never much toward green
@@ -168,7 +168,18 @@ static void jw_look_now(jw_look *k)
     k->thick  = s_thick;
     k->acc    = s_acc;
     k->def    = s_def;
-    k->album[0] = s_album_rgb[0]; k->album[1] = s_album_rgb[1]; k->album[2] = s_album_rgb[2];
+    // The album colour BREATHES: 0 -> full -> 0 over ~24 s (v11), so it is
+    // seen coming and going instead of sitting as a fixed cast.
+    {
+        static float ph = 0.0f;
+        static u64   last = 0;
+        const u64 now = timing_get_us();
+        if (last) ph += (float)(now - last) * 1.0e-6f / 24.0f;
+        last = now;
+        if (ph > 1.0f) ph -= (float)(int)ph;
+        const float c = 0.5f - 0.5f * wdf_sin2pi(ph + 0.25f);    // 0 .. 1 .. 0
+        for (int i = 0; i < 3; i++) k->album[i] = 1.0f + (s_album_rgb[i] - 1.0f) * c;
+    }
 }
 
 

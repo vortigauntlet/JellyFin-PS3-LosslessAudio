@@ -639,12 +639,20 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
     // envelope, and an asymmetric one would ratchet upward on dense material
     // until nothing could clear it.
     {
+        // WINSORISED (v11): one frame moves the mean and the spread by at
+        // most 3x the current spread.  A drop's own transient used to lift
+        // both thresholds so far that the next ~2 s of kicks went unheard
+        // (Rockstar Lifestyle: 3 onsets in 2.5 s after the drop, ~4/s after).
         const float k = wa_k(dt, WA_TAU_FLUX);
-        const float fd = flux > s->flux_avg ? flux - s->flux_avg : s->flux_avg - flux;
-        const float kd = kick > s->kick_avg ? kick - s->kick_avg : s->kick_avg - kick;
-        s->flux_avg += (flux - s->flux_avg) * k;
+        const float fcap = s->flux_avg + 3.0f * s->flux_dev + WA_FLUX_FLOOR;
+        const float kcap = s->kick_avg + 3.0f * s->kick_dev + WA_KICK_FLOOR;
+        const float fl = flux < fcap ? flux : fcap;
+        const float kl = kick < kcap ? kick : kcap;
+        const float fd = fl > s->flux_avg ? fl - s->flux_avg : s->flux_avg - fl;
+        const float kd = kl > s->kick_avg ? kl - s->kick_avg : s->kick_avg - kl;
+        s->flux_avg += (fl - s->flux_avg) * k;
         s->flux_dev += (fd - s->flux_dev) * k;
-        s->kick_avg += (kick - s->kick_avg) * k;
+        s->kick_avg += (kl - s->kick_avg) * k;
         s->kick_dev += (kd - s->kick_dev) * k;
     }
 
