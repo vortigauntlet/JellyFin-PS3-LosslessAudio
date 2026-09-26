@@ -243,7 +243,7 @@ int stream_open(const char *url) {
     int rlen = snprintf(req, sizeof(req),
         "GET %s HTTP/1.1\r\n"
         "Host: %s:%d\r\n"
-        "X-Emby-Authorization: %s\r\n"
+        "Authorization: %s\r\n"
         "Accept: video/mp2t\r\n"
         "User-Agent: " HTTP_USER_AGENT "\r\n"
         "Connection: close\r\n"
