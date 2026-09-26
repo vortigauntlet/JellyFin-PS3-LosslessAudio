@@ -593,7 +593,7 @@ void ui_run_xmb(void) {
         else if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
         else if (BTN_PRESSED(select)) {
-            wave_drop_toggle();         // JellyDrop (ui_wave.h)
+            wave_vis_cycle();           // JellyWave -> JellyDrop -> Off (ui_wave.h)
             ui_sfx_play(SFX_OPTION);
         }
         else if (peek_active())

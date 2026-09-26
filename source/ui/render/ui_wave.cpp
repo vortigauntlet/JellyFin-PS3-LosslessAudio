@@ -227,8 +227,55 @@ void wave_drop_toggle(void)
 
 bool wave_drop_on(void) { jd_load(); return s_jd_want; }
 
+// ---- the visualiser mode (Select) -------------------------------------------
+#define VIS_FILE "jellyfin_visualiser.txt"
+static int  s_vis      = -1;          // -1 = not loaded yet
+static bool s_vis_off  = false;       // mode Off: gradient only
+
+static void vis_load(void)
+{
+    if (s_vis >= 0) return;
+    int v = -1;
+    FILE *f = fopen(jf_data_path(VIS_FILE), "r");
+    if (f) { if (fscanf(f, "%d", &v) != 1) v = -1; fclose(f); }
+    if (v < 0 || v > 2) {                 // first run: carry JellyDrop's old toggle
+        jd_load();
+        v = s_jd_want ? WAVE_VIS_JELLYDROP : WAVE_VIS_JELLYWAVE;
+    }
+    s_vis = v;
+    jd_load();
+    s_jd_want = (v == WAVE_VIS_JELLYDROP);
+    s_vis_off = (v == WAVE_VIS_OFF);
+}
+
+int wave_vis_mode(void) { vis_load(); return s_vis; }
+
+void wave_vis_cycle(void)
+{
+    vis_load();
+    s_vis = (s_vis + 1) % 3;
+    s_jd_want = (s_vis == WAVE_VIS_JELLYDROP);
+    s_vis_off = (s_vis == WAVE_VIS_OFF);
+    s_jd_toggles++;
+    FILE *f = fopen(jf_data_path(VIS_FILE), "w");
+    if (f) { fprintf(f, "%d\n", s_vis); fclose(f); }
+    f = fopen(jf_data_path(JELLYDROP_FILE), "w");
+    if (f) { fputs(s_jd_want ? "1\n" : "0\n", f); fclose(f); }
+    static const char *const k[3] = { "JellyWave", "JellyDrop", "Off" };
+    char b[64]; snprintf(b, sizeof b, "wave: visualiser -> %s (Select)", k[s_vis]);
+    plog(b);
+}
+
+const char *wave_vis_next_label(void)
+{
+    vis_load();
+    static const char *const next[3] = { "JellyDrop", "Off", "JellyWave" };
+    return next[s_vis];
+}
+
 static void jd_frame(float aspect)
 {
+    vis_load();                 // the mode decides where the morph starts
     wave_audio_bands(s_band_lvl, &s_band_kick);
     if (!s_jd_init) {
         jd_motion_init(&s_jd_mo);
@@ -2305,7 +2352,11 @@ void wave_draw(void) {
             rsxSetBlendEnable(context, GCM_TRUE);
         }
 
-        if (jellywave) {
+        vis_load();
+        if (jellywave && s_vis_off) {
+            // Visualiser Off (Select): the gradient above, nothing over it.
+            // s_jw_drawn stays false, so wave_draw_front stands down too.
+        } else if (jellywave) {
             // Explicitly establish JellyWave's hardware-validated standard
             // alpha blend state. Do not inherit whatever state the previous
             // UI/background operation left behind.

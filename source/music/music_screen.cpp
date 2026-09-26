@@ -940,17 +940,23 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     // as soon as the screen starts to settle and return with the first press).
     if (!s_q_open && s_ctl_a > 0.9f && s_scr_a > 0.9f && s_e_ctl > 0.95f) {
         if (s_fzone == FZ_QUEUE) {
-            static const Hint h[5] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
-                                      {'X', "Play"},
-                                      {'T', "Shuffle"},
-                                      {'C', "Back"}};
-            draw_hints_bar(h, 5);
+            // Select names the visualiser it switches TO (JellyWave ->
+            // JellyDrop -> Off -> JellyWave).
+            const Hint h[6] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
+                               {'B', wave_vis_next_label()},
+                               {'X', "Play"},
+                               {'T', "Shuffle"},
+                               {'C', "Back"}};
+            draw_hints_bar(h, 6);
         } else {
-            static const Hint h[5] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
-                                      {'X', "Select"},
-                                      {'T', "Shuffle"},
-                                      {'C', "Back"}};
-            draw_hints_bar(h, 5);
+            // Select names the visualiser it switches TO (JellyWave ->
+            // JellyDrop -> Off -> JellyWave).
+            const Hint h[6] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
+                               {'B', wave_vis_next_label()},
+                               {'X', "Select"},
+                               {'T', "Shuffle"},
+                               {'C', "Back"}};
+            draw_hints_bar(h, 6);
         }
     }
 }
@@ -1096,7 +1102,7 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
     if (BTN_PRESSED(select)) {
         // JellyDrop (2026-09-27; was L1+R1).  Select used to open the full
         // queue overlay -- the same list the on-screen "Up next" zone shows.
-        wave_drop_toggle();
+        wave_vis_cycle();               // JellyWave -> JellyDrop -> Off
         ui_sfx_play(SFX_OPTION);
     }
     if (false) {
