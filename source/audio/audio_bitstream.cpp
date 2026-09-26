@@ -397,4 +397,25 @@ void audio_bitstream_end(void)
 	journal_clear();
 }
 
+void audio_bitstream_reassert(const char *why)
+{
+	if (!s_applied) return;
+	const int mode = bitstream_mode();
+	if (mode == BITSTREAM_OFF) return;
+	audioOutConfiguration want;
+	memset(&want, 0, sizeof(want));
+	want.channel   = 6;
+	want.encoder   = coding_for(mode);
+	want.downMixer = AUDIO_OUT_DOWNMIXER_NONE;
+	const s32 rc = audioOutConfigure(AUDIO_OUT_PRIMARY, &want, NULL, 1);
+	audioOutState st;
+	memset(&st, 0, sizeof(st));
+	audioOutGetState(AUDIO_OUT_PRIMARY, 0, &st);
+	char b[128];
+	snprintf(b, sizeof(b), "bitstream: re-asserted after %s rc=%d -> wire type=%u ch=%u",
+	         why ? why : "?", (int)rc, (unsigned)st.soundMode.type,
+	         (unsigned)st.soundMode.channel);
+	plog(b);
+}
+
 bool audio_bitstream_engaged(void) { return s_engaged; }

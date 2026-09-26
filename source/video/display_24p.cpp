@@ -34,6 +34,7 @@
 #include "rsxutil.h"
 #include "plog.h"
 #include "lclog.h"
+#include "audio_bitstream.h"   // the 6ch configure a mode change undoes
 
 #define F_ENABLE    "/dev_hdd0/tmp/jellyfin_24p.txt"     // "1" = on
 #define F_CONFIRMED "/dev_hdd0/tmp/jf_24p_confirmed.txt" // "1" seen, "0" not
@@ -264,6 +265,7 @@ static void revert(const char *why)
 		S.vbfreq_changed = false;
 	}
 	timing_set_display_override(0, 0);
+	audio_bitstream_reassert("24p revert");   // the HDMI re-lock reset the audio config
 	// The mode change back drops the scan-out buffer registration just as
 	// the switch did: without this the TV is back at 60 Hz but the head scans
 	// nothing and the screen stays black for the rest of the run (hardware,
@@ -531,6 +533,10 @@ bool d24_session_begin(const d24_ui *ui)
 		conf_put(s_tv_fp, 1);
 		plog("24p: TV check confirmed by user");
 	}
+
+	// The switch re-established the HDMI link, and the system put its own
+	// audio configuration back: re-apply the playback's (the centre channel).
+	audio_bitstream_reassert("24p switch");
 
 	// Hand the MEASURED rate to the timing engine and restart its cadence.
 	timing_set_display_override(num, den);

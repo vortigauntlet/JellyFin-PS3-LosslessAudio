@@ -119,16 +119,46 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         snprintf(rem_s, sizeof rem_s, "-%s", t);
     }
 
-    // ---- title: 30px/700 white, -0.01em, at (57,536) ----
+    // ---- the big Play / Pause button, bottom left (2026-09-27) ----
+    // What X does by default: PLAY while paused, PAUSE while playing.  A
+    // 64 px disc at the start of the title row, the title moved right of it.
+    const int pb_d = UIS_H(64), pb_x = v3x(57), pb_y = v3y(522);
+    {
+        const bool foc = g_hud.focus == FOCUS_PP;
+        if (foc)
+            v3_rrect(pb_x - UIS_W(5), pb_y - UIS_H(5), pb_d + UIS_H(10), pb_d + UIS_H(10),
+                     (pb_d + UIS_H(10)) / 2, 0, XMB_ACCENT, 60, 0, 0);
+        v3_rrect(pb_x, pb_y, pb_d, pb_d, pb_d / 2, 2, XMB_ACCENT, 190,
+                 foc ? XMB_ACCENT_ALT : WHITE, foc ? 255 : 110);
+        const int cx = pb_x + pb_d / 2, cy = pb_y + pb_d / 2;
+        if (paused) {
+            // a play triangle, nudged right of centre so it LOOKS centred
+            const int th = pb_d * 26 / 64, tw = th * 7 / 8;
+            const int tx = cx - tw / 2 + pb_d / 32, ty = cy - th / 2;
+            for (int r = 0; r < th; r++) {
+                const float f = (float)r / (float)(th - 1);
+                const int w = (int)((1.0f - (f < 0.5f ? 1.0f - 2.0f * f : 2.0f * f - 1.0f)) * (float)tw + 0.5f);
+                if (w > 0) v3_fill(tx, ty + r, w, 1, WHITE, 255);
+            }
+        } else {
+            // two pause bars
+            const int bh = pb_d * 24 / 64, bw = pb_d * 7 / 64, gap = pb_d * 7 / 64;
+            v3_rrect(cx - gap / 2 - bw, cy - bh / 2, bw, bh, bw / 3, 0, WHITE, 255, 0, 0);
+            v3_rrect(cx + gap / 2,      cy - bh / 2, bw, bh, bw / 3, 0, WHITE, 255, 0, 0);
+        }
+    }
+
+    // ---- title: 30px/700 white, -0.01em, beside the button ----
     const int chips_right = v3x(1223);
     if (g_hud.title[0]) {
         const float tpx = UIS_TF(30.0f);
+        const int tx0 = pb_x + pb_d + UIS_W(20);
         char tb[128];
         snprintf(tb, sizeof tb, "%s", g_hud.title);
-        const int maxw = v3x(960) - v3x(57);
+        const int maxw = v3x(960) - tx0;
         int len = (int)strlen(tb);
         while (len > 1 && ttf_text_width(tb, tpx, true) > maxw) tb[--len] = 0;
-        drawTTF((u32)v3x(57), (u32)v3y(536), tb, tpx, WHITE, true);
+        drawTTF((u32)tx0, (u32)(pb_y + (pb_d - (int)tpx) / 2 - UIS_H(2)), tb, tpx, WHITE, true);
     }
 
     // ---- chips, right-aligned to x=1223: audio, volume, subtitles ----
