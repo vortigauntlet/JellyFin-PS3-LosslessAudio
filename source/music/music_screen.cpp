@@ -16,6 +16,7 @@
 
 #include "ui_internal.h"
 #include "ui_wave.h"
+#include "ui_sfx.h"
 #include "music_screen.h"
 #include "music_player.h"
 #include "music_fft.h"
@@ -1093,6 +1094,12 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
         music_set_shuffle(!music_is_shuffle());
 
     if (BTN_PRESSED(select)) {
+        // JellyDrop (2026-09-27; was L1+R1).  Select used to open the full
+        // queue overlay -- the same list the on-screen "Up next" zone shows.
+        wave_drop_toggle();
+        ui_sfx_play(SFX_OPTION);
+    }
+    if (false) {
         int vis    = q_vis_rows();
         s_q_open   = true;
         s_q_sel    = music_current_pos();

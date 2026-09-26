@@ -9,6 +9,7 @@
 
 #include "ui_internal.h"
 #include "ui_wave.h"
+#include "ui_sfx.h"
 #include "ui_card_gpu.h"
 #include "ui_text_gpu.h"
 #include "ui_strobe_test.h"
@@ -591,6 +592,10 @@ void ui_run_xmb(void) {
             ;                           // it only brought the UI back
         else if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
+        else if (BTN_PRESSED(select)) {
+            wave_drop_toggle();         // JellyDrop (ui_wave.h)
+            ui_sfx_play(SFX_OPTION);
+        }
         else if (peek_active())
             peek_input();               // the quick-peek owns the pad while up
         else if (spine_at_base())
