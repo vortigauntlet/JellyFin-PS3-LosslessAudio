@@ -149,9 +149,16 @@ void player_display_frame(PlayerState *ps) {
 
         if (!b_ok || dur_a >= vblank_period_us) {
             // Pure-A: consume one vblank period, pop if frame exhausted
+            const u32 seq0 = jbuf_peek_seq();
             jbuf_consume_dur(vblank_period_us);
             jbuf_advance();
-            silent_flip = true;
+            // A pop here is a NEW picture and must count as one.  At 59.94 a
+            // film frame always ends in the crossfade branch below, so this
+            // never mattered; at a 1:1 cadence (24p output, 2026-09-27) EVERY
+            // frame ends here, frame_count stayed 0, and the video -- drawn
+            // only once frame_count > 0 -- was never drawn: audio, black screen.
+            if (jbuf_peek_seq() != seq0) do_pop = true;
+            else                         silent_flip = true;
             s_pure_count++;
         } else {
             // Crossfade: dur_a < vblank, B available — blend A→B
