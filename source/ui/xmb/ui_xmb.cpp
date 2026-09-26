@@ -426,8 +426,8 @@ static void xmb_draw_hints(int tab) {
             static const Hint h[] = {{'X',"Confirm"},{'C',"Cancel"}};
             draw_hints_bar(h, 2);
         } else {
-            static const Hint h[] = {{'X',"Select"}};
-            draw_hints_bar(h, 1);
+            static const Hint h[] = {{'X',"Select"},{'T',"Details"}};
+            draw_hints_bar(h, 2);
         }
     } else if (tab == XMB_TAB_SEARCH) {
         if (g_search_focus_results) {
@@ -440,31 +440,36 @@ static void xmb_draw_hints(int tab) {
     } else if (xmb_kind(tab) == TABKIND_MUSIC && g_music_header) {
         static const Hint h[] = {{'D',"Switch"},{'X',"Select"}};
         draw_hints_bar(h, 2);
-    } else if (in_tv_sub || in_col_sub ||
-               (g_music_depth > 0)) {
+    } else if (g_music_depth > 0 && xmb_kind(tab) == TABKIND_MUSIC) {
         static const Hint h[] = {{'X',"Select"},{'C',"Back"}};
         draw_hints_bar(h, 2);
+    } else if (in_tv_sub || in_col_sub) {
+        static const Hint h[] = {{'X',"Select"},{'T',"Details"},{'C',"Back"}};
+        draw_hints_bar(h, 3);
     } else if (g_jumpbar_active) {
         static const Hint h[] = {{'X',"Jump"},{'C',"Cancel"}};
         draw_hints_bar(h, 2);
     } else if (tab == XMB_TAB_HOME && spine_back) {
         // The canvas's L2 bar: the d-pad walks the queue and the categories,
         // X opens detail, O goes back up to the base layer.
-        static const Hint h[] = {{'E',"Nav"},{'X',"Open"},{'C',"Back"}};
-        draw_hints_bar(h, 3);
+        static const Hint h[] = {{'E',"Nav"},{'X',"Open"},{'T',"Details"},{'C',"Back"}};
+        draw_hints_bar(h, 4);
     } else if (tab == XMB_TAB_HOME) {
         // The L1/R1 cluster leads, per handoff section 3.1.  Label is "Tab"
         // and not the document's "Page" because L1/R1 switch TABS on this
         // build (ui_nav.cpp / ui_home.cpp) -- paging is Phase 4, and a hint
         // must describe what the button does today.
         static const Hint h[] = {{'l',""},{'r',"Tab"},
-                                 {'X',"Open"},{'T',"Info"},{'C',"Back"}};
+                                 {'X',"Open"},{'T',"Details"},{'C',"Back"}};
         draw_hints_bar(h, spine_back ? 5 : 4);
     } else {
         static const Hint h[] = {{'l',""},{'r',"Tab"},
-                                 {'E',"Nav"},{'X',"Select"},{'T',"Info"},
+                                 {'E',"Nav"},{'X',"Select"},{'T',"Details"},
                                  {'C',"Back"}};
-        draw_hints_bar(h, spine_back ? 6 : 5);
+        static const Hint hm[] = {{'l',""},{'r',"Tab"},
+                                  {'E',"Nav"},{'X',"Select"},{'C',"Back"}};
+        if (xmb_kind(tab) == TABKIND_MUSIC) draw_hints_bar(hm, spine_back ? 5 : 4);
+        else                                draw_hints_bar(h, spine_back ? 6 : 5);
     }
 }
 

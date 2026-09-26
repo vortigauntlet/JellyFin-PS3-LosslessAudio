@@ -167,6 +167,10 @@ void ambient_cover_over_ui(void);
 // peek_draw_over() draws it after the frame's text flush.  Spine gate only.
 void peek_open_item(const XMBItem *it, int src_w, int src_h, void (*open)(void) = NULL);
 bool peek_input(void);
+// The same card turn for a Settings row: (x,y,w,h) is the row on screen.
+void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
+// Settings: open the highlighted row's description as a peek (ui_settings.cpp).
+void settings_open_help_peek(void);
 bool peek_active(void);    // opening or open: owns input
 bool peek_visible(void);   // anything on screen, including the close
 void peek_draw_over(void);

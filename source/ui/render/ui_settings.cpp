@@ -20,6 +20,9 @@
 #include "subfont.h"
 #include "subcolor.h"
 
+// xmb/ui_peek.cpp (declared in ui_internal.h, not included here).
+void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
+
 static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
     { "Log Out", "Debug Logging", "Screen Size", "1080p Playback (Alpha)",
       "Audio Output", "Dialogue Boost", "Subtitle Font", "Subtitle Colour",
@@ -112,6 +115,15 @@ static int settings_first_row(void) {
 static int settings_row_y(int i) {
     return settings_rows_top()
          + (i - settings_first_row()) * settings_row_pitch();
+}
+
+// Triangle (spine gate): the highlighted row turns over like a poster's
+// quick-peek (xmb/ui_peek.cpp), its back the row's description.
+void settings_open_help_peek(void) {
+    if (g_settings_sel < 0 || g_settings_sel >= XMB_SETTINGS_COUNT) return;
+    const int list_x = ((int)display_width - XMB_LIST_W) / 2;
+    peek_open_text(SETTINGS_LABELS[g_settings_sel], SETTINGS_HELP[g_settings_sel],
+                   list_x, settings_row_y(g_settings_sel), XMB_LIST_W, SET_ROW_H);
 }
 
 // Centered confirm dialog rect.

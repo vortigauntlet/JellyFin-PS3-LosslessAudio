@@ -228,7 +228,13 @@ static bool xmb_input_settings(void) {
     // Triangle: what the highlighted setting does.  The panel follows the
     // selection while it is up; Triangle again or O closes it (O does nothing
     // else while it is open).
-    if (BTN_PRESSED(triangle)) { g_settings_help = !g_settings_help; return false; }
+    if (BTN_PRESSED(triangle)) {
+        // Spine: the row turns over like a poster's quick-peek.  Without the
+        // spine (no peek layer) the old in-place panel.
+        if (g_spine_on) { g_settings_help = false; settings_open_help_peek(); }
+        else            g_settings_help = !g_settings_help;
+        return false;
+    }
     if (g_settings_help && BTN_PRESSED(circle)) { g_settings_help = false; return false; }
     if (BTN_PRESSED(l1)) { g_settings_help = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { g_settings_help = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }

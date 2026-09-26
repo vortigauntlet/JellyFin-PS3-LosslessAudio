@@ -47,6 +47,12 @@ static char      s_img_id[64];               // the poster: cache id + kind
 static ThumbImg  s_img = THUMB_IMG_PRIMARY;
 static void    (*s_open)(void) = NULL;       // what X does from the peek
 
+// Text mode (2026-09-27): the same card turn for a Settings row -- Triangle
+// flips the highlighted row over and its back is the setting's description.
+static bool      s_text_mode = false;
+static char      s_text_title[64];
+static char      s_text_body[320];
+
 // Wrapped synopsis, computed once per item/size (never per frame).
 #define PK_LINES 14
 static char  s_lines[PK_LINES][128];
@@ -60,6 +66,7 @@ bool peek_visible(void) { return s_pk.phase != PEEK_OFF; }
 
 void peek_open_item(const XMBItem *it, int src_w, int src_h, void (*open)(void)) {
     if (!it || !it->id[0]) return;
+    s_text_mode = false;
     s_item  = *it;
     s_open  = open;
     s_src_w = src_w;
@@ -97,6 +104,21 @@ void peek_open_item(const XMBItem *it, int src_w, int src_h, void (*open)(void))
 
 static void peek_close_now(void) { peek_close(&s_pk, timing_get_us()); }
 
+void peek_open_text(const char *title, const char *body, int x, int y, int w, int h) {
+    s_text_mode = true;
+    memset(&s_item, 0, sizeof s_item);
+    snprintf(s_text_title, sizeof s_text_title, "%s", title ? title : "");
+    snprintf(s_text_body, sizeof s_text_body, "%s", body ? body : "");
+    // The wrap cache is keyed by s_item.id: make it the title.
+    snprintf(s_item.id, sizeof s_item.id, "text:%.40s", s_text_title);
+    s_open = NULL;
+    s_src_w = s_src_h = 0;
+    s_img_id[0] = 0;
+    s_from.x = (float)x; s_from.y = (float)y; s_from.w = (float)w; s_from.h = (float)h;
+    s_nlines = -1;
+    peek_open(&s_pk, timing_get_us());
+}
+
 // Input while a peek is up (the grid gets none).  Returns true when the
 // peek consumed this frame.
 bool peek_input(void) {
@@ -105,6 +127,10 @@ bool peek_input(void) {
         BTN_PRESSED(up) || BTN_PRESSED(down) || BTN_PRESSED(left) || BTN_PRESSED(right) ||
         BTN_PRESSED(l1) || BTN_PRESSED(r1)) {
         peek_close_now();
+        return true;
+    }
+    if (s_text_mode) {
+        if (BTN_PRESSED(cross)) peek_close_now();   // nothing deeper to open
         return true;
     }
     if (BTN_PRESSED(cross)) {
@@ -182,6 +208,65 @@ void peek_draw_over(void) {
     peek_tick(&s_pk, now);
     if (s_pk.phase == PEEK_OFF) return;
     if (peek_active()) facts_request(s_item.id);
+
+    if (s_text_mode) {
+        // A wide, low panel: a title and a couple of lines, not a synopsis.
+        peek_rect to;
+        to.w = (float)UIS_W(760); to.h = (float)UIS_H(210);
+        to.x = (float)(XMB_OX + UIS_W(640)) - to.w * 0.5f;
+        to.y = (float)(XMB_OY + UIS_H(372)) - to.h * 0.5f;
+        const peek_frame f = peek_eval(peek_progress(&s_pk, now), s_from, to);
+        const int W = (int)display_width, H = (int)display_height;
+        const int rx = (int)(f.r.x + 0.5f), ry = (int)(f.r.y + 0.5f);
+        const int rw = (int)(f.r.w + 0.5f), rh = (int)(f.r.h + 0.5f);
+        ui_rect_gpu_draw(0, 0, W, H, 0x00000000, a8(0.66f * f.lift));
+        wave_draw_glow_gpu(rx + rw / 2, ry + rh / 2, (int)(f.r.w * 0.5f + UIS_W(90) * f.lift),
+                           rh / 2 + UIS_H(70), (u8)(XMB_ACCENT >> 16), (u8)(XMB_ACCENT >> 8),
+                           (u8)XMB_ACCENT, a8(0.22f * f.lift));
+        if (rw >= 1 && rh >= 1) {
+            if (!f.back) {
+                // The front: the Settings row itself.
+                ui_rect_gpu_draw(rx, ry, rw, rh, XMB_PANEL_HI, 255);
+            } else {
+                const int r = UIS_H(10) < rw / 2 ? UIS_H(10) : rw / 2;
+                wave_draw_rrect_outline_gpu(rx, ry, rw, rh, r, 1,
+                                            art_mix(XMB_HAIRLINE, XMB_ACCENT, 0.55f), 255,
+                                            0x000B0D1A, 0x000B0D1A, 244);
+            }
+        }
+        rsxSync();
+        ui_text_gpu_begin();
+        if (f.back && f.content_a > 0.02f) {
+            const float t = f.content_a;
+            const u32 bg = 0x000B0D1A;
+            const int pad = UIS_W(32);
+            const int tx = (int)to.x + pad, tw = (int)to.w - 2 * pad;
+            int ty = (int)to.y + UIS_H(26);
+            xmb_draw_eyebrow(tx, ty, "Settings", depth_mix_q(bg, XMB_ACCENT_ALT, t));
+            ty += UIS_H(22);
+            {
+                char tl[96];
+                const float tpx = UIS_TF(24.0f);
+                depth_fit_text(tl, sizeof tl, s_text_title, tpx, UI_FACE_DISPLAY, tw);
+                drawTTF_face((u32)tx, (u32)ty, tl, tpx, depth_mix_q(bg, XMB_TEXT, t), UI_FACE_DISPLAY);
+                ty += UIS_H(42);
+            }
+            const float spx = UIS_TF(15.0f);
+            const int   lh  = UIS_H(24);
+            wrap_synopsis(s_text_body, spx, tw);
+            const int max_lines = ((int)(to.y + to.h) - UIS_H(18) - ty) / lh;
+            for (int i = 0; i < s_nlines && i < max_lines; i++)
+                drawTTF((u32)tx, (u32)(ty + i * lh), s_lines[i], spx,
+                        depth_mix_q(bg, XMB_TEXT, t * 0.92f));
+        }
+        if (peek_active() && f.lift > 0.5f) {
+            Hint h[1];
+            h[0].glyph = 'T'; h[0].label = "Close";
+            draw_hints_bar(h, 1);
+        }
+        ui_text_gpu_flush();
+        return;
+    }
 
     const peek_rect to = peek_panel_px();
     const peek_frame f = peek_eval(peek_progress(&s_pk, now), s_from, to);
