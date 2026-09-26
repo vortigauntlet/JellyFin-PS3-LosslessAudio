@@ -11,6 +11,7 @@
 #include "wave_snow.h"
 #include "wave_nav.h"          /* the wave answers the pad */
 #include "wave_look.h"         /* haze, fringe, glow, 59.94 Hz blend */
+#include "wave_drop.h"         /* JellyDrop: the ribbons closed into the bell */
 #include "menusnow.h"         /* Settings > Menu Particles */
 #include "bg_gradient.h"
 #include "timing.h"
@@ -150,6 +151,7 @@ struct jw_look {
     bg_quad        bg;           // the sky, for the haze
     float          px_y;         // one pixel in clip y, for the fringe
     int            look_on;      // jellyfin_jwlook.txt
+    jd_pose        drop;         // JellyDrop (wave_drop.h); morph 0 = JellyWave
 };
 
 // --- the pad (wave_nav.h) ----------------------------------------------------
@@ -177,6 +179,97 @@ static void wave_nav_frame(void)
     const float dt = s_nav_us ? (float)(now - s_nav_us) * 1.0e-6f : 0.0f;
     s_nav_us = now;
     wnv_step(&s_nav, dt, &s_nav_fx);
+}
+
+// --- JellyDrop (wave_drop.h) -------------------------------------------------
+// L1 + R1 together (ui_input.cpp) turn the three ribbons into the Jellyfin
+// bell and back.  The choice is kept in jellyfin_jellydrop.txt ("1" = bell).
+// Render thread only, like the pad's state above: jd_frame() steps the
+// motion and the morph once per wave_draw() call, and the build takes a copy
+// of the pose in its snapshot (jw_look_now), so the worker never reads these.
+#define JELLYDROP_FILE  "jellyfin_jellydrop.txt"
+#define JD_MORPH_S      2.4f          // the design's transition, seconds
+#define JD_HEIGHT       0.40f         // the bell's height, fraction of the screen
+#define JD_CENTRE_Y     0.02f         // NDC, +up: just above the middle
+static bool      s_jd_loaded = false;
+static bool      s_jd_want   = false;  // where the morph is heading
+static bool      s_jd_init   = false;
+static float     s_jd_morph  = 0.0f;   // 0 wave .. 1 bell, linear in time
+static jd_motion s_jd_mo;
+static jd_motes  s_jd_motes;
+static jd_pose   s_jd_pose;            // this frame's, zero = JellyWave
+static u64       s_jd_us     = 0;
+static u32       s_jd_toggles = 0;
+// The analyser's bands, read ONCE per call and shared by the bell and the
+// snow: wave_audio_bands() hands the kick over only once.
+static float     s_band_lvl[3] = { 0.0f, 0.0f, 0.0f };
+static float     s_band_kick   = 0.0f;
+
+static void jd_load(void)
+{
+    if (s_jd_loaded) return;
+    s_jd_loaded = true;
+    FILE *f = fopen(jf_data_path(JELLYDROP_FILE), "r");
+    int v = 0;
+    if (f) { if (fscanf(f, "%d", &v) != 1) v = 0; fclose(f); }
+    s_jd_want = v == 1;
+}
+
+void wave_drop_toggle(void)
+{
+    jd_load();
+    s_jd_want = !s_jd_want;
+    s_jd_toggles++;
+    FILE *f = fopen(jf_data_path(JELLYDROP_FILE), "w");
+    if (f) { fputs(s_jd_want ? "1\n" : "0\n", f); fclose(f); }
+    plog(s_jd_want ? "wave: JellyDrop ON (L1+R1)" : "wave: JellyDrop off -- JellyWave (L1+R1)");
+}
+
+bool wave_drop_on(void) { jd_load(); return s_jd_want; }
+
+static void jd_frame(float aspect)
+{
+    wave_audio_bands(s_band_lvl, &s_band_kick);
+    if (!s_jd_init) {
+        jd_motion_init(&s_jd_mo);
+        jd_motes_init(&s_jd_motes, 0x4A44524Fu);
+        jd_load();
+        s_jd_morph = s_jd_want ? 1.0f : 0.0f;       // a relaunch lands where it was left
+        memset(&s_jd_pose, 0, sizeof s_jd_pose);
+        s_jd_init = true;
+    }
+    const u64 now = timing_get_us();
+    float dt = s_jd_us ? (float)(now - s_jd_us) * 1.0e-6f : 0.0f;
+    s_jd_us = now;
+    if (dt > 0.1f) dt = 0.1f;                       // a blocking load is not a jump
+
+    const float prev = s_jd_morph;
+    const float want = s_jd_want ? 1.0f : 0.0f;
+    if (s_jd_morph < want)      { s_jd_morph += dt / JD_MORPH_S; if (s_jd_morph > want) s_jd_morph = want; }
+    else if (s_jd_morph > want) { s_jd_morph -= dt / JD_MORPH_S; if (s_jd_morph < want) s_jd_morph = want; }
+    if (prev < 0.9f && s_jd_morph >= 0.9f) s_jd_mo.drop_v += 2.2f;   // the seams close: an arrival wobble
+    if (prev > 0.9f && s_jd_morph <= 0.9f) s_jd_mo.sq_v   -= 2.5f;   // the bell stretches before it splits
+
+    if (!(s_jd_morph > 0.0f)) {                     // JellyWave: nothing to pose
+        s_jd_pose.morph = 0.0f;
+        return;
+    }
+    // wa_features, as far as this analyser goes: three bands and a kick.  The
+    // design's balance / width / pitch / drop / key_change are PROPOSED
+    // fields it does not produce, so they rest at zero.
+    jd_in in;
+    memset(&in, 0, sizeof in);
+    in.sub = in.bass = s_band_lvl[0];
+    in.lowmid = in.mid = s_band_lvl[1];
+    in.high = in.air = s_band_lvl[2];
+    in.rms  = (s_band_lvl[0] + s_band_lvl[1] + s_band_lvl[2]) * (1.0f / 3.0f);
+    if (s_band_kick > 0.02f) {
+        in.onset = 1.0f;
+        in.onset_strength = s_band_kick > 1.0f ? 1.0f : s_band_kick;
+    }
+    jd_motion_step(&s_jd_mo, &in, dt);
+    jd_place(&s_jd_mo, s_jd_morph, aspect, 0.0f, JD_CENTRE_Y, JD_HEIGHT, &s_jd_pose);
+    jd_motes_step(&s_jd_motes, dt, s_jd_mo.ts, s_band_lvl[1], in.onset_strength);
 }
 
 // --- a details page's poster colour ------------------------------------------
@@ -262,6 +355,7 @@ static void jw_look_now(jw_look *k)
         k->sky[2] = (1.0f + (1.14f - 1.0f) * d) * (1.0f - 0.04f * g);
     }
     wnv_snapshot(&s_nav, &k->nav);
+    k->drop = s_jd_pose;
     jw_look_extras(k);
 }
 
@@ -448,7 +542,10 @@ typedef struct { float x, y, z, w; u32 rgba; }
 #define JW_BODY_VERTS   (JW_SECTION * 2 * JW_STATIONS + (JW_SECTION - 1) * 2)
 #define JW_RIM_STRIPS   6
 #define JW_RIM_VERTS    (JW_RIM_STRIPS * 2 * JW_STATIONS + (JW_RIM_STRIPS - 1) * 2)
-#define JW_TOTAL_VERTS  (4 + JWL_GLOW_VERTS \
+// JellyDrop's core rides in the glow range: one strip per shell, fanned as
+// centre/rim pairs, joined by degenerate pairs.
+#define JD_CORE_VERTS   (2 + JD_CORE_SHELLS * (2 * (JD_CORE_K + 1) + 2))
+#define JW_TOTAL_VERTS  (4 + JWL_GLOW_VERTS + JD_CORE_VERTS \
                          + JW_LAYERS * (JW_BODY_VERTS + JW_RIM_VERTS + 2 * JWL_FRINGE_VERTS))
 
 #define WAVE_MAX_VERTS  ((WAVE_LEGACY_VERTS > JW_TOTAL_VERTS) \
@@ -545,7 +642,7 @@ static bool s_jw_drawn    = false; // ... and whether it drew JellyWave at all
 // upload (whose rsxSync is the fence for both), drawn once after the gel with
 // an ADDITIVE blend.  A tiny particle is one flat quad; a larger one a fan,
 // bright centre to transparent rim (4 segments, 6 for the bokeh).
-#define MOTE_VERTS  (WS_MAX * 6 * 3)
+#define MOTE_VERTS  ((WS_MAX + JD_MOTES) * 6 * 3)
 static ws_state    s_snow;
 static ws_sprite   s_snow_spr[WS_MAX];
 static WaveVert    s_mote_stage[MOTE_VERTS] __attribute__((aligned(16)));
@@ -626,9 +723,13 @@ static u32 motes_build(float aspect)
     else                   { s_mote_lin -= dt / 1.3f; if (s_mote_lin < want) s_mote_lin = want; }
     s_mote_lvl += (lvl_want - s_mote_lvl) * (dt / (0.8f + dt));
     s_mote_a = s_mote_lin * s_mote_lin * (3.0f - 2.0f * s_mote_lin) * s_mote_lvl;
-    float lvl[3], kick = 0.0f;
-    wave_audio_bands(lvl, &kick);
-    if (s_mote_lin <= 0.0f) return 0;
+    float lvl[3], kick = s_band_kick;
+    lvl[0] = s_band_lvl[0]; lvl[1] = s_band_lvl[1]; lvl[2] = s_band_lvl[2];
+    // JellyDrop's orbit is on whenever the bell is (music or not): it is what
+    // gives the bell its depth.
+    const float jd_vis = jw_smooth(0.55f, 1.0f, s_jd_morph);
+    const bool  snow   = s_mote_lin > 0.0f;
+    if (!snow && !(jd_vis > 0.0f)) return 0;
 
     // The near layer's vertical velocity across the screen, in clip units/s
     // (+up), so the particles near the band ride its motion -- ripples too.
@@ -689,8 +790,18 @@ static u32 motes_build(float aspect)
     c.wind_x  = s_nav_fx.wind_x;              // the pad (wave_nav.h)
     c.wind_y  = s_nav_fx.wind_y;
     c.jostle  = s_nav_fx.jostle;
-    ws_step(&s_snow, &c, dt);
-    ws_shade(&s_snow, &c, s_mote_a, s_snow_spr, WS_MAX);
+    if (snow) {
+        ws_step(&s_snow, &c, dt);
+        ws_shade(&s_snow, &c, s_mote_a, s_snow_spr, WS_MAX);
+    } else {
+        for (int i = 0; i < s_snow.n; i++) s_snow_spr[i].a = 0;
+    }
+    static jd_sprite s_jd_spr[JD_MOTES];
+    for (int i = 0; i < JD_MOTES; i++) {
+        s_jd_spr[i].a = 0;
+        if (jd_vis > 0.0f)
+            jd_motes_sprite(&s_jd_motes, i, &s_jd_pose, aspect, jd_vis, lvl[2], &s_jd_spr[i]);
+    }
 
     static const float C4[5] = { 1.0f, 0.0f, -1.0f, 0.0f, 1.0f };
     static const float S4[5] = { 0.0f, 1.0f, 0.0f, -1.0f, 0.0f };
@@ -734,6 +845,39 @@ static u32 motes_build(float aspect)
             mote_v(&v[0], m->x, m->y, cc);
             mote_v(&v[1], m->x + sx * CS[k],     m->y + sy * SN[k],     ce);
             mote_v(&v[2], m->x + sx * CS[k + 1], m->y + sy * SN[k + 1], ce);
+            n += 3;
+        }
+    }
+    // JellyDrop's orbit: the far half in the behind pass, the near half in
+    // front, as soft fans (a speck when small), same blend as the snow.
+    for (int i = 0; i < JD_MOTES; i++) {
+        const jd_sprite *o = &s_jd_spr[i];
+        if (!o->a) continue;
+        if ((o->front != 0) != (mp == 1)) continue;
+        if (n + 18 > MOTE_VERTS) break;
+        const u32 cc = WAVE_RGBA(o->r, o->g, o->b, o->a);
+        const u32 ce = WAVE_RGBA(o->r, o->g, o->b, 0);
+        if (o->r_px < 2.2f) {
+            const float sy = o->r_px * px2y, sx = sy * inv_aspect;
+            WaveVert *v = &s_mote_stage[n];
+            mote_v(&v[0], o->x - sx, o->y - sy, cc);
+            mote_v(&v[1], o->x + sx, o->y - sy, cc);
+            mote_v(&v[2], o->x + sx, o->y + sy, cc);
+            mote_v(&v[3], o->x - sx, o->y - sy, cc);
+            mote_v(&v[4], o->x + sx, o->y + sy, cc);
+            mote_v(&v[5], o->x - sx, o->y + sy, cc);
+            n += 6;
+            continue;
+        }
+        const bool big = o->r_px >= 7.0f;
+        const int  seg = big ? 6 : 4;
+        const float *CS = big ? C6 : C4, *SN = big ? S6 : S4;
+        const float sy = o->r_px * 1.5f * px2y, sx = sy * inv_aspect;
+        for (int k = 0; k < seg; k++) {
+            WaveVert *v = &s_mote_stage[n];
+            mote_v(&v[0], o->x, o->y, cc);
+            mote_v(&v[1], o->x + sx * CS[k],     o->y + sy * SN[k],     ce);
+            mote_v(&v[2], o->x + sx * CS[k + 1], o->y + sy * SN[k + 1], ce);
             n += 3;
         }
     }
@@ -860,6 +1004,8 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
             Lk.y_off *= 1.0f + 0.50f * look->def.width;
         // the pad's bob: only ever down (wave_nav.h), so the same argument holds
         Lk.y_off += look->nav.bob[li];
+        // JellyDrop: the layer's one alpha moves toward the bell's
+        Lk.alpha = jd_layer_alpha(&Lk, li, look->drop.morph);
         const jw_layer *L  = &Lk;
         int order[JW_SECTION];
         int top[JW_STATIONS], bot[JW_STATIONS];
@@ -878,7 +1024,10 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         float rimg_st[JW_STATIONS];
         const bool rim_on = wdf_rim_glow(&look->def, li, rimg_st, JW_STATIONS) != 0;
         // The key light, drifting (wave_light.h's jw_key_drift) -- or fixed.
-        if (!jw_build_layer_k(L, disp, WF_SAMPLES, aspect, look->key, scratch, JW_VERTS)) {
+        // ... or JellyDrop's loft of the same vertices round the bell
+        // (wave_drop.h), which is this exact call while morph is 0.
+        if (!jd_build_layer_k(L, li, disp, WF_SAMPLES, aspect, look->key, &look->drop,
+                              scratch, JW_VERTS)) {
             sig = jwl_sig_mix(sig, 0xDEADu + (u32)slot);
             continue;
         }
@@ -961,7 +1110,8 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
             // fall into.  Same pass, same blend, so it rides in this range with
             // no extra draw: the body's fringe on the standard blend, the rim's
             // (the lit edge, light to ADD) on the additive one.
-            if (lk && started) {
+            // Not on JellyDrop: a bell has no top and bottom outline.
+            if (lk && started && !(look->drop.morph > 0.0f)) {
                 for (int side = 0; side < 2; side++) {
                     if (n + 2 * JW_STATIONS + 2 > WAVE_MAX_VERTS) break;
                     const int  *idx = side ? bot : top;
@@ -1003,7 +1153,11 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
     // band's centre line (at JWL_GLOW_A) to nothing JWL_GLOW_UP above and
     // JWL_GLOW_DOWN below, in the station's own average body colour -- so it
     // follows the palette, the tint and the music's brightness for free.
-    if (lk && near_ok && n + JWL_GLOW_VERTS <= WAVE_MAX_VERTS) {
+    // JellyDrop fades it out over the first half of the morph: a ring has no
+    // band for it to light.
+    const float glow_k = 1.0f - jw_smooth(0.0f, 0.5f, look->drop.morph);
+    const u32   glow_a = (u32)((float)JWL_GLOW_A * glow_k + 0.5f);
+    if (lk && near_ok && glow_a && n + JWL_GLOW_VERTS <= WAVE_MAX_VERTS) {
         float cx[JW_STATIONS], cy[JW_STATIONS];
         u32   cc[JW_STATIONS];
         for (int i = 0; i < JW_STATIONS; i++) {
@@ -1022,14 +1176,46 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         }
         ex->glow_off = (u32)n;
         for (int i = 0; i < JW_STATIONS; i++) {                 // above
-            JW_PUT(cx[i], cy[i], cc[i] | JWL_GLOW_A);
+            JW_PUT(cx[i], cy[i], cc[i] | glow_a);
             JW_PUT(cx[i], cy[i] + JWL_GLOW_UP, cc[i]);
         }
         JW_PUT(cx[JW_STATIONS - 1], cy[JW_STATIONS - 1] + JWL_GLOW_UP, cc[JW_STATIONS - 1]);  // join
-        JW_PUT(cx[0], cy[0], cc[0] | JWL_GLOW_A);
+        JW_PUT(cx[0], cy[0], cc[0] | glow_a);
         for (int i = 0; i < JW_STATIONS; i++) {                 // below
-            JW_PUT(cx[i], cy[i], cc[i] | JWL_GLOW_A);
+            JW_PUT(cx[i], cy[i], cc[i] | glow_a);
             JW_PUT(cx[i], cy[i] - JWL_GLOW_DOWN, cc[i]);
+        }
+        ex->glow_cnt = (u32)n - ex->glow_off;
+    }
+
+    // THE CORE -- JellyDrop's lit hole (wave_drop.h): three nested shells of
+    // the hole's own contour, additive, bright centre to a dimmer (shell 0) or
+    // vanishing (the outer two) rim.  Emitted into the glow's range -- the
+    // same additive draw, before every layer -- as centre/rim pairs, which a
+    // strip turns into a fan (every other triangle is degenerate).
+    if (jd_core_on(&look->drop) > 0.002f && n + JD_CORE_VERTS <= WAVE_MAX_VERTS) {
+        const float CR = 0.62f, CG = 0.86f, CB = 1.00f;     // lilac-cyan light
+        const float tr = tint[0], tg = tint[1], tb = tint[2];
+        if (!ex->glow_cnt) ex->glow_off = (u32)n;
+        bool any = ex->glow_cnt != 0;
+        for (int k = 0; k < JD_CORE_SHELLS; k++) {
+            float ccx, ccy, rx[JD_CORE_K], ry[JD_CORE_K], gc, gr, ac, ar;
+            if (!jd_core_shell(&look->drop, k, aspect, &ccx, &ccy, rx, ry, &gc, &gr, &ac, &ar))
+                continue;
+            const u32 cc = WAVE_RGBA(jw_u8(CR * gc * tr), jw_u8(CG * gc * tg), jw_u8(CB * gc * tb),
+                                     jw_u8(ac));
+            const u32 cr = WAVE_RGBA(jw_u8(CR * gr * tr), jw_u8(CG * gr * tg), jw_u8(CB * gr * tb),
+                                     jw_u8(ar));
+            if (any) {                                      // degenerate join
+                const WaveVert last = dst[n - 1];
+                JW_PUT(last.x, last.y, last.rgba);
+                JW_PUT(ccx, ccy, cc);
+            }
+            for (int i = 0; i <= JD_CORE_K; i++) {
+                JW_PUT(ccx, ccy, cc);
+                JW_PUT(rx[i % JD_CORE_K], ry[i % JD_CORE_K], cr);
+            }
+            any = true;
         }
         ex->glow_cnt = (u32)n - ex->glow_off;
     }
@@ -1821,6 +2007,7 @@ void wave_draw(void) {
         wave_audio_shape(&s_thick, &s_acc);
         wave_audio_deform(&s_def);
         wave_nav_frame();
+        if (jellywave) jd_frame(W / H);          // JellyDrop's motion and morph
         // JellyWave also takes less of the broadband perturbation (0.55x):
         // the fine ripple is what makes a slow wave look agitated rather
         // than floating.  Legacy modes are untouched.  A racing scroll
@@ -2316,7 +2503,7 @@ void wave_draw(void) {
                  "jellywave: gen=%lluus/build amort=%lluus/call "
                  "up=%lluus/call verts=%u draws=%u rebuild=1/%d "
                  "speed=%d%% repaired=%u dropped=%u (%d calls, %d builds) "
-                 "worker=%d late=%u lerp=%u look=%d",
+                 "worker=%d late=%u lerp=%u look=%d drop=%.2f/%d",
                  (unsigned long long)(s_jw_gen_us / nb),
                  (unsigned long long)(s_jw_gen_us / s_jw_frames),
                  (unsigned long long)(s_jw_upload_us / s_jw_frames),
@@ -2325,7 +2512,8 @@ void wave_draw(void) {
                  (unsigned)s_jw_repaired, (unsigned)s_jw_dropped,
                  (int)s_jw_frames, (int)s_jw_rebuilds,
                  s_jw_worker ? 1 : 0, (unsigned)s_jw_late,
-                 (unsigned)s_jw_lerp_n, s_jw_look_on ? 1 : 0);
+                 (unsigned)s_jw_lerp_n, s_jw_look_on ? 1 : 0,
+                 (double)s_jd_morph, (int)s_jd_toggles);
         plog(msg);
         s_jw_late       = 0;
         s_jw_gen_us     = 0;
@@ -2357,6 +2545,9 @@ bool wave_gpu_blend_ready(void) { return s_wave_varray && s_wave_blend; }
 // Nothing touches the stage, the upload or the reuse guard.
 void wave_draw_front(int x, int y, int w, int h) {
     if (!s_jw_drawn || !s_wave_fp_buf || ui_cpu_bg()) return;
+    // JellyDrop floats BEHIND the covers and the text, always (the user's
+    // call, 2026-09-26): no ribbon over the cover while it is on or morphing.
+    if (s_jd_morph > 0.0f || s_jd_want) return;
     const int slot = JW_LAYERS - 1;               // the near ribbon is drawn last
     if (!s_jw_cnt[slot][0]) return;
     const int W = (int)display_width, H = (int)display_height;
