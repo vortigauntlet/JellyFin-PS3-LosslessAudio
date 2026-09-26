@@ -51,7 +51,11 @@ enum { WAVE_VIS_JELLYWAVE = 0, WAVE_VIS_JELLYDROP = 1, WAVE_VIS_OFF = 2 };
 int         wave_vis_mode(void);
 void        wave_vis_cycle(void);
 void        wave_vis_set(int mode);          // WAVE_VIS_*, persisted
-const char *wave_vis_next_label(void);   // what Select switches TO: the hint
+const char *wave_vis_next_label(void);   // what Square switches TO: the hint
+// Run the Off -> JellyWave entrance (the ribbons sweep in from the left over
+// ~1.3 s) now -- the cold boot fires it as its veil starts to lift.  Only
+// when the mode is JellyWave.  Render thread.
+void        wave_reveal_start(void);
 
 // True when CPU framebuffer writes are cheap (emulator): the whole XMB
 // background is composited on the CPU so the flip presents CPU-drawn content.

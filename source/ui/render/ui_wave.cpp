@@ -279,6 +279,12 @@ void wave_vis_cycle(void)
     plog(b);
 }
 
+void wave_reveal_start(void)
+{
+    vis_load();
+    if (s_vis == WAVE_VIS_JELLYWAVE) s_reveal_t0 = timing_get_us();
+}
+
 const char *wave_vis_next_label(void)
 {
     vis_load();

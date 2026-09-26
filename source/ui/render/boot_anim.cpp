@@ -651,6 +651,12 @@ static void draw(bool scene_black)
 
     // ---- GPU, in FIFO order ----
     if (!scene_black) {
+        // The wave's entrance rides the EMERGE: the moment the veil starts to
+        // lift, the ribbons begin sweeping in from the left edge (the same
+        // Off -> JellyWave animation Square plays), so the XMB rises out of
+        // the black with the wave extending across it.
+        static bool s_wave_in = false;
+        if (!s_wave_in && f.veil > 0.0f) { s_wave_in = true; wave_reveal_start(); }
         float ys[BOOT_VEIL_ROWS_MAX];
         unsigned char as[BOOT_VEIL_ROWS_MAX];
         const int n = boot_veil_rows(f.veil, (float)display_height, ys, as);
