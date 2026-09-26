@@ -939,15 +939,17 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     // as soon as the screen starts to settle and return with the first press).
     if (!s_q_open && s_ctl_a > 0.9f && s_scr_a > 0.9f && s_e_ctl > 0.95f) {
         if (s_fzone == FZ_QUEUE) {
-            static const Hint h[3] = {{'X', "Play"},
+            static const Hint h[5] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
+                                      {'X', "Play"},
                                       {'T', "Shuffle"},
                                       {'C', "Back"}};
-            draw_hints_bar(h, 3);
+            draw_hints_bar(h, 5);
         } else {
-            static const Hint h[3] = {{'X', "Select"},
+            static const Hint h[5] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
+                                      {'X', "Select"},
                                       {'T', "Shuffle"},
                                       {'C', "Back"}};
-            draw_hints_bar(h, 3);
+            draw_hints_bar(h, 5);
         }
     }
 }
