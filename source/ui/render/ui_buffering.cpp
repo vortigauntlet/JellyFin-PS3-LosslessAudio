@@ -190,7 +190,7 @@ static void draw_text(const buf_frame &f) {
 
 void buffering_frame(void) {
     if (!s_on) return;
-    if (s_flip_pending) waitflip();
+    if (s_flip_pending) waitflip_timeout(250000);   // bounded: see buffering_frame
     const u64 now = timing_get_us();
     s_last_draw = now;
     buf_frame f;
@@ -217,6 +217,10 @@ void buffering_frame_paced(u64 min_us) {
     buffering_frame();
 }
 
+// Every flip wait in this file is bounded (2026-09-27): the 24p check draws and
+// flips its own prompt while this screen is up, and resets the flip status as
+// it goes -- so a flip this screen still thinks is pending never completes, and
+// an unbounded waitflip() froze playback at "p8" after the user pressed X.
 void buffering_finish(bool ready) {
     if (!s_on) return;
     const u64 now = timing_get_us();
@@ -231,7 +235,7 @@ void buffering_finish(bool ready) {
     // One last black frame so nothing of the screen lingers under the
     // player's first video frame.
     if (running) {
-        if (s_flip_pending) waitflip();
+        if (s_flip_pending) waitflip_timeout(250000);   // bounded: see buffering_frame
         clearScreen(0x00000000);
         flip();
         s_flip_pending = true;
@@ -277,7 +281,7 @@ bool loading_run(void (*work)(void *), void *arg, const char *label,
         const u64 now = timing_get_us();
         if (now - t0 < 120000ULL || !running) { usleep(4000); continue; }
         sysUtilCheckCallback();
-        if (flip_pending) waitflip();
+        if (flip_pending) waitflip_timeout(250000);
         const float t  = (float)(now - t0 - 120000ULL) * 1.0e-6f;
         float a = t / 0.25f;
         a = a > 1.0f ? 1.0f : a;

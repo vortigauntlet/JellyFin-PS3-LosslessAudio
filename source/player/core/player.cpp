@@ -1266,7 +1266,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // one's buffering screen (and that playback joins these reports first).
     const bool ret_screen = g_spine_on && running && !s_next_requested;
     if (ret_screen) {
-        if (flip_queued) { waitflip(); flip_queued = false; }
+        if (flip_queued) { waitflip_timeout(250000); flip_queued = false; }
         ui_restore_rsx_state();
         buffering_begin(item->id, item->name);
         buffering_step("Returning", false, NULL);
