@@ -135,7 +135,37 @@ void player_display_frame(PlayerState *ps) {
         }
     }
 
-    if (!ps->paused && s_vid_frame_ready && s_timing_ready && jbuf_count() > 0) {
+    // ---- 1:1 (24p output of 24p film): frame-locked ----
+    // Exactly one picture per vblank, never blended.  The duration gate below
+    // is wrong here: its A/V bias nudges the per-vblank period by up to 5 ms,
+    // which at 59.94 only shifts a crossfade but at 1:1 repeats or skips a
+    // frame every few frames -- constant judder (hardware, 2026-09-27).  A/V
+    // is corrected instead by one whole repeat/skip when the smoothed offset
+    // passes 25 ms: that moves it by one frame (41.7 ms), landing inside
+    // +/-17 ms, so it cannot oscillate.
+    const bool one_to_one = timing_is_1to1();
+    if (one_to_one && !ps->paused && s_vid_frame_ready && s_timing_ready && jbuf_count() > 0) {
+        { u64 vpts = jbuf_peek_pts_us(); (void)avsync_compute_diff(vpts, ps->play_base_us); }
+        static int s_settle = 0;          // vblanks before another correction
+        const s64 sm = avsync_get_smoothed_diff();
+        if (s_settle > 0) s_settle--;
+        if (s_settle == 0 && sm > 25000 && sm < 1500000) {
+            // Video ahead: show this picture one more vblank.
+            s_settle = 48;
+            char b[80]; snprintf(b, sizeof b, "1to1: repeat (video +%lld us)", (long long)sm); plog(b);
+        } else {
+            if (s_settle == 0 && sm < -25000 && sm > -1500000 && jbuf_count() > 1) {
+                // Video behind: drop one.
+                jbuf_consume_dur(jbuf_peek_dur());
+                jbuf_advance();
+                s_settle = 48;
+                char b[80]; snprintf(b, sizeof b, "1to1: skip (video %lld us)", (long long)sm); plog(b);
+            }
+            jbuf_consume_dur(jbuf_peek_dur());
+            jbuf_advance();
+            do_pop = true;                // render_blend stays false: pure A
+        }
+    } else if (!one_to_one && !ps->paused && s_vid_frame_ready && s_timing_ready && jbuf_count() > 0) {
         // Measurement only — result discarded; EMA updated for logging.
         // play_base lets avsync fold out an absolute (sub-burn) video PTS.
         { u64 vpts = jbuf_peek_pts_us(); (void)avsync_compute_diff(vpts, ps->play_base_us); }

@@ -184,6 +184,13 @@ void timing_frame_shown(void) {
 // real vblank, so it stays correct at ANY refresh: 16683 at 59.94Hz NTSC,
 // 20000 at 50Hz PAL, 33333 at 30Hz.  Replaces a hardcoded 16683 that silently
 // assumed a 60Hz display and undershot ~17% on a 50Hz CRT (judder).
+// True when one content frame lasts exactly one vblank (24p output of 24p
+// film, 2026-09-27): player_display.cpp then presents frame-locked.
+bool timing_is_1to1(void) {
+    return s_fps_num && s_display_num &&
+           (u64)s_display_num * s_fps_den == (u64)s_fps_num * s_display_den;
+}
+
 s64 timing_vblank_period_us(void) {
     if (s_display_num == 0) return 16683;   // defensive; never happens post-init
     return (s64)1000000 * (s64)s_display_den / (s64)s_display_num;
