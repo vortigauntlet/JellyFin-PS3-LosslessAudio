@@ -546,8 +546,8 @@ static inline jw_rgb jw_rim_color(float rim, float lit, const jw_layer *L)
 // domain instead would have left the outer eighth of each end frozen.
 //
 // Returns JW_VERTS on success, 0 if the request is degenerate.
-static inline int jw_build_layer(const jw_layer *L, const float *disp, int ndisp,
-                                 float aspect, jw_vert *out, int cap)
+static inline int jw_build_layer_k(const jw_layer *L, const float *disp, int ndisp,
+                                   float aspect, jw_vec3 key, jw_vert *out, int cap)
 {
     int   i, j;
     float du, dk;
@@ -622,12 +622,12 @@ static inline int jw_build_layer(const jw_layer *L, const float *disp, int ndisp
 
             ev  = jw_eyevec(p);
             alb = jw_gel_color(p, ny, rim, L);
-            lit_c = jw_shade(alb, n, ev, rim);
+            lit_c = jw_shade_k(alb, n, ev, rim, key);
 
             // The rim pass is lit by the KEY alone, to the design's 0.8 power.
             // wave_light.h owns that dot product so the motes later agree with
             // the ribbon about where the light is.
-            lit = jw_key_lit(n);
+            lit = jw_key_lit_k(n, key);
             lit = lit * (0.8f + 0.2f * lit);     // cheap stand-in for pow(x,0.8)
             rimc = jw_rim_color(rim, lit, L);
 
@@ -646,6 +646,13 @@ static inline int jw_build_layer(const jw_layer *L, const float *disp, int ndisp
         }
     }
     return JW_VERTS;
+}
+
+// The fixed key: what the tests and every caller before the drift expect.
+static inline int jw_build_layer(const jw_layer *L, const float *disp, int ndisp,
+                                 float aspect, jw_vert *out, int cap)
+{
+    return jw_build_layer_k(L, disp, ndisp, aspect, jw_key_dir(), out, cap);
 }
 
 // --- draw order -----------------------------------------------------------

@@ -52,6 +52,7 @@
 #define WAVE_LIGHT_H
 
 #include "wave_cam.h"
+#include "wave_kernel.h"     /* wk_sinf, for the drifting key */
 
 // --- the rig --------------------------------------------------------------
 //
@@ -285,10 +286,10 @@ static inline float jw_tonemap(float x)
 // on its shaded side -- that dark region IS the material reading as thick --
 // and wrapping the lambert would wash it into the mid-tones, which is the
 // single most common way translucency ends up looking like flat plastic.
-static inline jw_rgb jw_irradiance(jw_vec3 n)
+static inline jw_rgb jw_irradiance_k(jw_vec3 n, jw_vec3 key)
 {
     float  sky = n.y * 0.5f + 0.5f;
-    float  kd  = jw_dot(n, jw_key_dir());
+    float  kd  = jw_dot(n, key);
     float  fd  = jw_dot(n, jw_fill_dir());
     float  rd  = jw_dot(n, jw_rim_dir());
     jw_rgb o;
@@ -311,20 +312,23 @@ static inline jw_rgb jw_irradiance(jw_vec3 n)
     return o;
 }
 
+static inline jw_rgb jw_irradiance(jw_vec3 n) { return jw_irradiance_k(n, jw_key_dir()); }
+
 // The specular half: one lobe on the key light only.
 //
 // Only the key gets a highlight because only the key is a small bright source.
 // Giving the fill and the rim their own lobes would put three wet highlights
 // on a surface that should read as having one light on it, which is how a
 // material stops looking like a material and starts looking like a shader.
-static inline float jw_specular(jw_vec3 n, jw_vec3 eyev)
+static inline float jw_specular_k(jw_vec3 n, jw_vec3 eyev, jw_vec3 k)
 {
-    jw_vec3 k = jw_key_dir();
     jw_vec3 h = jw_norm(jw_v3(k.x + eyev.x, k.y + eyev.y, k.z + eyev.z));
     float   d = jw_dot(n, h);
     if (d <= 0.0f) return 0.0f;
     return jw_lut(JW_SPEC_LUT, d) * JW_SPEC_I;
 }
+
+static inline float jw_specular(jw_vec3 n, jw_vec3 eyev) { return jw_specular_k(n, eyev, jw_key_dir()); }
 
 // The raw view-dependent grazing weight, 0..1 -- NOT a colour and not scaled
 // by anything.  Separate from wave_gel.h's geometric rim: that one says "this
@@ -343,11 +347,13 @@ static inline float jw_fresnel(jw_vec3 n, jw_vec3 eyev)
 // a mote brightens on the same beat the ribbon's highlight does.  This is the
 // correlation the file's opening comment is about; it is exposed rather than
 // recomputed so there is exactly one definition of "lit" in the scene.
-static inline float jw_key_lit(jw_vec3 n)
+static inline float jw_key_lit_k(jw_vec3 n, jw_vec3 key)
 {
-    float d = jw_dot(n, jw_key_dir());
+    float d = jw_dot(n, key);
     return (d > 0.0f) ? d : 0.0f;
 }
+
+static inline float jw_key_lit(jw_vec3 n) { return jw_key_lit_k(n, jw_key_dir()); }
 
 // albedo * irradiance + specular + edge, tone-mapped, ready for a u8.
 //
@@ -355,11 +361,11 @@ static inline float jw_key_lit(jw_vec3 n)
 // flat faces and ~0.9 on the rolled edges.  It gates the Fresnel edge term;
 // passing 0 gives a surface with a highlight but no edge response, which is
 // what the flat faces want.
-static inline jw_rgb jw_shade(jw_rgb albedo, jw_vec3 n, jw_vec3 eyev, float rim)
+static inline jw_rgb jw_shade_k(jw_rgb albedo, jw_vec3 n, jw_vec3 eyev, float rim, jw_vec3 key)
 {
-    jw_rgb irr = jw_irradiance(n);
+    jw_rgb irr = jw_irradiance_k(n, key);
     float  fres = jw_fresnel(n, eyev);
-    float  sp  = jw_specular(n, eyev) * (1.0f + JW_FRES_SPEC * fres);
+    float  sp  = jw_specular_k(n, eyev, key) * (1.0f + JW_FRES_SPEC * fres);
     float  fr  = JW_FRES_EDGE * fres * jw_clamp01(rim);
     jw_rgb o;
 
@@ -370,6 +376,33 @@ static inline jw_rgb jw_shade(jw_rgb albedo, jw_vec3 n, jw_vec3 eyev, float rim)
     o.g = jw_tonemap((albedo.g * irr.g + (sp + fr) * JW_GLOW_G) * JW_EXPOSURE);
     o.b = jw_tonemap((albedo.b * irr.b + (sp + fr) * JW_GLOW_B) * JW_EXPOSURE);
     return o;
+}
+
+static inline jw_rgb jw_shade(jw_rgb albedo, jw_vec3 n, jw_vec3 eyev, float rim)
+{
+    return jw_shade_k(albedo, n, eyev, rim, jw_key_dir());
+}
+
+// THE DRIFTING KEY (2026-09-26).  The key light turns slowly about the
+// vertical -- +/-14 degrees over a 150 s cycle -- and tips +/-5 degrees over
+// 211 s, so the wet highlight and the terminator crawl along the gel instead
+// of sitting still: the difference between glass and a printed picture of
+// glass.  Two incommensurate periods, so the path never visibly repeats.
+// t is seconds; t = 0 is exactly jw_key_dir().  Pure, libm-free.
+#define JW_DRIFT_YAW    0.2443461f     /* 14 deg */
+#define JW_DRIFT_PITCH  0.0872665f     /* 5 deg  */
+#define JW_DRIFT_T_YAW  150.0f
+#define JW_DRIFT_T_PIT  211.0f
+static inline jw_vec3 jw_key_drift(float t)
+{
+    const float a  = JW_DRIFT_YAW   * wk_sinf(t * (6.2831853f / JW_DRIFT_T_YAW));
+    const float b  = JW_DRIFT_PITCH * wk_sinf(t * (6.2831853f / JW_DRIFT_T_PIT));
+    const float ca = wk_sinf(a + WK_HALF_PI), sa = wk_sinf(a);
+    const float cb = wk_sinf(b + WK_HALF_PI), sb = wk_sinf(b);
+    jw_vec3 k = jw_key_dir();
+    // yaw about y, then pitch about x
+    jw_vec3 y = jw_v3(k.x * ca + k.z * sa, k.y, -k.x * sa + k.z * ca);
+    return jw_norm(jw_v3(y.x, y.y * cb - y.z * sb, y.y * sb + y.z * cb));
 }
 
 static inline unsigned char jw_u8(float v)

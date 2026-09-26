@@ -10,6 +10,7 @@
 #include "wave_gel.h"          /* JellyWave: pulls wave_cam.h + wave_light.h */
 #include "wave_snow.h"
 #include "wave_nav.h"          /* the wave answers the pad */
+#include "wave_look.h"         /* haze, fringe, glow, 59.94 Hz blend */
 #include "menusnow.h"         /* Settings > Menu Particles */
 #include "bg_gradient.h"
 #include "timing.h"
@@ -144,6 +145,11 @@ struct jw_look {
     float          art[3];       // a details page's poster colour, same rules
     float          sky[3];       // day / night and the dusk glow (1 = the night look)
     wnv_look       nav;          // the pad's pushes and bob (wave_nav.h)
+    // the look pass (wave_look.h)
+    jw_vec3        key;          // the key light, drifting (jw_key_drift)
+    bg_quad        bg;           // the sky, for the haze
+    float          px_y;         // one pixel in clip y, for the fringe
+    int            look_on;      // jellyfin_jwlook.txt
 };
 
 // --- the pad (wave_nav.h) ----------------------------------------------------
@@ -214,6 +220,7 @@ void wave_set_album_tint(unsigned int rgb, float strength)
     if (s_album_rgb[1] > 1.05f) s_album_rgb[1] = 1.05f;     // never much toward green
 }
 
+static void jw_look_extras(jw_look *k);     // below: needs s_bg and the gates
 static void jw_look_now(jw_look *k)
 {
     k->amp[0] = s_amp[0]; k->amp[1] = s_amp[1]; k->amp[2] = s_amp[2];
@@ -255,6 +262,7 @@ static void jw_look_now(jw_look *k)
         k->sky[2] = (1.0f + (1.14f - 1.0f) * d) * (1.0f - 0.04f * g);
     }
     wnv_snapshot(&s_nav, &k->nav);
+    jw_look_extras(k);
 }
 
 
@@ -440,7 +448,8 @@ typedef struct { float x, y, z, w; u32 rgba; }
 #define JW_BODY_VERTS   (JW_SECTION * 2 * JW_STATIONS + (JW_SECTION - 1) * 2)
 #define JW_RIM_STRIPS   6
 #define JW_RIM_VERTS    (JW_RIM_STRIPS * 2 * JW_STATIONS + (JW_RIM_STRIPS - 1) * 2)
-#define JW_TOTAL_VERTS  (4 + JW_LAYERS * (JW_BODY_VERTS + JW_RIM_VERTS))
+#define JW_TOTAL_VERTS  (4 + JWL_GLOW_VERTS \
+                         + JW_LAYERS * (JW_BODY_VERTS + JW_RIM_VERTS + 2 * JWL_FRINGE_VERTS))
 
 #define WAVE_MAX_VERTS  ((WAVE_LEGACY_VERTS > JW_TOTAL_VERTS) \
                          ? WAVE_LEGACY_VERTS : JW_TOTAL_VERTS)
@@ -543,6 +552,12 @@ static WaveVert    s_mote_stage[MOTE_VERTS] __attribute__((aligned(16)));
 static WaveVert   *s_mote_vbuf[2] = { NULL, NULL };
 static u32         s_mote_voff[2] = { 0, 0 };
 static u32         s_mote_n  = 0;          // vertices uploaded by this call
+static u32         s_mote_far_n = 0;       // ... of which [0, this) are behind the gel
+static bool        s_jw_look_on = true;    // jellyfin_jwlook.txt (see below)
+// Particles at least this deep sit BEHIND the ribbons (wave_snow.h's z:
+// 0 nearest .. 1 furthest).  The far ones are the small, dim, sharp-to-faint
+// half of the field, which is what reads as further away than the gel.
+#define WS_BEHIND_Z 0.55f
 static bool        s_mote_ok = false;
 static float       s_mote_a  = 0.0f;       // the eased fade, 0..1
 static float       s_mote_lin = 0.0f;      // the fade's linear ramp, 0..1
@@ -685,9 +700,17 @@ static u32 motes_build(float aspect)
     const float px2y = 1.0f / 540.0f;              // 1080p pixels -> clip y
     const float inv_aspect = 1.0f / aspect;
     u32 n = 0;
+    // Two passes: the FAR particles first (drawn behind the ribbons), then
+    // the near ones (in front).  s_mote_far_n is where the split falls.  With
+    // the look pass off every particle is "near", as before.
+    s_mote_far_n = 0;
+    for (int mp = 0; mp < 2; mp++) {
+    if (mp == 1) s_mote_far_n = n;
     for (int i = 0; i < s_snow.n; i++) {
         const ws_sprite *m = &s_snow_spr[i];
         if (!m->a) continue;
+        const bool far_p = s_jw_look_on && s_snow.z[i] >= WS_BEHIND_Z;
+        if (far_p != (mp == 0)) continue;
         const u32 cc = WAVE_RGBA(m->r, m->g, m->b, m->a);
         const u32 ce = WAVE_RGBA(m->r, m->g, m->b, 0);
         if (m->r_px < 2.2f) {                          // a speck: one flat quad
@@ -713,6 +736,7 @@ static u32 motes_build(float aspect)
             mote_v(&v[2], m->x + sx * CS[k + 1], m->y + sy * SN[k + 1], ce);
             n += 3;
         }
+    }
     }
     return n;
 }
@@ -746,10 +770,24 @@ static inline u32 jw_rim_rgba(const jw_vert *q, float g, const float *t)
 // constants, so it runs unchanged on the render thread (the first build) or
 // on the generation worker (every build after it).  Nothing here touches the
 // RSX-local buffers.
+// What a build produces besides the layer ranges (the look pass, 2026-09-26):
+// the near ribbon's glow range, and the signature that says whether this
+// build can be blended vertex-for-vertex with the one before it.
+struct jw_extra {
+    u32 glow_off, glow_cnt;
+    u32 sig;
+};
+
+// The stage's own extra (what s_jw_stage holds), and whether this rebuild
+// call put a new build there.
+static jw_extra s_jw_ex_stage = { 0, 0, 0 };
+static bool     s_jw_fresh    = false;
+
 static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
                        const jw_look *look, float *disp,
                        float aspect, jw_vert *scratch,
                        u32 off[JW_LAYERS][2], u32 cnt[JW_LAYERS][2],
+                       jw_extra *ex,
                        u32 *repaired_out, u32 *dropped_out)
 {
     // G: the travelling glow's gain at this station (1 = none).
@@ -764,6 +802,13 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         dst[n].rgba = (USE_RIM)                                 \
             ? jw_rim_rgba(q_, rimg * (GR), tint)                \
             : jw_body_rgba(q_, (A), (G), tint);                 \
+        n++;                                                    \
+    } while (0)
+    // A vertex from explicit values (the fringe and the glow).
+    #define JW_PUT(X, Y, RGBA) do {                             \
+        dst[n].x = (X); dst[n].y = (Y);                         \
+        dst[n].z = 0.0f; dst[n].w = 1.0f;                       \
+        dst[n].rgba = (RGBA);                                   \
         n++;                                                    \
     } while (0)
 
@@ -785,6 +830,15 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
     tint[0] *= look->art[0] * look->sky[0];
     tint[1] *= look->art[1] * look->sky[1];
     tint[2] *= look->art[2] * look->sky[2];
+
+    // The look pass's per-build state.
+    const bool lk     = look->look_on != 0;
+    const float fdy   = look->px_y * JWL_FRINGE_PX;     // the fringe, in clip y
+    u32  sig          = 0x4A57u;
+    bool near_ok      = false;                          // the near layer is in scratch
+    int  n_top[JW_STATIONS], n_bot[JW_STATIONS];        // its silhouette, for the glow
+    ex->glow_off = ex->glow_cnt = 0;
+
     for (int slot = 0; slot < JW_LAYERS; slot++) {
         const int       li = JW_LAYERS - 1 - slot;
         // The audio look for this layer, on a copy: disp_gain scales the
@@ -808,6 +862,7 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         Lk.y_off += look->nav.bob[li];
         const jw_layer *L  = &Lk;
         int order[JW_SECTION];
+        int top[JW_STATIONS], bot[JW_STATIONS];
         int pass, s, i;
 
         cnt[slot][0] = cnt[slot][1] = 0;
@@ -822,19 +877,45 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
         const bool glow_on = wdf_glow(&look->def, li, glow, JW_STATIONS) != 0;
         float rimg_st[JW_STATIONS];
         const bool rim_on = wdf_rim_glow(&look->def, li, rimg_st, JW_STATIONS) != 0;
-        if (!jw_build_layer(L, disp, WF_SAMPLES, aspect, scratch, JW_VERTS))
+        // The key light, drifting (wave_light.h's jw_key_drift) -- or fixed.
+        if (!jw_build_layer_k(L, disp, WF_SAMPLES, aspect, look->key, scratch, JW_VERTS)) {
+            sig = jwl_sig_mix(sig, 0xDEADu + (u32)slot);
             continue;
+        }
 
         {
             int repaired = 0;
             if (!jw_sanitize_layer(scratch, &repaired)) {
                 (*dropped_out)++;
+                sig = jwl_sig_mix(sig, 0xDEADu + (u32)slot);
                 continue;
             }
             *repaired_out += (u32)repaired;
         }
 
+        // Aerial perspective: the further layers take on the sky behind them.
+        // After the sanitizer (every vertex is on screen-ish and finite), and
+        // before anything reads a colour.
+        if (lk && JWL_HAZE[li] > 0.0f) {
+            for (int k = 0; k < JW_VERTS; k++) {
+                jw_vert *q = &scratch[k];
+                float br, bgc, bb;
+                bg_sample_f(&look->bg, (q->x + 1.0f) * 0.5f, (1.0f - q->y) * 0.5f, &br, &bgc, &bb);
+                jwl_haze(q, br, bgc, bb, JWL_HAZE[li]);
+            }
+        }
+
         jw_strip_order(scratch, order);
+        for (s = 0; s < JW_SECTION; s++) sig = jwl_sig_mix(sig, (u32)order[s]);
+
+        // The outline, once per layer: the fringe below uses it, and the
+        // near layer's also feeds the glow.
+        for (i = 0; i < JW_STATIONS; i++) {
+            if (!jwl_silhouette(scratch, i, &top[i], &bot[i])) {
+                top[i] = i ? top[i - 1] : 3;          // cannot happen after the sanitizer
+                bot[i] = i ? bot[i - 1] : 9;
+            }
+        }
 
         for (pass = 0; pass < 2; pass++) {
             int started = 0;
@@ -873,11 +954,90 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
                 tail = &scratch[(JW_STATIONS - 1) * JW_SECTION + j2];
             }
 
+            // THE FRINGE -- edge anti-aliasing.  Along the top and the bottom
+            // outline, a strip JWL_FRINGE_PX wide going OUTWARD, from the edge
+            // vertex's own colour at the layer's alpha to the same colour at
+            // alpha 0: the stair-steps of the hard polygon edge get a ramp to
+            // fall into.  Same pass, same blend, so it rides in this range with
+            // no extra draw: the body's fringe on the standard blend, the rim's
+            // (the lit edge, light to ADD) on the additive one.
+            if (lk && started) {
+                for (int side = 0; side < 2; side++) {
+                    if (n + 2 * JW_STATIONS + 2 > WAVE_MAX_VERTS) break;
+                    const int  *idx = side ? bot : top;
+                    const float dy  = side ? -fdy : fdy;
+                    const jw_vert *first = &scratch[0 * JW_SECTION + idx[0]];
+                    // Degenerate join: the LAST VERTEX EMITTED, repeated (after
+                    // the first fringe that is an outer, alpha-0 vertex, not a
+                    // scratch point -- repeating the inner one instead makes a
+                    // real triangle across the screen), then this strip's first.
+                    // dst is main memory, the stage or the worker's buffer.
+                    { const WaveVert last = dst[n - 1]; JW_PUT(last.x, last.y, last.rgba); }
+                    JW_EMIT(first, L->alpha, pass, 1.0f);
+                    for (i = 0; i < JW_STATIONS; i++) {
+                        const jw_vert *q = &scratch[i * JW_SECTION + idx[i]];
+                        const float g_  = glow_on ? glow[i] : 1.0f;
+                        const float gr_ = rim_on ? g_ * rimg_st[i] : g_;
+                        const u32 c = pass ? jw_rim_rgba(q, rimg * gr_, tint)
+                                           : jw_body_rgba(q, L->alpha, g_, tint);
+                        JW_PUT(q->x, q->y, c);
+                        JW_PUT(q->x, q->y + dy, c & 0xFFFFFF00u);
+                    }
+                }
+            }
+
             cnt[slot][pass] = (u32)n - off[slot][pass];
+            sig = jwl_sig_mix(sig, cnt[slot][pass]);
+        }
+
+        if (li == 0) {
+            near_ok = true;
+            for (i = 0; i < JW_STATIONS; i++) { n_top[i] = top[i]; n_bot[i] = bot[i]; }
         }
     }
+
+    // THE GLOW -- the near ribbon's light on the sky around it.  Emitted after
+    // every layer (the near one is the last built, so scratch still holds it)
+    // but DRAWN first, before any layer, additive: it lights the background
+    // and shows through the gel.  Two strips per station column, from the
+    // band's centre line (at JWL_GLOW_A) to nothing JWL_GLOW_UP above and
+    // JWL_GLOW_DOWN below, in the station's own average body colour -- so it
+    // follows the palette, the tint and the music's brightness for free.
+    if (lk && near_ok && n + JWL_GLOW_VERTS <= WAVE_MAX_VERTS) {
+        float cx[JW_STATIONS], cy[JW_STATIONS];
+        u32   cc[JW_STATIONS];
+        for (int i = 0; i < JW_STATIONS; i++) {
+            const jw_vert *t = &scratch[i * JW_SECTION + n_top[i]];
+            const jw_vert *b = &scratch[i * JW_SECTION + n_bot[i]];
+            cx[i] = 0.5f * (t->x + b->x);
+            cy[i] = 0.5f * (t->y + b->y);
+            float r = 0.0f, g = 0.0f, bl = 0.0f;
+            for (int j = 0; j < JW_SECTION; j++) {
+                const jw_vert *q = &scratch[i * JW_SECTION + j];
+                r += q->r; g += q->g; bl += q->b;
+            }
+            const float k = 1.0f / (float)JW_SECTION;
+            cc[i] = WAVE_RGBA(jw_c8(r * k * tint[0]), jw_c8(g * k * tint[1]),
+                              jw_c8(bl * k * tint[2]), 0);
+        }
+        ex->glow_off = (u32)n;
+        for (int i = 0; i < JW_STATIONS; i++) {                 // above
+            JW_PUT(cx[i], cy[i], cc[i] | JWL_GLOW_A);
+            JW_PUT(cx[i], cy[i] + JWL_GLOW_UP, cc[i]);
+        }
+        JW_PUT(cx[JW_STATIONS - 1], cy[JW_STATIONS - 1] + JWL_GLOW_UP, cc[JW_STATIONS - 1]);  // join
+        JW_PUT(cx[0], cy[0], cc[0] | JWL_GLOW_A);
+        for (int i = 0; i < JW_STATIONS; i++) {                 // below
+            JW_PUT(cx[i], cy[i], cc[i] | JWL_GLOW_A);
+            JW_PUT(cx[i], cy[i] - JWL_GLOW_DOWN, cc[i]);
+        }
+        ex->glow_cnt = (u32)n - ex->glow_off;
+    }
+    sig = jwl_sig_mix(sig, ex->glow_cnt);
+    ex->sig = sig;
     #undef JW_EMIT
     #undef JW_EMIT2
+    #undef JW_PUT
     return n;
 }
 
@@ -911,6 +1071,7 @@ static float            s_jw_job_aspect = 1.0f;
 static jw_look          s_jw_job_look;
 static u32              s_jw_back_off[JW_LAYERS][2];
 static u32              s_jw_back_cnt[JW_LAYERS][2];
+static jw_extra         s_jw_back_ex;
 static int              s_jw_back_n = 0;
 static u32              s_jw_back_repaired = 0, s_jw_back_dropped = 0;
 static u64              s_jw_back_us = 0;
@@ -931,7 +1092,7 @@ static void jw_worker_fn(void *arg)
         const int m = jw_generate(s_jw_back, 4, s_jw_job_sy,
                                   &s_jw_job_look, s_jw_wdisp, s_jw_job_aspect,
                                   s_jw_wscratch, s_jw_back_off, s_jw_back_cnt,
-                                  &rep, &drop);
+                                  &s_jw_back_ex, &rep, &drop);
         s_jw_back_n        = m;
         s_jw_back_repaired = rep;
         s_jw_back_dropped  = drop;
@@ -977,6 +1138,8 @@ static int jw_worker_publish(int n)
     memcpy(&s_jw_stage[n], &s_jw_back[n], (size_t)(m - n) * sizeof(WaveVert));
     memcpy(s_jw_off, s_jw_back_off, sizeof s_jw_off);
     memcpy(s_jw_cnt, s_jw_back_cnt, sizeof s_jw_cnt);
+    s_jw_ex_stage = s_jw_back_ex;
+    s_jw_fresh    = true;                      // a new build is in the stage
     s_jw_gen_us   += s_jw_back_us;
     s_jw_repaired += s_jw_back_repaired;
     s_jw_dropped  += s_jw_back_dropped;
@@ -995,6 +1158,125 @@ static void jw_worker_queue(float aspect)
     s_jw_job_aspect = aspect;
     __sync_synchronize();                      // the snapshot lands before the flag
     s_jw_job = JW_JOB_QUEUED;
+}
+
+// --- 59.94 Hz motion (the look pass, 2026-09-26) ---------------------------
+//
+// The geometry is rebuilt every s_jw_rebuild_every calls (2), so on its own it
+// moves at 29.97 Hz: each build is shown twice -- the "choppy" the wave was
+// judged on.  Between builds, the RSX now draws the PREVIOUS build blended
+// toward the NEWEST by a vertex program (wave_interp_vp_data: POS/COLOR0 from
+// one buffer, TEX0/COLOR1 from the other, c[4].x the fraction), so every flip
+// moves by the same amount.  The fraction comes from the call count
+// (jwl_interp_t), not a clock, so it runs at the rate the console actually
+// presents -- 59.94 Hz (60000/1001), not 60 -- with nothing to drift.
+//
+// Two builds blend only when their signatures match (same strip order and
+// counts everywhere, jwl_sig_mix); otherwise that frame simply shows the
+// newest build, as before.
+//
+// GATED, default OFF (jellyfin_jwinterp.txt = 1 to enable): it is the first
+// vertex program and the first four-attribute binding this renderer has run,
+// and a bad binding wedges the GPU.  A crash marker makes a wedge self-limiting:
+// jf_jwinterp_pending.txt is written before the first blended draw of a run
+// and removed after JW_INTERP_PROVEN of them; finding it at startup means the
+// last run died there, and the gate turns itself off.
+#define JWINTERP_FILE     "jellyfin_jwinterp.txt"
+#define JWINTERP_PENDING  "jf_jwinterp_pending.txt"
+#define JW_INTERP_PROVEN  600                       // ~10 s of blended frames
+static bool  s_jw_interp_on  = false;
+static bool  s_jw_uploaded   = false;   // a build is in the current buffer
+static bool  s_jw_prev_ok    = false;   // ... and the other holds the one before
+static u32   s_jw_prev_sig   = 0, s_jw_cur_sig = 0;
+static u32   s_jw_glow_off   = 0, s_jw_glow_cnt = 0;
+static int   s_jw_k          = 0;       // calls since the current build landed
+static u32   s_jw_vo_prev_frame = 0;    // this frame's blend, for wave_draw_front
+static bool  s_jw_lerp_frame = false;
+static float s_jw_t_frame    = 1.0f;
+static u32   s_jw_lerp_n     = 0;       // blended draws, for the log
+static int   s_jw_marker     = 0;       // 0 not written, 1 written, 2 proven
+
+static void jw_interp_marker(void)
+{
+    if (s_jw_marker == 0) {
+        FILE *f = fopen(jf_data_path(JWINTERP_PENDING), "w");
+        if (f) { fputs("blending\n", f); fclose(f); }
+        crash_log("wave: JellyWave 59.94 Hz blend -- first blended draw");
+        s_jw_marker = 1;
+    } else if (s_jw_marker == 1 && s_jw_lerp_n >= JW_INTERP_PROVEN) {
+        remove(jf_data_path(JWINTERP_PENDING));
+        plog("wave: JellyWave 59.94 Hz blend proven this run (marker cleared)");
+        s_jw_marker = 2;
+    }
+}
+
+// Bind the blend for the draws that follow: false (nothing changed) when this
+// frame should simply draw the newest build.
+static bool jw_interp_begin(u32 vo_prev, u32 vo, float t)
+{
+    if (!s_jw_interp_on || !s_jw_prev_ok || s_jw_prev_sig != s_jw_cur_sig) return false;
+    if (!(t < 1.0f)) return false;
+    jw_interp_marker();
+    rsxVertexProgram *ivp = (rsxVertexProgram *)wave_interp_vp_data;
+    void *ucode; u32 usize;
+    rsxVertexProgramGetUCode(ivp, &ucode, &usize);
+    rsxLoadVertexProgram(context, ivp, ucode);
+    rsxSetVertexAttribOutputMask(context, ivp->output_mask);
+    const f32 c4[4] = { t, t, t, t };
+    rsxLoadVertexProgramParameterBlock(context, 4, 1, c4);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
+        vo_prev, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
+        vo_prev + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_TEX0, 0,
+        vo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR1, 0,
+        vo + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+    rsxInvalidateVertexCache(context);
+    s_jw_lerp_n++;
+    return true;
+}
+
+// Undo it: the two extra arrays off (TEX0 exactly as wave_draw() has always
+// left it; COLOR1 the same way), the passthrough program back, and POS /
+// COLOR0 on the newest build -- the state everything after expects.
+static void jw_interp_end(u32 vo)
+{
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_TEX0, 0,
+        0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR1, 0,
+        0, 0, 0, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+    rsxVertexProgram *vpo = (rsxVertexProgram *)wave_vp_data;
+    void *ucode; u32 usize;
+    rsxVertexProgramGetUCode(vpo, &ucode, &usize);
+    rsxLoadVertexProgram(context, vpo, ucode);
+    rsxSetVertexAttribOutputMask(context, vpo->output_mask);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
+        vo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
+        vo + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+    rsxInvalidateVertexCache(context);
+}
+
+// The look pass's share of a jw_look: the drifting key (on its own clock --
+// seconds, wrapped at the two periods' product so the float never loses
+// precision), the sky for the haze, one pixel in clip y for the fringe.
+static void jw_look_extras(jw_look *k)
+{
+    static float t = 0.0f;
+    static u64   last = 0;
+    const u64 now = timing_get_us();
+    if (last) {
+        float dt = (float)(now - last) * 1.0e-6f;
+        if (dt > 0.5f) dt = 0.5f;
+        t += dt;
+        if (t > JW_DRIFT_T_YAW * JW_DRIFT_T_PIT) t -= JW_DRIFT_T_YAW * JW_DRIFT_T_PIT;
+    }
+    last = now;
+    k->key     = s_jw_look_on ? jw_key_drift(t) : jw_key_dir();
+    k->bg      = s_bg;
+    k->px_y    = display_height ? 2.0f / (float)display_height : 2.0f / 1080.0f;
+    k->look_on = s_jw_look_on ? 1 : 0;
 }
 
 // --- measured on hardware, 2026-09-21 -------------------------------------
@@ -1266,6 +1548,35 @@ void wave_init(void) {
         s_jw_rebuild_every = jwrebuild_setting();
         s_jw_front_body    = jwfront_setting();
         s_jw_rebuild_phase = 0;
+        {
+            // The look pass: absent / anything but 0 = on (CPU colour and
+            // geometry only, on the existing bindings).
+            FILE *f = fopen(jf_data_path("jellyfin_jwlook.txt"), "r");
+            int v = 1;
+            if (f) { if (fscanf(f, "%d", &v) != 1) v = 1; fclose(f); }
+            s_jw_look_on = v != 0;
+        }
+        {
+            // The 59.94 Hz blend: only with the gate = 1, and never after a
+            // run that died mid-blend (the marker survived it).
+            FILE *f = fopen(jf_data_path(JWINTERP_FILE), "r");
+            int v = 0;
+            if (f) { if (fscanf(f, "%d", &v) != 1) v = 0; fclose(f); }
+            s_jw_interp_on = v == 1;
+            FILE *m = fopen(jf_data_path(JWINTERP_PENDING), "r");
+            if (m) {
+                fclose(m);
+                remove(jf_data_path(JWINTERP_PENDING));
+                if (s_jw_interp_on) {
+                    FILE *g = fopen(jf_data_path(JWINTERP_FILE), "w");
+                    if (g) { fputs("0\n", g); fclose(g); }
+                    crash_log("wave: 59.94 Hz blend DISABLED -- the last run died mid-blend");
+                }
+                s_jw_interp_on = false;
+            }
+            crash_log(s_jw_interp_on ? "wave: JellyWave 59.94 Hz blend ON"
+                                     : "wave: JellyWave 59.94 Hz blend off");
+        }
         s_jw_have_geom     = 0;
         jw_worker_start();
         motes_init();
@@ -1632,7 +1943,9 @@ void wave_draw(void) {
                 jw_look_now(&look);
                 n = jw_generate(s_jw_stage, n, s_field.sy, &look, s_jw_disp,
                                 W / H, s_jw,
-                                s_jw_off, s_jw_cnt, &s_jw_repaired, &s_jw_dropped);
+                                s_jw_off, s_jw_cnt, &s_jw_ex_stage,
+                                &s_jw_repaired, &s_jw_dropped);
+                s_jw_fresh = true;
                 s_jw_gen_us += timing_get_us() - jw_t0;
                 s_jw_rebuilds++;
             }
@@ -1710,12 +2023,31 @@ void wave_draw(void) {
              */
             rsxSync();
 
-            s_wave_vbuf_turn ^= 1;
+            // 2026-09-26: only a NEW build is uploaded, into the buffer that
+            // held the older of the two -- so the other still holds the
+            // previous build, which the in-between frames blend from (see
+            // "59.94 Hz motion" below).  A reuse call, or a rebuild call whose
+            // build was late, uploads nothing and draws what is there.  The
+            // rsxSync above is a full fence, so the buffer written is idle
+            // whichever one it is.
+            if (s_jw_fresh || !s_jw_uploaded) {
+                s_wave_vbuf_turn ^= 1;
+                jw_upload(s_wave_vbuf[s_wave_vbuf_turn], s_jw_stage, s_jw_verts);
+                s_jw_prev_ok  = s_jw_uploaded;
+                s_jw_prev_sig = s_jw_cur_sig;
+                s_jw_cur_sig  = s_jw_ex_stage.sig;
+                s_jw_glow_off = s_jw_ex_stage.glow_off;
+                s_jw_glow_cnt = s_jw_ex_stage.glow_cnt;
+                s_jw_k        = 0;
+                s_jw_uploaded = true;
+            } else if (s_jw_k < 64) {
+                s_jw_k++;
+            }
+            s_jw_fresh = false;
 
             v  = s_wave_vbuf[s_wave_vbuf_turn];
             vo = s_wave_vbuf_off[s_wave_vbuf_turn];
 
-            jw_upload(v, s_jw_stage, s_jw_verts);
             // The motes ride the same fence: the rsxSync above means nothing
             // queued is still reading either of their buffers.
             s_mote_n = s_mote_ok ? motes_build(W / H) : 0;
@@ -1818,6 +2150,38 @@ void wave_draw(void) {
             rsxInvalidateVertexCache(context);
             s_jw_draws = 1;   // gradient plus the body/rim strips sent below
 
+            // The FAR particles first, behind every ribbon (the look pass):
+            // the gel passes in front of them.  Their own buffer for this one
+            // draw, the wave's straight back after, as the near motes do.
+            if (s_mote_n && s_mote_far_n) {
+                const u32 mo = s_mote_voff[s_wave_vbuf_turn];
+                rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
+                    mo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
+                    mo + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+                rsxInvalidateVertexCache(context);
+                rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE, GCM_SRC_ALPHA, GCM_ONE);
+                rsxDrawVertexArray(context, GCM_TYPE_TRIANGLES, 0, s_mote_far_n);
+                s_jw_draws++;
+                rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
+                    vo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
+                    vo + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+                rsxInvalidateVertexCache(context);
+            }
+
+            // 59.94 Hz motion: between builds, blend from the previous one.
+            const u32 vo_prev = s_wave_vbuf_off[s_wave_vbuf_turn ^ 1];
+            const float jt = jwl_interp_t(s_jw_k, s_jw_rebuild_every);
+            const bool lerp = jw_interp_begin(vo_prev, vo, jt);
+
+            // The glow: behind every layer, additive (the look pass).
+            if (s_jw_glow_cnt) {
+                rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE, GCM_SRC_ALPHA, GCM_ONE);
+                rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_glow_off, s_jw_glow_cnt);
+                s_jw_draws++;
+            }
+
             for (int slot = 0; slot < JW_LAYERS; slot++) {
                 for (int pass = 0; pass < 2; pass++) {
                     if ((pass == 0 && strobe_test_disable_jellywave_body()) ||
@@ -1844,11 +2208,13 @@ void wave_draw(void) {
                 }
             }
 
+            if (lerp) jw_interp_end(vo);
+
             // The motes, in front of the gel, additive.  Their own buffer is
             // bound for this one draw and POS goes straight back to the wave's
             // buffer, so the teardown below finds exactly the binding it
-            // always has.
-            if (s_mote_n) {
+            // always has.  Only the NEAR ones now: [s_mote_far_n, s_mote_n).
+            if (s_mote_n > s_mote_far_n) {
                 const u32 mo = s_mote_voff[s_wave_vbuf_turn];
                 rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
                     mo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
@@ -1858,12 +2224,15 @@ void wave_draw(void) {
                 rsxSetBlendFunc(context,
                     GCM_SRC_ALPHA, GCM_ONE,
                     GCM_SRC_ALPHA, GCM_ONE);
-                rsxDrawVertexArray(context, GCM_TYPE_TRIANGLES, 0, s_mote_n);
+                rsxDrawVertexArray(context, GCM_TYPE_TRIANGLES, s_mote_far_n, s_mote_n - s_mote_far_n);
                 s_jw_draws++;
                 rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_POS, 0,
                     vo, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
             }
             s_jw_vo_frame = vo;
+            s_jw_vo_prev_frame = vo_prev;
+            s_jw_lerp_frame = lerp;
+            s_jw_t_frame  = jt;
             s_jw_drawn    = true;
         }
 
@@ -1947,7 +2316,7 @@ void wave_draw(void) {
                  "jellywave: gen=%lluus/build amort=%lluus/call "
                  "up=%lluus/call verts=%u draws=%u rebuild=1/%d "
                  "speed=%d%% repaired=%u dropped=%u (%d calls, %d builds) "
-                 "worker=%d late=%u",
+                 "worker=%d late=%u lerp=%u look=%d",
                  (unsigned long long)(s_jw_gen_us / nb),
                  (unsigned long long)(s_jw_gen_us / s_jw_frames),
                  (unsigned long long)(s_jw_upload_us / s_jw_frames),
@@ -1955,7 +2324,8 @@ void wave_draw(void) {
                  (int)(s_jw_speed * 100.0f + 0.5f),
                  (unsigned)s_jw_repaired, (unsigned)s_jw_dropped,
                  (int)s_jw_frames, (int)s_jw_rebuilds,
-                 s_jw_worker ? 1 : 0, (unsigned)s_jw_late);
+                 s_jw_worker ? 1 : 0, (unsigned)s_jw_late,
+                 (unsigned)s_jw_lerp_n, s_jw_look_on ? 1 : 0);
         plog(msg);
         s_jw_late       = 0;
         s_jw_gen_us     = 0;
@@ -2013,6 +2383,9 @@ void wave_draw_front(int x, int y, int w, int h) {
         vo + 16, (u8)sizeof(WaveVert), 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_TEX0, 0,
         0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    // The same in-between as wave_draw() drew this frame, or the ribbon over
+    // the cover would sit half a step off the one beside it.
+    const bool lerp = s_jw_lerp_frame && jw_interp_begin(s_jw_vo_prev_frame, vo, s_jw_t_frame);
     rsxSetScissor(context, (u16)x, (u16)y, (u16)w, (u16)h);
     rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
     rsxSetBlendEnable(context, GCM_TRUE);
@@ -2048,6 +2421,7 @@ void wave_draw_front(int x, int y, int w, int h) {
                                  GCM_CONSTANT_ALPHA, GCM_ONE);
         rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, s_jw_off[slot][0], s_jw_cnt[slot][0]);
     }
+    if (lerp) jw_interp_end(vo);
     // hud_dim's teardown, as wave_draw() ends: COLOR0 back to stride 0, POS
     // left bound; the full scissor and the UI's standard blend.
     rsxBindVertexArrayAttrib(context, GCM_VERTEX_ATTRIB_COLOR0, 0,
