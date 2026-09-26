@@ -107,6 +107,27 @@ static float s_e_cover = 1.0f, s_e_text = 1.0f, s_e_panel = 1.0f, s_e_ctl = 1.0f
 static float s_mini = 0.0f, s_mini_e = 0.0f;
 #define MINI_MS 650.0f
 static bool  s_have_origin = false;     // the album tile's rect is known
+
+// ---- the visualiser on Square (2026-09-27) ----------------------------------
+// One cycle here: JellyWave -> JellyDrop -> Canyon -> Off -> JellyWave.
+// JellyWave / JellyDrop / Off are the global wave mode (ui_wave.h, which the
+// menus cycle too, without Canyon); Canyon is this screen's viz mode, drawn
+// over JellyWave.  Holding Square while Canyon is up still picks its preset.
+static const char *const MVIS_NAME[4] = { "JellyWave", "JellyDrop", "Canyon", "Off" };
+static int music_vis_cur(void) {
+    if (viz_mode() == VIZ_CANYON) return 2;
+    const int w = wave_vis_mode();
+    return w == WAVE_VIS_JELLYDROP ? 1 : (w == WAVE_VIS_OFF ? 3 : 0);
+}
+static void music_vis_cycle(void) {
+    switch ((music_vis_cur() + 1) % 4) {
+    case 0: viz_set_mode(VIZ_WAVE);   wave_vis_set(WAVE_VIS_JELLYWAVE); break;
+    case 1: viz_set_mode(VIZ_WAVE);   wave_vis_set(WAVE_VIS_JELLYDROP); break;
+    case 2: viz_set_mode(VIZ_CANYON); wave_vis_set(WAVE_VIS_JELLYWAVE); break;
+    default: viz_set_mode(VIZ_WAVE);  wave_vis_set(WAVE_VIS_OFF);       break;
+    }
+}
+static const char *music_vis_next_label(void) { return MVIS_NAME[(music_vis_cur() + 1) % 4]; }
 static int   s_ox = 0, s_oy = 0, s_os = 0;
 static bool  s_origin_pending = false;  // set by the opener for the next open
 
@@ -978,20 +999,22 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         if (s_fzone == FZ_QUEUE) {
             // Select names the visualiser it switches TO (JellyWave ->
             // JellyDrop -> Off -> JellyWave).
+            // Square names the visualiser it switches TO, in the corner.
             const Hint h[6] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
-                               {'B', wave_vis_next_label()},
                                {'X', "Play"},
                                {'T', "Shuffle"},
-                               {'C', "Back"}};
+                               {'C', "Back"},
+                               {'S', music_vis_next_label()}};
             draw_hints_bar(h, 6);
         } else {
             // Select names the visualiser it switches TO (JellyWave ->
             // JellyDrop -> Off -> JellyWave).
+            // Square names the visualiser it switches TO, in the corner.
             const Hint h[6] = {{'l', ""}, {'r', "Skip"},   // L1/R1: prev/next track
-                               {'B', wave_vis_next_label()},
                                {'X', "Select"},
                                {'T', "Shuffle"},
-                               {'C', "Back"}};
+                               {'C', "Back"},
+                               {'S', music_vis_next_label()}};
             draw_hints_bar(h, 6);
         }
     }
@@ -1025,7 +1048,8 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
         }
         if (!btn_cur.square && s_sq_down) {
             if (!s_sq_held) {
-                viz_set_mode((viz_mode() + 1) % VIZ_COUNT);
+                music_vis_cycle();
+                ui_sfx_play(SFX_OPTION);
                 s_viz_toast_us = now + 2500000ULL;
             }
             s_sq_down = 0;
@@ -1135,13 +1159,7 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
     if (BTN_PRESSED(triangle))
         music_set_shuffle(!music_is_shuffle());
 
-    if (BTN_PRESSED(select)) {
-        // JellyDrop (2026-09-27; was L1+R1).  Select used to open the full
-        // queue overlay -- the same list the on-screen "Up next" zone shows.
-        wave_vis_cycle();               // JellyWave -> JellyDrop -> Off
-        ui_sfx_play(SFX_OPTION);
-    }
-    if (false) {
+    if (false) {   // (Select used to open the full queue overlay; the "Up next" zone shows it)
         int vis    = q_vis_rows();
         s_q_open   = true;
         s_q_sel    = music_current_pos();
@@ -1319,7 +1337,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             if (viz_mode() == VIZ_CANYON)
                 snprintf(vb, sizeof vb, "Visualizer: Canyon - %s", canyon_preset_name());
             else
-                snprintf(vb, sizeof vb, "Visualizer: %s", viz_mode_name(viz_mode()));
+                snprintf(vb, sizeof vb, "Visualizer: %s", MVIS_NAME[music_vis_cur()]);
             draw_clipped((u32)UIS_W(40), (u32)(display_height * 0.12f), vb, UIS_TF(16),
                          fa(XMB_WHITE, s_scr_a), (int)(display_width * 0.5f));
         }

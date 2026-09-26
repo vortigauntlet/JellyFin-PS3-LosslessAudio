@@ -189,7 +189,7 @@ static void wave_nav_frame(void)
 // of the pose in its snapshot (jw_look_now), so the worker never reads these.
 #define JELLYDROP_FILE  "jellyfin_jellydrop.txt"
 #define JD_MORPH_S      1.3f          // the transition, seconds (design 2.4: too slow on a TV)
-#define JD_HEIGHT       0.40f         // the bell's height, fraction of the screen
+#define JD_HEIGHT       0.20f         // the bell's height, fraction of the screen (was 0.40: half)
 #define JD_CENTRE_Y     0.02f         // NDC, +up: just above the middle
 static bool      s_jd_loaded = false;
 static bool      s_jd_want   = false;  // where the morph is heading
@@ -250,6 +250,15 @@ static void vis_load(void)
 
 int wave_vis_mode(void) { vis_load(); return s_vis; }
 
+void wave_vis_set(int mode)
+{
+    vis_load();
+    if (mode < 0 || mode > 2) mode = WAVE_VIS_JELLYWAVE;
+    if (mode == s_vis) return;
+    s_vis = (mode + 2) % 3;      // wave_vis_cycle steps it on to `mode`
+    wave_vis_cycle();
+}
+
 void wave_vis_cycle(void)
 {
     vis_load();
@@ -262,7 +271,7 @@ void wave_vis_cycle(void)
     f = fopen(jf_data_path(JELLYDROP_FILE), "w");
     if (f) { fputs(s_jd_want ? "1\n" : "0\n", f); fclose(f); }
     static const char *const k[3] = { "JellyWave", "JellyDrop", "Off" };
-    char b[64]; snprintf(b, sizeof b, "wave: visualiser -> %s (Select)", k[s_vis]);
+    char b[64]; snprintf(b, sizeof b, "wave: visualiser -> %s (Square)", k[s_vis]);
     plog(b);
 }
 
@@ -336,6 +345,21 @@ static void jd_frame(float aspect)
         }
     }
     #undef JDC
+    {
+        // ~50 ms low-pass on the continuous inputs (not the onset): punch
+        // spikes from one frame to the next, and fed raw into the springs it
+        // made the bell twitch.
+        static float lp[8];
+        static bool  lp_init = false;
+        float *v[8] = { &in.sub, &in.bass, &in.lowmid, &in.mid, &in.high, &in.air, &in.rms, &in.width };
+        const float a = dt > 0.0f ? 1.0f - __builtin_expf(-dt / 0.05f) : 1.0f;
+        for (int i = 0; i < 8; i++) {
+            if (!lp_init) lp[i] = *v[i];
+            lp[i] += (*v[i] - lp[i]) * a;
+            *v[i] = lp[i];
+        }
+        lp_init = true;
+    }
     if (gain <= 0.0f) in.silence = 0.0f;            // reactive off: it still breathes
     jd_motion_step(&s_jd_mo, &in, dt);
     jd_place(&s_jd_mo, s_jd_morph, aspect, 0.0f, JD_CENTRE_Y, JD_HEIGHT, &s_jd_pose);

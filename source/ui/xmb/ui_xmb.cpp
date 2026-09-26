@@ -407,6 +407,18 @@ static void xmb_cost_tick(u64 frame_us)
     ui_text_gpu_stats_reset();
 }
 
+// Every bar but Search's ends with Square and the visualiser it switches TO
+// (2026-09-27): the bottom-right corner always says what Square does.
+static void draw_hints_vis(const Hint *h, int n) {
+    Hint all[10];
+    int k = 0;
+    for (int i = 0; i < n && k < 9; i++) all[k++] = h[i];
+    all[k].glyph = 'S';
+    all[k].label = wave_vis_next_label();
+    k++;
+    draw_hints_bar(all, k);
+}
+
 // Contextual hints bar for the current tab / mode.
 static void xmb_draw_hints(int tab) {
     bool in_tv_sub  = (g_tv_depth > 0);
@@ -417,7 +429,7 @@ static void xmb_draw_hints(int tab) {
     // O Back -- the way out to the base layer.
     if (spine_at_base()) {
         static const Hint h[] = {{'E',"Nav"},{'X',"Open"}};
-        draw_hints_bar(h, 2);
+        draw_hints_vis(h, 2);
         return;
     }
     const bool spine_back = g_spine_on;
@@ -425,10 +437,10 @@ static void xmb_draw_hints(int tab) {
     if (tab == XMB_TAB_SETTINGS) {
         if (g_settings_confirm) {
             static const Hint h[] = {{'X',"Confirm"},{'C',"Cancel"}};
-            draw_hints_bar(h, 2);
+            draw_hints_vis(h, 2);
         } else {
             static const Hint h[] = {{'X',"Select"},{'T',"Details"}};
-            draw_hints_bar(h, 2);
+            draw_hints_vis(h, 2);
         }
     } else if (tab == XMB_TAB_SEARCH) {
         if (g_search_focus_results) {
@@ -440,21 +452,21 @@ static void xmb_draw_hints(int tab) {
         }
     } else if (xmb_kind(tab) == TABKIND_MUSIC && g_music_header) {
         static const Hint h[] = {{'D',"Switch"},{'X',"Select"}};
-        draw_hints_bar(h, 2);
+        draw_hints_vis(h, 2);
     } else if (g_music_depth > 0 && xmb_kind(tab) == TABKIND_MUSIC) {
         static const Hint h[] = {{'X',"Select"},{'C',"Back"}};
-        draw_hints_bar(h, 2);
+        draw_hints_vis(h, 2);
     } else if (in_tv_sub || in_col_sub) {
         static const Hint h[] = {{'X',"Select"},{'T',"Details"},{'C',"Back"}};
-        draw_hints_bar(h, 3);
+        draw_hints_vis(h, 3);
     } else if (g_jumpbar_active) {
         static const Hint h[] = {{'X',"Jump"},{'C',"Cancel"}};
-        draw_hints_bar(h, 2);
+        draw_hints_vis(h, 2);
     } else if (tab == XMB_TAB_HOME && spine_back) {
         // The canvas's L2 bar: the d-pad walks the queue and the categories,
         // X opens detail, O goes back up to the base layer.
         static const Hint h[] = {{'E',"Nav"},{'X',"Open"},{'T',"Details"},{'C',"Back"}};
-        draw_hints_bar(h, 4);
+        draw_hints_vis(h, 4);
     } else if (tab == XMB_TAB_HOME) {
         // The L1/R1 cluster leads, per handoff section 3.1.  Label is "Tab"
         // and not the document's "Page" because L1/R1 switch TABS on this
@@ -462,15 +474,15 @@ static void xmb_draw_hints(int tab) {
         // must describe what the button does today.
         static const Hint h[] = {{'l',""},{'r',"Tab"},
                                  {'X',"Open"},{'T',"Details"},{'C',"Back"}};
-        draw_hints_bar(h, spine_back ? 5 : 4);
+        draw_hints_vis(h, spine_back ? 5 : 4);
     } else {
         static const Hint h[] = {{'l',""},{'r',"Tab"},
                                  {'E',"Nav"},{'X',"Select"},{'T',"Details"},
                                  {'C',"Back"}};
         static const Hint hm[] = {{'l',""},{'r',"Tab"},
                                   {'E',"Nav"},{'X',"Select"},{'C',"Back"}};
-        if (xmb_kind(tab) == TABKIND_MUSIC) draw_hints_bar(hm, spine_back ? 5 : 4);
-        else                                draw_hints_bar(h, spine_back ? 6 : 5);
+        if (xmb_kind(tab) == TABKIND_MUSIC) draw_hints_vis(hm, spine_back ? 5 : 4);
+        else                                draw_hints_vis(h, spine_back ? 6 : 5);
     }
 }
 
@@ -592,12 +604,14 @@ void ui_run_xmb(void) {
             ;                           // it only brought the UI back
         else if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
-        else if (BTN_PRESSED(select)) {
-            wave_vis_cycle();           // JellyWave -> JellyDrop -> Off (ui_wave.h)
-            ui_sfx_play(SFX_OPTION);
-        }
         else if (peek_active())
             peek_input();               // the quick-peek owns the pad while up
+        else if (BTN_PRESSED(square) && tab != XMB_TAB_SEARCH) {
+            // Square: the visualiser, JellyWave -> JellyDrop -> Off (ui_wave.h).
+            // Not on Search, where Square deletes a character.
+            wave_vis_cycle();
+            ui_sfx_play(SFX_OPTION);
+        }
         else if (spine_at_base())
             should_exit = spine_input_base();
         else if (spine_try_back(tab))

@@ -44,12 +44,13 @@ void wave_reset(void);
 void wave_drop_toggle(void);
 bool wave_drop_on(void);
 
-// The visualiser (2026-09-27): Select cycles JellyWave -> JellyDrop -> Off
+// The visualiser (2026-09-27): SQUARE cycles JellyWave -> JellyDrop -> Off
 // (the background gradient alone) -> JellyWave, everywhere the wave is drawn.
 // Default JellyWave; kept in jellyfin_visualiser.txt (0/1/2).  Render thread.
 enum { WAVE_VIS_JELLYWAVE = 0, WAVE_VIS_JELLYDROP = 1, WAVE_VIS_OFF = 2 };
 int         wave_vis_mode(void);
 void        wave_vis_cycle(void);
+void        wave_vis_set(int mode);          // WAVE_VIS_*, persisted
 const char *wave_vis_next_label(void);   // what Select switches TO: the hint
 
 // True when CPU framebuffer writes are cheap (emulator): the whole XMB

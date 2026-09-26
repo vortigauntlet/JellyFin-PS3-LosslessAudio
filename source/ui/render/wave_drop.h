@@ -139,6 +139,7 @@ typedef struct {
     float drop, drop_v, yaw, yaw_v, orbit, roll;
     float lean, shift, tilt, spread, rip_a, rip_b, ph1, ph2, ph3;
     float glow, bright, kick, wph;
+    float pace, turn, turn_w;   // 2026-09-27: smoothed clock rate; the continuous spin
 } jd_motion;
 
 static inline void jd_motion_init(jd_motion *m)
@@ -147,6 +148,7 @@ static inline void jd_motion_init(jd_motion *m)
     memset(m, 0, sizeof *m);
     m->ts = 1.0f; m->spin_w = 0.3f; m->w_amp = 0.4f;
     m->rip_a = 0.02f; m->rip_b = 0.01f; m->glow = 0.6f; m->bright = 0.95f;
+    m->pace = 1.7f; m->turn_w = 0.7f;
 }
 
 static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
@@ -159,7 +161,10 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     // Pace (2026-09-27): the design's clocks drifted; on a TV it read as
     // half-asleep next to JellyWave.  Every PHASE clock runs 1.7x, up to ~3x
     // when it is loud.  The springs keep real time -- they are physics.
-    const float dtp = dt * (1.7f + 1.4f * jd_clamp(F->rms * live, 0.0f, 1.0f));
+    // ... SMOOTHED over ~0.6 s: taken straight from the frame's loudness the
+    // clock rate itself jittered, which read as jerky (hardware, 09-27).
+    m->pace = jd_approach(m->pace, 1.9f + 1.5f * jd_clamp(F->rms * live, 0.0f, 1.0f), dt, 0.6f);
+    const float dtp = dt * m->pace;
     m->t += dtp;
 
     ts_t = F->beat_hz > 0.0f ? jd_clamp(F->beat_hz * 0.5f, 0.7f, 1.6f) : 1.0f;
@@ -173,24 +178,30 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     m->swell   += m->swell_v * dt;
     d_sub = jd_clamp((sub - m->sub_prev) / dt, -8.0f, 8.0f);
     m->sub_prev = sub;
-    if (F->onset > 0.0f) m->bounce_v += 2.0f * F->onset_strength * (0.35f + F->bass * live);
-    b_a = -9.0f * m->bounce - 1.1f * m->bounce_v;
+    if (F->onset > 0.0f) m->bounce_v += 1.5f * F->onset_strength * (0.35f + F->bass * live);
+    b_a = -9.0f * m->bounce - 2.4f * m->bounce_v;
     m->bounce_v += b_a * dt; m->bounce += m->bounce_v * dt;
     j_f = -0.05f * b_a + 0.02f * d_sub + 0.0014f * jd_clamp(m->wax < 0 ? -m->wax : m->wax, 0.0f, 160.0f);
-    m->jig_v += (-38.0f * m->jig - 1.5f * m->jig_v + 6.0f * j_f) * dt;
+    m->jig_v += (-30.0f * m->jig - 3.2f * m->jig_v + 6.0f * j_f) * dt;
     m->jig   += m->jig_v * dt;
-    m->shear_v += (-26.0f * m->shear - 1.2f * m->shear_v + 0.4f * m->bounce_v + 0.15f * m->yaw_v
+    m->shear_v += (-22.0f * m->shear - 2.6f * m->shear_v + 0.4f * m->bounce_v + 0.15f * m->yaw_v
                    - 0.0009f * jd_clamp(m->wax, -200.0f, 200.0f)) * dt;
     m->shear += m->shear_v * dt;
     if (F->onset > 0.0f) {
-        m->sq_v += 1.6f * F->onset_strength;
+        m->sq_v += 1.2f * F->onset_strength;
         m->yaw_v += 0.22f * F->onset_strength;
+        m->turn_w += 0.9f * F->onset_strength;      // a beat throws the spin on
         m->kick += 0.30f * F->onset_strength;
     }
-    m->sq_v += (-45.0f * m->sq - 2.4f * m->sq_v) * dt; m->sq += m->sq_v * dt;
+    m->sq_v += (-36.0f * m->sq - 4.2f * m->sq_v) * dt; m->sq += m->sq_v * dt;
     if (F->drop > 0.0f) m->drop_v += 6.5f;
     m->drop_v += (-5.5f * m->drop - 1.15f * m->drop_v) * dt; m->drop += m->drop_v * dt;
-    m->yaw_v += (-9.0f * m->yaw - 2.4f * m->yaw_v) * dt; m->yaw += m->yaw_v * dt;
+    m->yaw_v += (-9.0f * m->yaw - 3.0f * m->yaw_v) * dt; m->yaw += m->yaw_v * dt;
+    // The spin: continuous, never a sine back and forth.  It coasts back to
+    // a steady turn after each beat's throw.
+    m->turn_w = jd_approach(m->turn_w, 0.7f + 0.5f * jd_clamp(F->rms * live, 0.0f, 1.0f), dt, 1.4f);
+    m->turn  += m->turn_w * dt;
+    if (m->turn > 1000.0f) m->turn -= 159.0f * WK_TWO_PI;
     m->orbit += dtp * 0.34f * m->ts;
     // The design spins it a full turn every ~40 s; behind the XMB an upside-down
     // mark reads as a fault, so here the same clock ROCKS it, +/-0.35 rad.
@@ -204,7 +215,7 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     m->w_amp = jd_approach(m->w_amp, 0.18f + 0.82f * en, dt, 1.2f);
     if (F->drop > 0.0f) m->calm = 1.0f;
     m->calm *= jd_expn(dt / 3.2f);
-    m->wt += dtp * 0.11f * m->ts * (0.5f + 0.7f * m->w_amp);
+    m->wt += dtp * 0.22f * m->ts * (0.5f + 0.7f * m->w_amp);
     if (m->wt > 1000.0f) m->wt -= 1000.0f;
     reach = m->w_amp * (1.0f - 0.92f * m->calm);
     tx = reach * (340.0f * wk_sinf(m->wt) + 50.0f * wk_sinf(m->wt * 2.3f + 1.0f));
@@ -220,7 +231,7 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     m->wax = jd_approach(m->wax, ax, dt, 0.25f);
 
     if (F->onset > 0.0f) m->spin_w += 0.25f * F->onset_strength;
-    m->spin_w = jd_approach(m->spin_w, 0.22f * m->ts, dt, 1.6f);
+    m->spin_w = jd_approach(m->spin_w, 0.6f * m->ts, dt, 1.6f);
     m->spin  += m->spin_w * dtp;
     if (m->spin > 1000.0f) m->spin -= 159.0f * WK_TWO_PI;
     m->lean   = jd_approach(m->lean, -F->balance * 0.26f, dt, 0.5f);
@@ -313,8 +324,8 @@ static inline void jd_place(const jd_motion *m, float morph, float aspect,
     bank = jd_clamp(m->wvx * 0.0032f, -0.3f, 0.3f);
     dive = jd_clamp(m->wvy * 0.003f, -0.22f, 0.22f);
     ex = 0.08f + m->tilt + 0.08f * wk_sinf(t * 0.41f * m->ts) + dive;
-    ey = 0.32f * wk_sinf(m->orbit) + m->yaw;
-    ez = m->lean + 0.1f * wk_sinf(t * 0.5f * m->ts) - 0.04f * m->bounce_v + 0.35f * wk_sinf(m->roll) - bank;
+    ey = m->turn + 0.18f * wk_sinf(m->orbit) + m->yaw;     // spins all the way round
+    ez = m->lean + 0.1f * wk_sinf(t * 0.5f * m->ts) - 0.03f * m->bounce_v + 0.22f * wk_sinf(m->roll) - bank;
     Rb[0] = JW_RIGHT_X; Rb[1] = JW_RIGHT_Y; Rb[2] = JW_RIGHT_Z;
     Rb[3] = JW_UP_X;    Rb[4] = JW_UP_Y;    Rb[5] = JW_UP_Z;
     Rb[6] = -JW_FWD_X;  Rb[7] = -JW_FWD_Y;  Rb[8] = -JW_FWD_Z;
@@ -390,7 +401,7 @@ static inline int jd_build_layer_k(const jw_layer *L, int li, const float *disp,
     Lb.bright = L->bright * jw_lerp(1.0f, C->bright / JW_LAYER[li].bright, e2);
 
     // orbit frame: spin about the bell's vertical, then tilt the orbit plane
-    oa = li ? 0.38f * wk_sinf(P->spin + C->off) : 0.0f;
+    oa = li ? (P->spin * (li == 1 ? 1.0f : -1.3f) + C->off) : 0.0f;
     ob = C->tilt + (li ? 0.08f * wk_sinf(P->orbit * 0.7f + (float)li) : 0.0f);
     ca = jw_cosf(oa); sa = wk_sinf(oa); cb = jw_cosf(ob); sb = wk_sinf(ob);
     Lk[0] = ca; Lk[1] = sb * sa; Lk[2] = -cb * sa;
