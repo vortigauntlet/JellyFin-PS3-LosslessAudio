@@ -3,6 +3,7 @@
 // lives in player_session / player_menu / player_seek / player_display.
 
 #include "segments.h"
+#include "autoskip.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -974,19 +975,26 @@ void show_player(const JFItem *item, u32 resume_secs,
             ps.playing = false;
         }
 
-        // End-of-item auto-advance: within the last 90 s of a followed item,
-        // show the NEXT popup; SELECT ends this session with the
-        // next-request flag set so the UI starts the follower.  Episodes
-        // also count down through the last 30 s and fire the request
-        // automatically at zero.
+        // End-of-item auto-advance: within the last 90 s of a followed item
+        // (or once its credits start), show the NEXT popup; SELECT ends this
+        // session with the next-request flag set so the UI starts the
+        // follower.  Episodes also count down 25 s -- from the start of the
+        // credits when the server marks them (within the last 10 minutes),
+        // else through the last 25 s -- and fire the request at zero.
         bool next_popup = false;
         int  auto_secs  = -1;
         in_auto_window  = false;
         if (have_next && ps.total_secs > 90) {
-            u64 pos_secs = (ps.play_base_us + audio_get_clock_us()) / 1000000ULL;
-            next_popup = (pos_secs + 90 >= (u64)ps.total_secs);
-            if (next_popup && auto_next && pos_secs + 30 >= (u64)ps.total_secs) {
-                s64 rem = (s64)ps.total_secs - (s64)pos_secs;
+            const s64 pos   = (s64)((ps.play_base_us + audio_get_clock_us()) / 1000000ULL);
+            const s64 total = (s64)ps.total_secs;
+            const double outro = segments_outro_start();
+            s64 cd_start = total - 25;
+            if (outro > 0.0 && (s64)outro < cd_start && (s64)outro + 600 >= total)
+                cd_start = (s64)outro;
+            next_popup = (pos + 90 >= total) || pos >= cd_start;
+            if (next_popup && auto_next && pos >= cd_start) {
+                s64 rem = cd_start + 25 - pos;
+                if (total - pos < rem) rem = total - pos;
                 auto_secs = rem > 0 ? (int)rem : 0;
                 in_auto_window = true;
             }
@@ -1010,6 +1018,13 @@ void show_player(const JFItem *item, u32 resume_secs,
         const MediaSegment *skip_seg = ps.paused ? NULL : segments_at(seg_pos);
         hud_set_skip_offered(skip_seg != NULL);
         HudAction act = hud_handle_input(l2_pressed, r2_pressed, ps.paused);
+        // Settings > Auto Skip: intros and recaps go by themselves.  Credits
+        // stay: they run the next episode's countdown.
+        if (act == HUD_ACTION_NONE && skip_seg && skip_seg->type != SEG_OUTRO &&
+            autoskip_enabled()) {
+            plog("segments: auto skip");
+            act = HUD_ACTION_SKIP_SEGMENT;
+        }
         if (act == HUD_ACTION_SKIP_SEGMENT && skip_seg) {
             segments_skipped();
             // Credits with a next item queued: go straight to it, as SELECT

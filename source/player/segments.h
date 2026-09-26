@@ -17,3 +17,7 @@ void segments_stop(void);
 // being carried out is not offered twice.
 const MediaSegment *segments_at(double pos_secs);
 void segments_skipped(void);
+
+// Start of the title's credits (an Outro segment), seconds; < 0 when the
+// server has none (yet).
+double segments_outro_start(void);

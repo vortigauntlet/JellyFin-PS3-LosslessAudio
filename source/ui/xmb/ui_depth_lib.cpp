@@ -175,7 +175,18 @@ void depth_lib_cpu(int tab) {
     col.i0 = v.sel > 0 ? v.sel : 0;
     col.i1 = v.sel + 3 < v.count ? v.sel + 3 : v.count;
     depth_stage_request(&col);
-    if (v.e > 0.0f || v.near >= 0.99f) depth_stage_request(&st);
+    if (v.e > 0.0f || v.near >= 0.99f) {
+        depth_stage_request(&st);
+        // Preload: a few cards either side of the page, so moving along
+        // finds them decoded.  Asked after the visible ones.
+        DepthStage pre = st;
+        pre.i0 = st.i1;
+        pre.i1 = st.i1 + 4 < v.count ? st.i1 + 4 : v.count;
+        if (pre.i0 < pre.i1) depth_stage_request(&pre);
+        pre.i1 = st.i0;
+        pre.i0 = st.i0 - 2 > 0 ? st.i0 - 2 : 0;
+        if (pre.i0 < pre.i1) depth_stage_request(&pre);
+    }
 
     depth_stage_cpu(&st, 0.3f);
 }

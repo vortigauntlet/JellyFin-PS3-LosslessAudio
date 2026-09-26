@@ -543,6 +543,14 @@ void xmb_grid_cpu(const GridGeom *gg, const XMBItem *items, int count,
         if (idx >= count) break;
         thumb_request(items[idx].id, gg->card_w, gg->card_h);
     }
+    // And the row above, so scrolling back up does not blank either.  The
+    // cache drops a request it has no free slot for, so this never evicts
+    // what is on screen.
+    for (int i = 0; i < gg->cols; i++) {
+        int idx = scroll - gg->cols + i;
+        if (idx < 0) continue;
+        thumb_request(items[idx].id, gg->card_w, gg->card_h);
+    }
 }
 
 // Phase 3: titles under every visible card (selected one bigger/bold,

@@ -542,6 +542,22 @@ void xmb_home_cpu_phase(void) {
     }
 
     g_cpu_clip_top = 0; g_cpu_clip_bot = 0;
+
+    // Preload: the focused row's next cards past the right edge (and one past
+    // the left), queued after everything visible so they never delay it.
+    {
+        const HomeRow *row = &s_rows[s_focus_row];
+        if (row->kind != HROW_STUB && row->count > 0) {
+            const int cw = row_card_w(row->kind), ch = row_card_h(row->kind);
+            const int vis = row_visible_cols(row->kind);
+            const int a = row->scroll - 1, b = row->scroll + vis + 3;
+            for (int c = a < 0 ? 0 : a; c < b && c < row->count; c++) {
+                ThumbImg img = (row->kind == HROW_LANDSCAPE && row->items[c].has_thumb)
+                             ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
+                thumb_request(row->items[c].id, cw, ch, img);
+            }
+        }
+    }
 }
 
 void xmb_home_text_phase(void) {

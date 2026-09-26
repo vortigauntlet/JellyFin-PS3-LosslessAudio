@@ -276,7 +276,7 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
 
     // ---- hints: what X does, then the canvas's Tracks / Stop / Stats ----
     {
-        Hint h[4]; int n = 0;
+        Hint h[6]; int n = 0;
         h[n].glyph = 'X';
         h[n].label = g_hud.focus == FOCUS_REW    ? "Back"
                    : g_hud.focus == FOCUS_FF     ? "Ahead"
@@ -285,6 +285,8 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
                    : g_hud.focus == FOCUS_CC     ? "Subtitles"
                    : paused                      ? "Play" : "Pause";
         n++;
+        h[n].glyph = 'L'; h[n].label = "";       n++;   // L2 R2: one cluster
+        h[n].glyph = 'R'; h[n].label = "Rewind / Fast Forward"; n++;
         h[n].glyph = 'T'; h[n].label = "Tracks"; n++;
         h[n].glyph = 'C'; h[n].label = "Stop";   n++;
 #if ENABLE_PLAYER_STATS

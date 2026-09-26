@@ -122,6 +122,14 @@ const MediaSegment *segments_at(double pos) {
     return NULL;
 }
 
+double segments_outro_start(void) {
+    const int n = s_count;
+    __sync_synchronize();
+    for (int i = 0; i < n; i++)
+        if (s_segs[i].type == SEG_OUTRO) return s_segs[i].start_secs;
+    return -1.0;
+}
+
 void segments_skipped(void) {
     s_quiet_until_us = timing_get_us() + SEG_SKIP_QUIET_US;
 }

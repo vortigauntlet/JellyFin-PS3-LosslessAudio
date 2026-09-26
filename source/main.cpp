@@ -38,6 +38,7 @@
 #include "subcolor.h"
 #include "statsovl.h"
 #include "menusnow.h"
+#include "autoskip.h"
 #include "audio.h"
 #include "video.h"
 #include "player_hud.h"
@@ -158,6 +159,7 @@ int main(int argc, const char *argv[]) {
     subfont_load();        // restore the subtitle typeface
     subcolor_load();       // restore the subtitle colour
     menusnow_load();       // restore the Menu Particles toggle
+    autoskip_load();       // restore the Auto Skip toggle
     statsovl_load();       // restore the player stats overlay toggle
     audio_volume_load();   // restore the saved master volume
     audio_bitstream_recover();   // undo an output change a crashed session left behind
