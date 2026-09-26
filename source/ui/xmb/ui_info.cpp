@@ -539,21 +539,24 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         const int CY = IY(262), CH = UIS_H(29), CG = UIS_W(8);
         const float apx = UIS_TF(10.0f), cpx = UIS_TF(11.0f);
         int cx = TX;
-        const int aw = achip[0] ? info_chip_width(achip, apx, UI_FACE_SPEC) : 0;
-        const int vw = vchip[0] ? info_chip_width(vchip, cpx, UI_FACE_REGULAR) : 0;
-        const int pw = info_chip_width(pchip, cpx, UI_FACE_REGULAR);
+        // 2026-09-27: the audio chip in the regular face and the video chip in
+        // the spec face (swapped), and no "direct play / transcode" chip.
+        (void)pchip;
+        const int aw = achip[0] ? info_chip_width(achip, cpx, UI_FACE_REGULAR) : 0;
+        const int vw = vchip[0] ? info_chip_width(vchip, apx, UI_FACE_SPEC) : 0;
         if (aw) { wave_draw_rrect_outline_gpu(cx, CY, aw, CH, CH / 2, 1,
                                               a_ll ? XMB_ACCENT_ALT : XMB_HAIRLINE, 255,
                                               XMB_PANEL, XMB_PANEL, 255); cx += aw + CG; }
         if (vw) { wave_draw_rrect_outline_gpu(cx, CY, vw, CH, CH / 2, 1, XMB_HAIRLINE, 255,
                                               XMB_PANEL, XMB_PANEL, 255); cx += vw + CG; }
-        wave_draw_rrect_outline_gpu(cx, CY, pw, CH, CH / 2, 1, XMB_HAIRLINE, 255,
-                                    XMB_PANEL, XMB_PANEL, 255);
 
         // Action row (y=410, h=44, r=4, gaps 12).  Resume/Play is the one
         // primary: the accent->accent_alt ramp with its glow; the others are
         // panels.  The focused control gets the focus ring, whichever it is.
-        const int AY = IY(410), AH = UIS_H(44), AR = UIS_H(4), AG = UIS_W(12);
+        // 2026-09-27: the row moved down into the wave's band (was y=410, above
+        // the cast), and every button is see-through so the wave moves behind
+        // it.  The director line and the cast moved up into its old place.
+        const int AY = IY(562), AH = UIS_H(44), AR = UIS_H(4), AG = UIS_W(12);
         int ax[3], aww[3];
         {
             int x = TX;
@@ -570,13 +573,14 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                                        aww[i] / 2 + UIS_W(24), AH / 2 + UIS_H(24),
                                        (u8)((XMB_ACCENT >> 16) & 0xFF),
                                        (u8)((XMB_ACCENT >> 8) & 0xFF),
-                                       (u8)(XMB_ACCENT & 0xFF), 97);   // .38
-                    wave_draw_rrect_gpu(ax[i], AY, aww[i], AH, AR,
-                                        XMB_ACCENT, XMB_ACCENT_ALT, 255);
+                                       (u8)(XMB_ACCENT & 0xFF), 60);
+                    wave_draw_rrect_outline_gpu(ax[i], AY, aww[i], AH, AR, 1,
+                                                XMB_ACCENT_ALT, 230,
+                                                XMB_ACCENT, XMB_ACCENT_ALT, 105);
                 } else {
                     wave_draw_rrect_outline_gpu(ax[i], AY, aww[i], AH, AR, 1,
                                                 XMB_HAIRLINE, 255,
-                                                XMB_PANEL, XMB_PANEL, 255);
+                                                XMB_PANEL, XMB_PANEL, 110);
                 }
                 // The card focus ring, gliding between controls the way it
                 // glides between posters (spine_focus_ring_gpu).
@@ -630,7 +634,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         }
         // Portraits in the XMB's own shape: 2:3 cards (a headshot's native
         // aspect, so no face is cropped) with a hairline frame, not circles.
-        const int KY = IY(493), KW = UIS_W(58), KD = UIS_H(87), KP = UIS_W(104);
+        const int KY = IY(426), KW = UIS_W(58), KD = UIS_H(87), KP = UIS_W(104);   // was 493
         for (int k = 0; k < n_cast; k++) {
             const int kx = TX + k * KP;
             if (!xmb_cpu_blit_thumb(detail.people[cast_idx[k]].id, kx, KY, KW, KD))
@@ -688,12 +692,13 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             int x = TX;
             const int ty_s = CY + (CH - (int)apx) / 2 - UIS_H(1);
             const int ty_r = CY + (CH - (int)cpx) / 2 - UIS_H(1);
-            if (aw) { drawTTF_face((u32)(x + UIS_W(10)), (u32)ty_s, achip, apx,
-                                   a_ll ? XMB_ACCENT_ALT : XMB_TEXT_DIM, UI_FACE_SPEC);
+            if (aw) { drawTTF((u32)(x + UIS_W(10)), (u32)ty_r, achip, cpx,
+                              a_ll ? XMB_ACCENT_ALT : XMB_TEXT_DIM);
                       x += aw + CG; }
-            if (vw) { drawTTF((u32)(x + UIS_W(10)), (u32)ty_r, vchip, cpx, XMB_TEXT_DIM);
+            if (vw) { drawTTF_face((u32)(x + UIS_W(10)), (u32)ty_s, vchip, apx, XMB_TEXT_DIM,
+                                   UI_FACE_SPEC);
                       x += vw + CG; }
-            drawTTF((u32)(x + UIS_W(10)), (u32)ty_r, pchip, cpx, XMB_TEXT_DIM);
+            (void)x;                    // (the transcode chip is gone)
         }
 
         // Overview: 14 px text_dim, 620 wide, four lines at 1.55.
@@ -730,7 +735,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         if (director) {
             char line[140];
             snprintf(line, sizeof line, "Director \xC2\xB7 %s", director);
-            drawTTF((u32)TX, (u32)IY(467), line, UIS_TF(13.0f), XMB_TEXT_FAINT);
+            drawTTF((u32)TX, (u32)IY(402), line, UIS_TF(13.0f), XMB_TEXT_FAINT);   // was 467
         }
 
         // Cast names: actor above character, Satoshi one weight.
