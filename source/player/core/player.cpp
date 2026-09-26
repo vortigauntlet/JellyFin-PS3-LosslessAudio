@@ -709,7 +709,7 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     // 5 ms socket receive timeout keeps the network thread responsive
     { struct { u32 sec; u32 usec; } tv = { 0, 5000 };
-      setsockopt(ps.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+      netSetSockOpt(ps.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
 
     // The button always reads "AUDIO" — track names are too long for the HUD
     // row; the selected track is plogged when cycled.

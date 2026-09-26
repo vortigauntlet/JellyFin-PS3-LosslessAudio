@@ -208,6 +208,13 @@ void decode_thread_fn(void *arg) {
                  !adec_pes_queue_hungry()))
                 break;
 
+            // Nothing waiting on the socket: go back and feed the ring and
+            // pull frames instead of blocking here.  The watchdog caught this
+            // loop 16 s inside stream_read with 100k packets queued in the
+            // ring and an empty jitter buffer (24p output, 2026-09-27): the
+            // server pauses its transcode when the client is far ahead.
+            g_dec_stage = "poll";
+            if (!stream_readable(ctx->sock, 2)) { g_dec_iter++; break; }
             g_dec_stage = "stream_read";
             int rd = stream_read(ctx->sock, ts_pkt, TS_PACKET_SIZE);
             g_dec_stage = "batch";

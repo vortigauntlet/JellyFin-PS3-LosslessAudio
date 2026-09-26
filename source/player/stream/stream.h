@@ -36,6 +36,8 @@ const char *stream_last_error(void);
 //           0 = timed out (call again after checking buttons)
 //          -1 = disconnect or terminal chunk
 int stream_read(int sock, u8 *buf, int size);
+// True when stream_read() has something to return without blocking (see stream.cpp).
+bool stream_readable(int sock, int timeout_ms);
 
 // Cumulative receive stats since process start: bytes delivered by netRecv,
 // microseconds spent blocked inside it, and how many times it was called.

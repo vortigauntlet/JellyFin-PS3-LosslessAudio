@@ -13,6 +13,7 @@
 #include <net/net.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <net/poll.h>
 #include <sysutil/sysutil.h>
 
 extern u32 running;
@@ -291,13 +292,19 @@ int stream_open(const char *url) {
     // blocking forever, and remains in effect for the stream (caller can
     // tighten it after connecting).
     { struct { u32 sec; u32 usec; } tv = { 0, 500000 };
-      setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+      netSetSockOpt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
 
     char hdr[4096]; int htotal = 0;
     u64 hdr_t0     = timing_get_us();
     u64 hdr_log_us = hdr_t0;
     while (htotal < (int)sizeof(hdr)-1) {
-        int n = netRecv(sock, hdr + htotal, 1, 0);
+        // Poll first (2026-09-27): a receive that blocked with no timeout
+        // hung a seek's reopen for good -- the "crash" after subtitles.
+        int n;
+        {
+            struct pollfd pfd; pfd.fd = sock; pfd.events = POLLIN; pfd.revents = 0;
+            n = netPoll(&pfd, 1, 500) == 0 ? -1 : netRecv(sock, hdr + htotal, 1, MSG_DONTWAIT);
+        }
         if (n == 1) {
             htotal++;
             if (htotal >= 4 && memcmp(hdr + htotal - 4, "\r\n\r\n", 4) == 0) break;
@@ -403,6 +410,15 @@ static int stream_save_carry(const u8 *buf, int got) {
         }
     }
     return 0;
+}
+
+// Is there anything for stream_read() to return without blocking?  Buffered
+// bytes, a carried partial packet, or data (or a close) on the socket within
+// timeout_ms.  (2026-09-27, see the decode loop.)
+bool stream_readable(int sock, int timeout_ms) {
+    if (s_carry_n > 0 || s_sb_p < s_sb_n) return true;
+    struct pollfd pfd; pfd.fd = sock; pfd.events = POLLIN; pfd.revents = 0;
+    return netPoll(&pfd, 1, timeout_ms) != 0;     // < 0: let the read report it
 }
 
 int stream_read(int sock, u8 *buf, int size) {

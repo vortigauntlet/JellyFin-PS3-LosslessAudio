@@ -315,7 +315,7 @@ bool player_execute_seek(PlayerState *ps) {
     ps->play_base_us = (u64)target_us;
     subs_after_seek();      // the cue cursor must not walk on from the old spot
     { struct { u32 sec; u32 usec; } tv = { 0, 5000 };
-      setsockopt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+      netSetSockOpt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
     crash_log("sk4 reopened");
 
     // 4) Re-prime: decode a few frames before resuming display so

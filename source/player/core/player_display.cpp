@@ -168,15 +168,16 @@ void player_display_frame(PlayerState *ps) {
         const s64 sm = avsync_get_smoothed_diff();
         if (s_settle > 0) s_settle--;
         if (s_settle == 0 && sm > 25000 && sm < 1500000) {
-            // Video ahead: show this picture one more vblank.
-            s_settle = 48;
+            // Video ahead: show this picture one more vblank.  Far ahead
+            // (a reopen): again almost at once -- the smoothed offset lags.
+            s_settle = sm > 150000 ? 2 : 48;
             char b[80]; snprintf(b, sizeof b, "1to1: repeat (video +%lld us)", (long long)sm); plog(b);
         } else {
             if (s_settle == 0 && sm < -25000 && sm > -1500000 && jbuf_count() > 1) {
                 // Video behind: drop one.
                 jbuf_consume_dur(jbuf_peek_dur());
                 jbuf_advance();
-                s_settle = 48;
+                s_settle = sm < -150000 ? 2 : 48;
                 char b[80]; snprintf(b, sizeof b, "1to1: skip (video %lld us)", (long long)sm); plog(b);
             }
             jbuf_consume_dur(jbuf_peek_dur());
