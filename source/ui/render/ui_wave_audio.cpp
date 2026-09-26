@@ -403,6 +403,16 @@ void wave_audio_bands(float lvl[3], float *kick)
     if (kick) { *kick = s_kick; s_kick = 0.0f; }
 }
 
+void wave_audio_features(float punch[3], float *energy, float *tempo_hz,
+                         float *tempo_conf, float *gain)
+{
+    if (punch) for (int i = 0; i < 3; i++) punch[i] = s_on ? s_db.punch[i] : 0.0f;
+    if (energy)     *energy     = s_on ? s_db.energy_eff : 0.0f;
+    if (tempo_hz)   *tempo_hz   = s_on ? s_db.tempo_hz : 0.0f;
+    if (tempo_conf) *tempo_conf = s_on ? s_db.tempo_conf : 0.0f;
+    if (gain)       *gain       = s_on ? s_gain : 0.0f;
+}
+
 void wave_audio_deform(wdf_look *out)
 {
     if (!out) return;

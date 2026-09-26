@@ -188,7 +188,7 @@ static void wave_nav_frame(void)
 // motion and the morph once per wave_draw() call, and the build takes a copy
 // of the pose in its snapshot (jw_look_now), so the worker never reads these.
 #define JELLYDROP_FILE  "jellyfin_jellydrop.txt"
-#define JD_MORPH_S      2.4f          // the design's transition, seconds
+#define JD_MORPH_S      1.3f          // the transition, seconds (design 2.4: too slow on a TV)
 #define JD_HEIGHT       0.40f         // the bell's height, fraction of the screen
 #define JD_CENTRE_Y     0.02f         // NDC, +up: just above the middle
 static bool      s_jd_loaded = false;
@@ -304,16 +304,39 @@ static void jd_frame(float aspect)
     // wa_features, as far as this analyser goes: three bands and a kick.  The
     // design's balance / width / pitch / drop / key_change are PROPOSED
     // fields it does not produce, so they rest at zero.
+    // 2026-09-27: fed like JellyWave -- level plus the per-layer PUNCH (the
+    // transients the wave's deform rides), the effective energy, the tempo,
+    // all scaled by Settings > Wave Intensity.  It used to take only the
+    // smoothed levels, unscaled, which left it drifting half-asleep.
     jd_in in;
     memset(&in, 0, sizeof in);
-    in.sub = in.bass = s_band_lvl[0];
-    in.lowmid = in.mid = s_band_lvl[1];
-    in.high = in.air = s_band_lvl[2];
-    in.rms  = (s_band_lvl[0] + s_band_lvl[1] + s_band_lvl[2]) * (1.0f / 3.0f);
-    if (s_band_kick > 0.02f) {
-        in.onset = 1.0f;
-        in.onset_strength = s_band_kick > 1.0f ? 1.0f : s_band_kick;
+    float punch[3], energy = 0.0f, thz = 0.0f, tconf = 0.0f, gain = 0.0f;
+    wave_audio_features(punch, &energy, &thz, &tconf, &gain);
+    const float g = gain > 0.0f ? 0.75f + 0.45f * gain : 0.0f;    // Normal ~1.2 .. Max ~2
+    #define JDC(v) ((v) < 0.0f ? 0.0f : ((v) > 1.0f ? 1.0f : (v)))
+    in.sub    = JDC(g * (s_band_lvl[0] + 0.9f * punch[0]));
+    in.bass   = JDC(g * (0.8f * s_band_lvl[0] + 1.1f * punch[0]));
+    in.lowmid = JDC(g * (0.9f * s_band_lvl[1] + 0.5f * punch[1]));
+    in.mid    = JDC(g * (s_band_lvl[1] + 0.8f * punch[1]));
+    in.high   = JDC(g * (s_band_lvl[2] + 0.8f * punch[2]));
+    in.air    = JDC(g * (0.8f * s_band_lvl[2] + 0.6f * punch[2]));
+    in.rms    = JDC(g * (0.5f * energy + 0.5f * (s_band_lvl[0] + s_band_lvl[1] + s_band_lvl[2]) * (1.0f / 3.0f)));
+    in.width  = JDC(g * 0.8f * punch[2]);
+    in.beat_hz = thz; in.beat_conf = tconf;
+    {
+        // A hit: the sub kick, or a punch on the bass or mid layer.
+        static float s_prev_p0 = 0.0f, s_prev_p1 = 0.0f;
+        const float hit = s_band_kick > 0.02f ? s_band_kick
+                        : (punch[0] > 0.30f && s_prev_p0 <= 0.30f) ? punch[0]
+                        : (punch[1] > 0.40f && s_prev_p1 <= 0.40f) ? 0.6f * punch[1] : 0.0f;
+        s_prev_p0 = punch[0]; s_prev_p1 = punch[1];
+        if (hit > 0.0f && g > 0.0f) {
+            in.onset = 1.0f;
+            in.onset_strength = JDC(hit * g);
+        }
     }
+    #undef JDC
+    if (gain <= 0.0f) in.silence = 0.0f;            // reactive off: it still breathes
     jd_motion_step(&s_jd_mo, &in, dt);
     jd_place(&s_jd_mo, s_jd_morph, aspect, 0.0f, JD_CENTRE_Y, JD_HEIGHT, &s_jd_pose);
     jd_motes_step(&s_jd_motes, dt, s_jd_mo.ts, s_band_lvl[1], in.onset_strength);

@@ -156,7 +156,11 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     if (!(dt > 0.0f)) return;
     if (dt > 0.05f) dt = 0.05f;
     live = 1.0f - F->silence;
-    m->t += dt;
+    // Pace (2026-09-27): the design's clocks drifted; on a TV it read as
+    // half-asleep next to JellyWave.  Every PHASE clock runs 1.7x, up to ~3x
+    // when it is loud.  The springs keep real time -- they are physics.
+    const float dtp = dt * (1.7f + 1.4f * jd_clamp(F->rms * live, 0.0f, 1.0f));
+    m->t += dtp;
 
     ts_t = F->beat_hz > 0.0f ? jd_clamp(F->beat_hz * 0.5f, 0.7f, 1.6f) : 1.0f;
     m->ts = jd_approach(m->ts, 1.0f + (ts_t - 1.0f) * F->beat_conf, dt, 1.2f);
@@ -165,11 +169,11 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     // jiggle mode; hits throw the mass up on a loose spring and every landing
     // feeds the jiggle and a lagging shear, so it wobbles like set gel.
     sub = F->sub * live;
-    m->swell_v += (14.0f * (sub - m->swell) - 2.6f * m->swell_v) * dt;
+    m->swell_v += (26.0f * (sub - m->swell) - 3.4f * m->swell_v) * dt;
     m->swell   += m->swell_v * dt;
     d_sub = jd_clamp((sub - m->sub_prev) / dt, -8.0f, 8.0f);
     m->sub_prev = sub;
-    if (F->onset > 0.0f) m->bounce_v += 1.1f * F->onset_strength * (0.3f + F->bass * live);
+    if (F->onset > 0.0f) m->bounce_v += 2.0f * F->onset_strength * (0.35f + F->bass * live);
     b_a = -9.0f * m->bounce - 1.1f * m->bounce_v;
     m->bounce_v += b_a * dt; m->bounce += m->bounce_v * dt;
     j_f = -0.05f * b_a + 0.02f * d_sub + 0.0014f * jd_clamp(m->wax < 0 ? -m->wax : m->wax, 0.0f, 160.0f);
@@ -179,28 +183,28 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
                    - 0.0009f * jd_clamp(m->wax, -200.0f, 200.0f)) * dt;
     m->shear += m->shear_v * dt;
     if (F->onset > 0.0f) {
-        m->sq_v += 0.9f * F->onset_strength;
-        m->yaw_v += 0.12f * F->onset_strength;
-        m->kick += 0.15f * F->onset_strength;
+        m->sq_v += 1.6f * F->onset_strength;
+        m->yaw_v += 0.22f * F->onset_strength;
+        m->kick += 0.30f * F->onset_strength;
     }
     m->sq_v += (-45.0f * m->sq - 2.4f * m->sq_v) * dt; m->sq += m->sq_v * dt;
     if (F->drop > 0.0f) m->drop_v += 6.5f;
     m->drop_v += (-5.5f * m->drop - 1.15f * m->drop_v) * dt; m->drop += m->drop_v * dt;
     m->yaw_v += (-9.0f * m->yaw - 2.4f * m->yaw_v) * dt; m->yaw += m->yaw_v * dt;
-    m->orbit += dt * 0.34f * m->ts;
+    m->orbit += dtp * 0.34f * m->ts;
     // The design spins it a full turn every ~40 s; behind the XMB an upside-down
     // mark reads as a fault, so here the same clock ROCKS it, +/-0.35 rad.
-    m->roll  += dt * 0.16f * m->ts;
+    m->roll  += dtp * 0.16f * m->ts;
     if (m->roll > 1000.0f) m->roll -= 159.0f * WK_TWO_PI;       // whole turns
 
     // Wander, in 1280x720 stage px from rest.  The reach follows loudness; a
     // drop pulls it to centre and releases over seconds; a soft wall keeps it
     // inside the box.
     en = jw_smooth(0.04f, 0.55f, F->rms * live);
-    m->w_amp = jd_approach(m->w_amp, 0.18f + 0.82f * en, dt, 2.8f);
+    m->w_amp = jd_approach(m->w_amp, 0.18f + 0.82f * en, dt, 1.2f);
     if (F->drop > 0.0f) m->calm = 1.0f;
     m->calm *= jd_expn(dt / 3.2f);
-    m->wt += dt * 0.11f * m->ts * (0.5f + 0.7f * m->w_amp);
+    m->wt += dtp * 0.11f * m->ts * (0.5f + 0.7f * m->w_amp);
     if (m->wt > 1000.0f) m->wt -= 1000.0f;
     reach = m->w_amp * (1.0f - 0.92f * m->calm);
     tx = reach * (340.0f * wk_sinf(m->wt) + 50.0f * wk_sinf(m->wt * 2.3f + 1.0f));
@@ -215,19 +219,19 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     m->wx  += m->wvx * dt; m->wy += m->wvy * dt;
     m->wax = jd_approach(m->wax, ax, dt, 0.25f);
 
-    if (F->onset > 0.0f) m->spin_w += 0.12f * F->onset_strength;
+    if (F->onset > 0.0f) m->spin_w += 0.25f * F->onset_strength;
     m->spin_w = jd_approach(m->spin_w, 0.22f * m->ts, dt, 1.6f);
-    m->spin  += m->spin_w * dt;
+    m->spin  += m->spin_w * dtp;
     if (m->spin > 1000.0f) m->spin -= 159.0f * WK_TWO_PI;
     m->lean   = jd_approach(m->lean, -F->balance * 0.26f, dt, 0.5f);
     m->shift  = jd_approach(m->shift, F->balance, dt, 0.6f);
     m->tilt   = jd_approach(m->tilt, F->pitch * 0.34f, dt, 0.7f);
     m->spread = jd_approach(m->spread, F->width, dt, 0.8f);
-    m->rip_a  = jd_approach(m->rip_a, 0.02f + 0.10f * F->mid * live, dt, 0.15f);
-    m->rip_b  = jd_approach(m->rip_b, 0.01f + 0.09f * F->lowmid * live, dt, 0.2f);
-    m->ph1 += dt * m->ts * (1.4f + 2.4f * F->mid);
-    m->ph2 += dt * m->ts * (1.0f + 1.6f * F->lowmid);
-    m->ph3 += dt * m->ts * (0.8f + 0.6f * F->width);
+    m->rip_a  = jd_approach(m->rip_a, 0.03f + 0.20f * F->mid * live, dt, 0.07f);
+    m->rip_b  = jd_approach(m->rip_b, 0.02f + 0.16f * F->lowmid * live, dt, 0.09f);
+    m->ph1 += dtp * m->ts * (1.4f + 2.4f * F->mid);
+    m->ph2 += dtp * m->ts * (1.0f + 1.6f * F->lowmid);
+    m->ph3 += dtp * m->ts * (0.8f + 0.6f * F->width);
     if (m->ph1 > 1000.0f) m->ph1 -= 159.0f * WK_TWO_PI;
     if (m->ph2 > 1000.0f) m->ph2 -= 159.0f * WK_TWO_PI;
     if (m->ph3 > 1000.0f) m->ph3 -= 159.0f * WK_TWO_PI;
@@ -237,9 +241,9 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     m->rest = jd_approach(m->rest, F->silence, dt, F->silence > m->rest ? 2.2f : 0.8f);
     if (m->last_sil > 0.5f && F->silence < 0.5f) { m->bounce_v += 0.9f; m->jig_v += 1.3f; }
     m->last_sil = F->silence;
-    m->glow   = jd_approach(m->glow, 0.62f - 0.32f * m->rest + 0.3f * F->rms * live, dt, 0.4f);
+    m->glow   = jd_approach(m->glow, 0.62f - 0.32f * m->rest + 0.5f * F->rms * live + 0.35f * m->kick, dt, 0.18f);
     m->bright = jd_approach(m->bright, 0.9f + 0.12f * F->rms * live, dt, 0.5f);
-    m->wph += dt * m->ts * (0.22f + 0.35f * F->lowmid * live);
+    m->wph += dtp * m->ts * (0.22f + 0.35f * F->lowmid * live);
     if (m->t > 3600.0f) m->t -= 3600.0f;             // the clocks below only need phase
 }
 
@@ -299,7 +303,7 @@ static inline void jd_place(const jd_motion *m, float morph, float aspect,
     o->P.x += m->shift * 6.0f * s0 + 2.2f * s0 * wk_sinf(t * 0.53f * m->ts);      // a slow float
     o->P.y += (m->bounce * 7.0f + 1.6f * wk_sinf(t * 0.7f * m->ts) - 12.0f * m->rest) * s0;
 
-    g = 1.0f + 0.07f * m->swell + 0.3f * m->drop + 0.02f * wk_sinf(t * 1.1f * m->ts)
+    g = 1.0f + 0.13f * m->swell + 0.3f * m->drop + 0.03f * m->kick + 0.02f * wk_sinf(t * 1.1f * m->ts)
       + 0.035f * m->rest * wk_sinf(t * 0.8f);
     o->S0 = s0;
     o->S  = s0 * g;
@@ -408,6 +412,19 @@ static inline int jd_build_layer_k(const jw_layer *L, int li, const float *disp,
         const float *st = JD_RING[i];
         float u  = L->u0 + du * (float)i;
         float uk = dk * (float)i;
+        float fl;                                           // 0..1..0 while in flight
+        {
+            // The morph runs ALONG the strand (2026-09-27): the middle leaves
+            // first and the ends follow, so each ribbon zips into the bell
+            // instead of the whole layer sliding over as one.
+            const float ord = uk < 0.5f ? (0.5f - uk) * 2.0f : (uk - 0.5f) * 2.0f;
+            const float ms  = jd_clamp(mk * 1.45f - 0.45f * ord, 0.0f, 1.0f);
+            e1 = jw_smooth(0.0f, 0.5f, ms);
+            e2 = jw_smooth(0.15f, 1.0f, ms);
+            sw = wk_sinf(WK_PI * e2) * 0.9f;
+            tw = jw_smooth(0.0f, 0.3f, ms) * (1.0f - jw_smooth(0.7f, 1.0f, ms));
+            fl = wk_sinf(WK_PI * e2);
+        }
         float uw = 0.5f + (u - 0.5f) * (1.0f - 0.6f * e1);    // the strands draw in
         float d0, hw, ht, stw, sl;
         jw_frame f;
@@ -475,6 +492,13 @@ static inline int jd_build_layer_k(const jw_layer *L, int li, const float *disp,
                       p.z + (wp.z - p.z) * e2 + P->tc.z * sw);
             s  = jw_norm(jw_v3(s.x + (sL.x - s.x) * e2, s.y + (sL.y - s.y) * e2, s.z + (sL.z - s.z) * e2));
             up = jw_norm(jw_v3(up.x + (uL.x - up.x) * e2, up.y + (uL.y - up.y) * e2, up.z + (uL.z - up.z) * e2));
+            if (fl > 0.001f) {
+                // In flight the strand corkscrews about its own path.
+                const float a  = 7.0f * uk + t * 2.2f + (float)li * 2.1f;
+                const float rr = fl * SGk * 5.0f;
+                const float ka = jw_cosf(a) * rr, kb = wk_sinf(a) * rr;
+                p = jw_v3(p.x + s.x * ka + up.x * kb, p.y + s.y * ka + up.y * kb, p.z + s.z * ka + up.z * kb);
+            }
             hw += (hwl * SGk - hw) * e2;
             ht += (htl * SGk - ht) * e2;
             // the logo's own gradient line: (12,30) -> (72,63) in the viewBox
@@ -534,7 +558,7 @@ static inline int jd_build_layer_k(const jw_layer *L, int li, const float *disp,
             // depth cue: the near side of an orbit reads brighter, the far side sinks
             dd = jd_clamp(((q.x - P->P.x) * P->tc.x + (q.y - P->P.y) * P->tc.y
                            + (q.z - P->P.z) * P->tc.z) / (30.0f * P->S), -1.0f, 1.0f) * e2;
-            kd = 1.0f + 0.4f * dd + 0.22f * pass * e2;
+            kd = 1.0f + 0.4f * dd + 0.22f * pass * e2 + 0.35f * fl;
             lit_c.r *= kd; lit_c.g *= kd; lit_c.b *= kd;
             // the core's light on the ring's inner wall
             inward = in_sgn * nx;

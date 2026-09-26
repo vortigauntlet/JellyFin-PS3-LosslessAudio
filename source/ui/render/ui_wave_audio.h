@@ -66,6 +66,11 @@ float wave_audio_presence(void);
 // The distinct-band levels (lows, mids, highs; 0..1) and a pending sub-bass
 // kick (returned once, then cleared) -- for the snow field.
 void wave_audio_bands(float lvl[3], float *kick);
+// JellyDrop's feed (2026-09-27): the same shaped levels and per-layer punch
+// JellyWave's deform reads, the effective energy, the tempo, and the Wave
+// Intensity gain.  All zero while audio-reactive is off.
+void wave_audio_features(float punch[3], float *energy, float *tempo_hz,
+                         float *tempo_conf, float *gain);
 
 // True when the analyser is running (gate on, initialised).  For logging only.
 bool wave_audio_active(void);
