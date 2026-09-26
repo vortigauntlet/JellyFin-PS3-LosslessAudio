@@ -37,6 +37,13 @@ void wave_set_art_tint(unsigned int rgb, float strength);
 void wave_nav_event(int dx, int dy);
 void wave_reset(void);
 
+// JellyDrop (wave_drop.h): the three ribbons closed into the Jellyfin bell,
+// floating behind everything.  Toggled by L1 + R1 together (ui_input.cpp),
+// morphs over ~2.4 s, and the choice survives a relaunch
+// (jellyfin_jellydrop.txt).  Render thread.
+void wave_drop_toggle(void);
+bool wave_drop_on(void);
+
 // True when CPU framebuffer writes are cheap (emulator): the whole XMB
 // background is composited on the CPU so the flip presents CPU-drawn content.
 // False on real hardware, where the background stays on the GPU.  Set once by

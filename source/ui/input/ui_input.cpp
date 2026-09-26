@@ -219,6 +219,71 @@ void input_init(void) {
     ioKbInit(KB_PORTS);
 }
 
+// --- L1 + R1: JellyDrop ------------------------------------------------------
+// Both shoulders together toggle JellyDrop (ui_wave.h).  Each alone keeps its
+// job -- tab switching on the XMB, track skip on the music screen, chapter
+// skip in the player -- so a single shoulder press is HELD BACK for up to
+// SHOULDER_CHORD_US waiting for its partner:
+//
+//   * the other shoulder arrives in time   -> the chord: toggle, and neither
+//     button is reported until both are released;
+//   * it is released first (a tap), or the wait runs out while it is held
+//                                          -> it is reported as pressed then,
+//     exactly once, and passes through untouched until released.
+//
+// The cost is that a lone shoulder press lands SHOULDER_CHORD_US later.  Both
+// pressed on the same poll is a chord with no wait at all.
+#define SHOULDER_CHORD_US 110000ULL
+enum { SH_IDLE, SH_WAIT, SH_PASS, SH_CHORD };
+
+static void shoulder_chord(ButtonState *b)
+{
+    static int  st = SH_IDLE;
+    static int  which = 0;              // 1 = L1 waiting, 2 = R1 waiting
+    static u64  t0 = 0;
+    const bool l = b->l1 != 0, r = b->r1 != 0;
+    const u64 now = timing_get_us();
+
+    switch (st) {
+    case SH_IDLE:
+        if (l && r) {
+            st = SH_CHORD;
+            wave_drop_toggle();
+            ui_sfx_play(SFX_OPTION);
+        } else if (l || r) {
+            st = SH_WAIT; which = l ? 1 : 2; t0 = now;
+        }
+        break;
+    case SH_WAIT:
+        if (l && r) {
+            st = SH_CHORD;
+            wave_drop_toggle();
+            ui_sfx_play(SFX_OPTION);
+        } else if (!(which == 1 ? l : r)) {
+            // released before the partner came: a tap.  Report it now, for
+            // this one poll (btn_prev has it up, so BTN_PRESSED fires).
+            if (which == 1) b->l1 = 1; else b->r1 = 1;
+            st = SH_PASS;
+            return;
+        } else if (now - t0 >= SHOULDER_CHORD_US) {
+            st = SH_PASS;                   // held alone: a plain press from here
+            return;
+        }
+        break;
+    case SH_PASS:
+        // (a partner arriving late is an ordinary press of it, not a chord)
+        if (!l && !r) st = SH_IDLE;
+        if (st == SH_PASS) return;          // report as-is
+        break;
+    case SH_CHORD:
+        if (!l && !r) st = SH_IDLE;
+        break;
+    }
+    // Held back (waiting) or swallowed (a chord): report neither shoulder.
+    b->l1 = 0;
+    b->r1 = 0;
+}
+
 bool poll_buttons(void) {
     // Per-port last report.  A read with len == 0 means "nothing changed",
     // so the port keeps its previous state -- per port, which is what lets a
@@ -269,6 +334,7 @@ bool poll_buttons(void) {
         }
     }
     poll_keyboards(&merged, &any);
+    shoulder_chord(&merged);
     btn_prev = btn_cur;
     btn_cur  = merged;
     // XMB sounds on the button edges.  The cursor sound for the d-pad is in

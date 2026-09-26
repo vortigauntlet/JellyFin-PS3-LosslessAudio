@@ -475,14 +475,21 @@ static inline jw_frame jw_frame_at(float u, float disp, const jw_layer *L)
 //   p        world position, for the brand-axis hue
 //   topness  cy/ht in [-1,+1]
 //   rim      the section's geometric rim weight
-static inline jw_rgb jw_gel_color(jw_vec3 p, float topness, float rim,
-                                  const jw_layer *L)
+// Where p sits along the brand axis, 0 (purple) .. 1 (blue).
+static inline float jw_axis_t(jw_vec3 p)
 {
-    float  t, top, shade, dm;
-    jw_rgb c;
+    return jw_clamp01((p.x * JW_AXIS_X + p.y * JW_AXIS_Y + JW_AXIS_BIAS)
+                      * (1.0f / JW_AXIS_SPAN));
+}
 
-    t = (p.x * JW_AXIS_X + p.y * JW_AXIS_Y + JW_AXIS_BIAS) * (1.0f / JW_AXIS_SPAN);
-    t = jw_clamp01(t);
+// The same material, given the axis position directly: JellyDrop's bell takes
+// its hue from the logo's own gradient line rather than from world space
+// (wave_drop.h).  jw_gel_color is exactly this with t = jw_axis_t(p).
+static inline jw_rgb jw_gel_color_t(float t, float topness, float rim,
+                                    const jw_layer *L)
+{
+    float  top, shade, dm;
+    jw_rgb c;
 
     c.r = jw_lerp(JW_PURPLE_R, JW_BLUE_R, t);
     c.g = jw_lerp(JW_PURPLE_G, JW_BLUE_G, t);
@@ -513,6 +520,12 @@ static inline jw_rgb jw_gel_color(jw_vec3 p, float topness, float rim,
         c.b = jw_lerp(c.b, JW_RIMC_B, rm);
     }
     return c;
+}
+
+static inline jw_rgb jw_gel_color(jw_vec3 p, float topness, float rim,
+                                  const jw_layer *L)
+{
+    return jw_gel_color_t(jw_axis_t(p), topness, rim, L);
 }
 
 // The design's rimColor: the additive companion pass, the flat-topped band
