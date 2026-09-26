@@ -140,6 +140,7 @@ typedef struct {
     float lean, shift, tilt, spread, rip_a, rip_b, ph1, ph2, ph3;
     float glow, bright, kick, wph;
     float pace, turn, turn_w;   // 2026-09-27: smoothed clock rate; the continuous spin
+    float cam_t;                // the camera's own slow clock (real seconds)
 } jd_motion;
 
 static inline void jd_motion_init(jd_motion *m)
@@ -148,7 +149,7 @@ static inline void jd_motion_init(jd_motion *m)
     memset(m, 0, sizeof *m);
     m->ts = 1.0f; m->spin_w = 0.3f; m->w_amp = 0.4f;
     m->rip_a = 0.02f; m->rip_b = 0.01f; m->glow = 0.6f; m->bright = 0.95f;
-    m->pace = 1.7f; m->turn_w = 0.7f;
+    m->pace = 1.7f; m->turn_w = 0.55f;
 }
 
 static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
@@ -190,7 +191,7 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     if (F->onset > 0.0f) {
         m->sq_v += 1.2f * F->onset_strength;
         m->yaw_v += 0.22f * F->onset_strength;
-        m->turn_w += 0.9f * F->onset_strength;      // a beat throws the spin on
+        m->turn_w += 0.3f * F->onset_strength;      // a beat nudges the spin
         m->kick += 0.30f * F->onset_strength;
     }
     m->sq_v += (-36.0f * m->sq - 4.2f * m->sq_v) * dt; m->sq += m->sq_v * dt;
@@ -199,7 +200,15 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     m->yaw_v += (-9.0f * m->yaw - 3.0f * m->yaw_v) * dt; m->yaw += m->yaw_v * dt;
     // The spin: continuous, never a sine back and forth.  It coasts back to
     // a steady turn after each beat's throw.
-    m->turn_w = jd_approach(m->turn_w, 0.7f + 0.5f * jd_clamp(F->rms * live, 0.0f, 1.0f), dt, 1.4f);
+    // ... at the SONG's tempo: one full turn every 16 beats (four bars), so
+    // at 120 BPM one turn in 8 s.  An unsure tempo leans to 0.55 rad/s.
+    {
+        const float bpm_w = F->beat_hz > 0.5f ? WK_TWO_PI * F->beat_hz / 16.0f : 0.55f;
+        const float tw_t  = 0.55f + (bpm_w - 0.55f) * jd_clamp(F->beat_conf, 0.0f, 1.0f);
+        m->turn_w = jd_approach(m->turn_w, tw_t, dt, 1.4f);
+    }
+    m->cam_t += dt;
+    if (m->cam_t > 3600.0f) m->cam_t -= 3600.0f;
     m->turn  += m->turn_w * dt;
     if (m->turn > 1000.0f) m->turn -= 159.0f * WK_TWO_PI;
     m->orbit += dtp * 0.34f * m->ts;
@@ -314,6 +323,14 @@ static inline void jd_place(const jd_motion *m, float morph, float aspect,
     o->P.x += m->shift * 6.0f * s0 + 2.2f * s0 * wk_sinf(t * 0.53f * m->ts);      // a slow float
     o->P.y += (m->bounce * 7.0f + 1.6f * wk_sinf(t * 0.7f * m->ts) - 12.0f * m->rest) * s0;
 
+    // The camera (2026-09-27): it drifts slowly round the bell -- dollying in
+    // and out and swinging above, below and to the sides -- on its own
+    // real-time clock, so the angles change whatever the music does.
+    {
+        const float ct = m->cam_t;
+        const float dolly = 0.28f * wk_sinf(ct * 0.105f) + 0.12f * wk_sinf(ct * 0.043f + 2.0f);
+        s0 *= 1.0f + dolly;                                  // nearer = larger
+    }
     g = 1.0f + 0.13f * m->swell + 0.3f * m->drop + 0.03f * m->kick + 0.02f * wk_sinf(t * 1.1f * m->ts)
       + 0.035f * m->rest * wk_sinf(t * 0.8f);
     o->S0 = s0;
@@ -324,7 +341,9 @@ static inline void jd_place(const jd_motion *m, float morph, float aspect,
     bank = jd_clamp(m->wvx * 0.0032f, -0.3f, 0.3f);
     dive = jd_clamp(m->wvy * 0.003f, -0.22f, 0.22f);
     ex = 0.08f + m->tilt + 0.08f * wk_sinf(t * 0.41f * m->ts) + dive;
-    ey = m->turn + 0.18f * wk_sinf(m->orbit) + m->yaw;     // spins all the way round
+    ey = m->turn + 0.18f * wk_sinf(m->orbit) + m->yaw      // spins all the way round
+       + 0.50f * wk_sinf(m->cam_t * 0.061f + 0.7f);        // the camera swings round it
+    ex += 0.26f * wk_sinf(m->cam_t * 0.083f + 1.9f);       // ... and over and under it
     ez = m->lean + 0.1f * wk_sinf(t * 0.5f * m->ts) - 0.03f * m->bounce_v + 0.22f * wk_sinf(m->roll) - bank;
     Rb[0] = JW_RIGHT_X; Rb[1] = JW_RIGHT_Y; Rb[2] = JW_RIGHT_Z;
     Rb[3] = JW_UP_X;    Rb[4] = JW_UP_Y;    Rb[5] = JW_UP_Z;

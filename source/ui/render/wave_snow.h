@@ -386,11 +386,20 @@ static inline int ws_shade(const ws_state *st, const ws_ctl *c, float alpha,
         }
         a = ws_clampf(a, 0.0f, 1.0f);
 
-        // colour: violet (170,120,235) -> blue (110,190,245), toward white in focus
+        // colour (2026-09-27): JellyDrop's orbit palette -- violet -> Jellyfin
+        // blue -> the cyan rim, lifted toward white so a speck reads as light
+        // (wave_drop.h jd_motes_sprite; the user wanted it field-wide) --
+        // and toward white again in focus.
         const float h = st->hue[i];
-        float cr = 170.0f + (110.0f - 170.0f) * h;
-        float cg = 120.0f + (190.0f - 120.0f) * h;
-        float cb = 235.0f + (245.0f - 235.0f) * h;
+        float cr, cg, cb;
+        if (h < 0.5f) {
+            const float u = h * 2.0f;
+            cr = 170.0f + (0.0f   - 170.0f) * u; cg = 92.0f + (164.0f - 92.0f) * u; cb = 195.0f + (220.0f - 195.0f) * u;
+        } else {
+            const float u = (h - 0.5f) * 2.0f;
+            cr = 0.0f + (46.0f - 0.0f) * u; cg = 164.0f + (214.0f - 164.0f) * u; cb = 220.0f + (255.0f - 220.0f) * u;
+        }
+        cr = cr * 0.7f + 76.5f; cg = cg * 0.7f + 76.5f; cb = cb * 0.7f + 76.5f;
         const float wt = 0.55f * focus;
         cr += (255.0f - cr) * wt; cg += (255.0f - cg) * wt; cb += (255.0f - cb) * wt;
 

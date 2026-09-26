@@ -119,8 +119,8 @@ static int music_vis_cur(void) {
     const int w = wave_vis_mode();
     return w == WAVE_VIS_JELLYDROP ? 1 : (w == WAVE_VIS_OFF ? 3 : 0);
 }
-static void music_vis_cycle(void) {
-    switch ((music_vis_cur() + 1) % 4) {
+static void music_vis_apply(int idx) {
+    switch (idx) {
     case 0: viz_set_mode(VIZ_WAVE);   wave_vis_set(WAVE_VIS_JELLYWAVE); break;
     case 1: viz_set_mode(VIZ_WAVE);   wave_vis_set(WAVE_VIS_JELLYDROP); break;
     // Canyon leaves the wave mode as it was: its fade (s_mini_e) draws the
@@ -132,6 +132,24 @@ static void music_vis_cycle(void) {
     }
 }
 static const char *music_vis_next_label(void) { return MVIS_NAME[(music_vis_cur() + 1) % 4]; }
+
+// Into or out of Canyon (2026-09-27): no shrink animation any more -- it
+// resized the cover and re-set the text every frame and was laggy.  The whole
+// screen dips to the background, the mode changes while it is hidden, and it
+// comes back in the new layout.  s_swap_a is that dip: 1 normal .. 0 hidden.
+#define SWF_HALF_US 280000.0f
+static u64   s_swf_t0   = 0;
+static int   s_swf_next = -1;       // the mode to apply at the bottom of the dip
+static bool  s_swf_on   = false;
+static float s_swap_a   = 1.0f;
+static void music_vis_cycle(void) {
+    const int cur = music_vis_cur(), nx = (cur + 1) % 4;
+    if (nx == 2 || cur == 2) {
+        if (!s_swf_on) { s_swf_on = true; s_swf_t0 = timing_get_us(); s_swf_next = nx; }
+        return;
+    }
+    music_vis_apply(nx);
+}
 static int   s_ox = 0, s_oy = 0, s_os = 0;
 static bool  s_origin_pending = false;  // set by the opener for the next open
 
@@ -178,7 +196,8 @@ static void music_fades_reset(void) {
 }
 
 static bool music_any_press(void) {
-    return BTN_PRESSED(cross) || BTN_PRESSED(circle) || BTN_PRESSED(square) ||
+    // Not Square: it changes the visualiser and leaves focus mode alone.
+    return BTN_PRESSED(cross) || BTN_PRESSED(circle) ||
            BTN_PRESSED(triangle) || BTN_PRESSED(up) || BTN_PRESSED(down) ||
            BTN_PRESSED(left) || BTN_PRESSED(right) || BTN_PRESSED(l1) ||
            BTN_PRESSED(r1) || BTN_PRESSED(l2) || BTN_PRESSED(r2) ||
@@ -193,10 +212,21 @@ static void music_fades_tick(bool focus_ok) {
     if (dt > 100000.0f) dt = 100000.0f;
     s_fade_us = now;
     {
-        const float step = dt * 0.001f / MINI_MS;
-        if (viz_mode() == VIZ_CANYON) s_mini += step; else s_mini -= step;
-        s_mini = s_mini < 0.0f ? 0.0f : (s_mini > 1.0f ? 1.0f : s_mini);
-        s_mini_e = s_mini * s_mini * (3.0f - 2.0f * s_mini);
+        float a = 1.0f;
+        if (s_swf_on) {
+            const float t = (float)(now - s_swf_t0) / SWF_HALF_US;
+            if (t < 1.0f) a = 1.0f - t;
+            else {
+                if (s_swf_next >= 0) { music_vis_apply(s_swf_next); s_swf_next = -1; }
+                a = t - 1.0f;
+                if (t >= 2.0f) { a = 1.0f; s_swf_on = false; }
+            }
+            a = a * a * (3.0f - 2.0f * a);
+        }
+        s_swap_a = a;
+        // The layout snaps (it changes while the screen is hidden).
+        s_mini = s_mini_e = viz_mode() == VIZ_CANYON ? 1.0f : 0.0f;
+        (void)MINI_MS;
     }
 
     const bool focus = focus_ok && !s_outro && now - s_last_input_us > FOCUS_AFTER_US;
@@ -231,6 +261,7 @@ static void music_fades_tick(bool focus_ok) {
         const float t = (float)(now - s_intro_t0) / INTRO_US;
         s_scr_a = t >= 1.0f ? 1.0f : fade_ease(t);
     }
+    s_scr_a *= s_swap_a;                // the Canyon dip
 }
 
 // The cover's place when settled.  cover_A1_full() is the size the TEXTURE
@@ -712,7 +743,9 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
 
     // No breadcrumb (Music > Albums > ... > Now Playing): everything it said
     // is on the screen already.  The lockup stays -- it is the XMB's too.
+    g_topbar_logo_a = 1.0f - fade_ease(s_focus_p);   // the Jellyfin lockup fades in focus mode
     xmb_draw_topbar();
+    g_topbar_logo_a = 1.0f;
     const float ta = s_e_text;                      // the text column
     float ua;                                       // Up Next (the panel's own)
     const float ca = s_ctl_a * s_e_ctl;             // transport
@@ -1279,6 +1312,9 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         } else {
             wave_draw();
         }
+        if (s_swap_a < 0.999f)          // the Canyon dip: the visualiser goes too
+            ui_rect_gpu_draw(0, 0, (int)display_width, (int)display_height, XMB_BG,
+                             (u8)((1.0f - s_swap_a) * 255.0f + 0.5f));
         {
             // The accent follows the current track's album.  Same cover size
             // draw_now_playing() uses, so it reads the bitmap on screen.

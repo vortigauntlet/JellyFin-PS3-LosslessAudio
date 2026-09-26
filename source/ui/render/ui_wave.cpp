@@ -231,6 +231,8 @@ bool wave_drop_on(void) { jd_load(); return s_jd_want; }
 #define VIS_FILE "jellyfin_visualiser.txt"
 static int  s_vis      = -1;          // -1 = not loaded yet
 static bool s_vis_off  = false;       // mode Off: gradient only
+static u64  s_reveal_t0 = 0;          // Off -> JellyWave: the wave extends in from the left
+#define VIS_REVEAL_US 1300000.0f
 
 static void vis_load(void)
 {
@@ -262,7 +264,9 @@ void wave_vis_set(int mode)
 void wave_vis_cycle(void)
 {
     vis_load();
+    const int prev = s_vis;
     s_vis = (s_vis + 1) % 3;
+    if (prev == WAVE_VIS_OFF && s_vis == WAVE_VIS_JELLYWAVE) s_reveal_t0 = timing_get_us();
     s_jd_want = (s_vis == WAVE_VIS_JELLYDROP);
     s_vis_off = (s_vis == WAVE_VIS_OFF);
     s_jd_toggles++;
@@ -817,12 +821,16 @@ static u32 motes_build(float aspect)
     else                   { s_mote_lin -= dt / 1.3f; if (s_mote_lin < want) s_mote_lin = want; }
     s_mote_lvl += (lvl_want - s_mote_lvl) * (dt / (0.8f + dt));
     s_mote_a = s_mote_lin * s_mote_lin * (3.0f - 2.0f * s_mote_lin) * s_mote_lvl;
+    // In JellyDrop the only particles are the bell's own orbit (2026-09-27):
+    // the wide field fades out as the bell forms and back as it opens.
+    const float jd_hide = jw_smooth(0.15f, 0.6f, s_jd_morph);
+    s_mote_a *= 1.0f - jd_hide;
     float lvl[3], kick = s_band_kick;
     lvl[0] = s_band_lvl[0]; lvl[1] = s_band_lvl[1]; lvl[2] = s_band_lvl[2];
     // JellyDrop's orbit is on whenever the bell is (music or not): it is what
     // gives the bell its depth.
     const float jd_vis = jw_smooth(0.55f, 1.0f, s_jd_morph);
-    const bool  snow   = s_mote_lin > 0.0f;
+    const bool  snow   = s_mote_lin > 0.0f && jd_hide < 0.999f;
     if (!snow && !(jd_vis > 0.0f)) return 0;
 
     // The near layer's vertical velocity across the screen, in clip units/s
@@ -2404,6 +2412,21 @@ void wave_draw(void) {
             // Visualiser Off (Select): the gradient above, nothing over it.
             // s_jw_drawn stays false, so wave_draw_front stands down too.
         } else if (jellywave) {
+            // Off -> JellyWave: the ribbons are uncovered from the left edge
+            // across the screen (the gradient above is already whole).
+            bool revealing = false;
+            if (s_reveal_t0) {
+                float r = (float)(timing_get_us() - s_reveal_t0) / VIS_REVEAL_US;
+                if (r >= 1.0f) s_reveal_t0 = 0;
+                else {
+                    r = 1.0f - (1.0f - r) * (1.0f - r) * (1.0f - r);      // ease out
+                    int rw = (int)(r * W);
+                    if (rw < 1) rw = 1;
+                    rsxSetScissor(context, 0, 0, (u16)rw, (u16)H);
+                    revealing = true;
+                }
+            }
+            (void)revealing;
             // Explicitly establish JellyWave's hardware-validated standard
             // alpha blend state. Do not inherit whatever state the previous
             // UI/background operation left behind.
@@ -2520,6 +2543,8 @@ void wave_draw(void) {
             s_jw_t_frame  = jt;
             s_jw_drawn    = true;
         }
+
+        if (s_reveal_t0) rsxSetScissor(context, 0, 0, (u16)W, (u16)H);   // the reveal's clip off
 
         // Release the colour array.  Everything the UI draws after the
         // background this frame -- cards, text, chrome, the dim quad --

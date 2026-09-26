@@ -596,6 +596,9 @@ void xmb_draw_topbar(void);         // brand top-left, clock top-right
 // The raster carries the design's drop shadow in a padded box, so it draws
 // slightly larger than bell_px and slightly above/left of (x,y).
 void xmb_draw_mark(int x, int y, int bell_px);
+void xmb_draw_mark_a(int x, int y, int bell_px, u8 alpha);
+// The top bar's lockup opacity, 0..1 (the music screen fades it in focus mode).
+extern float g_topbar_logo_a;
 // Which mark raster the loaded theme takes: 0 = cool, 1 = gold.  The boot
 // animation's large mark follows the same choice.
 int  xmb_mark_variant(void);

@@ -137,8 +137,22 @@ static void lk_ramp_shade(const u32 *in, u32 *out, float k) {
     }
 }
 
+// The lockup's opacity (2026-09-27): the music screen fades it in focus mode.
+// Mixed toward the background in sixteenths, so the cached text runs are
+// reused; the mark is an image and takes real alpha.
+float g_topbar_logo_a = 1.0f;
+static u32 lk_fade(u32 c, float a) {
+    u32 out = 0;
+    for (int sh = 0; sh <= 16; sh += 8) {
+        const int cb = (int)((XMB_BG >> sh) & 0xFF), cc = (int)((c >> sh) & 0xFF);
+        out |= (u32)(cb + (int)((float)(cc - cb) * a)) << sh;
+    }
+    return out;
+}
+
 void xmb_draw_topbar(void) {
     const int oy    = XMB_OY;
+    const float la  = (float)(int)(g_topbar_logo_a * 16.0f + 0.5f) / 16.0f;
     const int row_y = oy + UIS_H(20);            // the shared 24px row
 
     XmbLockupGeom lk;
@@ -150,8 +164,10 @@ void xmb_draw_topbar(void) {
     // off -- is the static lockup, drawn by exactly the calls it always was.
     const BootLockupPose *pose = boot_anim_lockup_pose();
 
-    if (!pose || pose->show_mark) {
-        if (pose && pose->mark_posed)
+    if (la > 0.03f && (!pose || pose->show_mark)) {
+        if (!pose && la < 0.999f)
+            xmb_draw_mark_a(lk.mark_x, lk.mark_y, lk.mark_px, (u8)(la * 255.0f + 0.5f));
+        else if (pose && pose->mark_posed)
             xmb_draw_mark(pose->mark_x, pose->mark_y, pose->mark_bell);
         else
             xmb_draw_mark(lk.mark_x, lk.mark_y, lk.mark_px);
@@ -164,12 +180,17 @@ void xmb_draw_topbar(void) {
     u32 deep[4], mid[4];
     lk_ramp_shade(ramp, deep, 0.28f);
     lk_ramp_shade(ramp, mid,  0.50f);
+    u32 rampf[4];
+    for (int i = 0; i < 4; i++) {
+        rampf[i] = lk_fade(ramp[i], la); deep[i] = lk_fade(deep[i], la); mid[i] = lk_fade(mid[i], la);
+    }
+    #define ramp rampf
     const u32 st = UIS_H(1) > 1 ? (u32)UIS_H(1) : 1u;
-    if (lk.word_ok && (!pose || pose->show_word)) {
+    if (lk.word_ok && la > 0.03f && (!pose || pose->show_word)) {
         const u32 wx = (u32)lk.word_x, wy = (u32)lk.word_y;
         if (xmb_nav_depth() > 0) {
             drawTTF_tracked(wx, wy, "JELLYFIN", lk.word_px,
-                            XMB_TEXT_FAINT, UI_FACE_LOCKUP, lk.track);
+                            lk_fade(XMB_TEXT_FAINT, la), UI_FACE_LOCKUP, lk.track);
         } else if (pose && pose->word_posed) {
             // Same passes as below, each letter at its pose.  NULL stops is
             // a flat black run: the shadow and the extrusion travel with
@@ -192,7 +213,7 @@ void xmb_draw_topbar(void) {
                                BOOT_WORD_LETTERS, pose->word_slide_px);
         } else {
             drawTTF_tracked(wx + st, wy + 3 * st, "JELLYFIN", lk.word_px,
-                            0x00000000, UI_FACE_LOCKUP, lk.track);
+                            lk_fade(0x00000000, la), UI_FACE_LOCKUP, lk.track);
             drawTTF_ramp(wx + st, wy + 2 * st, "JELLYFIN", lk.word_px,
                          deep, 4, UI_FACE_LOCKUP, lk.track);
             drawTTF_ramp(wx, wy + st, "JELLYFIN", lk.word_px,
@@ -202,6 +223,7 @@ void xmb_draw_topbar(void) {
         }
     }
 
+    #undef ramp
     // Clock, right-aligned, with the date dimmer beside it.
     time_t now = time(NULL);
     struct tm *tm = localtime(&now);
@@ -774,6 +796,17 @@ int xmb_mark_variant(void) { return mark_variant(); }
 // The raster is wider than the bell -- it carries the design's drop shadow in
 // a padded box -- so both the size and the origin are adjusted here rather
 // than at the call site.
+void xmb_draw_mark_a(int x, int y, int bell_px, u8 alpha) {
+    if (bell_px <= 0 || !alpha) return;
+    int v = mark_variant();
+    mark_load(v);
+    if (s_mark_state[v] != 1) return;
+    int box = bell_px * JFMARK_SPAN_U / JFMARK_BELL_U;
+    int off = bell_px * JFMARK_PAD_U  / JFMARK_BELL_U;
+    blit_argb_scaled(s_mark_px[v], JFMARK_MASTER, JFMARK_MASTER,
+                     x - off, y - off, box, box, alpha);
+}
+
 void xmb_draw_mark(int x, int y, int bell_px) {
     if (bell_px <= 0) return;
     int v = mark_variant();
