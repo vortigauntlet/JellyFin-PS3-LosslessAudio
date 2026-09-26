@@ -3,6 +3,7 @@
 
 #include "menusnow.h"
 #include "autoskip.h"
+#include "display_24p.h"
 #include "month_bg.h"
 #include "ui_wave_audio.h"
 #include <stdio.h>
@@ -267,8 +268,10 @@ static bool xmb_input_settings(void) {
             wave_audio_set_level((wave_audio_level() + 1) % 4);         // Off -> Normal -> Strong -> Max
         if (g_settings_sel == 12)                                       // Auto Skip
             autoskip_set_enabled(!autoskip_enabled());
+        if (g_settings_sel == 13)                                       // 24Hz Output
+            d24_set_enabled(!d24_enabled());
 #if ENABLE_PLAYER_STATS
-        if (g_settings_sel == 13)                                       // Player Stats Overlay
+        if (g_settings_sel == 14)                                       // Player Stats Overlay
             statsovl_set_enabled(!statsovl_enabled());
 #endif
     }

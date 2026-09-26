@@ -15,6 +15,7 @@
 //   4. Every failure path ends in the exact mode the session started in.
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -84,7 +85,59 @@ static void write_text(const char *p, const char *s)
 	if (f) { fputs(s, f); fclose(f); }
 }
 
-bool d24_enabled(void) { return read_int(F_ENABLE, 0) == 1; }
+// On unless the file says 0: automatic by default (2026-09-27).
+bool d24_enabled(void) { return read_int(F_ENABLE, 1) != 0; }
+void d24_set_enabled(bool on) { write_text(F_ENABLE, on ? "1\n" : "0\n"); }
+
+// ---- the one-time TV check, remembered per TV --------------------------------
+// A TV is told apart by the 1080 modes it advertises (FNV-1a of every
+// (resolution, rates) pair): no EDID is reachable from a game, and a different
+// set -- or the same set behind a different receiver -- nearly always
+// advertises a different list.  jf_24p_confirmed.txt holds "<fp8hex> <0|1>"
+// lines; an old single-number file is taken as the answer for the TV in use.
+static u32 s_tv_fp = 0;
+
+static int conf_get(u32 fp)
+{
+	FILE *f = fopen(F_CONFIRMED, "r");
+	if (!f) return -1;
+	char a[32]; int v = -1, r = -1; bool legacy = true;
+	while (fscanf(f, "%31s", a) == 1) {
+		if (strlen(a) == 8) {                 // "<fp> <v>"
+			legacy = false;
+			if (fscanf(f, "%d", &v) != 1) break;
+			if ((u32)strtoul(a, NULL, 16) == fp) r = v;
+		} else if (legacy) {                  // old format: one number
+			r = atoi(a);
+			break;
+		}
+	}
+	fclose(f);
+	return r;
+}
+
+static void conf_put(u32 fp, int v)
+{
+	static u32 fps[32]; static int vs[32];
+	int n = 0;
+	FILE *f = fopen(F_CONFIRMED, "r");
+	if (f) {
+		char a[32]; int x;
+		while (n < 31 && fscanf(f, "%31s", a) == 1) {
+			if (strlen(a) != 8) break;        // legacy: dropped, replaced below
+			if (fscanf(f, "%d", &x) != 1) break;
+			const u32 k = (u32)strtoul(a, NULL, 16);
+			if (k == fp) continue;
+			fps[n] = k; vs[n] = x; n++;
+		}
+		fclose(f);
+	}
+	fps[n] = fp; vs[n] = v; n++;
+	f = fopen(F_CONFIRMED, "w");
+	if (!f) return;
+	for (int i = 0; i < n; i++) fprintf(f, "%08x %d\n", (unsigned)fps[i], vs[i]);
+	fclose(f);
+}
 
 void d24_boot_check(void)
 {
@@ -289,6 +342,12 @@ bool d24_session_begin(const d24_ui *ui)
 			modes[i].rates = di.availableModes[i].refreshRates;
 			if (modes[i].res == DM_RES_1080) adv1080 |= modes[i].rates;
 		}
+		u32 h = 2166136261u;
+		for (int i = 0; i < n; i++) {
+			h = (h ^ (u32)modes[i].res) * 16777619u;
+			h = (h ^ (u32)modes[i].rates) * 16777619u;
+		}
+		s_tv_fp = h;
 	}
 	const dm_film film = dm_classify_film(fnum, fden);
 	const dm_decision d = dm_decide(
@@ -298,7 +357,13 @@ bool d24_session_begin(const d24_ui *ui)
 		dm_display_24p_support(modes, n, DM_RES_1080), d24_enabled());
 	if (!d.attempt) return false;         // display_diag already said why
 
-	const int confirmed = read_int(F_CONFIRMED, -1);
+	const int confirmed = conf_get(s_tv_fp);
+	{
+		char tb[96];
+		snprintf(tb, sizeof tb, "24p: TV id %08x one-time check=%s", (unsigned)s_tv_fp,
+		         confirmed == 1 ? "passed" : confirmed == 0 ? "failed" : "not yet asked");
+		plog(tb);
+	}
 	if (confirmed == 0) {
 		plog("24p: RESULT mode_switch=not_attempted (this TV failed the "
 		     "one-time check; delete jf_24p_confirmed.txt to ask again)");
@@ -454,7 +519,7 @@ bool d24_session_begin(const d24_ui *ui)
 			phase(ui, ph);
 		}
 		if (ans != 1) {
-			write_text(F_CONFIRMED, "0\n");
+			conf_put(s_tv_fp, 0);
 			revert(ans < 0 ? "user said no picture" : "no answer within 15 s");
 			plog("24p: RESULT mode_switch=failure (TV check not confirmed; will "
 			     "not retry until jf_24p_confirmed.txt is deleted)");
@@ -463,7 +528,7 @@ bool d24_session_begin(const d24_ui *ui)
 			phase(ui, "reverted_after_confirm_failure");
 			return false;
 		}
-		write_text(F_CONFIRMED, "1\n");
+		conf_put(s_tv_fp, 1);
 		plog("24p: TV check confirmed by user");
 	}
 

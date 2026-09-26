@@ -15,6 +15,7 @@
 #include "statsovl.h"
 #include "menusnow.h"
 #include "autoskip.h"
+#include "display_24p.h"    // 24Hz Output
 #include "month_bg.h"       // Day / Night Palette
 #include "ui_wave_audio.h"  // Wave Intensity
 #include "subfont.h"
@@ -27,7 +28,7 @@ static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
     { "Log Out", "Debug Logging", "Screen Size", "1080p Playback (Alpha)",
       "Audio Output", "Dialogue Boost", "Subtitle Font", "Subtitle Colour",
       "Theme", "Menu Particles", "Day / Night Palette", "Wave Intensity",
-      "Auto Skip"
+      "Auto Skip", "24Hz Output"
 #if ENABLE_PLAYER_STATS
     , "Player Stats Overlay"
 #endif
@@ -39,7 +40,7 @@ static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
 static const int   SETTINGS_ICONS[XMB_SETTINGS_COUNT]  =
     { ICON_LOGOUT, ICON_BUG, ICON_TV, ICON_MOVIE, ICON_MUSIC, ICON_MUSIC,
       ICON_TV, ICON_TV, ICON_PHOTO, ICON_PHOTO, ICON_PHOTO, ICON_MUSIC,
-      ICON_MOVIE
+      ICON_MOVIE, ICON_TV
 #if ENABLE_PLAYER_STATS
     , ICON_BUG
 #endif
@@ -60,6 +61,7 @@ static const char *SETTINGS_HELP[XMB_SETTINGS_COUNT] = {
     "Brighten the background and wave by day, back to the night look\nafter dark, with a glow at dawn and dusk. Follows the console clock.",
     "How strongly the wave reacts to music.\nOff keeps it calm; Max makes every beat hit hard.",
     "Skip intros and recaps automatically, without pressing X.\nCredits start the next episode's 25 second countdown instead.",
+    "Auto: 24fps films switch the TV to 24Hz for smooth motion.\nEach TV is checked once first. Off keeps everything at 60Hz.",
 #if ENABLE_PLAYER_STATS
     "Show playback statistics over the video:\nframe rate, bitrate, buffer and decoder figures.",
 #endif
@@ -334,8 +336,15 @@ void xmb_draw_settings(void) {
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), autoskip_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
+        if (i == 13) {  // 24Hz Output -- right-aligned Auto/Off state
+            const char *val = d24_enabled() ? "Auto" : "Off";
+            int vw = ttf_text_width(val, UIS_TF(18), sel);
+            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
+                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
+                    val, UIS_TF(18), d24_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
+        }
 #if ENABLE_PLAYER_STATS
-        if (i == 13) {  // Player Stats Overlay — right-aligned On/Off state
+        if (i == 14) {  // Player Stats Overlay — right-aligned On/Off state
             const char *val = statsovl_enabled() ? "On" : "Off";
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),

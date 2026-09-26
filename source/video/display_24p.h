@@ -8,7 +8,10 @@
 // See display_mode.h for the firmware evidence and docs/24P_OUTPUT.md for the
 // whole investigation and the hardware test procedure.
 //
-// Off unless /dev_hdd0/tmp/jellyfin_24p.txt contains 1.  Every switch is
+// ON by default (2026-09-27): jellyfin_24p.txt "0" (Settings > 24Hz Output:
+// Off, or a run that died mid-24p) turns it off.  Each TV is asked once -- the
+// one-time "press X if you can read this" check is remembered PER TV, keyed by
+// the modes it advertises -- so a new TV is never switched blind.  Every switch is
 // verified by TIMING the vblank handler against the timebase -- which is also
 // how 23.976 is told from 24.000 -- and any doubt reverts to the mode the
 // session started in.
@@ -66,5 +69,6 @@ bool d24_session_begin(const d24_ui *ui);
 // mode if d24_session_begin switched it.  Safe to call unconditionally.
 void d24_session_end(void);
 
-// For the "24p:" diagnostic record.
+// For the "24p:" diagnostic record, and Settings > 24Hz Output.
 bool d24_enabled(void);
+void d24_set_enabled(bool on);
