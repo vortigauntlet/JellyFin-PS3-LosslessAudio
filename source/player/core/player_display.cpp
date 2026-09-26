@@ -144,6 +144,24 @@ void player_display_frame(PlayerState *ps) {
     // passes 25 ms: that moves it by one frame (41.7 ms), landing inside
     // +/-17 ms, so it cannot oscillate.
     const bool one_to_one = timing_is_1to1();
+    if (one_to_one) {
+        static u64 s_d_t = 0; static int s_d_calls = 0, s_d_pops = 0, s_d_notready = 0, s_d_empty = 0;
+        static int s_d_fr0 = 0;
+        s_d_calls++;
+        if (!s_vid_frame_ready) s_d_notready++;
+        if (jbuf_count() == 0) s_d_empty++;
+        const u64 now = timing_get_us();
+        if (!s_d_t) { s_d_t = now; s_d_fr0 = ps->frame_count; }
+        if (now - s_d_t >= 1000000ULL) {
+            s_d_pops = ps->frame_count - s_d_fr0;
+            char b[160];
+            snprintf(b, sizeof b, "1to1: 1s calls=%d pops=%d notready=%d empty=%d q=%d paused=%d",
+                     s_d_calls, s_d_pops, s_d_notready, s_d_empty, jbuf_count(), (int)ps->paused);
+            plog(b);
+            s_d_t = now; s_d_fr0 = ps->frame_count;
+            s_d_calls = s_d_notready = s_d_empty = 0;
+        }
+    }
     if (one_to_one && !ps->paused && s_vid_frame_ready && s_timing_ready && jbuf_count() > 0) {
         { u64 vpts = jbuf_peek_pts_us(); (void)avsync_compute_diff(vpts, ps->play_base_us); }
         static int s_settle = 0;          // vblanks before another correction

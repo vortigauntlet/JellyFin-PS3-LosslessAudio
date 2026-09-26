@@ -396,6 +396,7 @@ void vdec_submit(const u8 *data, int len, u64 pts) {
     int retries = 0;
     s32 dret;
     do {
+        { extern volatile const char *g_dec_stage; g_dec_stage = "vdecDecodeAu"; }
         dret = vdecDecodeAu(s_vdec, VDEC_DECODER_MODE_NORMAL, &au);
         if (dret == (s32)VDEC_ERROR_BUSY) {
             usleep(1000);
@@ -546,6 +547,7 @@ bool vdec_pull_frame(void) {
     vfmt.format_type  = VDEC_PICFMT_YUV420P;
     vfmt.color_matrix = VDEC_COLOR_MATRIX_BT709;
     vfmt.alpha        = 0xFF;
+    { extern volatile const char *g_dec_stage; g_dec_stage = "vdecGetPicture"; }
     s32 gpret = vdecGetPicture(s_vdec, &vfmt, jbuf_write_ptr());
     if (gpret != 0) {
         char buf[128];

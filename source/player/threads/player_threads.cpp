@@ -147,6 +147,10 @@ bool player_spawn_decode(PlayerState *ps) {
 // Decode thread  (Steps 2, 5c, 8b)
 // -------------------------------------------------------
 
+// Where the decode thread is, for the watchdog in progress_thread_fn.
+volatile const char *g_dec_stage = "start";
+volatile u32         g_dec_iter  = 0;
+
 void decode_thread_fn(void *arg) {
     DecodeCtx     *ctx         = (DecodeCtx*)arg;
     volatile bool *playing     = ctx->playing;
@@ -167,6 +171,8 @@ void decode_thread_fn(void *arg) {
     lc_logf("decode: thread running playing=%d", (int)*playing);
 
     while (running && *playing && *ctx->dec_run && !s_vdec_error) {
+        g_dec_iter++;
+        g_dec_stage = "ring_feed";
         // Buffered video first, in arrival order, while there is room for it.
         while (s_ring_n > 0 && jbuf_count() < jbuf_cap()) {
             video_feed_ts(s_ring + (size_t)s_ring_rd * TS_PACKET_SIZE);
@@ -202,7 +208,10 @@ void decode_thread_fn(void *arg) {
                  !adec_pes_queue_hungry()))
                 break;
 
+            g_dec_stage = "stream_read";
             int rd = stream_read(ctx->sock, ts_pkt, TS_PACKET_SIZE);
+            g_dec_stage = "batch";
+            g_dec_iter++;
             if (rd < 0) {
                 plog("playing=0 reason=stream_eof");
                 lc_logf("decode: stream_read FAILED -> playing=0 (got_any_pkt=%d)",
@@ -257,14 +266,16 @@ void decode_thread_fn(void *arg) {
             // rather than like a queueing bug.  A packet only goes straight
             // through when the ring is empty.
             if (s_ring_n == 0 && jbuf_count() < jbuf_cap()) {
+                g_dec_stage = "feed_ts";
                 video_feed_ts(ts_pkt);          // normal path, unchanged
-            } else if (!video_feed_ts_audio_only(ts_pkt)) {
+            } else if (g_dec_stage = "feed_audio_only", !video_feed_ts_audio_only(ts_pkt)) {
                 if (s_ring_cap > 0 && s_ring_n < s_ring_cap) ring_push(ts_pkt);
                 else                                         break;
             }
         }
 
         // Drain all decoded frames from VDEC into the jitter buffer
+        g_dec_stage = "pull_frame";
         while (s_frames_ready > 0 && jbuf_count() < jbuf_cap()) {
             if (!vdec_pull_frame()) break;
         }
@@ -405,8 +416,23 @@ void progress_thread_fn(void *arg) {
     PlayerState *ps = (PlayerState*)arg;
 
     int tick = 0;
+    u32 wd_iter = g_dec_iter;
+    int wd_still = 0;
     while (running && ps->playing) {
         usleep(250000);              // 250 ms granularity for a quick exit
+        // Decode-thread watchdog: no progress for 2 s -> say where it is.
+        if (!ps->paused) {
+            const u32 it = g_dec_iter;
+            if (it == wd_iter) {
+                if (++wd_still % 8 == 0) {
+                    char b[128];
+                    snprintf(b, sizeof b, "decode WATCHDOG: stuck %d ms in '%s' jbuf=%d ring=%d frames_ready=%d",
+                             wd_still * 250, (const char *)g_dec_stage, jbuf_count(), s_ring_n,
+                             (int)s_frames_ready);
+                    plog(b);
+                }
+            } else { wd_iter = it; wd_still = 0; }
+        }
         if (++tick < 40) continue;   // report every ~10 s
         tick = 0;
         if (!ps->playing) break;
