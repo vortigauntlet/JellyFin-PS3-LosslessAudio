@@ -42,6 +42,7 @@
 #include "slog.h"
 #include "trickplay.h"
 #include "ui_buffering.h"
+#include "vremember.h"       // the version that last worked, per title
 #include "music_player.h"   // music_join_stale
 #include "experience.h"      // vpick_audio_words: the audio chip's words
 #include "lclog.h"     // 24p lifecycle trace
@@ -341,6 +342,41 @@ static inline void returning_pump(bool on) {
     buffering_frame();
 }
 
+// ---- episode chain carry-over (see player.h) -------------------------------
+static bool s_chain_on = false;
+static char s_chain_lang[48]  = "";      // "English", from the audio label's first part
+static char s_chain_label[64] = "";      // the exact audio label last played
+static char s_chain_src[128]  = "";      // the version's label last played
+
+void player_chain_begin(void) {
+    s_chain_on = true;
+    s_chain_lang[0] = s_chain_label[0] = s_chain_src[0] = '\0';
+}
+void player_chain_end(void) { s_chain_on = false; }
+const char *player_chain_source_label(void) { return s_chain_src; }
+
+// The language part of a DisplayTitle ("English - EAC3 - 5.1 - Default").
+static void audio_lang(const char *label, char *out, size_t cap) {
+    size_t n = 0;
+    const char *dash = strstr(label, " - ");
+    n = dash ? (size_t)(dash - label) : strlen(label);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, label, n); out[n] = '\0';
+}
+
+// Same language as the last episode: the exact label first (same language,
+// codec and channels), else the first track in that language.
+static int chain_find_audio(const JFTracks *t) {
+    if (!s_chain_on || !s_chain_lang[0]) return -1;
+    for (int i = 0; i < t->n_audio; i++)
+        if (strcmp(t->audio[i].label, s_chain_label) == 0) return i;
+    for (int i = 0; i < t->n_audio; i++) {
+        char l[48]; audio_lang(t->audio[i].label, l, sizeof l);
+        if (strcasecmp(l, s_chain_lang) == 0) return i;
+    }
+    return -1;
+}
+
 void show_player(const JFItem *item, u32 resume_secs,
                  const char *media_source_id) {
     crash_log("p1 enter");
@@ -410,6 +446,19 @@ void show_player(const JFItem *item, u32 resume_secs,
     vquality_params(vquality_get(), hd1080_enabled(),
                     display_width, display_height,
                     &ps.req_w, &ps.req_h, NULL, NULL, NULL);
+
+    // No version chosen: the one that last worked for this title, if any
+    // (util/vremember.h).  If it has since died, the fallback below tries
+    // the others.
+    static char s_remembered[100];
+    if (!media_source_id || !media_source_id[0]) {
+        const char *r = vremember_get(item->id);
+        if (r) {
+            snprintf(s_remembered, sizeof s_remembered, "%s", r);
+            media_source_id = s_remembered;
+            plog("show_player: using the remembered version");
+        }
+    }
 
     // The buffering presentation starts BEFORE PlaybackInfo now (2026-09-26).
     // On this server PlaybackInfo is where Gelato syncs a title's streams --
@@ -521,6 +570,17 @@ void show_player(const JFItem *item, u32 resume_secs,
         // a lossy default and has to be switched by hand again.
         int pref_audio = track_pref_find_audio(&ps.tracks);
         if (pref_audio >= 0) ps.cur_audio = pref_audio;
+        // Next episode: stay in the language the last one was watched in.
+        else {
+            const int ca = chain_find_audio(&ps.tracks);
+            if (ca >= 0) {
+                ps.cur_audio = ca;
+                char b[112];
+                snprintf(b, sizeof b, "show_player: audio kept from the last episode: %.64s",
+                         ps.tracks.audio[ca].label);
+                plog(b);
+            }
+        }
     }
 
     // A remembered TEXT subtitle preference is applied the same way a manual
@@ -630,6 +690,9 @@ void show_player(const JFItem *item, u32 resume_secs,
         return;
     }
     plog("show_player: stream_open OK");
+    // It opened: this is the version to use for this title next time.
+    if (ps.source.id[0] && strcmp(ps.source.id, item->id) != 0)
+        vremember_put(item->id, ps.source.id);
     lc_logf("stream CONNECTED sock=%d", ps.sock);
     crash_log("p7 stream_open OK");
 
@@ -1161,6 +1224,13 @@ void show_player(const JFItem *item, u32 resume_secs,
     // Back to the mode the session started in (24p output), before any UI --
     // the Returning screen below included -- draws again.
     d24_session_end();
+
+    // What this episode was watched with, for the next one (player.h).
+    if (ps.have_tracks && ps.cur_audio >= 0 && ps.cur_audio < ps.tracks.n_audio) {
+        snprintf(s_chain_label, sizeof s_chain_label, "%s", ps.tracks.audio[ps.cur_audio].label);
+        audio_lang(s_chain_label, s_chain_lang, sizeof s_chain_lang);
+    }
+    snprintf(s_chain_src, sizeof s_chain_src, "%s", ps.source.label);
 
     // The Returning screen (spine gate): the buffering screen's look -- the
     // item's backdrop under a veil, the Jellyfin mark and ring -- saying

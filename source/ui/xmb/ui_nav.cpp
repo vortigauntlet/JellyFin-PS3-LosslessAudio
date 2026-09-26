@@ -4,6 +4,7 @@
 #include "menusnow.h"
 #include "month_bg.h"
 #include "ui_wave_audio.h"
+#include "vremember.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -124,24 +125,80 @@ static void xmb_play_list_with_next(const XMBItem *items, int count, int idx,
 // (or the end-of-episode countdown fires).  The follower is resolved from
 // the server before each playback, so this works no matter where the episode
 // was launched from and keeps going across season boundaries.
+// Words of a version label, lower-cased, for matching one episode's version
+// to the next's ("[PM] MediaFusion 1080p / WEB-DL / HEVC ..." etc.).
+static int label_words(const char *s, char w[][24], int max) {
+    int n = 0;
+    while (*s && n < max) {
+        while (*s && !isalnum((unsigned char)*s)) s++;
+        int k = 0;
+        while (*s && isalnum((unsigned char)*s)) {
+            if (k < 23) w[n][k++] = (char)tolower((unsigned char)*s);
+            s++;
+        }
+        w[n][k] = '\0';
+        if (k >= 2) n++;
+    }
+    return n;
+}
+
+// The next episode's version most like the one just watched: most shared
+// words (resolution, source, codec, provider, release group), at least two,
+// ties to the earlier (server-preferred) one.  NULL: let the server choose.
+static const char *match_version(const char *item_id, const char *want_label) {
+    static JFMediaSources vs;
+    if (!want_label || !want_label[0]) return NULL;
+    memset(&vs, 0, sizeof vs);
+    if (!jellyfin_fetch_media_sources(item_id, &vs) || vs.n_sources < 2) return NULL;
+    static char want[24][24], have[24][24];
+    const int nw = label_words(want_label, want, 24);
+    int best = -1, best_score = 1;
+    for (int i = 0; i < vs.n_sources; i++) {
+        const int nh = label_words(vs.source[i].label, have, 24);
+        int score = 0;
+        for (int a = 0; a < nw; a++)
+            for (int b = 0; b < nh; b++)
+                if (strcmp(want[a], have[b]) == 0) { score++; break; }
+        if (score > best_score) { best_score = score; best = i; }
+    }
+    if (best < 0) return NULL;
+    static char id[96];
+    snprintf(id, sizeof id, "%s", vs.source[best].id);
+    char b[200];
+    snprintf(b, sizeof b, "next episode: version %d/%d matched (%d shared words): %.80s",
+             best + 1, vs.n_sources, best_score, vs.source[best].label);
+    plog(b);
+    return id;
+}
+
 void xmb_play_episode_with_next(const XMBItem *first, u32 resume_secs,
                                 const char *media_source_id) {
     g_play_gen++;
     XMBItem cur = *first;
     u32 resume = resume_secs;
+    // One chain: each episode after the first keeps the last one's audio
+    // language, quality (vquality is not reset between them) and, as near as
+    // the server's versions allow, the same version (2026-09-26).
+    player_chain_begin();
     for (;;) {
         XMBItem next;
         bool have = xmb_fetch_next_episode(cur.id, &next);
         if (have)
             player_arm_next("NEXT EPISODE", "Press SELECT for next episode");
-        // A source chosen from the info screen applies to this title only.
-        // Auto-advanced followers negotiate their own default source.
         xmb_play_item(&cur, resume, media_source_id);
         if (!have || !player_take_next_request()) break;
         cur    = next;
         resume = 0;
-        media_source_id = NULL;
+        // The follower: a version that already worked for it, else the one
+        // most like what was just watched, else the server's default.
+        // (Copied: both helpers return static buffers that later calls reuse.)
+        static char msid[100];
+        const char *pick = vremember_get(cur.id);
+        if (!pick) pick = match_version(cur.id, player_chain_source_label());
+        if (pick) { snprintf(msid, sizeof msid, "%s", pick); media_source_id = msid; }
+        else        media_source_id = NULL;
     }
+    player_chain_end();
 }
 
 // -------------------------------------------------------
