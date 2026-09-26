@@ -169,8 +169,13 @@ static bool xmb_input_settings(void) {
         if (BTN_PRESSED(circle)) g_settings_confirm = false;
         return false;
     }
-    if (BTN_PRESSED(l1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
-    if (BTN_PRESSED(r1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
+    // Triangle: what the highlighted setting does.  The panel follows the
+    // selection while it is up; Triangle again or O closes it (O does nothing
+    // else while it is open).
+    if (BTN_PRESSED(triangle)) { g_settings_help = !g_settings_help; return false; }
+    if (g_settings_help && BTN_PRESSED(circle)) { g_settings_help = false; return false; }
+    if (BTN_PRESSED(l1)) { g_settings_help = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
+    if (BTN_PRESSED(r1)) { g_settings_help = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
     if (BTN_REPEAT(up)   && g_settings_sel > 0)                      g_settings_sel--;
     if (BTN_REPEAT(down) && g_settings_sel < XMB_SETTINGS_COUNT - 1) g_settings_sel++;
     if (BTN_PRESSED(cross)) {
@@ -296,15 +301,12 @@ static void xmb_input_tv_sub(void) {
                                                  0, &g_tv_sub_total);
             g_tv_depth = 2; g_tv_sub_sel = 0; g_tv_sub_scroll = 0;
         } else {
-            // A partly-watched episode asks resume vs. start over first.
-            int resume = xmb_resume_choice(&g_tv_sub_items[g_tv_sub_sel]);
-            if (resume >= 0) {
-                xmb_play_episode_with_next(&g_tv_sub_items[g_tv_sub_sel],
-                                           (u32)resume);
-                g_tv_depth = 0;
-                g_tv_sub_sel = 0;
-                g_tv_sub_scroll = 0;
-            }
+            // X opens the episode's details page (2026-09-26, hardware
+            // feedback): that is where Version and Quality are chosen, and
+            // where Play / Resume / Start over live.  It used to play at once.
+            if (timing_get_us() >= g_info_cooldown_until)
+                xmb_show_item_info(&g_tv_sub_items[g_tv_sub_sel]);
+            init_btns();
         }
     }
 }
@@ -656,13 +658,18 @@ bool xmb_handle_input_browse(void) {
                 g_music_depth = 1;
                 g_music_sub_sel = 0; g_music_sub_scroll = 0;
             }
+        } else if (tab != XMB_TAB_RESUME) {
+            // Movies, episodes, videos: X opens the details page (2026-09-26,
+            // hardware feedback) -- Version and Quality are chosen there, and
+            // its Play / Resume / Start over rows replace the old prompt.
+            if (timing_get_us() >= g_info_cooldown_until) xmb_show_item_info(it);
+            s_movie_just_exited = true;
+            init_btns();
+            return false;
         } else {
-            // The Continue Watching row launches straight at the saved
-            // position; from any other tab (Movies, etc.) a partly-watched
-            // item first asks the user resume vs. start over.
-            int resume;
-            if (tab == XMB_TAB_RESUME) resume = (int)it->resume_secs;
-            else                       resume = xmb_resume_choice(it);
+            // The Continue Watching row still launches straight at the saved
+            // position.
+            int resume = (int)it->resume_secs;
             if (resume >= 0) {
                 if (strcmp(it->type, "Episode") == 0)
                     xmb_play_episode_with_next(it, (u32)resume);

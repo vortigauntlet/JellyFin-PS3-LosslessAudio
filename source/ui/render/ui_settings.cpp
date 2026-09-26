@@ -39,6 +39,32 @@ static const int   SETTINGS_ICONS[XMB_SETTINGS_COUNT]  =
 #endif
     };
 
+// Triangle's descriptions, one per row, two short lines each ('\n' splits).
+static const char *SETTINGS_HELP[XMB_SETTINGS_COUNT] = {
+    "Sign out of this Jellyfin account.\nYou will need to log in again to browse your library.",
+    "Write a diagnostic log to /dev_hdd0/tmp/player_log.txt.\nUseful when reporting a problem; takes effect on the next launch.",
+    "Shrink the picture to fit TVs that crop the edges (overscan).\nLine the corners up with your screen's edges.",
+    "Ask the server for full 1920x1080 video instead of 720p.\nSharper, but needs more bandwidth. Still experimental.",
+    "Stereo, 5.1 or 7.1 sound over HDMI.\nPick what your TV, soundbar or receiver can play.",
+    "Raise the centre channel, where the dialogue is.\nHelps when voices are quiet next to music and effects.",
+    "The typeface subtitles are drawn in.",
+    "The colour subtitles are drawn in.",
+    "The interface colour theme.\nJellywave is the default; extra .ini themes appear here too.",
+    "Let the floating particles drift behind the menus too,\nnot only while music is playing.",
+    "Brighten the background and wave by day, back to the night look\nafter dark, with a glow at dawn and dusk. Follows the console clock.",
+    "How strongly the wave reacts to music.\nOff keeps it calm; Max makes every beat hit hard.",
+#if ENABLE_PLAYER_STATS
+    "Show playback statistics over the video:\nframe rate, bitrate, buffer and decoder figures.",
+#endif
+};
+
+static void help_rect(int *x, int *y, int *w, int *h) {
+    *w = XMB_LIST_W;
+    *h = UIS_H(104);
+    *x = ((int)display_width - *w) / 2;
+    *y = (int)display_height - XMB_BOTTOM_PAD - *h - UIS_H(6);
+}
+
 #define SET_PANEL_H UIS_H(96)
 #define SET_ROW_H   UIS_H(56)
 
@@ -138,6 +164,14 @@ void xmb_cpu_draw_settings(void) {
             drawRect((u32)list_x, (u32)iy, (u32)XMB_LIST_W, SET_ROW_H, XMB_PANEL_HI);
             drawRect((u32)(list_x - UIS_W(4)), (u32)iy, UIS_W(3), SET_ROW_H, XMB_ACCENT);
         }
+    }
+
+    if (g_settings_help) {
+        int hx, hy, hw, hh;
+        help_rect(&hx, &hy, &hw, &hh);
+        drawRect((u32)hx, (u32)hy, (u32)hw, (u32)hh, XMB_PANEL_HI);
+        hairline_frame(hx, hy, hw, hh);
+        drawRect((u32)hx, (u32)hy, UIS_W(3), (u32)hh, XMB_ACCENT);
     }
 }
 
@@ -286,6 +320,34 @@ void xmb_draw_settings(void) {
                     val, UIS_TF(18), statsovl_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
 #endif
+    }
+
+    // Triangle's description panel, over the list.
+    if (g_settings_help && g_settings_sel >= 0 && g_settings_sel < XMB_SETTINGS_COUNT) {
+        int hx, hy, hw, hh;
+        help_rect(&hx, &hy, &hw, &hh);
+        drawTTF((u32)(hx + UIS_W(24)), (u32)(hy + UIS_H(12)),
+                SETTINGS_LABELS[g_settings_sel], UIS_TF(17), XMB_ACCENT, true);
+        char line[160];
+        const char *t = SETTINGS_HELP[g_settings_sel];
+        for (int ln = 0; ln < 2 && t && *t; ln++) {
+            const char *nl = strchr(t, '\n');
+            int n = nl ? (int)(nl - t) : (int)strlen(t);
+            if (n > (int)sizeof(line) - 1) n = (int)sizeof(line) - 1;
+            memcpy(line, t, (size_t)n); line[n] = '\0';
+            drawTTF((u32)(hx + UIS_W(24)), (u32)(hy + UIS_H(42) + ln * UIS_H(24)),
+                    line, UIS_TF(15), XMB_TEXT, false);
+            t = nl ? nl + 1 : NULL;
+        }
+        return;      // the panel sits where the footer would
+    }
+
+    // A quiet hint that Triangle explains the rows.
+    {
+        const char *hint = "Triangle  About this setting";
+        int hw_ = ttf_text_width(hint, UIS_TF(13));
+        drawTTF((u32)((W + XMB_LIST_W) / 2 - hw_), (u32)(settings_panel_y() + SET_PANEL_H + UIS_H(4)),
+                hint, UIS_TF(13), XMB_TEXT_FAINT);
     }
 
     // Version footer — skip it if the visible settings window already

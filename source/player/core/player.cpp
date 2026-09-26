@@ -390,11 +390,56 @@ void show_player(const JFItem *item, u32 resume_secs,
                     display_width, display_height,
                     &ps.req_w, &ps.req_h, NULL, NULL, NULL);
 
-    if (!jellyfin_get_playback_info(item->id, media_source_id, ps.session_id,
-                                    sizeof(ps.session_id), &ps.total_secs,
-                                    NULL, &ps.source, true)) {
-        plog("show_player: PlaybackInfo failed, streaming without PlaySessionId");
-        ps.session_id[0] = '\0';
+    // The buffering presentation starts BEFORE PlaybackInfo now (2026-09-26).
+    // On this server PlaybackInfo is where Gelato syncs a title's streams --
+    // 6-8 s the first time a title is opened -- and it used to run with
+    // nothing on screen: the "freeze between pressing play and Connecting".
+    // The call runs on a worker while the render thread animates; the
+    // presentation only draws (its artwork is already in video memory) and
+    // makes no request, so responseBuffer is the worker's alone meanwhile.
+    if (g_spine_on) buffering_begin(item->id, item->name);
+    player_startup_step(item->name, "Connecting", "Connecting to server...");
+    {
+        static struct {
+            const JFItem *item; const char *msid; PlayerState *ps;
+            volatile bool done; bool ok;
+        } pi;
+        pi.item = item; pi.msid = media_source_id; pi.ps = &ps;
+        pi.done = false; pi.ok = false;
+        __sync_synchronize();
+        sys_ppu_thread_t tid;
+        static char tname[] = "jf_pbinfo";
+        const bool threaded = buffering_active() &&
+            sysThreadCreate(&tid, [](void *a) {
+                auto *p = (decltype(pi) *)a;
+                p->ok = jellyfin_get_playback_info(p->item->id, p->msid, p->ps->session_id,
+                                                   sizeof(p->ps->session_id), &p->ps->total_secs,
+                                                   NULL, &p->ps->source, true);
+                __sync_synchronize();
+                p->done = true;
+                sysThreadExit(0);
+            }, &pi, 1100, 64 * 1024, THREAD_JOINABLE, tname) == 0;
+        if (threaded) {
+            const u64 t0 = timing_get_us();
+            while (!pi.done) {
+                sysUtilCheckCallback();
+                buffering_frame_paced(16000);
+                usleep(2000);
+            }
+            u64 rv; sysThreadJoin(tid, &rv);
+            char b[128];
+            snprintf(b, sizeof b, "show_player: PlaybackInfo took %llu ms (behind the buffering screen)",
+                     (unsigned long long)((timing_get_us() - t0) / 1000));
+            plog(b);
+        } else {
+            pi.ok = jellyfin_get_playback_info(item->id, media_source_id, ps.session_id,
+                                               sizeof(ps.session_id), &ps.total_secs,
+                                               NULL, &ps.source, true);
+        }
+        if (!pi.ok) {
+            plog("show_player: PlaybackInfo failed, streaming without PlaySessionId");
+            ps.session_id[0] = '\0';
+        }
     }
     lc_logf("play-session CREATED psid=%s item=%s resume=%us",
             ps.session_id[0] ? ps.session_id : "(none)", item->id, resume_secs);
@@ -464,7 +509,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // The buffering presentation starts here and runs until the first frame
     // (spine gate on; the gate off keeps the status lines below).  It reuses
     // the detail page's artwork, which is still in video memory.
-    if (g_spine_on) buffering_begin(item->id, item->name);
+    if (g_spine_on && !buffering_active()) buffering_begin(item->id, item->name);
     player_startup_step(item->name, "Preparing", "Initializing decoder...");
 
     // Release the UI thumbnail cache (joins its fetch thread, frees ~15 MB
