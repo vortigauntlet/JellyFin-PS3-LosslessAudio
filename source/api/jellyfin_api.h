@@ -114,7 +114,9 @@ typedef struct {
 typedef struct {
     char     id[96];             // MediaSourceId used by stream.ts
     char     live_stream_id[96]; // populated after opening remote/live sources
-    char     label[128];         // MediaSource.Name (HUD display text)
+    char     label[384];         // MediaSource.Name (HUD display text).  384, not 128:
+                                 // Gelato's emoji-laden names put the release
+                                 // filename past byte 128 (see util/vmatch.h)
     unsigned runtime_secs;
     JFTracks tracks;
 } JFMediaSource;
