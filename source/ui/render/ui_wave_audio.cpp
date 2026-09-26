@@ -219,6 +219,7 @@ void wave_audio_frame(float *dt_scale, float *perturb, float *drive)
                 s_db.tempo_hz   = f.beat_hz;
                 s_db.tempo_conf = f.beat_conf;
                 s_db.energy     = f.level;
+                s_db.bass_rel   = f.bass_rel;
                 wrm_distinct(&s_db, src, f.band_fast[WA_SUB], present, resp, dt,
                              &s_out, s_lum3);
                 if (s_db.kick > s_kick) s_kick = s_db.kick;   // held until the snow takes it

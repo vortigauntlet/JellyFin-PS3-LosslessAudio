@@ -176,8 +176,8 @@ typedef struct {
 //          with a faint glow -- the "snap"
 //   BEND   an 808 sliding in pitch tilts the near ribbon with the slide
 //   WIDTH  a wide mix spreads the ribbons apart in depth (ui_wave.cpp)
-#define WDF_HAT_GAIN    9.0f
-#define WDF_HAT_RIM     0.80f    // peak rim gain of a glint (v9: 0.35 went unnoticed)
+#define WDF_HAT_GAIN    11.0f
+#define WDF_HAT_RIM     1.20f    // peak rim gain of a glint (0.35 / 0.8 too subtle on a TV)
 #define WDF_KEY_TINT    0.80f
 #define WDF_BEND_A      0.028f
 
@@ -605,8 +605,8 @@ static inline int wdf_rim_glow(const wdf_look *d, int layer, float *gain, int n)
     du = 1.0f / (float)(n - 1);
     for (i = 0; i < n; i++) {
         float s = wdf_sin2pi(7.0f * (float)i * du - d->hat_ph - 0.21f * (float)layer);
-        s = s > 0.0f ? s * s * s : 0.0f;
-        s *= s;                                         // narrow glints
+        s = s > 0.0f ? s * s : 0.0f;
+        s *= s;                                         // glints (a touch wider, v10)
         gain[i] = 1.0f + WDF_HAT_RIM * k * d->hat * s;
     }
     return 1;

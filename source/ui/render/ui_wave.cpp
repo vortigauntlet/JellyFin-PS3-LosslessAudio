@@ -153,8 +153,8 @@ void wave_set_album_tint(unsigned int rgb, float strength)
     float k[3] = { r / m, g / m, b / m };
     for (int i = 0; i < 3; i++) {
         float v = 1.0f + strength * (k[i] - 1.0f);
-        if (v < 0.84f) v = 0.84f;
-        if (v > 1.16f) v = 1.16f;
+        if (v < 0.88f) v = 0.88f;                     // ~12% at most (v10)
+        if (v > 1.12f) v = 1.12f;
         s_album_rgb[i] = v;
     }
     if (s_album_rgb[1] > 1.05f) s_album_rgb[1] = 1.05f;     // never much toward green

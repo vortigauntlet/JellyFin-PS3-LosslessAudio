@@ -216,21 +216,6 @@ static void cover_geom(int *x, int *y, int *A, float *alpha) {
     *alpha = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
 }
 
-// Up Next, an XMB-style side panel: where it is this frame and its opacity
-// (slides in with the choreography, out in focus mode).
-static void panel_geom(int *px, int *py0, int *py1, float *pa) {
-    const int W = (int)display_width, H = (int)display_height;
-    const int PW = (int)(W * 0.30f);
-    float e = s_e_panel * s_up_a;
-    if (e < 0.0f) e = 0.0f;
-    *px  = W - PW + (int)((1.0f - e) * (float)PW * 0.92f);
-    *py0 = (int)(H * 0.125f);
-    *py1 = (int)(H * 0.855f);
-    *pa  = e;
-}
-#define PANEL_PAD   UIS_W(22)
-#define PANEL_HEAD  UIS_H(58)
-
 static void music_cover_gpu(const char *art_id, int ax, int ay, int A, float alpha) {
     s_cover_gpu = false;
     if (!art_id || !art_id[0] || !ui_card_gpu_ready()) return;
@@ -256,7 +241,7 @@ static void music_accent_update(const char *art_id, int A) {
     s_mpal = g_spine_on ? ui_art_palette(art_id, music_art_bitmap(art_id, A))
                         : ui_art_fallback();
     // the ribbons take a hint of the album's colour
-    wave_set_album_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.55f);
+    wave_set_album_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.40f);
 }
 
 // -------------------------------------------------------
@@ -442,10 +427,8 @@ static bool s_swallow_left = false;   // eat the held LEFT that exited QUEUE
 // Rows that fit the Up Next list (MQ_ROW_H per entry, stopping above the
 // seek bar's time labels).
 static int uq_vis_rows(void) {
-    int px, py0, py1; float pa;
-    panel_geom(&px, &py0, &py1, &pa);
-    int ey0 = py0 + PANEL_HEAD;
-    int bot = py1 - UIS_H(14);
+    int ey0 = (int)(display_height * 0.18f) + UIS_H(34);
+    int bot = (int)(display_height * 0.895f) - UIS_H(16);
     int n   = (bot - ey0) / MQ_ROW_H;
     return n < 1 ? 1 : n;
 }
@@ -635,49 +618,12 @@ static void draw_queue_overlay(const MusicTrack *tracks, int count,
 // texture is not up yet falls back to the CPU blit / letter tile there.
 #define UQ_ROWS_MAX 32
 static bool s_up_gpu[UQ_ROWS_MAX];
-// The panel itself, GPU phase: a dark translucent body over the wave with a
-// soft lit left edge, and -- in the QUEUE zone -- the XMB's glowing bar under
-// the selected row.  Real alpha, so the wave shows through it.
-static void music_panel_gpu(int count) {
-    int px, py0, py1; float pa;
-    panel_geom(&px, &py0, &py1, &pa);
-    if (pa <= 0.01f) return;
-    const int W = (int)display_width;
-    const int r = UIS_H(18);
-    wave_draw_rrect_gpu(px, py0, W - px + r + UIS_W(4), py1 - py0, r,
-                        0x000A0B1A, 0x00040409, (u8)(170.0f * pa));
-    {
-        static const float pos[3] = { 0.0f, 0.5f, 1.0f };
-        const u8 al[3] = { 0, (u8)(70.0f * pa), 0 };
-        wave_draw_ramp_gpu(px, py0 + r, UIS_W(2), py1 - py0 - 2 * r, 0x00C8D0FF, true, 3, pos, al);
-    }
-    if (s_fzone == FZ_QUEUE) {
-        const int first = music_current_pos() + 1;
-        const int n_vis = uq_vis_rows();
-        int scroll = s_u_scroll;
-        if (scroll > count - n_vis) scroll = count - n_vis;
-        if (scroll < first)         scroll = first;
-        const int row = s_u_sel - scroll;
-        if (row >= 0 && row < n_vis) {
-            const int by = py0 + PANEL_HEAD + row * MQ_ROW_H - MQ_ROW_GAP / 2;
-            const int bx = px + PANEL_PAD - UIS_W(10);
-            const int bw = W - bx - UIS_W(18);
-            wave_draw_glow_gpu(bx + bw / 2, by + MQ_ROW_H / 2, bw / 2 + UIS_W(20), MQ_ROW_H,
-                               (u8)((XMB_ACCENT >> 16) & 0xFF), (u8)((XMB_ACCENT >> 8) & 0xFF),
-                               (u8)(XMB_ACCENT & 0xFF), (u8)(38.0f * pa));
-            wave_draw_rrect_gpu(bx, by, bw, MQ_ROW_H, UIS_H(8),
-                                XMB_ACCENT, XMB_PANEL_HI, (u8)(120.0f * pa));
-        }
-    }
-}
-
 static void music_upnext_gpu(const MusicTrack *tracks, int count, float a) {
     for (int i = 0; i < UQ_ROWS_MAX; i++) s_up_gpu[i] = false;
     if (a <= 0.01f || !ui_card_gpu_ready()) return;
-    int px, py0, py1; float pa;
-    panel_geom(&px, &py0, &py1, &pa);
-    const int up_x  = px + PANEL_PAD;
-    const int ey0   = py0 + PANEL_HEAD;
+    const int W = (int)display_width, H = (int)display_height;
+    const int up_x  = W - (int)(W * 0.27f);
+    const int ey0   = (int)(H * 0.18f) + UIS_H(34);
     const int n_vis = uq_vis_rows();
     const int first = music_current_pos() + 1;
     if (count - first <= 0) return;
@@ -751,11 +697,9 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     // Settled layout, then the slide: the column starts tucked behind the
     // cover and is clipped at its right edge until it is clear of it.
     const int tx1       = cover_x1() + A1 + UIS_W(56);
-    int px_, py0_, py1_; float pa_;
-    panel_geom(&px_, &py0_, &py1_, &pa_);
-    ua = pa_;
-    const int up_x      = W - (int)(W * 0.30f) + PANEL_PAD;   // the panel's settled row x
-    const int col_w     = W - (int)(W * 0.30f) - UIS_W(30) - tx1;
+    ua = s_e_panel * s_up_a;                                   // fades with the screen and focus mode
+    const int up_x      = W - (int)(W * 0.27f);
+    const int col_w     = up_x - UIS_W(30) - tx1;
     const int tuck      = (ax + A / 2) - tx1;                  // < 0: how far behind the cover it starts
     const int tx        = tx1 + (int)((1.0f - ta) * (float)tuck);
     const int title_top = cover_y1() + (int)(H * 0.15f);
@@ -818,17 +762,15 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     //      tile while loading), d-pad navigable, scrollbar when it
     //      outruns the window ----
     if (ua > 0.01f) {
-        const int rx0 = px_ + PANEL_PAD;             // this frame's row x (slides)
-        int uy    = py0_ + UIS_H(20);
-        int ey0   = py0_ + PANEL_HEAD;
+        int uy    = (int)(H * 0.18f);
+        int ey0   = uy + UIS_H(34);
         int n_vis = uq_vis_rows();
         int pos   = music_current_pos();
         int first = pos + 1;              // first upcoming position
         int n_up  = count - first;
 
-        // The panel's heading, in the XMB options menu's voice: plain, light.
-        drawTTF((u32)rx0, (u32)uy, "Up Next", UIS_TF(18),
-                fa(s_fzone == FZ_QUEUE ? XMB_WHITE : XMB_TEXT, ua), false);
+        drawTTF((u32)up_x, (u32)uy, "UP NEXT", UIS_TF(13),
+                fa(s_fzone == FZ_QUEUE ? XMB_TEXT : XMB_TEXT_FAINT, ua), true);
 
         if (n_up > 0) {
             // Window origin: follow the d-pad in QUEUE zone, playback
@@ -838,7 +780,6 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
             if (scroll < first)         scroll = first;
 
             int text_w = W - UIS_W(46) - (up_x + UIS_W(56));
-            (void)up_x;
             int ey     = ey0;
             int row    = 0;
             for (int p = scroll; p < count && p < scroll + n_vis; p++, row++) {
@@ -847,23 +788,36 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                 const MusicTrack *u = &tracks[orig];
                 bool selq = (s_fzone == FZ_QUEUE && p == s_u_sel);
                 const bool on_gpu = row < UQ_ROWS_MAX && s_up_gpu[row];
-                // The selection is the GPU's glowing bar (music_panel_gpu),
-                // drawn under the row's art, so the art is never covered.
-                if (!on_gpu && ua > 0.98f &&
-                    !xmb_cpu_blit_thumb(u->art_id, rx0, ey, MQ_ART, MQ_ART))
-                    xmb_draw_letter_tile(u->id, u->name, rx0, ey, MQ_ART);
-                if (rx0 + UIS_W(56) < W - UIS_W(40)) {
-                    draw_clipped((u32)(rx0 + UIS_W(56)), (u32)(ey + 1), u->name, UIS_TF(15),
-                                 fa(selq ? XMB_WHITE : XMB_TEXT, ua), text_w, selq);
-                    if (u->artist[0])
-                        draw_clipped((u32)(rx0 + UIS_W(56)), (u32)(ey + UIS_H(22)), u->artist,
-                                     UIS_TF(12), fa(selq ? XMB_TEXT : XMB_TEXT_FAINT, ua), text_w);
+                if (selq) {
+                    // The GPU drew this row's art before the CPU phase, so the
+                    // highlight goes AROUND it -- a full-row fill painted over
+                    // the cover and it vanished whenever the row was selected.
+                    const u32 hc = fa(XMB_PANEL_HI, ua);
+                    const int x0 = up_x - UIS_W(8), y0 = ey - MQ_ROW_GAP / 2;
+                    const int x1 = W - UIS_W(34), y1 = y0 + MQ_ROW_H;
+                    if (on_gpu) {
+                        drawRect((u32)x0, (u32)y0, (u32)(up_x - x0), (u32)(y1 - y0), hc);
+                        drawRect((u32)(up_x + MQ_ART), (u32)y0, (u32)(x1 - up_x - MQ_ART), (u32)(y1 - y0), hc);
+                        if (ey > y0) drawRect((u32)up_x, (u32)y0, MQ_ART, (u32)(ey - y0), hc);
+                        if (y1 > ey + MQ_ART)
+                            drawRect((u32)up_x, (u32)(ey + MQ_ART), MQ_ART, (u32)(y1 - ey - MQ_ART), hc);
+                    } else {
+                        drawRect((u32)x0, (u32)y0, (u32)(x1 - x0), (u32)(y1 - y0), hc);
+                    }
                 }
+                if (!on_gpu && ua > 0.5f &&
+                    !xmb_cpu_blit_thumb(u->art_id, up_x, ey, MQ_ART, MQ_ART))
+                    xmb_draw_letter_tile(u->id, u->name, up_x, ey, MQ_ART);
+                draw_clipped((u32)(up_x + UIS_W(56)), (u32)(ey + 1), u->name, UIS_TF(15),
+                             fa(selq ? XMB_WHITE : XMB_TEXT, ua), text_w, selq);
+                if (u->artist[0])
+                    draw_clipped((u32)(up_x + UIS_W(56)), (u32)(ey + UIS_H(22)), u->artist,
+                                 UIS_TF(12), fa(XMB_TEXT_FAINT, ua), text_w);
                 ey += MQ_ROW_H;
             }
 
             if (n_up > n_vis) {
-                int bar_x   = px_ + (int)(W * 0.30f) - UIS_W(14);   // the panel's inner right edge
+                int bar_x   = W - UIS_W(26);
                 int track_h = n_vis * MQ_ROW_H - MQ_ROW_GAP;
                 drawRect((u32)bar_x, (u32)ey0, UIS_W(3), (u32)track_h, fa(XMB_TRACK, ua));
                 int th = track_h * n_vis / n_up;
@@ -1176,11 +1130,9 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         {
             // The particles treat the screen's solid things as solid
             // (wave_snow.h): the cover, EACH text line (tight to its glyphs,
-            // so particles drift through the gaps between them), the Up Next
-            // panel, and each transport control.
+            // so particles drift through the gaps between them), and each
+            // transport control.
             const int W = (int)display_width, H = (int)display_height;
-            int px, py0, py1; float pa;
-            panel_geom(&px, &py0, &py1, &pa);
             int ob[4 * 12], n = 0;
             #define OB(x_, y_, w_, h_) do { if (n < 12) { ob[4*n] = (x_); ob[4*n+1] = (y_); \
                                              ob[4*n+2] = (w_); ob[4*n+3] = (h_); n++; } } while (0)
@@ -1188,7 +1140,6 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             if (s_e_text > 0.5f)
                 for (int i = 0; i < s_txt_n; i++)
                     OB(s_txt_box[i][0], s_txt_box[i][1], s_txt_box[i][2], s_txt_box[i][3]);
-            if (pa > 0.5f) OB(px, py0, W - px, py1 - py0);
             if (s_ctl_a * s_e_ctl > 0.5f) {
                 static const int T_OFF[6] = { -130, -72, 0, 72, 130, 182 };
                 static const int T_HALF[6] = { 12, 14, 30, 14, 12, 11 };
@@ -1214,10 +1165,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             // Depth: the near ribbon passes IN FRONT of the cover wherever it
             // rises across it (the same geometry drawn again, clipped).
             if (s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
-            music_panel_gpu(count);
-            int px, py0, py1; float pa;
-            panel_geom(&px, &py0, &py1, &pa);
-            music_upnext_gpu(s_tracks, count, pa);
+            music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a);
         }
         c_gpu += timing_get_us() - t_gpu0;
 

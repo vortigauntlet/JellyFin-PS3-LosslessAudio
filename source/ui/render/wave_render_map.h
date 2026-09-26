@@ -433,8 +433,8 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 1.10f, 0.60f };   // beat share 
 // so it does not bounce), and a recent level that rises slowly but falls
 // quickly -- a hit no longer eats the next one's punch.
 #define WRM_PUNCH_REL       0.060f   // s at energy 0 ...
-#define WRM_PUNCH_REL_E     0.030f   // ... and at full energy
-#define WRM_FALL_ENERGY     1.10f    // falling stiffness x (1 + this x energy_eff)
+#define WRM_PUNCH_REL_E     0.040f   // ... and at full energy (30 ms read a touch robotic, v10)
+#define WRM_FALL_ENERGY     0.80f    // falling stiffness x (1 + this x energy_eff); 1.1 read robotic (v10)
 #define WRM_RECENT_UP       0.35f    // s: the recent level rises at about the old rate (a held 808 must not read as punch for long)
 #define WRM_RECENT_DN       0.12f    // s: and falls quickly, so the next hit meets a low reference
 
@@ -450,6 +450,17 @@ static const float WRM_DB_PUNCH_W[3] = { 1.00f, 1.10f, 0.60f };   // beat share 
 // SLAM PUNK 0.517 -> 0.445; duck 0.15 with weights 0.9 / 1.0 gives 0.517
 // back with the vocals still apart (bass/vocal correlation 0.04 - 0.08).
 static const float WRM_ENERGY_PUNCH_W[3] = { 1.00f, 0.90f, 1.00f };   // v9: the whole-wave hit is back
+// THE DROP (v10: "when the beat drops after a vocal section the bass doesn't
+// hit hard enough and takes a couple of seconds to get the height" --
+// Rockstar Lifestyle).  Measured: after the drop the 808 is HELD -- its band
+// input barely moves -- and the self-referenced level re-references to it
+// within a second, so a held 808 read as ordinary height.  The absolute bass
+// level against its own last ~3 s says the bass has just arrived: that lifts
+// the near ribbon at once and eases out over ~3 s while the contrast boost and
+// the energy (which need a moment) take over.
+#define WRM_ARRIVAL_H       0.55f    // extra bass-layer level at a full arrival
+#define WRM_ARRIVAL_TAU     1.5f     // the arrival hands over to the hits within ~2-3 s
+
 #define WRM_VOCAL_DUCK      0.15f    // vocal punch x (1 - this x bass punch); 0.6 thinned the whole-wave hit 12-14%
 #define WRM_TEMPO_TS_MAX    1.40f    // base motion at ~180 BPM, locked
 #define WRM_TEMPO_TAU       1.50f    // s, the tempo speed-up eases in and out
@@ -476,6 +487,12 @@ typedef struct {
     float punch[3];
     float energy;      // set by the caller: 0..1 absolute loudness (wa_features.level)
     float energy_eff;  // loudness x compression, what the mapping uses (read by the look)
+    float energy_hold; // the song's loudness, remembered through a breakdown (~20 s)
+    float comp_hold;   // ... and its compression
+    float bass_rel;    // set by the caller: absolute bass vs its own peak (wa_features.bass_rel)
+    float babs_slow;   // that, over the last ~3 s
+    float lvl_slow;    // the absolute loudness, over the last ~3 s
+    float arrival;     // 0..1: the bass has just ARRIVED (a drop) -- extra height, easing out
     float pdev[3];     // each layer's typical |fast - recent|: its own contrast
     float boost[3];    // the contrast boost applied, 1 .. WRM_PUNCH_BOOST_MAX
     // the physical part: each layer's height rides a spring-damper toward
@@ -586,11 +603,40 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
     for (i = 0; i < WM_PULSES; i++) o->acc.a[i] *= WRM_DB_ACC_KEEP;
 
     {
-        const float loud = wrm_clamp((st->energy - 0.55f) / 0.40f, 0.0f, 1.0f);
+        // The song's loudness is remembered through a breakdown (slow 20 s
+        // decay), so the drop does not have to earn its energy back (v10).
+        st->energy_hold *= 1.0f / (1.0f + dt / 20.0f);
+        if (st->energy > st->energy_hold) st->energy_hold = st->energy;
+        const float loud = wrm_clamp((st->energy_hold - 0.55f) / 0.40f, 0.0f, 1.0f);
         const float pd   = (st->pdev[0] + st->pdev[1] + st->pdev[2]) * (1.0f / 3.0f);
-        const float comp = wrm_clamp((WRM_PUNCH_REF_DEV - pd) / 0.025f, 0.0f, 1.0f);
+        float comp = wrm_clamp((WRM_PUNCH_REF_DEV - pd) / 0.025f, 0.0f, 1.0f);
+        // the song's compression is remembered through a breakdown too
+        st->comp_hold *= 1.0f / (1.0f + dt / 20.0f);
+        if (comp > st->comp_hold) st->comp_hold = comp;
+        comp = st->comp_hold;
         const float e    = present * wrm_clamp(0.65f * loud + 0.35f * comp * loud + 0.15f * comp, 0.0f, 1.0f);
-        st->energy_eff += (e - st->energy_eff) * (dt / (2.0f + dt));
+        st->energy_eff += (e - st->energy_eff) * (dt / ((e > st->energy_eff ? 0.30f : 4.0f) + dt));
+    }
+    {
+        // A drop is the bass arriving OR the whole mix stepping up in
+        // loudness after a softer section (Rockstar Lifestyle: the intro has
+        // 808s; what changes at the drop is ~+8 dB) -- whichever rose more
+        // against its own last ~3 s.
+        const float br = wrm_clamp(st->bass_rel, 0.0f, 1.0f);
+        const float lv = wrm_clamp(st->energy, 0.0f, 1.0f);
+        float a;
+        st->babs_slow += (br - st->babs_slow) * (dt / (WRM_ARRIVAL_TAU + dt));
+        st->lvl_slow  += (lv - st->lvl_slow)  * (dt / (WRM_ARRIVAL_TAU + dt));
+        a = wrm_clamp((br - st->babs_slow) * 2.5f, 0.0f, 1.0f);
+        {
+            const float al = wrm_clamp((lv - st->lvl_slow) * 3.0f, 0.0f, 1.0f);
+            if (al > a) a = al;
+        }
+        // only a loud master drops: a dynamic mix (Blonde) swings in loudness
+        // all the time and must not read every swing as a drop
+        a *= present * wrm_clamp((lv - 0.35f) / 0.25f, 0.0f, 1.0f);   // loud enough NOW (a drop gets there in ~0.35 s)
+        // up at once, out over the same few seconds
+        st->arrival = a > st->arrival ? a : st->arrival + (a - st->arrival) * (dt / (1.2f + dt));
     }
     for (i = 0; i < 3; i++) {
         const float x   = wrm_clamp(src ? src[i] : 0.0f, 0.0f, 1.0f);
@@ -616,7 +662,19 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
                 const float ad = d < 0.0f ? -d : d;
                 float b;
                 if (!(st->pdev[i] > 0.0f)) st->pdev[i] = WRM_PUNCH_REF_DEV;   // zeroed state
-                st->pdev[i] += (ad - st->pdev[i]) * (dt / (WRM_PUNCH_DEV_TAU + dt));
+                // Winsorised: one frame counts for at most 2.5x the typical value,
+                // so the transition INTO a drop cannot inflate it and rob the
+                // drop of its boost for seconds (v10).
+                {
+                    const float cap = 2.5f * st->pdev[i] + 0.01f;
+                    const float a2 = ad < cap ? ad : cap;
+                    // rises slowly, FALLS fast: a compressed drop after a
+                    // dynamic intro gets its boost within ~1 s (v10)
+                    // (fast only on a loud master: a dynamic mix keeps the 4 s memory)
+                    const float tdev = a2 > st->pdev[i] ? WRM_PUNCH_DEV_TAU
+                                     : 1.2f + (WRM_PUNCH_DEV_TAU - 1.2f) * (1.0f - st->energy_eff);
+                    st->pdev[i] += (a2 - st->pdev[i]) * (dt / (tdev + dt));
+                }
                 b = WRM_PUNCH_REF_DEV / (st->pdev[i] > WRM_PUNCH_DEV_FLOOR ? st->pdev[i] : WRM_PUNCH_DEV_FLOOR);
                 b = wrm_clamp(b, 1.0f, WRM_PUNCH_BOOST_MAX);
                 st->boost[i] = b;
@@ -636,7 +694,8 @@ static inline void wrm_distinct(wrm_db_state *st, const float src[3],
         s   = wrm_clamp(wrm_clamp((st->env[i] - WRM_DB_FLOOR[i]) / (1.0f - WRM_DB_FLOOR[i])
                                   * resp * WRM_DB_RESP[i], 0.0f, 1.0f)
                         * (WRM_DB_SUS_W[i] + (i == 0 ? WRM_SUS_ENERGY * st->energy_eff : 0.0f))
-                        + st->punch[i] * WRM_DB_PUNCH_W[i], 0.0f, 1.0f);
+                        + st->punch[i] * (i == 1 ? 0.85f + 0.25f * st->energy_eff : WRM_DB_PUNCH_W[i])
+                        + (i == 0 ? WRM_ARRIVAL_H * st->arrival : 0.0f), 0.0f, 1.0f);
         amp = WRM_DB_AMP_QUIET + (WRM_DB_AMP_MAX[i] - WRM_DB_AMP_QUIET) * s;
         st->lvl[i] = s;
         if (present <= 0.0f) {

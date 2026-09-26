@@ -132,6 +132,8 @@ static const float WA_FLUX_W[WA_BANDS] = {
 // mid-scale, within a few seconds of a track starting, whatever the mastering.
 #define WA_TAU_REF_UP   2.0f
 #define WA_TAU_REF_DN   12.0f
+#define WA_REF_CATCHUP  2.5f       // a band this far above its reference ...
+#define WA_TAU_REF_FAST 0.35f      // ... re-references this fast
 
 // THE FLOOR IS NOT OPTIONAL.  Without it the reference decays toward zero
 // during silence, and then the first denormal of noise reads as full scale --
@@ -577,14 +579,24 @@ static inline void wa_frame(wa_state *s, float dt, wa_features *out)
     // keeps its headroom for much longer.  Floored, per WA_REF_FLOOR.
     for (i = 0; i < WA_BANDS; i++) {
         float lvl;
-        s->ref[i] = wa_env(s->ref[i], e[i], dt, WA_TAU_REF_UP, WA_TAU_REF_DN);
+        // A band far above its reference -- the bass coming back after a
+        // breakdown -- catches up in ~0.35 s instead of 2 s.  Otherwise it
+        // reads saturated near 1 for seconds and its beats vanish inside
+        // it: the "drop" that took seconds to hit (v10).
+        s->ref[i] = wa_env(s->ref[i], e[i], dt,
+                           e[i] > WA_REF_CATCHUP * s->ref[i] ? WA_TAU_REF_FAST : WA_TAU_REF_UP,
+                           WA_TAU_REF_DN);
         if (!(s->ref[i] > WA_REF_FLOOR)) s->ref[i] = WA_REF_FLOOR;
         lvl = wa_compress(e[i], s->ref[i]);
         s->fast[i] = wa_env(s->fast[i], lvl, dt, WA_TAU_FAST_A, WA_TAU_FAST_R);
         s->med[i]  = wa_env(s->med[i],  lvl, dt, WA_TAU_MED_A,  WA_TAU_MED_R);
         s->slow[i] = wa_env(s->slow[i], lvl, dt, WA_TAU_SLOW_A, WA_TAU_SLOW_R);
     }
-    s->rms_ref = wa_env(s->rms_ref, rms_amp, dt, WA_TAU_REF_UP, WA_TAU_REF_DN);
+    // the same catch-up for the broadband level (absolute loudness): after a
+    // quiet intro the drop's loudness is known in ~0.35 s, not ~8 s (v10)
+    s->rms_ref = wa_env(s->rms_ref, rms_amp, dt,
+                        rms_amp > WA_REF_CATCHUP * s->rms_ref ? WA_TAU_REF_FAST : WA_TAU_REF_UP,
+                        WA_TAU_REF_DN);
     if (!(s->rms_ref > WA_REF_FLOOR)) s->rms_ref = WA_REF_FLOOR;
     s->rms_lvl = wa_env(s->rms_lvl, wa_compress(rms_amp, s->rms_ref),
                         dt, WA_TAU_SLOW_A, WA_TAU_SLOW_R);
