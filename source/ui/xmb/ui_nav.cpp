@@ -5,7 +5,6 @@
 #include "autoskip.h"
 #include "month_bg.h"
 #include "ui_wave_audio.h"
-#include "vremember.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -190,12 +189,11 @@ void xmb_play_episode_with_next(const XMBItem *first, u32 resume_secs,
         if (!have || !player_take_next_request()) break;
         cur    = next;
         resume = 0;
-        // The follower: a version that already worked for it, else the one
-        // most like what was just watched, else the server's default.
-        // (Copied: both helpers return static buffers that later calls reuse.)
+        // The follower: the version most like what was just watched, else
+        // the server's default.  (Copied: match_version returns a static
+        // buffer that later calls reuse.)
         static char msid[100];
-        const char *pick = vremember_get(cur.id);
-        if (!pick) pick = match_version(cur.id, player_chain_source_label());
+        const char *pick = match_version(cur.id, player_chain_source_label());
         if (pick) { snprintf(msid, sizeof msid, "%s", pick); media_source_id = msid; }
         else        media_source_id = NULL;
     }

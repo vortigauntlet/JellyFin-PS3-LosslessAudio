@@ -222,7 +222,7 @@ static int info_choose_version(const char *title,
 #include "ui_text_gpu.h"
 #include "http.h"
 #include "api_facts.h"
-#include "vremember.h"       // the version that last worked; warm-up
+#include "vremember.h"       // jellyfin_warm_playback()
 
 static int IX(int x) { return XMB_OX + UIS_W(x); }
 static int IY(int y) { return XMB_OY + UIS_H(y); }
@@ -379,13 +379,6 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                 if (remembered >= 0) vquality_set((vquality_t)remembered);
             }
             version_sel = 0;
-            // The version that last opened a stream for this title, if the
-            // server still lists it (util/vremember.h).
-            {
-                const char *r = vremember_get(it->id);
-                for (int v = 0; r && v < versions.n_sources; v++)
-                    if (strcmp(versions.source[v].id, r) == 0) { version_sel = v; break; }
-            }
             // Warm the server while the page is read: its first-time stream
             // lookup (Gelato, 6-8 s) then happens before Play, not after.
             if (strcmp(it->type, "Movie") == 0 || strcmp(it->type, "Episode") == 0 ||

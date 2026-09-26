@@ -43,7 +43,6 @@
 #include "slog.h"
 #include "trickplay.h"
 #include "ui_buffering.h"
-#include "vremember.h"       // the version that last worked, per title
 #include "music_player.h"   // music_join_stale
 #include "experience.h"      // vpick_audio_words: the audio chip's words
 #include "lclog.h"     // 24p lifecycle trace
@@ -452,19 +451,6 @@ void show_player(const JFItem *item, u32 resume_secs,
                     display_width, display_height,
                     &ps.req_w, &ps.req_h, NULL, NULL, NULL);
 
-    // No version chosen: the one that last worked for this title, if any
-    // (util/vremember.h).  If it has since died, the fallback below tries
-    // the others.
-    static char s_remembered[100];
-    if (!media_source_id || !media_source_id[0]) {
-        const char *r = vremember_get(item->id);
-        if (r) {
-            snprintf(s_remembered, sizeof s_remembered, "%s", r);
-            media_source_id = s_remembered;
-            plog("show_player: using the remembered version");
-        }
-    }
-
     // The buffering presentation starts BEFORE PlaybackInfo now (2026-09-26).
     // On this server PlaybackInfo is where Gelato syncs a title's streams --
     // 6-8 s the first time a title is opened -- and it used to run with
@@ -490,38 +476,6 @@ void show_player(const JFItem *item, u32 resume_secs,
                 p->ok = jellyfin_get_playback_info(p->item->id, p->msid, p->ps->session_id,
                                                    sizeof(p->ps->session_id), &p->ps->total_secs,
                                                    NULL, &p->ps->source, true);
-                // VERSION FALLBACK (2026-09-26).  The Gelato plugin on this
-                // server names a temp .strm file after the stream's title,
-                // and a title containing '|' (illegal in a Windows path) makes
-                // PlaybackInfo fail with HTTP 500 -- The Avengers' DEFAULT
-                // version is one, so the film could not be played at all.  A
-                // failing version answers in ~0.1 s, so try the others:
-                // '|'-free names first (our label is cut at 128 bytes, so a
-                // name without a visible '|' is only probably clean), then the
-                // rest in order, at most JW_PB_TRIES in all.
-                if (!p->ok) {
-                    static JFMediaSources vs;
-                    memset(&vs, 0, sizeof vs);
-                    if (jellyfin_fetch_media_sources(p->item->id, &vs) && vs.n_sources > 1) {
-                        int tried = 0;
-                        for (int pass = 0; pass < 2 && !p->ok; pass++)
-                            for (int i = 0; i < vs.n_sources && !p->ok && tried < 6; i++) {
-                                const JFMediaSource *m = &vs.source[i];
-                                const bool piped = strchr(m->label, '|') != NULL;
-                                if (piped != (pass == 1)) continue;
-                                if (p->msid && strcmp(p->msid, m->id) == 0) continue;
-                                if (!p->msid && i == 0) continue;     // the default, already failed
-                                tried++;
-                                p->ok = jellyfin_get_playback_info(p->item->id, m->id,
-                                            p->ps->session_id, sizeof(p->ps->session_id),
-                                            &p->ps->total_secs, NULL, &p->ps->source, true);
-                                char b[200];
-                                snprintf(b, sizeof b, "show_player: version fallback %d/%d id=%.32s %s",
-                                         tried, vs.n_sources, m->id, p->ok ? "OK" : "failed");
-                                plog(b);
-                            }
-                    }
-                }
                 __sync_synchronize();
                 p->done = true;
                 sysThreadExit(0);
@@ -695,9 +649,6 @@ void show_player(const JFItem *item, u32 resume_secs,
         return;
     }
     plog("show_player: stream_open OK");
-    // It opened: this is the version to use for this title next time.
-    if (ps.source.id[0] && strcmp(ps.source.id, item->id) != 0)
-        vremember_put(item->id, ps.source.id);
     lc_logf("stream CONNECTED sock=%d", ps.sock);
     crash_log("p7 stream_open OK");
 
