@@ -98,6 +98,13 @@ void d24_set_enabled(bool on) { write_text(F_ENABLE, on ? "1\n" : "0\n"); }
 // lines; an old single-number file is taken as the answer for the TV in use.
 static u32 s_tv_fp = 0;
 
+// The key a mode's answer is stored under: the TV itself for bit 0x10 (every
+// answer given so far was for 0x10), the TV mixed with the bit for any other.
+static u32 conf_key(u16 bit)
+{
+	return bit == 0x10 ? s_tv_fp : (s_tv_fp ^ (0x9E3779B9u * (u32)bit));
+}
+
 static int conf_get(u32 fp)
 {
 	FILE *f = fopen(F_CONFIRMED, "r");
@@ -109,7 +116,7 @@ static int conf_get(u32 fp)
 			if (fscanf(f, "%d", &v) != 1) break;
 			if ((u32)strtoul(a, NULL, 16) == fp) r = v;
 		} else if (legacy) {                  // old format: one number
-			r = atoi(a);
+			if (fp == s_tv_fp) r = atoi(a);    // it was the answer for 0x10 only
 			break;
 		}
 	}
@@ -125,7 +132,10 @@ static void conf_put(u32 fp, int v)
 	if (f) {
 		char a[32]; int x;
 		while (n < 31 && fscanf(f, "%31s", a) == 1) {
-			if (strlen(a) != 8) break;        // legacy: dropped, replaced below
+			if (strlen(a) != 8) {             // legacy one number: the 0x10 answer
+				if (n == 0 && s_tv_fp != fp) { fps[n] = s_tv_fp; vs[n] = atoi(a); n++; }
+				break;
+			}
 			if (fscanf(f, "%d", &x) != 1) break;
 			const u32 k = (u32)strtoul(a, NULL, 16);
 			if (k == fp) continue;
@@ -359,7 +369,7 @@ bool d24_session_begin(const d24_ui *ui)
 		dm_display_24p_support(modes, n, DM_RES_1080), d24_enabled());
 	if (!d.attempt) return false;         // display_diag already said why
 
-	const int confirmed = conf_get(s_tv_fp);
+	int confirmed = conf_get(s_tv_fp);
 	{
 		char tb[96];
 		snprintf(tb, sizeof tb, "24p: TV id %08x one-time check=%s", (unsigned)s_tv_fp,
@@ -388,6 +398,17 @@ bool d24_session_begin(const d24_ui *ui)
 		plog("24p: RESULT mode_switch=not_attempted (no advertised 24Hz bit is "
 		     "known-good for this content's clock)");
 		return false;
+	}
+	// The TV check is per mode: a set that shows 23.976 may still not show
+	// 24.000 (2026-09-27: the first true-24 film would otherwise have switched
+	// with no prompt, a black screen and no way back but the timeout).
+	if (cand[0] != DM_RATE_24FAM_A) {
+		confirmed = conf_get(conf_key(cand[0]));
+		if (confirmed == 0) {
+			plog("24p: RESULT mode_switch=not_attempted (this TV failed the "
+			     "check for this 24Hz mode)");
+			return false;
+		}
 	}
 
 	const s32 lr = sysModuleLoad((sysModuleId)JF_SYSMODULE_AVCONF_EXT);
@@ -458,6 +479,8 @@ bool d24_session_begin(const d24_ui *ui)
 		return false;
 	}
 
+	if (used != cand[0]) confirmed = conf_get(conf_key(used));   // fell to the other bit
+
 	// The vblank was just measured ticking at the new rate, so a flip will
 	// complete -- the 2026-09-18 hang was a flip with NO vblank.  Hardware
 	// 2026-09-24 showed why this is needed: the TV synced to 23.976 but showed
@@ -521,7 +544,7 @@ bool d24_session_begin(const d24_ui *ui)
 			phase(ui, ph);
 		}
 		if (ans != 1) {
-			conf_put(s_tv_fp, 0);
+			conf_put(conf_key(used), 0);
 			revert(ans < 0 ? "user said no picture" : "no answer within 15 s");
 			plog("24p: RESULT mode_switch=failure (TV check not confirmed; will "
 			     "not retry until jf_24p_confirmed.txt is deleted)");
@@ -530,7 +553,7 @@ bool d24_session_begin(const d24_ui *ui)
 			phase(ui, "reverted_after_confirm_failure");
 			return false;
 		}
-		conf_put(s_tv_fp, 1);
+		conf_put(conf_key(used), 1);
 		plog("24p: TV check confirmed by user");
 	}
 

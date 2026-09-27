@@ -245,7 +245,13 @@ void build_stream_url(char *url, int url_sz, const PlayerState *ps,
         "&DeviceId=%s&Static=false"
         "&MediaSourceId=%s"
         "&StartTimeTicks=%llu",
-        g_server, ps->item->id, profile, level, ps->req_w, ps->req_h, vparams,
+        // The version's own id in the path, not the title's (2026-09-27):
+        // Gelato keeps every version as an item of its own, and asking
+        // /Videos/<title id>/stream.ts?MediaSourceId=<version> answers 404 --
+        // every play from Search, which lists the title, failed; Home lists
+        // the version and worked.  For an ordinary item the two ids are the
+        // same, and a stock Jellyfin alternate version is an item too.
+        g_server, source_id, profile, level, ps->req_w, ps->req_h, vparams,
         aparams, copy_audio,
         jf_device_id(), encoded_source, (unsigned long long)start_ticks);
     if (source && source->live_stream_id[0] && n > 0 && n < url_sz) {

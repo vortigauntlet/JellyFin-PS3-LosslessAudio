@@ -355,6 +355,27 @@ bool player_execute_seek(PlayerState *ps) {
     // 4) Re-prime: decode a few frames before resuming display so
     //    the jitter buffer is non-empty (mirrors initial pre-fill).
     player_prefill(ps, false, 20000);
+    // Nothing came: a debrid server can answer the reopen with a 200 and no
+    // body after half a minute (2026-09-27, fast-forward): taken as the end
+    // of the film, playback just stopped.  Ask once more before giving up.
+    if (jbuf_count() == 0 && ps->playing && running) {
+        plog("seek: reopen gave no picture -- asking the server once more");
+        netClose(ps->sock);
+        stream_set_wait_cb(player_seek_wait);
+        nsock = stream_open(surl);
+        stream_set_wait_cb(NULL);
+        if (nsock < 0) {
+            plog("playing=0 reason=seek_stream_open_failed (retry)");
+            ps->sock = -1;
+            ps->playing = false;
+            return false;
+        }
+        ps->sock = nsock;
+        { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;
+          netSetSockOpt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+        video_reset_demux();
+        player_prefill(ps, false, 20000);
+    }
     crash_log("sk5 prefilled");
     {
         // What timestamps did Jellyfin actually return for the new

@@ -444,8 +444,8 @@ void http_end(void) {
     sysModuleUnload(SYSMODULE_NET);
 }
 
-int http_request(int method, const char *url, const char *body,
-                 const char *token, char *out, int out_size) {
+static int http_request_once(int method, const char *url, const char *body,
+                             const char *token, char *out, int out_size) {
     if (s_http_mtx_ok) sysMutexLock(s_http_mtx, 0);
     char host[256]; int port; char path[512];
     url_parse(url, host, sizeof(host), &port, path, sizeof(path));
@@ -538,6 +538,26 @@ int http_request(int method, const char *url, const char *body,
     out[body_len > 0 ? body_len : 0] = '\0';
 
     if (s_http_mtx_ok) sysMutexUnlock(s_http_mtx);
+    return status;
+}
+
+// A GET that answers 200 with an empty body is a reply cut short, not an
+// answer: the server closed the connection mid-body (a cold Gelato item, 2026-
+// 09-27: 49.6 of 52.7 KB arrived, the chunked decode came out empty).  Callers
+// took the 200 at its word and parsed nothing -- a details page with no
+// synopsis, cast or versions.  Ask once more; if it is still empty, report a
+// failure (-3) so the caller's error path runs instead.
+int http_request(int method, const char *url, const char *body,
+                 const char *token, char *out, int out_size) {
+    int status = http_request_once(method, url, body, token, out, out_size);
+    if (method != HTTP_GET || status != 200 || !out || out_size <= 0 || out[0])
+        return status;
+    plog("http: 200 with an empty body -- retrying once");
+    status = http_request_once(method, url, body, token, out, out_size);
+    if (status == 200 && !out[0]) {
+        plog("http: still empty -- reported as a failure (-3)");
+        return -3;
+    }
     return status;
 }
 

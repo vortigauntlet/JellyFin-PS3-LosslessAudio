@@ -335,6 +335,12 @@ static void info_load_work(void *arg) {
     if (!detail_media_load(poster_id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster) && ep)
         detail_media_load(ld->it->id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster);
     ld->back_ok = ep && detail_media_load(ld->it->id, "Primary", 960, 540, 0.3f, &ld->back);
+    // A Gelato title found by Search is the title item, whose "Backdrop" is
+    // its poster again; its first version (what Home lists) carries the real
+    // one.  Ask the version first when the two ids differ.
+    if (!ld->back_ok && !ep && ld->versions->n_sources > 0 &&
+        ld->versions->source[0].id[0] && strcmp(ld->versions->source[0].id, ld->it->id) != 0)
+        ld->back_ok = detail_media_load(ld->versions->source[0].id, "Backdrop", 960, 540, 0.3f, &ld->back);
     if (!ld->back_ok)
         ld->back_ok = detail_media_load(ep ? ld->detail->series_id : ld->it->id,
                                         "Backdrop", 960, 540, 0.3f, &ld->back);
