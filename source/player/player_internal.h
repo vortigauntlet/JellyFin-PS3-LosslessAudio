@@ -32,7 +32,23 @@ void audio_thread_fn(void *arg);
 void upload_thread_fn(void *arg);
 
 // Playback-state reporter — posts position to Jellyfin every ~10 s so the
-// server's Continue Watching list tracks PS3 playback.  arg = PlayerState*.
+// server's Continue Watching list tracks PS3 playback.
+//
+// It is detached and a report can block for up to ~24 s, so it may outlive
+// show_player().  It therefore reads only g_prog -- static storage the
+// display loop keeps current -- never the PlayerState on show_player's stack.
+// arg = the g_prog.gen it was started for; a new playback bumps gen and an
+// old thread still finishing a report then exits instead of reporting on.
+struct ProgressShared {
+    volatile u32  gen;
+    volatile bool playing;
+    volatile bool paused;
+    volatile bool pos_valid;    // false mid-seek: the position is unstable
+    volatile u64  base_us;      // PlayerState.play_base_us
+    char          item[64];
+    char          sess[64];
+};
+extern ProgressShared g_prog;
 void progress_thread_fn(void *arg);
 
 // -------------------------------------------------------

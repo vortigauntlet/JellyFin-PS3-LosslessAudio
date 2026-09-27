@@ -923,7 +923,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         int trc = sysThreadCreate(&aud_tid, audio_thread_fn,
                                   (void *)&aud_ctx,
                                   700, 32 * 1024,
-                                  0, "jf_audio");
+                                  THREAD_JOINABLE, "jf_audio");
         if (trc != 0) {
             char buf[64];
             snprintf(buf, sizeof(buf), "show_player: aud thread_create FAILED rc=%d", trc);
@@ -939,7 +939,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         int trc = sysThreadCreate(&upl_tid, upload_thread_fn,
                                   (void *)&upl_ctx,
                                   850, 32 * 1024,
-                                  0, "jf_upload");
+                                  THREAD_JOINABLE, "jf_upload");
         if (trc != 0) {
             char buf[64];
             snprintf(buf, sizeof(buf), "show_player: upl thread_create FAILED rc=%d", trc);
@@ -953,10 +953,21 @@ void show_player(const JFItem *item, u32 resume_secs,
     // blocked the display loop while the audio thread, already spawned, was
     // playing: a 6 s timeout put the first picture 4.9 s behind the sound
     // (hardware, 2026-09-27).
+    // Detached, and fed only through g_prog (player_internal.h): it may still
+    // be inside a slow report after this function returns.
+    g_prog.playing   = false;
+    g_prog.gen       = g_prog.gen + 1;
+    snprintf(g_prog.item, sizeof g_prog.item, "%s", item->id);
+    snprintf(g_prog.sess, sizeof g_prog.sess, "%s", ps.session_id);
+    g_prog.base_us   = ps.play_base_us;
+    g_prog.paused    = ps.paused;
+    g_prog.pos_valid = true;
+    __sync_synchronize();
+    g_prog.playing   = ps.playing;
     sys_ppu_thread_t prog_tid = 0;
     if (ps.playing) {
         int trc = sysThreadCreate(&prog_tid, progress_thread_fn,
-                                  (void *)&ps,
+                                  (void *)(uintptr_t)g_prog.gen,
                                   1100, 16 * 1024,
                                   0, "jf_progress");
         if (trc != 0) {
@@ -978,7 +989,11 @@ void show_player(const JFItem *item, u32 resume_secs,
     crash_log("p10 loop");
     // Paused-idle gate state (see below).  flip_queued: whether the previous
     // iteration queued a flip — waitflip() blocks forever if none is pending.
-    bool flip_queued  = true;
+    // Start from a drained pipeline: the buffering screen and the 24p prompt
+    // flipped outside this loop, and a wait that tracks the wrong flip keeps
+    // the loop a frame ahead for the whole session (see player_flip_resync).
+    player_flip_resync();
+    bool flip_queued  = false;
     bool was_paused   = false;
     int  pause_settle = 0;   // frames still to draw after a pause-state change
     bool lc_first_frame = false;
@@ -1136,7 +1151,13 @@ void show_player(const JFItem *item, u32 resume_secs,
                        (unsigned long long)((ps.play_base_us +
                            audio_get_clock_us()) / 1000000ULL));
         } else if (act == HUD_ACTION_SEEK) {
-            if (!player_execute_seek(&ps)) break;
+            g_prog.pos_valid = false;
+            const bool seek_ok = player_execute_seek(&ps);
+            snprintf(g_prog.sess, sizeof g_prog.sess, "%s", ps.session_id);
+            g_prog.base_us   = ps.play_base_us;
+            __sync_synchronize();
+            g_prog.pos_valid = seek_ok;
+            if (!seek_ok) break;
             // The reopen's spinner frames flipped mid-iteration, so the one
             // this loop's wait tracks is not the last one queued.  Drain the
             // GPU (its label sits behind every queued flip's wait) and start
@@ -1186,13 +1207,20 @@ void show_player(const JFItem *item, u32 resume_secs,
         }
 #endif
 
+        g_prog.paused = ps.paused;
         player_display_frame(&ps);
         {
             // No new picture for 0.4 s while playing -- a stall, a seek, the
             // network: the spinner says so instead of a frozen frame.
             static int s_sp_fr = -1; static u64 s_sp_us = 0;
             const u64 now_sp = timing_get_us();
-            if (ps.frame_count != s_sp_fr || ps.frame_count == 0) { s_sp_fr = ps.frame_count; s_sp_us = now_sp; }
+            // A pause restarts the timer too (the idle gate skips this block
+            // while paused), or every resume flashed the spinner.
+            static bool s_sp_paused = false;
+            if (ps.frame_count != s_sp_fr || ps.frame_count == 0 || ps.paused || s_sp_paused) {
+                s_sp_fr = ps.frame_count; s_sp_us = now_sp;
+            }
+            s_sp_paused = ps.paused;
             if (!ps.paused && ps.frame_count > 0 && ps.seek.state != SEEK_SCRUB &&
                 now_sp - s_sp_us > 400000ULL)
                 player_spinner_gpu((float)(now_sp - s_sp_us) * 1.0e-6f);
@@ -1259,6 +1287,7 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     // Signal all threads to stop, join in order: decode → audio → upload
     ps.playing = false;
+    g_prog.playing = false;          // the reporter is detached: not joined
     usleep(16000);
 
     if (ps.dec_tid) {
@@ -1275,10 +1304,6 @@ void show_player(const JFItem *item, u32 resume_secs,
         u64 tret;
         sysThreadJoin(upl_tid, &tret);
         plog("show_player: upload thread joined");
-    }
-    if (prog_tid) {
-        u64 tret;
-        sysThreadJoin(prog_tid, &tret);
     }
     crash_log("p12 threads joined");
 

@@ -1065,8 +1065,11 @@ void xmb_show_item_info(const XMBItem *root) {
             } else if (focus == FOCUS_QUALITY) {
                 // Persisted immediately, so the choice carries to the next
                 // title the way the web player's quality dropdown does.
-                if (BTN_REPEAT(left) || BTN_REPEAT(right)) {
-                    vquality_next(BTN_REPEAT(left) ? -1 : +1);
+                // Each BTN_REPEAT read consumes the press: read once.
+                const bool ql = BTN_REPEAT(left);
+                const bool qr = BTN_REPEAT(right);
+                if (ql || qr) {
+                    vquality_next(ql ? -1 : +1);
                     // Remember it for this title as well as globally, so
                     // coming back to a heavy remux does not mean re-picking.
                     vquality_remember_item(cur_item.id, vquality_get());

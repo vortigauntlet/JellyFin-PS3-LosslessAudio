@@ -132,7 +132,7 @@ bool player_spawn_decode(PlayerState *ps) {
     int trc = sysThreadCreate(&ps->dec_tid, decode_thread_fn,
                               (void *)&ps->dec_ctx,
                               800, 128 * 1024,
-                              0, "jf_decode");
+                              THREAD_JOINABLE, "jf_decode");
     if (trc != 0) {
         char buf[64];
         snprintf(buf, sizeof(buf), "player: dec thread_create FAILED rc=%d", trc);
@@ -419,19 +419,26 @@ void audio_thread_fn(void *arg) {
 // Progress reporter — POST position to Jellyfin every ~10 s
 // -------------------------------------------------------
 
+ProgressShared g_prog;
+
 void progress_thread_fn(void *arg) {
-    PlayerState *ps = (PlayerState*)arg;
+    const u32 gen = (u32)(uintptr_t)arg;
+    char item[64], sess[64];
+    #define PROG_LIVE() (running && g_prog.gen == gen && g_prog.playing)
 
     // The start report, off the display thread (see show_player).
-    jellyfin_report_playing(ps->item->id, ps->session_id, ps->play_base_us * 10ULL);
+    snprintf(item, sizeof item, "%s", g_prog.item);
+    snprintf(sess, sizeof sess, "%s", g_prog.sess);
+    if (PROG_LIVE()) jellyfin_report_playing(item, sess, g_prog.base_us * 10ULL);
 
     int tick = 0;
     u32 wd_iter = g_dec_iter;
     int wd_still = 0;
-    while (running && ps->playing) {
+    while (PROG_LIVE()) {
         usleep(250000);              // 250 ms granularity for a quick exit
+        if (!PROG_LIVE()) break;
         // Decode-thread watchdog: no progress for 2 s -> say where it is.
-        if (!ps->paused) {
+        if (!g_prog.paused && g_prog.pos_valid) {
             const u32 it = g_dec_iter;
             if (it == wd_iter) {
                 if (++wd_still % 8 == 0) {
@@ -445,12 +452,12 @@ void progress_thread_fn(void *arg) {
         }
         if (++tick < 40) continue;   // report every ~10 s
         tick = 0;
-        if (!ps->playing) break;
-        if (!ps->dec_tid) continue;  // mid-seek flush: position unstable
-        u64 pos_ticks = (ps->play_base_us + audio_get_clock_us()) * 10ULL;
-        jellyfin_report_progress(ps->item->id, ps->session_id,
-                                 pos_ticks, ps->paused);
+        if (!g_prog.pos_valid) continue;  // mid-seek flush: position unstable
+        u64 pos_ticks = (g_prog.base_us + audio_get_clock_us()) * 10ULL;
+        snprintf(sess, sizeof sess, "%s", g_prog.sess);   // re-minted per seek
+        jellyfin_report_progress(item, sess, pos_ticks, g_prog.paused);
     }
+    #undef PROG_LIVE
 
     sysThreadExit(0);
 }
