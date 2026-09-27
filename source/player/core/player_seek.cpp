@@ -168,30 +168,6 @@ HudAction player_seek_input_update(PlayerState *ps, HudAction act) {
 // Execution — flush, stop transcode, reopen at the target
 // -------------------------------------------------------
 
-// Stop a superseded transcode on a thread of its own: fire and forget.
-static char s_stop_sid[64];
-static volatile bool s_stop_busy = false;
-static void seek_stop_thread(void *arg) {
-    (void)arg;
-    jellyfin_stop_transcode(s_stop_sid);
-    __sync_synchronize();
-    s_stop_busy = false;
-    sysThreadExit(0);
-}
-static void seek_stop_async(const char *sid) {
-    if (!sid || !sid[0]) return;
-    if (s_stop_busy) { jellyfin_stop_transcode(sid); return; }   // one in flight: do it here
-    snprintf(s_stop_sid, sizeof s_stop_sid, "%s", sid);
-    s_stop_busy = true;
-    __sync_synchronize();
-    sys_ppu_thread_t tid;
-    static char name[] = "jf_seekstop";
-    if (sysThreadCreate(&tid, seek_stop_thread, NULL, 1200, 32 * 1024, 0, name) != 0) {
-        s_stop_busy = false;
-        jellyfin_stop_transcode(sid);
-    }
-}
-
 bool player_execute_seek(PlayerState *ps) {
     int delta = ps->seek.pending_secs;   // total accumulated during cooldown
     ps->seek.pending_secs = 0;
@@ -329,7 +305,16 @@ bool player_execute_seek(PlayerState *ps) {
             jellyfin_stop_transcode(old_sid);     // the same id: that job must die first
         }
     }
-    if (strcmp(old_sid, ps->session_id) != 0) seek_stop_async(old_sid);
+    // The old transcode is stopped FIRST, and its source connection given a
+    // moment to close (2026-09-27).  Stopping it off-thread after the new one
+    // had started left two connections on the same debrid file for a moment,
+    // and TorBox answered the second with a 5 s placeholder clip: the new
+    // transcode encoded nothing and playback ended (an audio-track switch,
+    // and a fast-forward before it).
+    if (strcmp(old_sid, ps->session_id) != 0) {
+        jellyfin_stop_transcode(old_sid);
+        usleep(600000);
+    }
     char surl[768];
     build_stream_url(surl, sizeof(surl), ps, start_ticks);
     plog_url("surl", surl);
@@ -361,6 +346,11 @@ bool player_execute_seek(PlayerState *ps) {
     if (jbuf_count() == 0 && ps->playing && running) {
         plog("seek: reopen gave no picture -- asking the server once more");
         netClose(ps->sock);
+        // Kill the job that produced nothing (the same PlaySessionId would
+        // otherwise be handed that empty job again) and let the source
+        // connection go before asking.
+        jellyfin_stop_transcode(ps->session_id);
+        usleep(2000000);
         stream_set_wait_cb(player_seek_wait);
         nsock = stream_open(surl);
         stream_set_wait_cb(NULL);
