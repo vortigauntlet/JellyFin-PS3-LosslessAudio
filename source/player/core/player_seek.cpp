@@ -20,6 +20,7 @@
 #include <sys/thread.h>
 #include <net/net.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 #include "player_internal.h"
 #include "stream.h"
@@ -66,7 +67,7 @@ static const u64 SEEK_SCRUB_STEP_US = 250000ULL;   // one scrub step per 250ms
 static const s32 SEEK_SCRUB_SECS    = 25;          // +25s per scrub step
 static const s32 SEEK_TAP_SECS      = 10;          // +10s per quick tap
 static const u64 SEEK_GRACE_US      = 250000ULL;   // bridge digital-bit flicker
-static const u64 SEEK_TAP_GATE_US   = 1000000ULL;  // batch window for quick taps
+static const u64 SEEK_TAP_GATE_US   = 450000ULL;   // batch window for quick taps (was 1 s: felt laggy)
 
 // -------------------------------------------------------
 // Input
@@ -167,6 +168,30 @@ HudAction player_seek_input_update(PlayerState *ps, HudAction act) {
 // Execution — flush, stop transcode, reopen at the target
 // -------------------------------------------------------
 
+// Stop a superseded transcode on a thread of its own: fire and forget.
+static char s_stop_sid[64];
+static volatile bool s_stop_busy = false;
+static void seek_stop_thread(void *arg) {
+    (void)arg;
+    jellyfin_stop_transcode(s_stop_sid);
+    __sync_synchronize();
+    s_stop_busy = false;
+    sysThreadExit(0);
+}
+static void seek_stop_async(const char *sid) {
+    if (!sid || !sid[0]) return;
+    if (s_stop_busy) { jellyfin_stop_transcode(sid); return; }   // one in flight: do it here
+    snprintf(s_stop_sid, sizeof s_stop_sid, "%s", sid);
+    s_stop_busy = true;
+    __sync_synchronize();
+    sys_ppu_thread_t tid;
+    static char name[] = "jf_seekstop";
+    if (sysThreadCreate(&tid, seek_stop_thread, NULL, 1200, 32 * 1024, 0, name) != 0) {
+        s_stop_busy = false;
+        jellyfin_stop_transcode(sid);
+    }
+}
+
 bool player_execute_seek(PlayerState *ps) {
     int delta = ps->seek.pending_secs;   // total accumulated during cooldown
     ps->seek.pending_secs = 0;
@@ -253,7 +278,12 @@ bool player_execute_seek(PlayerState *ps) {
     // serving the in-progress job (which started at offset 0) and
     // the seek appears to reset to 0:00 instead of honouring the
     // new StartTimeTicks.
-    jellyfin_stop_transcode(ps->session_id);
+    // The old transcode is stopped AFTER the new session exists, off this
+    // thread (2026-09-27: it cost a whole HTTP round trip per seek).  Only if
+    // no new session can be had is it stopped here, first -- the same id
+    // would make Jellyfin reuse the old job and ignore StartTimeTicks.
+    char old_sid[64];
+    snprintf(old_sid, sizeof old_sid, "%s", ps->session_id);
     // Stopping the transcode is not enough on its own: re-requesting
     // stream.ts with the SAME PlaySessionId makes Jellyfin reuse the
     // existing transcode job (which began at offset 0), so
@@ -296,8 +326,10 @@ bool player_execute_seek(PlayerState *ps) {
             }
         } else {
             plog("seek: PlaybackInfo failed, reusing old session");
+            jellyfin_stop_transcode(old_sid);     // the same id: that job must die first
         }
     }
+    if (strcmp(old_sid, ps->session_id) != 0) seek_stop_async(old_sid);
     char surl[768];
     build_stream_url(surl, sizeof(surl), ps, start_ticks);
     plog_url("surl", surl);
@@ -316,7 +348,7 @@ bool player_execute_seek(PlayerState *ps) {
     // absolute media time target_us.
     ps->play_base_us = (u64)target_us;
     subs_after_seek();      // the cue cursor must not walk on from the old spot
-    { struct { u32 sec; u32 usec; } tv = { 0, 5000 };
+    { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;   // the lv2 layout (16 bytes)
       netSetSockOpt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
     crash_log("sk4 reopened");
 

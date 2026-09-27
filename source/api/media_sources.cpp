@@ -1,6 +1,7 @@
 // PlaybackInfo.MediaSources parser.  This file deliberately has no PS3-only
 // dependencies so the exact parser shipped in the PKG can be host-tested.
 
+#include "version_summary.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -317,6 +318,8 @@ static bool parse_source(const char *obj, const char *end, JFMediaSource *out) {
                  video[0] ? video : "Version");
     else
         source_tag_video(out->label, sizeof(out->label), video);
+    // From the RAW name, emoji and all: the globe marks the language.
+    version_summary(out->label, out->summary, sizeof(out->summary));
     return out->id[0] != '\0';
 }
 

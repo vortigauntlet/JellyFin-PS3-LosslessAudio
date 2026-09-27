@@ -12,6 +12,7 @@
 #include <sysutil/sysutil.h>
 #include <net/net.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/thread.h>
 #include <unistd.h>
 
@@ -764,7 +765,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     vid_gpu_init(jbuf_fw(), jbuf_fh());
 
     // 5 ms socket receive timeout keeps the network thread responsive
-    { struct { u32 sec; u32 usec; } tv = { 0, 5000 };
+    { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;   // the lv2 layout (16 bytes)
       netSetSockOpt(ps.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
 
     // The button always reads "AUDIO" — track names are too long for the HUD

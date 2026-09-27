@@ -13,6 +13,7 @@
 #include <net/net.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <net/poll.h>
 #include <sysutil/sysutil.h>
 
@@ -291,7 +292,11 @@ int stream_open(const char *url) {
     // 500 ms receive timeout — lets the header wait below poll instead of
     // blocking forever, and remains in effect for the stream (caller can
     // tighten it after connecting).
-    { struct { u32 sec; u32 usec; } tv = { 0, 500000 };
+    // The REAL struct timeval (2026-09-27): a hand-rolled {u32, u32} is 8
+    // bytes where the lv2 call expects 16, so the timeout never took --
+    // reads blocked for seconds on a quiet server (the stalls, the judder,
+    // the laggy seeks).  net/http.cpp always used this form.
+    { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 500000;
       netSetSockOpt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
 
     char hdr[4096]; int htotal = 0;

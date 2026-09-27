@@ -173,11 +173,27 @@ void player_display_frame(PlayerState *ps) {
             s_settle = sm > 150000 ? 2 : 48;
             char b[80]; snprintf(b, sizeof b, "1to1: repeat (video +%lld us)", (long long)sm); plog(b);
         } else {
-            if (s_settle == 0 && sm < -25000 && sm > -1500000 && jbuf_count() > 1) {
-                // Video behind: drop one.
+            if (s_settle == 0 && sm < -150000 && sm > -3000000 && jbuf_count() > 1) {
+                // Far behind -- the picture starved in a stall while the sound
+                // played on.  Drop EVERY frame that is already late, at once:
+                // one visible jump instead of seconds of frame-skipping
+                // judder (hardware, 2026-09-27: 1.3 s behind took ~4 s).
+                int dropped = 0;
+                while (jbuf_count() > 1) {
+                    const s64 d = avsync_compute_diff(jbuf_peek_pts_us(), ps->play_base_us);
+                    if (d > -40000) break;
+                    jbuf_consume_dur(jbuf_peek_dur());
+                    jbuf_advance();
+                    dropped++;
+                }
+                s_settle = 2;
+                char b[80]; snprintf(b, sizeof b, "1to1: caught up (video %lld us), dropped %d",
+                                     (long long)sm, dropped); plog(b);
+            } else if (s_settle == 0 && sm < -25000 && sm > -1500000 && jbuf_count() > 1) {
+                // Video a little behind: drop one.
                 jbuf_consume_dur(jbuf_peek_dur());
                 jbuf_advance();
-                s_settle = sm < -150000 ? 2 : 48;
+                s_settle = 48;
                 char b[80]; snprintf(b, sizeof b, "1to1: skip (video %lld us)", (long long)sm); plog(b);
             }
             jbuf_consume_dur(jbuf_peek_dur());

@@ -98,7 +98,7 @@ test_truehd_decode: test_truehd_decode.c $(TRUEHD_SRCS)
 test_subtitles: test_subtitles.cpp ../source/player/subtitles.cpp $(PGS_SRC)
 	$(CXX) $(CXXFLAGS) -o $@ test_subtitles.cpp $(PGS_SRC)
 
-test_media_sources: test_media_sources.cpp ../source/api/media_sources.cpp
+test_media_sources: test_media_sources.cpp ../source/api/media_sources.cpp ../source/api/version_summary.c
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_subtitles_pgs: test_subtitles_pgs.c $(PGS_SRC)

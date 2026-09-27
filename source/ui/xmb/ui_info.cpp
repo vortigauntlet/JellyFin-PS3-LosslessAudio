@@ -143,7 +143,7 @@ static int info_choose_version(const char *title,
             first = sources->n_sources - shown;
 
         int pw = UIS_W(760);
-        int row_h = UIS_H(48);
+        int row_h = UIS_H(58);            // two lines: the summary, the full name
         int ph = UIS_H(104) + shown * row_h;
         int px = ((int)display_width - pw) / 2;
         int py = ((int)display_height - ph) / 2;
@@ -176,10 +176,17 @@ static int info_choose_version(const char *title,
                 drawRect((u32)(cx - UIS_W(4)), (u32)ry, UIS_W(3),
                          (u32)(row_h - UIS_H(4)), XMB_ACCENT);
             }
-            info_clip_text(cx + UIS_W(16), ry + UIS_H(12),
-                           sources->source[idx].label, UIS_TF(19),
-                           idx == sel ? XMB_TEXT : XMB_TEXT_DIM,
+            // The summary ("1080p · REMUX · DTS-HD MA 7.1 · 38.8 GB"), and
+            // the full, cleaned name small beneath it.
+            info_clip_text(cx + UIS_W(16), ry + UIS_H(7),
+                           sources->source[idx].summary[0] ? sources->source[idx].summary
+                                                           : sources->source[idx].label,
+                           UIS_TF(18), idx == sel ? XMB_TEXT : XMB_TEXT_DIM,
                            pw - UIS_W(100), idx == sel);
+            info_clip_text(cx + UIS_W(16), ry + UIS_H(33),
+                           sources->source[idx].label, UIS_TF(12.5f),
+                           idx == sel ? XMB_TEXT_DIM : XMB_TEXT_FAINT,
+                           pw - UIS_W(100), false);
         }
 
         { static const Hint h[] = {{'X', "Select"}, {'C', "Back"}};
@@ -528,6 +535,38 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         const bool hfx = facts_get(it->id, &fx, NULL);
         bool a_ll = true;
         if (hfx && fx.audio[0]) { snprintf(achip, sizeof achip, "%s", fx.audio); a_ll = fx.lossless; }
+        // 2026-09-27: the chosen VERSION's own default audio track, so the
+        // chip changes as the version does.  "English - DTS-HD MA - 7.1 -
+        // Default" -> "DTS-HD MA 7.1"; blue edge for the lossless ones.
+        if (version_sel >= 0 && version_sel < versions.n_sources) {
+            const JFTracks *tk = &versions.source[version_sel].tracks;
+            if (tk->n_audio > 0) {
+                int d = tk->default_audio;
+                if (d < 0 || d >= tk->n_audio) d = 0;
+                const char *src = tk->audio[d].label;
+                char tmp[96]; snprintf(tmp, sizeof tmp, "%s", src);
+                char outc[96] = ""; int seg = 0, nseg = 1;
+                for (const char *q = tmp; (q = strstr(q, " - ")) != NULL; q += 3) nseg++;
+                char *tokp = tmp;
+                while (tokp) {
+                    char *nx = strstr(tokp, " - ");
+                    if (nx) *nx = 0;
+                    const bool skip = (seg == 0 && nseg > 1) || !strcmp(tokp, "Default") ||
+                                      !strcmp(tokp, "Forced") || !strcmp(tokp, "External");
+                    if (!skip && tokp[0]) {
+                        const size_t L = strlen(outc);
+                        snprintf(outc + L, sizeof outc - L, "%s%s", L ? " " : "", tokp);
+                    }
+                    seg++;
+                    tokp = nx ? nx + 3 : NULL;
+                }
+                if (outc[0]) {
+                    snprintf(achip, sizeof achip, "%s", outc);
+                    a_ll = strstr(outc, "TrueHD") || strstr(outc, "DTS-HD MA") || strstr(outc, "MLP") ||
+                           strstr(outc, "DTS:X") || strstr(outc, "FLAC") || strstr(outc, "PCM");
+                }
+            }
+        }
         else if (detail.audio_info[0]) info_audio_chip(detail.audio_info, achip, sizeof achip);
         if (hfx && fx.video[0]) snprintf(vchip, sizeof vchip, "%s", fx.video);
         else if (detail.video_info[0]) snprintf(vchip, sizeof vchip, "%s", detail.video_info);
@@ -758,7 +797,9 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             drawTTF((u32)(sx_[i] + UIS_W(15)), (u32)y, name, UIS_TF(12.0f), XMB_TEXT_DIM);
             char val[64];
             if (row1[i] == F3_VERSION) {
-                snprintf(val, sizeof val, "%s", versions.source[version_sel].label);
+                snprintf(val, sizeof val, "%s", versions.source[version_sel].summary[0]
+                                                  ? versions.source[version_sel].summary
+                                                  : versions.source[version_sel].label);
             } else {
                 u32 qw = 0, qh = 0; unsigned qbr = 0;
                 const vquality_t vq = vquality_get();
