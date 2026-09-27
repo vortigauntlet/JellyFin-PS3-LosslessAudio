@@ -663,14 +663,18 @@ const Bitmap *thumb_get(const char *item_id, int w, int h, ThumbImg img) {
 // unloaded on the next tick — except anything the new tab draws this same
 // frame, which re-touches its slots and survives.  Also arms a short fetch
 // cooldown so flipping through tabs quickly costs nothing.
-#define THUMB_SWITCH_COOLDOWN 20   // frames (~0.3 s) before fetches resume
+#define THUMB_SWITCH_COOLDOWN 4    // frames before fetches resume (was 20: the blank moment on a tab switch)
 #define THUMB_TTL_FRAMES      180  // ~3 s at 60 fps
 
 void thumb_cache_retarget(void) {
     lock_acquire();
+    // Half the TTL, not all of it (2026-09-27): the tab just left keeps its
+    // art ~1.5 s, so flicking back and forth never blanks the posters, while
+    // anything the new tab does not touch is still freed soon after.
     for (int i = 0; i < THUMB_CACHE_SIZE; i++) {
         if (s_slots[i].state == SLOT_EMPTY) continue;
-        s_slots[i].last_touch = s_frame - THUMB_TTL_FRAMES;
+        const u32 aged = s_frame - THUMB_TTL_FRAMES / 2;
+        if ((s32)(s_slots[i].last_touch - aged) > 0) s_slots[i].last_touch = aged;
     }
     s_fetch_hold = s_frame + THUMB_SWITCH_COOLDOWN;
     lock_release();

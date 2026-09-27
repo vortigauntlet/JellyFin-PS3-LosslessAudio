@@ -152,6 +152,26 @@ static DepthStage lib_stage(const LibView *v) {
     return s;
 }
 
+// Warm another library tab's first posters (2026-09-27): the tabs either side
+// of the one showing, so moving to them finds art already decoded instead of a
+// blank moment.  Exactly the size and image the tab will draw them at -- any
+// other size is a separate cache entry and would not help.  Only tabs whose
+// items are already loaded; never fetches a listing.
+void depth_lib_prefetch(int tab, int n) {
+    if (tab < 0 || tab >= XMB_TAB_COUNT || !lib_grid_kind(tab) || !g_items_loaded[tab]) return;
+    GridGeom gg; const XMBItem *items = NULL;
+    int count = 0, sel = 0, scroll = 0, y0 = 0, abs_start = 0, abs_total = 0;
+    bool more = false;
+    if (!xmb_grid_view(tab, &gg, &items, &count, &sel, &scroll, &y0, &more,
+                       &abs_start, &abs_total) || !items) return;
+    for (int i = 0; i < count && i < n; i++) {
+        const XMBItem *it = &items[i];
+        const ThumbImg img = (!gg.portrait && !lib_music_type(it->type) && it->has_thumb)
+                           ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
+        thumb_request(it->id, gg.card_w, gg.card_h, img);
+    }
+}
+
 void depth_lib_gpu(int tab) {
     LibView v;
     lib_view(tab, &v);

@@ -450,6 +450,44 @@ static void draw_visualizer(int x, int baseline, int width, int max_h, float a, 
     int bw  = (width - gap * (MUSIC_VIZ_BANDS - 1)) / MUSIC_VIZ_BANDS;
     if (bw < 4) bw = 4;
 
+    // Gel bars (2026-09-27, "more jelly XMB-like"): each band a translucent
+    // capsule in the album's accent -- a brighter core down its middle, a
+    // glowing rounded cap riding the level, a soft halo over the loud ones
+    // and a faint reflection under the baseline -- blended on the RSX like
+    // the rest of JellyWave.  The flat CPU rectangles below are the
+    // fallback where GPU blending is not up.
+    if (wave_gpu_blend_ready()) {
+        const u32 acc = s_mpal.accent, glo = s_mpal.glow;
+        const u32 alt = XMB_ACCENT_ALT;
+        const float A = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+        const int   r = bw / 2;
+        for (int i = 0; i < MUSIC_VIZ_BANDS; i++) {
+            const float lv = bands[i] < 0.0f ? 0.0f : (bands[i] > 1.0f ? 1.0f : bands[i]);
+            int h = bw + (int)(lv * (float)(max_h - bw));
+            const int bx = x + i * (bw + gap);
+            const int by = baseline - h;
+            if (bx < clip_x) continue;               // still behind the cover
+            if (lv > 0.45f)                           // the loud ones glow
+                wave_draw_glow_gpu(bx + bw / 2, by + r, bw * 2, bw * 2,
+                                   (u8)(glo >> 16), (u8)(glo >> 8), (u8)glo,
+                                   (u8)(A * 110.0f * (lv - 0.45f) / 0.55f));
+            // the gel body, see-through
+            wave_draw_rrect_gpu(bx, by, bw, h, r, acc, glo, (u8)(A * 120.0f));
+            // the core: narrower, brighter
+            if (bw >= 6 && h > bw)
+                wave_draw_rrect_gpu(bx + bw / 4, by + r, bw - 2 * (bw / 4), h - r, bw / 4,
+                                    alt, acc, (u8)(A * (70.0f + 90.0f * lv)));
+            // the cap: a lit, rounded head on the level
+            wave_draw_rrect_gpu(bx, by, bw, bw, r, alt, 0x00FFFFFF,
+                                (u8)(A * (150.0f + 100.0f * lv)));
+            // the reflection
+            const int rh = h / 3;
+            if (rh > 2)
+                wave_draw_rrect_gpu(bx, baseline + UIS_H(3), bw, rh, r, acc, glo, (u8)(A * 26.0f));
+        }
+        return;
+    }
+
     for (int i = 0; i < MUSIC_VIZ_BANDS; i++) {
         int h = UIS_H(2) + (int)(bands[i] * (float)(max_h - 2));
         int bx = x + i * (bw + gap);

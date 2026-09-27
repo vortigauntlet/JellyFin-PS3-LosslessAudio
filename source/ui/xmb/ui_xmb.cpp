@@ -235,8 +235,13 @@ static void xmb_draw_cpu_phase(int tab) {
 
     if (g_spine_on && tab == XMB_TAB_HOME) {
         xmb_home_stage_cpu();
+        depth_lib_prefetch(xmb_next_enabled(tab, +1), 6);   // the libraries either side
+        depth_lib_prefetch(xmb_next_enabled(tab, -1), 6);
     } else if (depth_lib_owns(tab)) {
         depth_lib_cpu(tab);
+        // The neighbours' first posters, after this tab's own requests.
+        depth_lib_prefetch(xmb_next_enabled(tab, +1), 6);
+        depth_lib_prefetch(xmb_next_enabled(tab, -1), 6);
     } else if (tab == XMB_TAB_SEARCH) {
         xmb_cpu_draw_osk();
         xmb_cpu_draw_search_results();
