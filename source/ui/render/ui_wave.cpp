@@ -60,8 +60,12 @@ bool ui_cpu_bg(void) { return BUILD_FOR_RPCS3 != 0; }
 // tessellated into WAVE_NS horizontal slices from its crest down to the screen
 // bottom; at every grid node the colour is the ribbon tint composited over the
 // gradient (and any earlier ribbons) at that exact height, using the same
-// maths as tools/ui_preview/preview.c.  Drawn fully opaque, the GPU's plain
-// colour interpolation reproduces the veil pixel-for-pixel with blending off.
+// maths as tools/ui_preview/preview.c.  Drawn fully opaque with blending off,
+// the result is exact at the grid nodes (every WAVE_STEP_PX columns, WAVE_NS
+// slices) and linearly interpolated between them: the crest is a polyline and
+// each slice's fade a linear ramp, where preview.c evaluates every pixel.  The
+// difference sits below the dither and is invisible at viewing distance, but
+// it is an approximation, not a pixel match.
 // WAVE_ALPHA is the crest opacity used for that pre-blend.
 //
 // SUBMISSION: two paths, see wave_draw().
@@ -1923,8 +1927,10 @@ void wave_init(void) {
 // CPU rasterisation of the XMB background — gradient plus the three translucent
 // ribbons — straight into the current framebuffer.  Mirrors the GPU wave_draw()
 // math (grad_sample / wave_crest / over8) and tools/ui_preview/preview.c's
-// cumulative per-pixel blend, including the animated phase, so the two paths
-// look identical.  Used only when ui_cpu_bg() is true (emulator).
+// cumulative per-pixel blend, including the animated phase.  This path is
+// per-pixel; the GPU path is the grid approximation described at the top of
+// the file, so the two agree at the grid nodes and closely in between.  Used
+// only when ui_cpu_bg() is true (emulator).
 static void wave_draw_cpu(void) {
     u32 *fb = color_buffer[curr_fb];
     if (!fb) return;

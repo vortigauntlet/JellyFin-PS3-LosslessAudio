@@ -41,3 +41,8 @@ tests/test_*
 !tests/test_*.c
 !tests/test_*.cpp
 !tests/test_*.h
+
+# Console logs pulled over FTP and local build logs
+player_log*.txt
+*.log
+*.pre-*
