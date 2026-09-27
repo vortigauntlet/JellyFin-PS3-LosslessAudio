@@ -219,12 +219,9 @@ static inline float wrm_clamp(float v, float lo, float hi)
 // caps at lower music levels (a steeper, more visible response) but can never
 // pass them.  Every ceiling above was measured against the framing box, and
 // none of them moves; rest is still exactly rest at any gain, because the
-// deviation there is zero.  gain 1 is wrm_map exactly.
-//
-// Added after the first hardware look: "barely noticed".  The mapping was
-// tuned to a brief that asked for "restrained"; which of the two is right is a
-// question for a TV, so it is a runtime knob (ui_wave_audio.cpp's gate file)
-// instead of a rebuild.
+// deviation there is zero.  gain 1 is wrm_map exactly.  Set at runtime from
+// ui_wave_audio.cpp's gate file, because how visible the response should be
+// is judged on a TV.
 #define WRM_GAIN_MIN    0.25f
 #define WRM_GAIN_MAX    4.00f
 
@@ -325,16 +322,12 @@ static inline void wrm_accent(const wrm_accent_set *a, int layer,
         out[k] = in[k] + wrm_accent_at(a, layer, (float)k * du);
 }
 
-// --- distinct bands (2026-09-24) -------------------------------------------
+// --- distinct bands --------------------------------------------------------
 //
-// Hardware verdict on the mapping above: "it all moves at a similar intensity;
-// you can't tell the lows, mids and highs apart".  The log said why: during
-// music `drive` went 0.62 -> 1.02 (every layer ~65% taller, together), `ts`
-// sat at 1.2-1.3 (the whole wave faster, together), while the per-band
-// heights only separated by +-15% (amp 0.88..1.16) -- shared terms swamping
-// the per-band ones, and the per-band ones built from MIXED bands.
-//
-// This is applied on top of wrm_map_gain()'s result by the glue:
+// Under wrm_map_gain() alone the SHARED terms (drive, timescale) dominate, so
+// all three layers move together and lows, mids and highs are
+// indistinguishable (measurements: docs/wave-renderer-notes.md, "Audio
+// mapping").  This is applied on top of that result by the glue:
 //
 //   * The shared terms are held near rest: tempo no longer speeds the wave
 //     (dt_scale 1.0), loudness keeps only a fifth of its drive swing (capped
@@ -361,9 +354,8 @@ static inline void wrm_accent(const wrm_accent_set *a, int layer,
 // solver, real loft, the fullest swell, the accent on the crest -- with THESE
 // caps, and must stay inside the same box with the same 0.05 margin.
 // Per layer: the band level (self-referenced) that reads as 0, and a response
-// multiplier.  2026-09-24 hardware: "the bass could be a bit more sensitive"
-// -- the lows start lower and climb faster; the caps (and so the framing) do
-// not move.
+// multiplier.  The lows start lower and climb faster; the caps (and so the
+// framing) do not depend on these.
 static const float WRM_DB_FLOOR[3] = { 0.18f, 0.28f, 0.28f };
 static const float WRM_DB_RESP[3]  = { 1.40f, 1.00f, 1.00f };
 #define WRM_DB_AMP_QUIET    0.72f   // 0.78 before: more range below rest
