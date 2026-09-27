@@ -9,6 +9,10 @@ extern bool s_audio_ok;
 // audio_output_channels() for what was actually opened.
 void audio_open(int channels);
 bool audio_write_pcm(void);  // returns true if a DMA event was consumed
+// Video player pause / resume: silences the ring while paused and puts the
+// writer back at its old distance from the hardware on resume.  Call from
+// the thread that calls audio_write_pcm(), on each change of state.
+void audio_pause_output(bool paused);
 
 // Paced mode (the music player): audio_write_pcm() never waits for the
 // source.  Each wake tops the ring up to

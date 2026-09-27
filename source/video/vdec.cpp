@@ -354,6 +354,9 @@ void vdec_submit(const u8 *data, int len, u64 pts) {
         if (inflight > s_au_inflight_max) s_au_inflight_max = inflight;
         int waits = 0;
         while (s_au_sent - s_au_done >= AU_BUF_COUNT && waits < 500) {
+            // Empty the decoder's output while waiting on its input: a
+            // decoded picture nobody collects can hold the next AU back.
+            if (s_frames_ready > 0 && !jbuf_full() && vdec_pull_frame()) continue;
             usleep(1000);
             waits++;
         }

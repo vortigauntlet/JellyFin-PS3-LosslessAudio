@@ -219,7 +219,25 @@ one_to_one_done: ;
     } else if (!one_to_one && !ps->paused && s_vid_frame_ready && s_timing_ready && jbuf_count() > 0) {
         // Measurement only — result discarded; EMA updated for logging.
         // play_base lets avsync fold out an absolute (sub-burn) video PTS.
-        { u64 vpts = jbuf_peek_pts_us(); (void)avsync_compute_diff(vpts, ps->play_base_us); }
+        const s64 raw60 = avsync_compute_diff(jbuf_peek_pts_us(), ps->play_base_us);
+        // Far behind (a stall or a slow start starved the picture while the
+        // sound played on): drop the frames that are already late at once,
+        // as the 1:1 path does.  The duration gate's bias moves at most 5 ms
+        // a vblank, so a second behind took seconds to close (2026-09-27).
+        if (raw60 < -150000 && raw60 > -10000000 && jbuf_count() > 1) {
+            int dropped = 0;
+            while (jbuf_count() > 1) {
+                const s64 d = avsync_compute_diff(jbuf_peek_pts_us(), ps->play_base_us);
+                if (d > -40000) break;
+                jbuf_consume_dur(jbuf_peek_dur());
+                jbuf_advance();
+                dropped++;
+            }
+            if (dropped) {
+                char b[80]; snprintf(b, sizeof b, "avsync: caught up (video %lld us), dropped %d",
+                                     (long long)raw60, dropped); plog(b);
+            }
+        }
 
         s64  dur_a = jbuf_peek_dur();
 #ifdef VID_DISABLE_BLEND

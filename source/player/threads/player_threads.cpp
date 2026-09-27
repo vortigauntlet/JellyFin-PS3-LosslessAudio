@@ -174,10 +174,20 @@ void decode_thread_fn(void *arg) {
         g_dec_iter++;
         g_dec_stage = "ring_feed";
         // Buffered video first, in arrival order, while there is room for it.
+        // Decoded pictures are collected AS it feeds (2026-09-27).  They used
+        // to be pulled only after this loop, and the loop only stops once the
+        // jitter buffer is full -- which only pulling fills.  With a full ring
+        // (the start of every film, after the 24p switch, and after any
+        // stall) it fed seconds of video into a decoder nobody was emptying:
+        // each AU waited on the decoder, the picture ran dry while the sound
+        // played on, and 1:1 then dropped frames to catch up.
         while (s_ring_n > 0 && jbuf_count() < jbuf_cap()) {
             video_feed_ts(s_ring + (size_t)s_ring_rd * TS_PACKET_SIZE);
             s_ring_rd = (s_ring_rd + 1) % s_ring_cap;
             s_ring_n--;
+            while (s_frames_ready > 0 && jbuf_count() < jbuf_cap()) {
+                if (!vdec_pull_frame()) break;
+            }
         }
 
         // Keep reading until the RING is full, not just until the jitter
@@ -406,8 +416,11 @@ void audio_thread_fn(void *arg) {
     volatile bool *playing = ctx->playing;
     volatile bool *paused  = ctx->paused;
 
+    bool was_paused = false;
     while (running && *playing) {
-        if (*paused || !audio_write_pcm())
+        const bool p = *paused;
+        if (p != was_paused) { audio_pause_output(p); was_paused = p; }
+        if (p || !audio_write_pcm())
             usleep(1000);
     }
 

@@ -314,6 +314,37 @@ static bool audio_write_pcm_paced(void) {
     return true;
 }
 
+// Pause / resume for the video player's audio thread (2026-09-27).
+//
+// The hardware never stops: paused, it kept cycling the ring -- the last
+// ~85 ms looping -- and posting an event per block, while the writer stood
+// still.  On resume the writer's distance from the read cursor was then
+// arbitrary (the clock assumes it is fixed) and the queued events burst-wrote
+// blocks: after every pause, and every seek (which pauses), the sound sat up
+// to a ring's length away from where the clock said it was.
+//
+// Now: at pause, remember that distance and silence the ring; at resume,
+// throw the queued events away and put the writer back at the same distance.
+static u32 s_pause_ahead = 0;
+
+void audio_pause_output(bool paused) {
+    if (!s_audio_ok || s_paced || !s_data_start || !s_read_idx_ea || !s_num_blocks) return;
+    const u32 nb = s_num_blocks;
+    const u32 rd = (u32)(*(volatile u64 *)(uintptr_t)s_read_idx_ea) % nb;
+    if (paused) {
+        s_pause_ahead = (s_write_blk + nb - rd) % nb;
+        memset((void *)(uintptr_t)s_data_start, 0,
+               (size_t)nb * s_port_channels * AUDIO_BLOCK_SAMPLES * sizeof(float));
+    } else {
+        sys_event_t ev;
+        while (sysEventQueueReceive(s_audio_eq, &ev, 1) == 0) { }   // 1 us: poll
+        const u32 rd2 = (u32)(*(volatile u64 *)(uintptr_t)s_read_idx_ea) % nb;
+        u32 ahead = s_pause_ahead;
+        if (ahead == 0 || ahead >= nb) ahead = 1;
+        s_write_blk = (rd2 + ahead) % nb;
+    }
+}
+
 bool audio_write_pcm(void) {
     if (!s_audio_ok) return false;
     if (s_paced) return audio_write_pcm_paced();
