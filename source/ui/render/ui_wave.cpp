@@ -1508,7 +1508,7 @@ static void jw_look_extras(jw_look *k)
 //
 // Tuned on a TV, so it is a file, not a constant: jellyfin_jwspeed.txt.
 #define JWSPEED_FILE  "jellyfin_jwspeed.txt"
-#define JW_SPEED_DEF  20
+#define JW_SPEED_DEF  14   // as tuned on the TV (was 20)
 static float s_jw_speed = JW_SPEED_DEF / 100.0f;
 
 static int jwspeed_setting(void) {
