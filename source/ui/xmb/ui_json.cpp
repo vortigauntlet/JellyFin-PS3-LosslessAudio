@@ -25,6 +25,41 @@ int xmb_json_str_range(const char *start, int len,
     return 0;
 }
 
+// As xmb_json_str_range, but only the object's OWN key (depth 1 of the
+// object at start), never one inside a nested object or array.  A search
+// reply carries each title's MediaSources inline, and their streams'
+// "Type":"Video" came before the title's "Type":"Movie" -- so a film found by
+// search read as a "Video" and its details page never offered versions
+// (2026-09-27).
+static int xmb_json_top_str_range(const char *start, int len,
+                                  const char *key, char *out, int out_size) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\":\"", key);
+    const int slen = strlen(search);
+    const char *p = start, *end = start + len;
+    int depth = 0;
+    bool in_str = false, esc = false;
+    for (; p < end; p++) {
+        const char c = *p;
+        if (in_str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') in_str = false;
+            continue;
+        }
+        if (c == '{' || c == '[') { depth++; continue; }
+        if (c == '}' || c == ']') { depth--; continue; }
+        if (c != '"') continue;
+        if (depth == 1 && p + slen <= end && memcmp(p, search, slen) == 0) {
+            json_unescape(p + slen, end, out, out_size);
+            return 1;
+        }
+        in_str = true;
+    }
+    out[0] = '\0';
+    return 0;
+}
+
 int xmb_json_int_range(const char *start, int len,
                         const char *key, int def) {
     char search[64];
@@ -134,7 +169,8 @@ int parse_xmb_items_each(const char *json, XMBItem *arr, int max,
         XMBItem it; memset(&it, 0, sizeof(it));
         xmb_json_str_range(obj, olen, "Id",   it.id,   sizeof(it.id));
         xmb_json_str_range(obj, olen, "Name", it.name, sizeof(it.name));
-        xmb_json_str_range(obj, olen, "Type", it.type, sizeof(it.type));
+        if (!xmb_json_top_str_range(obj, olen, "Type", it.type, sizeof(it.type)))
+            xmb_json_str_range(obj, olen, "Type", it.type, sizeof(it.type));
         if (!it.id[0]) continue;
 
         // ImageTags carries a "Thumb" only when the item really has wide banner

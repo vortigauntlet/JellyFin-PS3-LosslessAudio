@@ -449,8 +449,8 @@ static void xmb_draw_hints(int tab) {
         }
     } else if (tab == XMB_TAB_SEARCH) {
         if (g_search_focus_results) {
-            static const Hint h[] = {{'X',"Play"},{'S',"Delete"},{'C',"Back"}};
-            draw_hints_bar(h, 3);
+            static const Hint h[] = {{'X',"Open"},{'T',"Details"},{'S',"Delete"},{'C',"Back"}};
+            draw_hints_bar(h, 4);
         } else {
             static const Hint h[] = {{'X',"Type"},{'S',"Delete"},{'C',"Clear"}};
             draw_hints_bar(h, 3);

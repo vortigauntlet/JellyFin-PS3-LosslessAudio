@@ -79,13 +79,17 @@ void peek_open_item(const XMBItem *it, int src_w, int src_h, void (*open)(void))
     // would be a miss and a refetch mid-spin.
     {
         char id[64]; int w = 0, h = 0; ThumbImg img = THUMB_IMG_PRIMARY;
-        if (depth_last_focus_card(id, sizeof(id), &w, &h, &img)) {
+        // Not on Search: its list is no card, so the "last focused card" is
+        // another tab's -- a stranger's poster flying in from nowhere.
+        if (g_active_tab != XMB_TAB_SEARCH &&
+            depth_last_focus_card(id, sizeof(id), &w, &h, &img)) {
             snprintf(s_img_id, sizeof(s_img_id), "%s", id);
             s_src_w = w; s_src_h = h; s_img = img;
         }
     }
     int x = 0, y = 0, w = 0, h = 0;
-    if (depth_last_focus_rect(&x, &y, &w, &h) && w > 0 && h > 0) {
+    if (g_active_tab != XMB_TAB_SEARCH &&
+        depth_last_focus_rect(&x, &y, &w, &h) && w > 0 && h > 0) {
         s_from.x = (float)x; s_from.y = (float)y; s_from.w = (float)w; s_from.h = (float)h;
     } else {
         s_from.w = (float)UIS_W(150); s_from.h = (float)UIS_H(225);
