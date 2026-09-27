@@ -8,6 +8,14 @@ u64  timing_get_us(void);
 // Separate from timing_init() so fps detection can call timing_init() without re-registering.
 void timing_register_vblank(void);
 
+// Use num/den as the display refresh instead of the videoGetState bitmask
+// (0/0 clears it).  Only display_24p.cpp sets this, with a MEASURED rate.
+// Takes effect at the next timing_init().
+void timing_set_display_override(u32 num, u32 den);
+
+// Vblanks counted by the handler since the last timing_init().
+u64  timing_vsync_count(void);
+
 // Reset fps parameters and Bresenham accumulator.  Does NOT touch the vblank handler.
 // Call once on fps detection (from video.cpp) and once on timeout fallback.
 // fps_num/fps_den = e.g. 30/1 or 24000/1001.
@@ -19,6 +27,7 @@ void timing_init(u32 fps_num, u32 fps_den);
 // content per real vblank; using a fixed 16683 assumes a 60Hz-family display and
 // mis-paces playback on a 50Hz (PAL) one.  Valid after timing_init().
 s64  timing_vblank_period_us(void);
+bool timing_is_1to1(void);          // display rate == content rate (24p output)
 
 // Non-blocking: returns true when it is time to display the next frame.
 bool timing_frame_due(void);

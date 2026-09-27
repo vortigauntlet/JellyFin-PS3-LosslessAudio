@@ -7,6 +7,7 @@
 #include "hd1080.h"
 #include "vquality.h"
 #include "jellyfin_api.h"   // g_source_fps_milli — server-reported frame rate
+#include "display_diag.h"   // 24p decision record, logged once the rate is known
 
 #include <stdio.h>
 #include <string.h>
@@ -56,6 +57,12 @@ volatile int s_au_inflight_max = 0;
 // Set true once fps detection completes and timing_init has been called
 // with the detected rate; display loop must not pop frames until then.
 volatile bool s_timing_ready = false;
+
+// First input PTS of the session, for measure_fps().
+#define IN_PTS_MAX 32
+static u64 s_in_pts[IN_PTS_MAX];
+static int s_in_pts_n = 0;
+static s64 s_dur_override_us = 0;   // per-frame duration when the PTS overruled VDEC
 
 static u32 vdec_cb(u32 handle, u32 msgtype, u32 msgdata, u32 arg) {
     (void)handle; (void)msgdata; (void)arg;
@@ -269,6 +276,7 @@ void vdec_reserve_mem(void) {
 
 void vdec_reset_counters(void) {
     s_au_submitted = 0;
+    s_in_pts_n     = 0;
     s_got_sps      = false;
     s_au_buf_idx   = 0;
     s_frames_ready = 0;
@@ -299,6 +307,8 @@ void vdec_submit(const u8 *data, int len, u64 pts) {
         return;
     }
     if (len <= 0) return;
+    // Keep the first input PTS (90 kHz) for measure_fps() below.
+    if (s_in_pts_n < IN_PTS_MAX && pts < (1ULL << 40)) s_in_pts[s_in_pts_n++] = pts;
     {
         static int s_in_pts_log = 0;
         if (s_in_pts_log < 10) {
@@ -344,6 +354,9 @@ void vdec_submit(const u8 *data, int len, u64 pts) {
         if (inflight > s_au_inflight_max) s_au_inflight_max = inflight;
         int waits = 0;
         while (s_au_sent - s_au_done >= AU_BUF_COUNT && waits < 500) {
+            // Empty the decoder's output while waiting on its input: a
+            // decoded picture nobody collects can hold the next AU back.
+            if (s_frames_ready > 0 && !jbuf_full() && vdec_pull_frame()) continue;
             usleep(1000);
             waits++;
         }
@@ -395,6 +408,7 @@ void vdec_submit(const u8 *data, int len, u64 pts) {
     int retries = 0;
     s32 dret;
     do {
+        { extern volatile const char *g_dec_stage; g_dec_stage = "vdecDecodeAu"; }
         dret = vdecDecodeAu(s_vdec, VDEC_DECODER_MODE_NORMAL, &au);
         if (dret == (s32)VDEC_ERROR_BUSY) {
             usleep(1000);
@@ -418,7 +432,38 @@ void vdec_submit(const u8 *data, int len, u64 pts) {
 
 // MPEG-2/H264 frame rate codes reported by the PS3 VDEC hardware.
 // Values 1-8 follow the ISO 13818-2 frame_rate_code table.
+// The frame rate the TIMESTAMPS say, from the first input PTS (90 kHz).
+// VDEC's frame-rate code said 23.976 for a transcode that was exactly 24.000
+// (2026-09-27: PTS steps of 3750 ticks; 23.976 steps 3753/3754), so the 24p
+// switch picked the 23.976 Hz mode and 1:1 playback dropped frames every few
+// seconds to keep up with the sound.  Sorted, so B-frame decode order does
+// not matter: the smallest step between neighbours is one frame.
+static bool measure_fps(int *num, int *den) {
+    const int n = s_in_pts_n;
+    if (n < 3) return false;
+    u64 v[IN_PTS_MAX];
+    for (int i = 0; i < n; i++) v[i] = s_in_pts[i];
+    for (int i = 1; i < n; i++)                        // insertion sort, n <= 32
+        for (int j = i; j > 0 && v[j - 1] > v[j]; j--) { u64 t = v[j]; v[j] = v[j - 1]; v[j - 1] = t; }
+    u64 step = 0;
+    for (int i = 1; i < n; i++) {
+        const u64 d = v[i] - v[i - 1];
+        if (d > 0 && (step == 0 || d < step)) step = d;
+    }
+    if (step >= 3749 && step <= 3751) { *num = 24;    *den = 1;    return true; }
+    if (step >= 3752 && step <= 3755) { *num = 24000; *den = 1001; return true; }
+    if (step >= 3599 && step <= 3601) { *num = 25;    *den = 1;    return true; }
+    if (step >= 3002 && step <= 3004) { *num = 30000; *den = 1001; return true; }
+    if (step >= 2999 && step <= 3001) { *num = 30;    *den = 1;    return true; }
+    return false;
+}
+
+// Where the last fps_from_frc() answer came from -- the 24p record needs to
+// know a DETECTED rate from a guessed one.
+static dm_fps_source s_fps_src = DM_FPS_DEFAULT;
+
 static void fps_from_frc(int frc, int *num, int *den) {
+    s_fps_src = DM_FPS_VDEC_FRC;
     switch (frc) {
         case 1: *num = 24000; *den = 1001; break;  /* 23.976fps */
         case 2: *num = 24;    *den = 1;    break;  /* 24fps     */
@@ -448,6 +493,7 @@ static void fps_from_frc(int frc, int *num, int *den) {
                 else if (m >= 29950 && m <= 29990) { *num = 30000; *den = 1001; }
                 else if (m >= 59900 && m <= 59980) { *num = 60000; *den = 1001; }
                 else { *num = m; *den = 1000; }
+                s_fps_src = DM_FPS_SERVER;
                 char b[80];
                 snprintf(b, sizeof(b),
                          "fps_detect: no frc, using server rate %d.%03d",
@@ -456,6 +502,7 @@ static void fps_from_frc(int frc, int *num, int *den) {
             } else {
                 plog("fps_detect: no frc and no server rate, defaulting to 30fps");
                 *num = 30; *den = 1;
+                s_fps_src = DM_FPS_DEFAULT;
             }
             break;
     }
@@ -538,6 +585,7 @@ bool vdec_pull_frame(void) {
     vfmt.format_type  = VDEC_PICFMT_YUV420P;
     vfmt.color_matrix = VDEC_COLOR_MATRIX_BT709;
     vfmt.alpha        = 0xFF;
+    { extern volatile const char *g_dec_stage; g_dec_stage = "vdecGetPicture"; }
     s32 gpret = vdecGetPicture(s_vdec, &vfmt, jbuf_write_ptr());
     if (gpret != 0) {
         char buf[128];
@@ -559,7 +607,7 @@ bool vdec_pull_frame(void) {
     }
     s_frames_ready--;
 
-    s64 dur_us = dur_from_frc(frc);
+    s64 dur_us = s_dur_override_us ? s_dur_override_us : dur_from_frc(frc);
     {
         static u64 s_last_push_pts = 0;
         static int s_push_count    = 0;
@@ -597,11 +645,34 @@ bool vdec_pull_frame(void) {
     if (!s_timing_ready) {
         int fps_num, fps_den;
         fps_from_frc(frc, &fps_num, &fps_den);
+        s_dur_override_us = 0;
+        {
+            // The timestamps overrule VDEC's code between the two members of
+            // a family only (23.976 / 24, 29.97 / 30): that is the mistake
+            // seen, and nothing else is worth second-guessing on a few samples.
+            const bool fam24 = (fps_num == 24000 && fps_den == 1001) || (fps_num == 24 && fps_den == 1);
+            const bool fam30 = (fps_num == 30000 && fps_den == 1001) || (fps_num == 30 && fps_den == 1);
+            int mn = 0, md = 1;
+            if ((fam24 || fam30) && measure_fps(&mn, &md) &&
+                ((fam24 && (mn == 24 || mn == 24000)) || (fam30 && (mn == 30 || mn == 30000))) &&
+                (mn != fps_num || md != fps_den)) {
+                char b[112];
+                snprintf(b, sizeof b, "fps_detect: VDEC said %d/%d, the timestamps say %d/%d -- using them",
+                         fps_num, fps_den, mn, md);
+                plog(b);
+                fps_num = mn; fps_den = md;
+                s_dur_override_us = (s64)1000000 * md / mn;   // each frame's duration too
+            }
+        }
         timing_init(fps_num, fps_den);
         s_timing_ready = true;
         char buf[64];
         snprintf(buf, sizeof(buf), "fps_detect: frc=%d -> %d/%d", (int)frc, fps_num, fps_den);
         plog(buf);
+        // Observe only: records what the display is doing against what the
+        // content needs.  Changes no mode and nothing in the timing above.
+        display_diag_session((u32)fps_num, (u32)fps_den, s_fps_src,
+                             jbuf_fw(), jbuf_fh());
     }
 
     return true;
