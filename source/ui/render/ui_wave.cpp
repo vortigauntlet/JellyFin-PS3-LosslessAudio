@@ -1587,7 +1587,9 @@ static int bgdither_setting(void) {
 // The wave's gate: one file holding a mode, so any mode is one character
 // away over FTP with no reflash.
 //
-//   absent / 0  immediate mode, baked opaque colours
+//   0           immediate mode, baked opaque colours
+//   absent      3 (JellyWave) since 2026-09-27: it was opt-in, so a fresh
+//               install showed the old flat bands
 //   1           vertex arrays, baked opaque colours
 //   2           vertex arrays, GPU alpha blending
 //   3           JellyWave: the translucent-gel design, lofted in 3-D on the
@@ -1600,9 +1602,9 @@ static int bgdither_setting(void) {
 #define GPUWAVE_FILE "jellyfin_gpuwave.txt"
 static int gpuwave_mode(void) {
     FILE *f = fopen(jf_data_path(GPUWAVE_FILE), "r");
-    if (!f) return 0;
-    int v = 0;
-    if (fscanf(f, "%d", &v) != 1) v = 0;
+    if (!f) return 3;
+    int v = 3;
+    if (fscanf(f, "%d", &v) != 1) v = 3;
     fclose(f);
     return (v >= 1 && v <= 3) ? v : 0;
 }
@@ -1674,7 +1676,7 @@ void wave_init(void) {
     if (ui_cpu_bg()) return;          // emulator draws the background on the CPU
     const int mode = gpuwave_mode();
     if (mode == 0) {
-        plog("wave: vertex arrays disabled (jellyfin_gpuwave.txt absent/0) -- immediate mode");
+        plog("wave: vertex arrays disabled (jellyfin_gpuwave.txt = 0) -- immediate mode");
         crash_log("wave: OFF (immediate mode)");
         return;
     }

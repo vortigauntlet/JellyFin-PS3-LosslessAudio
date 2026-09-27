@@ -38,15 +38,15 @@ static bool s_ready  = false;
 // the GPU path, delete it to go back to the CPU blit.  Same shape as
 // jellyfin_dtsma.txt and the other experimental gates.
 //
-// Once it has proven itself on hardware this default should flip, because the
-// CPU path costs 6.4 ms of every Home frame.
+// ON by default since 2026-09-27 (proven on hardware; the CPU path costs
+// 6.4 ms of every Home frame).  The file saying 0 turns it off.
 #define GPUCARDS_FILE "jellyfin_gpucards.txt"
 static bool gpucards_enabled(void)
 {
     FILE *f = fopen(jf_data_path(GPUCARDS_FILE), "r");
-    if (!f) return false;
-    int v = 0;
-    bool on = (fscanf(f, "%d", &v) == 1 && v == 1);
+    if (!f) return true;
+    int v = 1;
+    bool on = !(fscanf(f, "%d", &v) == 1 && v == 0);
     fclose(f);
     return on;
 }

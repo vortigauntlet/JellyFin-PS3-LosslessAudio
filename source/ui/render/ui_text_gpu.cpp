@@ -98,18 +98,19 @@ static u32 s_st_runs, s_st_misses, s_st_bytes, s_st_flushes;
 
 // --- the gate -------------------------------------------------------------
 //
-// OPT-IN and off by default, for the same reason ui_card_gpu.cpp is: this
+// Was OPT-IN, for the same reason ui_card_gpu.cpp was: this
 // binds RSX textures from a part of the app that historically bound none, and
 // a bad bind on this hardware does not fail politely -- it wedges the GPU,
-// takes the console off the network and needs a power cycle.  Put "1" in
-// /dev_hdd0/tmp/jellyfin_gputext.txt to enable, delete the file to go back.
+// takes the console off the network and needs a power cycle.  Put "0" in
+// /dev_hdd0/tmp/jellyfin_gputext.txt to fall back to the CPU path.
 #define GPUTEXT_FILE "jellyfin_gputext.txt"
+// ON by default since 2026-09-27 (proven on hardware); "0" turns it off.
 static bool gputext_enabled(void)
 {
     FILE *f = fopen(jf_data_path(GPUTEXT_FILE), "r");
-    if (!f) return false;
-    int v = 0;
-    bool on = (fscanf(f, "%d", &v) == 1 && v == 1);
+    if (!f) return true;
+    int v = 1;
+    bool on = !(fscanf(f, "%d", &v) == 1 && v == 0);
     fclose(f);
     return on;
 }
