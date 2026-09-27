@@ -318,54 +318,75 @@ bool player_execute_seek(PlayerState *ps) {
     char surl[768];
     build_stream_url(surl, sizeof(surl), ps, start_ticks);
     plog_url("surl", surl);
-    stream_set_wait_cb(player_seek_wait);      // spinner + Circle while the server thinks
-    int nsock = stream_open(surl);
-    stream_set_wait_cb(NULL);
-    if (nsock < 0) {
-        plog("seek: stream_open FAILED");
-        plog("playing=0 reason=seek_stream_open_failed");
-        crash_log("sk_fail reopen");
-        ps->playing = false;       // give up cleanly; loop will exit
-        return false;
-    }
-    ps->sock = nsock;
-    // The new stream's PTS restarts at ~0, so its clock now maps to
-    // absolute media time target_us.
-    ps->play_base_us = (u64)target_us;
-    subs_after_seek();      // the cue cursor must not walk on from the old spot
-    { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;   // the lv2 layout (16 bytes)
-      netSetSockOpt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
-    crash_log("sk4 reopened");
-
-    // 4) Re-prime: decode a few frames before resuming display so
-    //    the jitter buffer is non-empty (mirrors initial pre-fill).
-    player_prefill(ps, false, 20000);
-    // Nothing came: a debrid server can answer the reopen with a 200 and no
-    // body after half a minute (2026-09-27, fast-forward): taken as the end
-    // of the film, playback just stopped.  Ask once more before giving up.
-    if (jbuf_count() == 0 && ps->playing && running) {
-        plog("seek: reopen gave no picture -- asking the server once more");
-        netClose(ps->sock);
-        // Kill the job that produced nothing (the same PlaySessionId would
-        // otherwise be handed that empty job again) and let the source
-        // connection go before asking.
-        jellyfin_stop_transcode(ps->session_id);
-        usleep(2000000);
-        stream_set_wait_cb(player_seek_wait);
+    // 3b/4) Open and re-prime, retrying with a growing wait.
+    //
+    // A debrid host rate-limits opens of the same file: the server's ffmpeg
+    // got "HTTP 429 Too Many Requests" after four opens in ~90 s (start,
+    // audio switch, seek, retry), answered the reopen with a 200 and no body,
+    // then a 500 -- and one 2 s retry later playback was dumped back at the
+    // menu (2026-09-27).  So: up to four tries, 5 / 10 / 15 s apart, the last
+    // picture and the spinner up the whole time, Circle to give up.
+    static const unsigned RETRY_WAIT_MS[] = { 5000, 10000, 15000 };
+    const int max_tries = 1 + (int)(sizeof RETRY_WAIT_MS / sizeof RETRY_WAIT_MS[0]);
+    int nsock = -1;
+    for (int attempt = 0; ; attempt++) {
+        stream_set_wait_cb(player_seek_wait);      // spinner + Circle while the server thinks
         nsock = stream_open(surl);
         stream_set_wait_cb(NULL);
-        if (nsock < 0) {
-            plog("playing=0 reason=seek_stream_open_failed (retry)");
+        const bool cancelled = nsock < 0 &&
+            strstr(stream_last_error(), "Cancelled") != NULL;
+        if (nsock >= 0) {
+            ps->sock = nsock;
+            // The new stream's PTS restarts at ~0, so its clock now maps to
+            // absolute media time target_us.
+            ps->play_base_us = (u64)target_us;
+            { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;   // the lv2 layout (16 bytes)
+              netSetSockOpt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+            crash_log("sk4 reopened");
+            if (attempt > 0) video_reset_demux();
+            // Re-prime: decode a few frames before resuming display so the
+            // jitter buffer is non-empty (mirrors initial pre-fill).
+            player_prefill(ps, false, 20000);
+            if (jbuf_count() > 0 || !ps->playing || !running) break;
+            plog("seek: reopen gave no picture (the server found nothing to send)");
+            netClose(ps->sock);
+            ps->sock = -1;
+        } else {
+            char b[160];
+            snprintf(b, sizeof b, "seek: stream_open FAILED (%.100s)", stream_last_error());
+            plog(b);
+        }
+        if (cancelled || attempt + 1 >= max_tries || !running) {
+            plog("playing=0 reason=seek_stream_open_failed");
+            crash_log("sk_fail reopen");
+            ps->sock = -1;
+            ps->playing = false;       // give up cleanly; loop will exit
+            return false;
+        }
+        // Kill the job that produced nothing (the same PlaySessionId would be
+        // handed it again) and give the source host time to calm down.
+        jellyfin_stop_transcode(ps->session_id);
+        const unsigned wait_ms = RETRY_WAIT_MS[attempt];
+        {
+            char b[96];
+            snprintf(b, sizeof b, "seek: asking again in %u s (try %d of %d)",
+                     wait_ms / 1000, attempt + 2, max_tries);
+            plog(b);
+        }
+        const u64 w0 = timing_get_us();
+        bool gave_up = false;
+        while (timing_get_us() - w0 < (u64)wait_ms * 1000ULL) {
+            if (!player_seek_wait((unsigned)((timing_get_us() - w0) / 1000ULL))) { gave_up = true; break; }
+            usleep(30000);
+        }
+        if (gave_up) {
+            plog("playing=0 reason=seek_cancelled_by_user");
             ps->sock = -1;
             ps->playing = false;
             return false;
         }
-        ps->sock = nsock;
-        { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;
-          netSetSockOpt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
-        video_reset_demux();
-        player_prefill(ps, false, 20000);
     }
+    subs_after_seek();      // the cue cursor must not walk on from the old spot
     crash_log("sk5 prefilled");
     {
         // What timestamps did Jellyfin actually return for the new
