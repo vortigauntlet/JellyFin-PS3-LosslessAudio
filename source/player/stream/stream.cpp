@@ -303,7 +303,7 @@ int stream_open(const char *url) {
         int n;
         {
             struct pollfd pfd; pfd.fd = sock; pfd.events = POLLIN; pfd.revents = 0;
-            n = netPoll(&pfd, 1, 500) == 0 ? -1 : netRecv(sock, hdr + htotal, 1, MSG_DONTWAIT);
+            n = netPoll(&pfd, 1, 50) == 0 ? -1 : netRecv(sock, hdr + htotal, 1, MSG_DONTWAIT);
         }
         if (n == 1) {
             htotal++;

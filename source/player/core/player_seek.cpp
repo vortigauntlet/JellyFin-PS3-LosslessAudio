@@ -301,7 +301,9 @@ bool player_execute_seek(PlayerState *ps) {
     char surl[768];
     build_stream_url(surl, sizeof(surl), ps, start_ticks);
     plog_url("surl", surl);
+    stream_set_wait_cb(player_seek_wait);      // spinner + Circle while the server thinks
     int nsock = stream_open(surl);
+    stream_set_wait_cb(NULL);
     if (nsock < 0) {
         plog("seek: stream_open FAILED");
         plog("playing=0 reason=seek_stream_open_failed");

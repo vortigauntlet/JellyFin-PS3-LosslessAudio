@@ -318,6 +318,8 @@ static void info_load_work(void *arg) {
     if (strcmp(ld->it->type, "Movie") == 0 || strcmp(ld->it->type, "Episode") == 0 ||
         strcmp(ld->it->type, "Video") == 0)
         jellyfin_fetch_media_sources(ld->it->id, ld->versions);
+    for (int v = 0; v < ld->versions->n_sources; v++)            // emoji -> gone
+        ttf_clean_text(ld->versions->source[v].label, (int)sizeof ld->versions->source[v].label);
     detail_media_load(ld->it->id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster);
     ld->back_ok = detail_media_load(ld->it->id, "Backdrop", 960, 540, 0.3f, &ld->back);
 }
@@ -888,6 +890,8 @@ void xmb_show_item_info(const XMBItem *root) {
                 strcmp(cur->type, "Episode") == 0 ||
                 strcmp(cur->type, "Video") == 0)
                 jellyfin_fetch_media_sources(cur->id, &versions);
+            for (int v = 0; v < versions.n_sources; v++)
+                ttf_clean_text(versions.source[v].label, (int)sizeof versions.source[v].label);
             version_sel = 0;
             // Hi-res poster: the grid thumbnail cache only holds card-sized art,
             // so a poster blown up from it looks pixelated.  On failure the draw

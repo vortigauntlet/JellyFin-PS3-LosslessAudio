@@ -122,14 +122,14 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
     // ---- the big Play / Pause button, bottom left (2026-09-27) ----
     // What X does by default: PLAY while paused, PAUSE while playing.  A
     // 64 px disc at the start of the title row, the title moved right of it.
-    const int pb_d = UIS_H(64), pb_x = v3x(57), pb_y = v3y(522);
+    const int pb_d = UIS_H(50), pb_x = v3x(57), pb_y = v3y(529);
     {
         const bool foc = g_hud.focus == FOCUS_PP;
         if (foc)
             v3_rrect(pb_x - UIS_W(5), pb_y - UIS_H(5), pb_d + UIS_H(10), pb_d + UIS_H(10),
                      (pb_d + UIS_H(10)) / 2, 0, XMB_ACCENT, 60, 0, 0);
-        v3_rrect(pb_x, pb_y, pb_d, pb_d, pb_d / 2, 2, XMB_ACCENT, 190,
-                 foc ? XMB_ACCENT_ALT : WHITE, foc ? 255 : 110);
+        v3_rrect(pb_x, pb_y, pb_d, pb_d, pb_d / 2, 1, XMB_ACCENT, 190,
+                 foc ? XMB_ACCENT_ALT : WHITE, foc ? 200 : 70);
         const int cx = pb_x + pb_d / 2, cy = pb_y + pb_d / 2;
         if (paused) {
             // a play triangle, nudged right of centre so it LOOKS centred

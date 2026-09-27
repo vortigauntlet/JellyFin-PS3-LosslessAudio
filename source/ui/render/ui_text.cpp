@@ -628,6 +628,49 @@ static inline int chain_pick(const FaceChain *c, int cp)
     return k;
 }
 
+static int utf8_put(char *o, int cp) {
+    if (cp < 0x80)    { o[0] = (char)cp; return 1; }
+    if (cp < 0x800)   { o[0] = (char)(0xC0 | (cp >> 6)); o[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { o[0] = (char)(0xE0 | (cp >> 12)); o[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        o[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    o[0] = (char)(0xF0 | (cp >> 18)); o[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    o[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); o[3] = (char)(0x80 | (cp & 0x3F)); return 4;
+}
+
+void ttf_clean_text(char *s, int cap) {
+    if (!s || cap <= 1) return;
+    FaceChain ch;
+    const bool fonts = s_ttf_ok;
+    if (fonts) chain_of(UI_FACE_REGULAR, 16.0f, &ch);
+    char out[512];
+    int n = 0;
+    const char *p = s;
+    bool space = true;                     // no leading space / separator
+    while (*p && n < (int)sizeof out - 8 && n < cap - 8) {
+        const int cp = utf8_next(&p);
+        if (cp == '\n' || cp == '\r') {
+            if (!space) { n += utf8_put(out + n, ' '); n += utf8_put(out + n, 0xB7); n += utf8_put(out + n, ' '); space = true; }
+            continue;
+        }
+        if (cp < 0x20 || cp == 0x200D || (cp >= 0xFE00 && cp <= 0xFE0F) || cp == 0x20E3) continue;
+        if (cp >= 0x80 && fonts) {
+            bool have = false;
+            for (int i = 0; i < ch.n && !have; i++) have = stbtt_FindGlyphIndex(ch.fi[i], cp) != 0;
+            if (!have) continue;
+        }
+        if (cp == ' ') { if (space) continue; space = true; }
+        else space = false;
+        n += utf8_put(out + n, cp);
+    }
+    while (n > 0 && (out[n - 1] == ' ')) n--;
+    // a separator left dangling at the end
+    if (n >= 3 && (unsigned char)out[n - 2] == 0xC2 && (unsigned char)out[n - 1] == 0xB7) {
+        n -= 2; while (n > 0 && out[n - 1] == ' ') n--;
+    }
+    out[n] = 0;
+    snprintf(s, (size_t)cap, "%s", out);
+}
+
 int ttf_text_width_face(const char *text, float px, int face) {
     if (!s_ttf_ok) return (int)(strlen(text) * px);
     FaceChain ch;

@@ -85,6 +85,10 @@ void drawText(u32 x, u32 y, const char *text);
 void drawTextf(u32 x, u32 y, const char *fmt, ...);
 void drawTextScaled(u32 x, u32 y, const char *text, int px);
 void drawTTF(u32 x, u32 y, const char *text, float px, u32 color, bool bold = false);
+// Make server text drawable (2026-09-27): line breaks become " \xC2\xB7 ",
+// emoji modifiers go, and every character NO UI font has is dropped instead
+// of drawing as a box -- debrid version names are full of emoji.  In place.
+void ttf_clean_text(char *s, int cap);
 // drawTTF with the string's ink box vertically centred on cy — measures the
 // actual glyph extents, so labels align with icon/glyph centrelines exactly.
 void drawTTF_vcentered(u32 x, int cy, const char *text, float px, u32 color,

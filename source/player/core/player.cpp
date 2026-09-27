@@ -36,6 +36,7 @@
 #include "ui_visuals.h"
 #include "jellyfin_api.h"
 #include "rsxutil.h"
+#include "ui_wave.h"          // wave_draw_rrect_gpu: the loading spinner
 #include "thumbnail_cache.h"
 #include "display_24p.h"   // physical 1080p24 output
 #include "display_diag.h"
@@ -249,6 +250,61 @@ static void player_draw_skip_badge(const char *label) {
     drawRect((u32)bx, (u32)by, 3, (u32)bh, XMB_ACCENT);
     draw_ps_button_vcentered((u32)(bx + pad_x), by + bh / 2, 'X', icon_h, 255);
     drawTTF((u32)(bx + pad_x + iw + gap), (u32)(by + pad_y), label, label_px, XMB_TEXT, true);
+}
+
+// The loading spinner (2026-09-27): ten dots round a ring, a bright head
+// chasing round with a fading tail, over whatever video is on screen.  GPU
+// phase (before rsxSync).  t in seconds.
+void player_spinner_gpu(float t)
+{
+    const int cx = (int)display_width / 2, cy = (int)display_height / 2;
+    const float R = (float)UIS_H(30);
+    const int d = UIS_H(9) > 4 ? UIS_H(9) : 4;
+    wave_draw_rrect_gpu(cx - (int)R - d * 2, cy - (int)R - d * 2, 2 * (int)R + d * 4,
+                        2 * (int)R + d * 4, (int)R + d * 2, 0x00000000, 0x00000000, 90);
+    for (int i = 0; i < 10; i++) {
+        const float a = (float)i / 10.0f * 6.2831853f;
+        float f = (float)i / 10.0f - t * 1.1f;
+        f -= (float)(int)f; if (f < 0.0f) f += 1.0f;           // 0 = the head
+        const float k = 1.0f - f;
+        const int x = cx + (int)(R * __builtin_sinf(a)) - d / 2;
+        const int y = cy - (int)(R * __builtin_cosf(a)) - d / 2;
+        wave_draw_rrect_gpu(x, y, d, d, d / 2, 0x00FFFFFF, 0x00FFFFFF,
+                            (u8)(40.0f + 215.0f * k * k));
+    }
+}
+
+// Waiting on the server during a SEEK's reopen (2026-09-27: a fast-forward
+// sat 60 s on a debrid server that then answered 500, with the screen frozen
+// and no way out -- force-quit).  The last picture stays up with the spinner
+// and a count; Circle gives up (playback ends, back to the menu).
+static bool s_seekwait_flip = false;
+bool player_seek_wait(unsigned elapsed_ms)
+{
+    poll_buttons();
+    if (BTN_PRESSED(circle)) return false;
+    if (s_seekwait_flip) waitflip_timeout(250000);
+    const u32 fw = jbuf_fw(), fh = jbuf_fh();
+    if (fw && fh) vid_gpu_draw(false, 0.0f, fw, fh);
+    else          clearScreen(0x00000000);
+    player_spinner_gpu((float)elapsed_ms * 0.001f);
+    rsxSync();
+    char msg[64];
+    snprintf(msg, sizeof msg, "Waiting for the server \xC2\xB7 %us", elapsed_ms / 1000u);
+    const float px = UIS_TF(16.0f);
+    const int w = ttf_text_width(msg, px);
+    const int y = (int)display_height / 2 + UIS_H(58);
+    drawTTF((u32)(((int)display_width - w) / 2), (u32)y, msg, px, 0x00FFFFFF);
+    {
+        const char *c = "O  Cancel";
+        const int cw = ttf_text_width(c, UIS_TF(13.0f));
+        drawTTF((u32)(((int)display_width - cw) / 2), (u32)(y + UIS_H(26)), c,
+                UIS_TF(13.0f), 0x00B8BCD0);
+    }
+    gcmResetFlipStatus();
+    flip();
+    s_seekwait_flip = true;
+    return true;
 }
 
 // Drawn while stream_open() waits for the server's response headers.
@@ -1108,6 +1164,16 @@ void show_player(const JFItem *item, u32 resume_secs,
 #endif
 
         player_display_frame(&ps);
+        {
+            // No new picture for 0.4 s while playing -- a stall, a seek, the
+            // network: the spinner says so instead of a frozen frame.
+            static int s_sp_fr = -1; static u64 s_sp_us = 0;
+            const u64 now_sp = timing_get_us();
+            if (ps.frame_count != s_sp_fr || ps.frame_count == 0) { s_sp_fr = ps.frame_count; s_sp_us = now_sp; }
+            if (!ps.paused && ps.frame_count > 0 && ps.seek.state != SEEK_SCRUB &&
+                now_sp - s_sp_us > 400000ULL)
+                player_spinner_gpu((float)(now_sp - s_sp_us) * 1.0e-6f);
+        }
         if (!lc_first_frame && ps.frame_count > 0) {
             lc_first_frame = true;
             lc_logf("playback: first frame displayed fr=%d", ps.frame_count);
