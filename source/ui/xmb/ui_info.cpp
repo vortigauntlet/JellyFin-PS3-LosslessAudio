@@ -327,8 +327,17 @@ static void info_load_work(void *arg) {
         jellyfin_fetch_media_sources(ld->it->id, ld->versions);
     for (int v = 0; v < ld->versions->n_sources; v++)            // emoji -> gone
         ttf_clean_text(ld->versions->source[v].label, (int)sizeof ld->versions->source[v].label);
-    detail_media_load(ld->it->id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster);
-    ld->back_ok = detail_media_load(ld->it->id, "Backdrop", 960, 540, 0.3f, &ld->back);
+    // Episodes: the show's poster (the title card Home shows) and the
+    // episode's own still -- its Primary image, 16:9 -- as the backdrop.  The
+    // show's backdrop stands in when an episode has no still.
+    const bool ep = strcmp(ld->it->type, "Episode") == 0 && ld->detail->series_id[0];
+    const char *poster_id = ep ? ld->detail->series_id : ld->it->id;
+    if (!detail_media_load(poster_id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster) && ep)
+        detail_media_load(ld->it->id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster);
+    ld->back_ok = ep && detail_media_load(ld->it->id, "Primary", 960, 540, 0.3f, &ld->back);
+    if (!ld->back_ok)
+        ld->back_ok = detail_media_load(ep ? ld->detail->series_id : ld->it->id,
+                                        "Backdrop", 960, 540, 0.3f, &ld->back);
 }
 
 static void xmb_show_item_info_v3(const XMBItem *root) {
