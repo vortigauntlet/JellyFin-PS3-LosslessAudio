@@ -144,7 +144,9 @@ If playback stutters, drop to **Very High** before anything else.
   actually reacts to what you're hearing.
 - **Live search**, an on-screen keyboard, item info overlays, and a thumbnail cache
   that keeps browsing quick.
-- **An update check at launch** that pops up quietly when a newer release is out.
+- **An update check at launch** that pops up quietly when a newer release is out,
+  and a **Settings → Software Update** row that shows the result and checks again.
+  See [`CHANGELOG.md`](CHANGELOG.md) for what changed in each release.
 
 ---
 
@@ -267,12 +269,13 @@ That gives you `JellyFin---PS3.self` and `JellyFin---PS3.pkg`.
 
 ## Controls
 
-**Menus.** `X` select · `O` back · `D-pad` navigate · `L1`/`R1` switch tabs ·
-`△` item info. In Music, press `Up` from the top row to reach the sub-tab header.
+**Menus.** `X` select · `O` back · `D-pad` navigate · `L1`/`R1` switch tabs
+(on the Blu-ray remote, `|<<` `>>|` and `<<` `>>` also switch tabs) · `△` item info. In Music, press `Up` from the top row to reach the sub-tab header.
 
 **Video player.** Press any button to bring up the HUD (it hides itself again after
 4 seconds). `Left`/`Right` move across the control row and `X` activates whatever's
-focused. `R2`/`L2` tap to skip ±10 seconds, or hold to scrub. `Start` stops. During
+focused. `R2`/`L2` tap to skip ±10 seconds, or hold to scrub. `O` or `Start` stops,
+and `□` puts the bar away before it times out. During
 the last-90-seconds prompt, `Select` jumps to the next episode.
 
 **Music player.** `Left`/`Right` move across the transport row, and going `Right`
@@ -293,13 +296,15 @@ and `△` to toggle caps.
 | O        | Back                                               |
 | D-pad    | Navigate                                           |
 | L1 / R1  | Cycle tabs (prev/next page in the season browser)  |
+| Remote `\|<<` `>>\|` / `<<` `>>` | Cycle tabs, for remotes without L1 / R1 |
 | Triangle | Item info overlay                                  |
 
 ### Video player
 
 | Button          | Action                                                            |
 |-----------------|-------------------------------------------------------------------|
-| Start           | Stop / exit player                                                |
+| O / Start       | Stop / exit player (O closes an open track menu first)            |
+| Square          | Hide the player bar before its timeout                            |
 | Left / Right    | Move focus across the control row (Rew · Play/Pause · FF · AUDIO · Volume · CC) |
 | X               | Activate the focused control                                      |
 | R2 / L2 (tap)   | Skip +10 s / -10 s (taps within 1 s batch into one seek)          |
