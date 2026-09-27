@@ -597,6 +597,7 @@ void ui_run_xmb(void) {
             }
 
         poll_buttons();
+        input_media_keys_as_shoulders();   // a remote with no L1 / R1
         spine_frame_begin();   // one depth sample for the whole frame
         // The ambient screensaver: a press that wakes it does nothing else.
         const bool amb_swallow =

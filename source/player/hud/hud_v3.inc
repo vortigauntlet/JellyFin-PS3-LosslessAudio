@@ -298,7 +298,7 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
     // (The canvas's audio-path pill at the top right is gone: it only ever
     // read AUDIO.  The track is named in the audio chip instead.)
 
-    // ---- hints: what X does, then the canvas's Tracks / Stop / Stats ----
+    // ---- hints: what X does, then Tracks / Stop / Hide ----
     {
         Hint h[6]; int n = 0;
         h[n].glyph = 'X';
@@ -313,9 +313,7 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         h[n].glyph = 'R'; h[n].label = "Rewind / Fast Forward"; n++;
         h[n].glyph = 'T'; h[n].label = "Tracks"; n++;
         h[n].glyph = 'C'; h[n].label = "Stop";   n++;
-#if ENABLE_PLAYER_STATS
-        h[n].glyph = 'S'; h[n].label = "Stats";  n++;
-#endif
+        h[n].glyph = 'S'; h[n].label = "Hide";   n++;
         draw_hints_bar(h, n);
         ovl_span(v3y(660), (int)s_ovl_h);
     }

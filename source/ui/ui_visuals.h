@@ -424,7 +424,7 @@ extern char g_tab_name_filter[XMB_TAB_COUNT][4];
 // The "Player Stats Overlay" row only exists when the diagnostics module is
 // compiled in — a build with ENABLE_PLAYER_STATS 0 has nothing for it to
 // toggle, so the row goes away rather than sitting there doing nothing.
-#define XMB_SETTINGS_COUNT (14 + ENABLE_PLAYER_STATS)  // selectable settings entries
+#define XMB_SETTINGS_COUNT (15 + ENABLE_PLAYER_STATS)  // selectable settings entries
 extern int   g_settings_sel;       // highlighted settings entry
 extern bool  g_settings_confirm;   // true while the logout confirm prompt is up
 extern bool  g_settings_help;      // Triangle: the highlighted row's description is up
@@ -635,3 +635,6 @@ void xmb_draw_settings(void);       // RSX phase: account info + entries
 bool xmb_update_popup_active(void);
 void xmb_update_popup_input(void);  // owns the frame's input; X dismisses
 void xmb_update_popup_draw(void);   // dim + panel; call last, before flip()
+// Settings > Software Update: show the popup again (after a dismissal, or
+// when a re-run check finds a release).
+void xmb_update_popup_reopen(void);

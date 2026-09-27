@@ -44,6 +44,7 @@ static bool             s_started = false;
 // so readers polling update_check_result() only ever see a complete result.
 static volatile bool s_done  = false;
 static bool          s_newer = false;
+static bool          s_ok    = false;   // a release tag was read, newer or not
 static char          s_latest[64];
 
 // The tag_name field sits near the front of the response; 16K is plenty even
@@ -287,6 +288,7 @@ static void do_check(void) {
             ulog("FAIL no tag_name in response");
             goto cleanup;
         }
+        s_ok = true;
         int cmp = ver_cmp(tag, APP_VERSION);
         ulog("tag=%s app=%s cmp=%d -> %s", tag, APP_VERSION, cmp,
              cmp > 0 ? "UPDATE AVAILABLE" : "up to date");
@@ -353,4 +355,23 @@ bool update_check_result(char *out, int out_size) {
 
 bool update_check_done(void) {
     return s_done;
+}
+
+int update_check_state(void) {
+    if (!s_started && !s_done) return UPD_IDLE;
+    if (!s_done)  return UPD_CHECKING;
+    if (s_newer)  return UPD_AVAILABLE;
+    return s_ok ? UPD_CURRENT : UPD_FAILED;
+}
+
+bool update_check_again(void) {
+    if (s_started && !s_done) return false;   // one at a time
+    update_check_shutdown();                  // reap the finished worker
+    s_done  = false;
+    s_newer = false;
+    s_ok    = false;
+    s_log_started = false;                    // a fresh trace file
+    __sync_synchronize();
+    update_check_start();
+    return s_started;
 }

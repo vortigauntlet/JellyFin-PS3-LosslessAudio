@@ -454,6 +454,49 @@ static bool row_on_screen(int r, int *out_vy, int *out_card_y) {
     return !(card_y + ch < view_top() || vy > view_bot());
 }
 
+// Thumbnail requests, most wanted first.  The cache has 32 slots and a claim
+// may evict anything not yet asked for THIS frame, so when Home wants more
+// than fit, request order is priority.  It used to be top row to bottom, and
+// ensure_row_visible() leaves the focused row at the BOTTOM of the view after
+// a step down: the row being looked at starved, some of its posters never
+// loading until the row above scrolled away (tester, 2026-09-27).  Now: the
+// focused row, the other rows on screen nearest first, then the focused row's
+// preload past its edges.  Once per frame, before the first draw touches.
+static unsigned s_req_frame = ~0u;
+
+static void home_request_cols(const HomeRow *row, int c0, int c1) {
+    const int cw = row_card_w(row->kind), ch = row_card_h(row->kind);
+    for (int c = c0 < 0 ? 0 : c0; c < c1 && c < row->count; c++) {
+        const ThumbImg img = (row->kind == HROW_LANDSCAPE && row->items[c].has_thumb)
+                           ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
+        thumb_request(row->items[c].id, cw, ch, img);
+    }
+}
+
+static void home_request_thumbs(void) {
+    const unsigned id = spine_frame_id();
+    if (id == s_req_frame) return;
+    s_req_frame = id;
+    for (int d = 0; d < HOME_ROWS_N; d++) {
+        for (int s = -1; s <= 1; s += 2) {
+            if (d == 0 && s > 0) continue;
+            const int r = s_focus_row + s * d;
+            if (r < 0 || r >= HOME_ROWS_N) continue;
+            const HomeRow *row = &s_rows[r];
+            if (row->kind == HROW_STUB || row->count <= 0) continue;
+            if (!row_on_screen(r, NULL, NULL)) continue;
+            int c0, c1;
+            home_cols(home_hs(r), row_visible_cols(row->kind), row->count, &c0, &c1);
+            home_request_cols(row, c0, c1);
+        }
+    }
+    const HomeRow *row = &s_rows[s_focus_row];
+    if (row->kind != HROW_STUB && row->count > 0) {
+        const int vis = row_visible_cols(row->kind);
+        home_request_cols(row, row->scroll - 1, row->scroll + vis + 3);
+    }
+}
+
 // GPU phase (BEFORE rsxSync): card images only, from their VRAM mirrors.
 // Mirrors xmb_home_cpu_phase's walk exactly -- same rows, same visibility
 // test, same ThumbImg choice -- so a card either gets drawn here and skipped
@@ -463,6 +506,7 @@ void xmb_home_gpu_phase(void) {
     if (!ui_card_gpu_ready()) return;
     home_init_once();
     home_motion_tick();
+    home_request_thumbs();
 
     ui_card_gpu_clip(view_top(), view_bot());
 
@@ -498,6 +542,7 @@ void xmb_home_cpu_phase(void) {
     home_init_once();
     home_step_load();
     home_motion_tick();
+    home_request_thumbs();   // no-op if the GPU phase already did
 
     // Rows scroll smoothly by pixels, so a row leaving the top/bottom is drawn
     // partly outside the content band.  Scissor cards (and their text below) to
@@ -542,22 +587,6 @@ void xmb_home_cpu_phase(void) {
     }
 
     g_cpu_clip_top = 0; g_cpu_clip_bot = 0;
-
-    // Preload: the focused row's next cards past the right edge (and one past
-    // the left), queued after everything visible so they never delay it.
-    {
-        const HomeRow *row = &s_rows[s_focus_row];
-        if (row->kind != HROW_STUB && row->count > 0) {
-            const int cw = row_card_w(row->kind), ch = row_card_h(row->kind);
-            const int vis = row_visible_cols(row->kind);
-            const int a = row->scroll - 1, b = row->scroll + vis + 3;
-            for (int c = a < 0 ? 0 : a; c < b && c < row->count; c++) {
-                ThumbImg img = (row->kind == HROW_LANDSCAPE && row->items[c].has_thumb)
-                             ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
-                thumb_request(row->items[c].id, cw, ch, img);
-            }
-        }
-    }
 }
 
 void xmb_home_text_phase(void) {

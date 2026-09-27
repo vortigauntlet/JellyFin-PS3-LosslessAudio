@@ -277,12 +277,16 @@ void xmb_home_stage_cpu(void) {
 
     // Requests: the focused row from one behind to two past what is drawn,
     // and the neighbouring rows' first few, so Up/Down lands on posters.
-    for (int r = 0; r < HOME_ROWS_N; r++) {
+    // Focused row first: request order is the cache's priority (see
+    // home_request_thumbs in ui_home.cpp).
+    static const int k_order[3] = { 0, -1, +1 };
+    for (int oi = 0; oi < 3; oi++) {
+        const int r = s_focus_row + k_order[oi];
+        if (r < 0 || r >= HOME_ROWS_N) continue;
         const HomeRow *row = &s_rows[r];
         if (row->count <= 0) continue;
         const int col = s_row_col[r];
         const bool focus = r == s_focus_row;
-        if (!focus && (r < s_focus_row - 1 || r > s_focus_row + 1)) continue;
         QCtx ctx = { r, 0.0f, &q, depth_xf() };
         DepthStage st = q_stage(&ctx, 1.0f);
         st.i0 = col - 1;

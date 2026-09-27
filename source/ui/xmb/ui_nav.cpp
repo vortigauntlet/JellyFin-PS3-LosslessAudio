@@ -24,6 +24,7 @@
 #include "subfont.h"
 #include "subcolor.h"
 #include "statsovl.h"
+#include "update_check.h"
 
 // -------------------------------------------------------
 // Tab switching
@@ -270,8 +271,12 @@ static bool xmb_input_settings(void) {
             autoskip_set_enabled(!autoskip_enabled());
         if (g_settings_sel == 13)                                       // 24Hz Output
             d24_set_enabled(!d24_enabled());
+        if (g_settings_sel == 14) {                                     // Software Update
+            if (update_check_state() == UPD_AVAILABLE) xmb_update_popup_reopen();
+            else                                       update_check_again();
+        }
 #if ENABLE_PLAYER_STATS
-        if (g_settings_sel == 14)                                       // Player Stats Overlay
+        if (g_settings_sel == 15)                                       // Player Stats Overlay
             statsovl_set_enabled(!statsovl_enabled());
 #endif
     }

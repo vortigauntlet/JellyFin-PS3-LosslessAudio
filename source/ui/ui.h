@@ -71,6 +71,10 @@ void input_init(void);
 // calls update_buttons() exactly once. Returns true if any pad was active.
 bool poll_buttons(void);
 
+// Menus: the remote's |<< >>| and << >> keys also press L1 / R1 (tab
+// switching).  Call right after poll_buttons().
+void input_media_keys_as_shoulders(void);
+
 // Seed btn_prev = btn_cur from the live pad so held buttons
 // from a previous screen don't fire as new presses.
 void init_btns(void);

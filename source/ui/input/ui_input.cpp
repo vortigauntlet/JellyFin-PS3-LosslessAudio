@@ -130,7 +130,21 @@ static void bd_key(ButtonState *b, u16 code) {
     case 0x64: b->audio    = 1; break;
     case 0x28:                              // TIME
     case 0x70: b->info     = 1; break;      // DISPLAY
-    default: break;                         // digits, colour keys, eject...
+    default: {                              // digits, colour keys, eject...
+        // Logged (first few) so a remote whose keys arrive as codes this
+        // table does not know can be mapped from its player_log.txt.
+        static int s_unknown_logged = 0;
+        static u16 s_last_unknown = 0xffff;
+        if (code != s_last_unknown && s_unknown_logged < 16) {
+            char line[64];
+            snprintf(line, sizeof line, "input: bd remote key 0x%02x (unmapped)",
+                     (unsigned)code);
+            plog(line);
+            s_unknown_logged++;
+        }
+        s_last_unknown = code;
+        break;
+    }
     }
 }
 
@@ -217,6 +231,16 @@ static void poll_keyboards(ButtonState *b, bool *any) {
 
 void input_init(void) {
     ioKbInit(KB_PORTS);
+}
+
+// Menus only (the XMB loop calls it after poll_buttons): the remote's skip and
+// scan keys switch tabs as L1 / R1 do.  A Bluetooth remote with no shoulder
+// buttons was otherwise stuck on Home (tester, 2026-09-27).  Not in
+// poll_buttons() itself: the player and the music screen give these keys
+// their own meaning, and the music screen already treats R1 as NEXT.
+void input_media_keys_as_shoulders(void) {
+    btn_cur.l1 |= btn_cur.prev | btn_cur.rew;
+    btn_cur.r1 |= btn_cur.next | btn_cur.ffwd;
 }
 
 // JellyDrop was L1+R1 here (a chord that held every lone shoulder back

@@ -169,6 +169,19 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
         return HUD_ACTION_NONE;
     }
 
+    // O stops playback, bar up or not, as START does: O backs out of
+    // everything on the XMB and people reach for it (tester, 2026-09-27).
+    // A popup menu or the volume slider, above, takes O as "close" first.
+    if (BTN_PRESSED(circle)) return HUD_ACTION_STOP;
+
+    // Square with the bar already up puts it away without waiting for the
+    // timeout; the press that brings it up only does that.
+    if (BTN_PRESSED(square) && !was_hidden) {
+        g_hud.visible = false;
+        g_hud.focus   = -1;
+        return HUD_ACTION_NONE;
+    }
+
     // D-pad left/right move the focus cursor across the control row, in screen
     // order: REW · PLAY/PAUSE · FF · AUDIO · VOLUME · CC.  This is how you reach
     // the AUDIO, VOLUME and CC controls.  R2/L2 (handled in the main loop) scrub.
@@ -193,19 +206,12 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
         }
     }
 
-    // The redesigned HUD (design-import-v3 "07 · Player HUD") names four
-    // buttons in its hint cluster: X Pause, Triangle Tracks, O Stop, Square
-    // Stats.  X keeps doing what it always did (the focused control, which is
-    // play/pause by default); the other three had no meaning during playback
-    // and gain the canvas's.  Only with the spine gate on, so the old HUD's
-    // input is unchanged, and never on the press that revealed the bar -- a
-    // stray O must not end the film.
+    // The redesigned HUD (design-import-v3 "07 · Player HUD") names Triangle
+    // Tracks in its hint cluster.  Only with the spine gate on, and not on the
+    // press that revealed the bar.  (O and Square are handled above for both
+    // HUDs; the stats overlay is on DISPLAY and in Settings.)
     if (g_spine_on && !was_hidden) {
         if (BTN_PRESSED(triangle)) return HUD_ACTION_AUDIO_TRACK;
-        if (BTN_PRESSED(circle))   return HUD_ACTION_STOP;
-#if ENABLE_PLAYER_STATS
-        if (BTN_PRESSED(square)) { statsovl_set_enabled(!statsovl_enabled()); return HUD_ACTION_NONE; }
-#endif
     }
 
     // X (cross) activates the focused control.
