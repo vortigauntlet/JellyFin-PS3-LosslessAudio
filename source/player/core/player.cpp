@@ -280,6 +280,18 @@ void player_spinner_gpu(float t)
 // and no way out -- force-quit).  The last picture stays up with the spinner
 // and a count; Circle gives up (playback ends, back to the menu).
 static bool s_seekwait_flip = false;
+
+// Settle the flip bookkeeping after drawing outside the main loop: every
+// queued flip has landed once the GPU reaches a label behind it, so the flip
+// status can be cleared with nothing pending.  The caller's next flip is
+// then the one its next wait sees.
+static void player_flip_resync(void)
+{
+    rsxSync();
+    gcmResetFlipStatus();
+    s_seekwait_flip = false;
+}
+
 bool player_seek_wait(unsigned elapsed_ms)
 {
     poll_buttons();
@@ -937,7 +949,10 @@ void show_player(const JFItem *item, u32 resume_secs,
     }
 
     // ---- Spawn progress reporter — keeps server resume position current ----
-    jellyfin_report_playing(item->id, ps.session_id, ps.play_base_us * 10ULL);
+    // It sends the /Sessions/Playing start report itself.  Sent from here it
+    // blocked the display loop while the audio thread, already spawned, was
+    // playing: a 6 s timeout put the first picture 4.9 s behind the sound
+    // (hardware, 2026-09-27).
     sys_ppu_thread_t prog_tid = 0;
     if (ps.playing) {
         int trc = sysThreadCreate(&prog_tid, progress_thread_fn,
@@ -949,6 +964,8 @@ void show_player(const JFItem *item, u32 resume_secs,
             prog_tid = 0;
         }
     }
+    if (!prog_tid)
+        jellyfin_report_playing(item->id, ps.session_id, ps.play_base_us * 10ULL);
 
     crash_log("p9 threads started");
     lc_logf("playback: START aud=%d upl=%d prog=%d playing=%d",
@@ -1120,6 +1137,11 @@ void show_player(const JFItem *item, u32 resume_secs,
                            audio_get_clock_us()) / 1000000ULL));
         } else if (act == HUD_ACTION_SEEK) {
             if (!player_execute_seek(&ps)) break;
+            // The reopen's spinner frames flipped mid-iteration, so the one
+            // this loop's wait tracks is not the last one queued.  Drain the
+            // GPU (its label sits behind every queued flip's wait) and start
+            // the count clean, or the loop runs a frame ahead for good.
+            player_flip_resync();
         }
 
         // Paused-idle gate.  While paused the seek bar stays up and every

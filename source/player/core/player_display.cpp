@@ -181,10 +181,13 @@ void player_display_frame(PlayerState *ps) {
             }
         } else {
             s_holding = false;
-            if (raw < -150000 && raw > -3000000 && jbuf_count() > 1) {
+            if (raw < -150000 && raw > -10000000 && jbuf_count() > 1) {
                 // Far behind -- a stall starved the picture while the sound
                 // played on.  Drop every frame already late, at once: one
-                // jump instead of seconds of frame-skipping judder.
+                // jump instead of seconds of frame-skipping judder.  Runs
+                // every vblank until caught up.  Was capped at 3 s: a start
+                // 4.9 s behind fell through to one skip per 2 s and stayed
+                // 3+ s out of lip sync for the whole film (2026-09-27).
                 int dropped = 0;
                 while (jbuf_count() > 1) {
                     const s64 d = avsync_compute_diff(jbuf_peek_pts_us(), ps->play_base_us);
@@ -269,6 +272,17 @@ one_to_one_done: ;
         }
     }
 
+    // Clearing s_vid_frame_ready hands the texture shown until now to the
+    // upload thread, which starts overwriting it at once, so the GPU must be
+    // done reading it first.  A flip queued inside a seek (the reopen's
+    // spinner) left the flip wait one frame behind for the rest of the
+    // session: the CPU ran a frame ahead, the upload landed while the
+    // previous draw was still sampling, and frames came out as two pictures
+    // torn together -- the zig-zag on motion after a seek at 24p (2026-09-27).
+    if (do_pop || (silent_flip && s_vid_frame_ready) ||
+        (ps->show_seek_frame && ps->paused && s_vid_frame_ready))
+        rsxSync();
+
     if (do_pop) {
         u32 disp_seq = jbuf_peek_seq();
         ps->frame_count++;
@@ -342,7 +356,6 @@ one_to_one_done: ;
 
     // Re-draw every vblank. s_vid_disp_idx advances on do_pop or silent_flip.
     if (ps->frame_count > 0) {
-        if (do_pop) rsxSync();
         u32 fw = jbuf_fw(), fh = jbuf_fh();
         vid_gpu_draw(render_blend, blend_factor, fw, fh);
     }

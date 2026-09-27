@@ -422,6 +422,9 @@ void audio_thread_fn(void *arg) {
 void progress_thread_fn(void *arg) {
     PlayerState *ps = (PlayerState*)arg;
 
+    // The start report, off the display thread (see show_player).
+    jellyfin_report_playing(ps->item->id, ps->session_id, ps->play_base_us * 10ULL);
+
     int tick = 0;
     u32 wd_iter = g_dec_iter;
     int wd_still = 0;
