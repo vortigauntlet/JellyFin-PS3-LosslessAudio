@@ -457,13 +457,19 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             const int n = frow == 0 ? n0 : n1;
             const bool can_season = strcmp(it->type, "Episode") == 0 &&
                                     detail.series_id[0] && detail.season_id[0];
+            // BTN_REPEAT is stateful (the first call per press consumes it),
+            // so read each direction ONCE.  Reading Left twice -- here for
+            // Back to Season, then for the move -- lost every Left press
+            // once the focus left the first button (2026-09-27).
+            const bool nav_l = BTN_REPEAT(left);
+            const bool nav_r = BTN_REPEAT(right);
             if (frow == 2) {
-                if (BTN_PRESSED(right)) { frow = 0; fcol = 0; }
-            } else if (BTN_REPEAT(left) && fcol == 0 && frow == 0 && can_season) {
+                if (nav_r) { frow = 0; fcol = 0; }
+            } else if (nav_l && fcol == 0 && frow == 0 && can_season) {
                 frow = 2;
             } else {
-            if (BTN_REPEAT(left)  && fcol > 0)     fcol--;
-            if (BTN_REPEAT(right) && fcol < n - 1) fcol++;
+            if (nav_l && fcol > 0)     fcol--;
+            if (nav_r && fcol < n - 1) fcol++;
             }
             if (frow == 2 && BTN_PRESSED(cross)) {
                 // Leave for the episode's season: TV tab -> the series ->
