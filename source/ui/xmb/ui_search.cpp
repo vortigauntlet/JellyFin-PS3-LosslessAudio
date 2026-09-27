@@ -447,10 +447,15 @@ bool xmb_handle_input_search(void) {
                 }
                 return false;
             }
-            if (strcmp(it->type, "Episode") == 0)
-                xmb_play_episode_with_next(it, 0);
-            else
+            // Films and episodes open their details page, as X does in the
+            // library grids (Version, Quality, Resume live there).  Songs
+            // still play at once.
+            if (strcmp(it->type, "Audio") == 0) {
                 xmb_play_item(it, 0);
+            } else if (timing_get_us() >= g_info_cooldown_until) {
+                xmb_show_item_info(it);
+                init_btns();
+            }
             return false;
         }
     }
