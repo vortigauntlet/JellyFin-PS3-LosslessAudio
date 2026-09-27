@@ -236,8 +236,7 @@ Notes and limitations:
 
 **[⬇ JellyFin-PS3.pkg — latest release](https://github.com/vortigauntlet/JellyFin-PS3-LosslessAudio/releases/latest)**
 
-Direct link to the current build: [`JellyFin-PS3.pkg`](https://github.com/vortigauntlet/JellyFin-PS3-LosslessAudio/releases/latest/download/JellyFin-PS3.pkg).  
-The same file is mirrored in [`release/`](release/) in the repo.
+Direct link to the current build: [`JellyFin-PS3.pkg`](release/JellyFin-PS3.pkg?raw=1), the same file as the release, kept in [`release/`](release/).
 
 Then either:
 

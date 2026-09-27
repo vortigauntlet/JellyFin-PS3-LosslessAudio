@@ -29,13 +29,10 @@
 #include "timing.h"
 #include "plog.h"
 
-// Point straight at the current repo.  The old "Tuggs-Bunny" name only resolved
-// via GitHub's rename 301 -> /repositories/<id>/... redirect; RPCS3 follows that
-// transparently but the console's firmware HTTP client is far less reliable at
-// re-driving a redirected HTTPS request, so on real hardware the check could die
-// on the hop and the update popup never appeared.  A direct URL is one plain
-// request — no redirect for the firmware stack to choke on.
-#define UPDATE_URL "https://api.github.com/repos/MontyMcK/JellyFin-PS3/releases/latest"
+// This fork's own releases.  Use the repo's exact current name: a renamed repo
+// answers with a 301 redirect, which the console's firmware HTTP client does
+// not reliably follow, and the update popup would silently never appear.
+#define UPDATE_URL "https://api.github.com/repos/vortigauntlet/JellyFin-PS3-LosslessAudio/releases/latest"
 #define UPDATE_TIMEOUT_US (2 * 1000 * 1000)
 
 #define UPDATE_LOG_PATH "/dev_hdd0/tmp/update_detection.txt"
