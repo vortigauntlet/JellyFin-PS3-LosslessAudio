@@ -449,17 +449,51 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         poll_buttons();
         spine_frame_begin();
 
-        const int focus = frow == 0 ? row0[fcol] : row1[fcol];
+        const int focus = frow == 0 ? row0[fcol] : (frow == 1 ? row1[fcol] : -1);
         if (!exit_armed) {
             if (!btn_cur.circle && !btn_cur.triangle && !btn_cur.cross) exit_armed = true;
         } else {
             if (BTN_PRESSED(circle)) break;
             const int n = frow == 0 ? n0 : n1;
+            const bool can_season = strcmp(it->type, "Episode") == 0 &&
+                                    detail.series_id[0] && detail.season_id[0];
+            if (frow == 2) {
+                if (BTN_PRESSED(right)) { frow = 0; fcol = 0; }
+            } else if (BTN_REPEAT(left) && fcol == 0 && frow == 0 && can_season) {
+                frow = 2;
+            } else {
             if (BTN_REPEAT(left)  && fcol > 0)     fcol--;
             if (BTN_REPEAT(right) && fcol < n - 1) fcol++;
+            }
+            if (frow == 2 && BTN_PRESSED(cross)) {
+                // Leave for the episode's season: TV tab -> the series ->
+                // that season's episodes, this episode selected.
+                XMBItem ser;
+                memset(&ser, 0, sizeof ser);
+                snprintf(ser.id, sizeof ser.id, "%s", detail.series_id);
+                snprintf(ser.name, sizeof ser.name, "%s", detail.series_name[0] ? detail.series_name : "");
+                snprintf(ser.type, sizeof ser.type, "Series");
+                if (xmb_open_series(&ser)) {
+                    for (int i = 0; i < g_tv_sub_count; i++) {
+                        if (strcmp(g_tv_sub_items[i].id, detail.season_id) != 0) continue;
+                        snprintf(g_tv_season_id, sizeof g_tv_season_id, "%s", g_tv_sub_items[i].id);
+                        snprintf(g_tv_season_name, sizeof g_tv_season_name, "%s", g_tv_sub_items[i].name);
+                        g_tv_sub_start = 0; g_tv_sub_total = 0;
+                        g_tv_sub_count = xmb_fetch_episodes(g_tv_series_id, g_tv_season_id,
+                                                            g_tv_sub_items, XMB_ITEMS_MAX,
+                                                            0, &g_tv_sub_total);
+                        g_tv_depth = 2; g_tv_sub_sel = 0; g_tv_sub_scroll = 0;
+                        for (int e = 0; e < g_tv_sub_count; e++)
+                            if (strcmp(g_tv_sub_items[e].id, it->id) == 0) { g_tv_sub_sel = e; break; }
+                        break;
+                    }
+                }
+                init_btns();
+                break;
+            }
             if (BTN_PRESSED(down) && frow == 0 && n1 > 0) { frow = 1; if (fcol >= n1) fcol = n1 - 1; }
             if (BTN_PRESSED(up)   && frow == 1)           { frow = 0; if (fcol >= n0) fcol = n0 - 1; }
-            if (BTN_PRESSED(cross)) {
+            if (frow != 2 && BTN_PRESSED(cross)) {
                 if (focus == F3_RESUME || focus == F3_PLAY || focus == F3_START) {
                     const u32 at = focus == F3_RESUME ? it->resume_secs : 0;
                     const char *source_id = versions.n_sources > 0
@@ -629,6 +663,16 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             }
         }
 
+        // "Back to Season N" under the poster (episodes).  y 523, poster width.
+        const bool season_btn = strcmp(it->type, "Episode") == 0 &&
+                                detail.series_id[0] && detail.season_id[0];
+        const int BSY = IY(523), BSH = UIS_H(34);
+        if (season_btn) {
+            wave_draw_rrect_outline_gpu(PX, BSY, PW, BSH, AR, 1, XMB_HAIRLINE, 255,
+                                        XMB_PANEL, XMB_PANEL, 110);
+            if (frow == 2) spine_focus_ring_gpu(PX, BSY, PW, BSH);
+        }
+
         // Selectors (y=634, h=34, r=4).
         const int SY = IY(634), SH = UIS_H(34);
         int sx_[2], sw_[2];
@@ -770,6 +814,17 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             }
             drawTTF((u32)lx, (u32)(AY + (AH - (int)bpx) / 2 - UIS_H(1)), lab, bpx,
                     primary ? XMB_WHITE : XMB_TEXT, primary);
+        }
+
+        if (season_btn) {
+            char sl[48];
+            if (detail.season_num == 0)      snprintf(sl, sizeof sl, "\xE2\x80\xB9  Back to Specials");
+            else if (detail.season_num > 0)  snprintf(sl, sizeof sl, "\xE2\x80\xB9  Back to Season %d", detail.season_num);
+            else                             snprintf(sl, sizeof sl, "\xE2\x80\xB9  Back to Season");
+            const float spx = UIS_TF(13.0f);
+            const int sw = ttf_text_width(sl, spx, frow == 2);
+            drawTTF((u32)(PX + (PW - sw) / 2), (u32)(BSY + (BSH - (int)spx) / 2 - UIS_H(1)), sl, spx,
+                    frow == 2 ? XMB_WHITE : XMB_TEXT, frow == 2);
         }
 
         // Director line.

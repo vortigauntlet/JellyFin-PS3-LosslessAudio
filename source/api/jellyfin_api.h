@@ -70,6 +70,11 @@ typedef struct {
     char studios[256];         // "Universal Pictures, Original Film"
     JFPerson people[JF_MAX_PEOPLE];  // top-billed cast + key crew
     int      n_people;
+    // Episodes: where they live (the details page's "Back to Season" button).
+    char     series_id[64];
+    char     series_name[128];
+    char     season_id[64];
+    int      season_num;             // ParentIndexNumber; -1 unknown, 0 = Specials
 } XMBItemDetail;
 
 bool jellyfin_fetch_item_detail(const char *item_id, XMBItemDetail *out);

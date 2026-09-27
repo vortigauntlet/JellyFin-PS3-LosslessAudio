@@ -163,21 +163,28 @@ void player_display_frame(PlayerState *ps) {
         }
     }
     if (one_to_one && !ps->paused && s_vid_frame_ready && s_timing_ready && jbuf_count() > 0) {
-        { u64 vpts = jbuf_peek_pts_us(); (void)avsync_compute_diff(vpts, ps->play_base_us); }
-        static int s_settle = 0;          // vblanks before another correction
+        // The RAW offset of the frame about to show decides the big moves;
+        // the smoothed one lags ~10 frames, and acting on it after a reopen
+        // (video ~1 s ahead of the new stream's sound) repeated a frame every
+        // third vblank for two seconds -- stutter -- and overshot (2026-09-27).
+        const s64 raw = avsync_compute_diff(jbuf_peek_pts_us(), ps->play_base_us);
+        static int  s_settle = 0;         // vblanks before another SMALL correction
+        static bool s_holding = false;
         const s64 sm = avsync_get_smoothed_diff();
         if (s_settle > 0) s_settle--;
-        if (s_settle == 0 && sm > 25000 && sm < 1500000) {
-            // Video ahead: show this picture one more vblank.  Far ahead
-            // (a reopen): again almost at once -- the smoothed offset lags.
-            s_settle = sm > 150000 ? 2 : 48;
-            char b[80]; snprintf(b, sizeof b, "1to1: repeat (video +%lld us)", (long long)sm); plog(b);
+        if (raw > 60000 && raw < 3000000 && (s_holding || raw > 150000)) {
+            // Far ahead: hold this picture, cleanly, until the sound reaches
+            // it (down to 60 ms, so it does not stop short and stutter on).
+            if (!s_holding) {
+                s_holding = true;
+                char b[80]; snprintf(b, sizeof b, "1to1: hold (video +%lld us)", (long long)raw); plog(b);
+            }
         } else {
-            if (s_settle == 0 && sm < -150000 && sm > -3000000 && jbuf_count() > 1) {
-                // Far behind -- the picture starved in a stall while the sound
-                // played on.  Drop EVERY frame that is already late, at once:
-                // one visible jump instead of seconds of frame-skipping
-                // judder (hardware, 2026-09-27: 1.3 s behind took ~4 s).
+            s_holding = false;
+            if (raw < -150000 && raw > -3000000 && jbuf_count() > 1) {
+                // Far behind -- a stall starved the picture while the sound
+                // played on.  Drop every frame already late, at once: one
+                // jump instead of seconds of frame-skipping judder.
                 int dropped = 0;
                 while (jbuf_count() > 1) {
                     const s64 d = avsync_compute_diff(jbuf_peek_pts_us(), ps->play_base_us);
@@ -186,20 +193,26 @@ void player_display_frame(PlayerState *ps) {
                     jbuf_advance();
                     dropped++;
                 }
-                s_settle = 2;
+                s_settle = 24;
                 char b[80]; snprintf(b, sizeof b, "1to1: caught up (video %lld us), dropped %d",
-                                     (long long)sm, dropped); plog(b);
-            } else if (s_settle == 0 && sm < -25000 && sm > -1500000 && jbuf_count() > 1) {
-                // Video a little behind: drop one.
+                                     (long long)raw, dropped); plog(b);
+            } else if (s_settle == 0 && sm < -25000 && raw < -25000 && jbuf_count() > 1) {
+                // A little behind: drop one.
                 jbuf_consume_dur(jbuf_peek_dur());
                 jbuf_advance();
                 s_settle = 48;
                 char b[80]; snprintf(b, sizeof b, "1to1: skip (video %lld us)", (long long)sm); plog(b);
+            } else if (s_settle == 0 && sm > 25000 && raw > 25000) {
+                // A little ahead: show this picture one more vblank.
+                s_settle = 48;
+                char b[80]; snprintf(b, sizeof b, "1to1: repeat (video +%lld us)", (long long)sm); plog(b);
+                goto one_to_one_done;
             }
             jbuf_consume_dur(jbuf_peek_dur());
             jbuf_advance();
             do_pop = true;                // render_blend stays false: pure A
         }
+one_to_one_done: ;
     } else if (!one_to_one && !ps->paused && s_vid_frame_ready && s_timing_ready && jbuf_count() > 0) {
         // Measurement only — result discarded; EMA updated for logging.
         // play_base lets avsync fold out an absolute (sub-burn) video PTS.

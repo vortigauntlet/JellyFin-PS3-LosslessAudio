@@ -304,6 +304,22 @@ static void xmb_input_tv_sub(void) {
     if (BTN_PRESSED(circle)) {
         g_tv_depth--;
         g_tv_sub_sel = 0; g_tv_sub_scroll = 0; g_tv_sub_start = 0; g_tv_sub_total = 0;
+        if (g_tv_depth == 1) {
+            // Episodes -> seasons: the grid's items ARE the episodes until
+            // the seasons are fetched back, which drew every season as an
+            // episode (2026-09-27).  Reload them, the season we came from
+            // selected.
+            g_tv_sub_count = xmb_fetch_seasons(g_tv_series_id, g_tv_sub_items,
+                                               XMB_ITEMS_MAX, 0, &g_tv_sub_total);
+            for (int i = 0; i < g_tv_sub_count; i++)
+                if (strcmp(g_tv_sub_items[i].id, g_tv_season_id) == 0) {
+                    g_tv_sub_sel = i;
+                    g_tv_sub_scroll = (i / C) * C;
+                    if (g_tv_sub_scroll > 0 && g_tv_sub_scroll + VIS > g_tv_sub_count + C - 1)
+                        g_tv_sub_scroll = g_tv_sub_scroll;   // (kept on the row)
+                    break;
+                }
+        }
         return;
     }
     if (BTN_REPEAT(up)) {

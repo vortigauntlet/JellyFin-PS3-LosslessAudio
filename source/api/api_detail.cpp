@@ -368,6 +368,10 @@ bool jellyfin_fetch_item_detail(const char *item_id, XMBItemDetail *out) {
     json_array_strings_join(resp,   "Genres",   out->genres,  sizeof(out->genres));
     json_array_obj_names_join(resp, "Studios",  out->studios, sizeof(out->studios));
     parse_people(resp, out->people, JF_MAX_PEOPLE, &out->n_people);
+    json_get_string(resp, "SeriesId",   out->series_id,   sizeof(out->series_id));
+    json_get_string(resp, "SeriesName", out->series_name, sizeof(out->series_name));
+    json_get_string(resp, "SeasonId",   out->season_id,   sizeof(out->season_id));
+    out->season_num = json_get_int_in_range(resp, (int)strlen(resp), "ParentIndexNumber", -1);
 
     parse_media_streams(resp, out->video_info, sizeof(out->video_info),
                               out->audio_info, sizeof(out->audio_info));

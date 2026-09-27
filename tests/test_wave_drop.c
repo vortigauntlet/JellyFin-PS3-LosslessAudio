@@ -101,7 +101,7 @@ int main(void)
     }
 
     // 6. ten minutes of a heavy beat and then silence: every spring settles,
-    //    the wander stays in its box, nothing goes non-finite
+    //    it stays on screen, bouncing off the edges, nothing goes non-finite
     {
         jd_in in;
         float max_wx = 0, max_wy = 0;
@@ -122,7 +122,11 @@ int main(void)
             if (fabsf(mo.wy) > max_wy) max_wy = fabsf(mo.wy);
         }
         printf("wander max |x| %.0f px  |y| %.0f px (1280x720 stage)\n", max_wx, max_wy);
-        CHECK(max_wx < 420.0f && max_wy < 170.0f);
+        // 2026-09-27: it roams the WHOLE screen and bounces off its edges --
+        // never past them (the bell's half extent inside 640 x 360), and it
+        // really does travel out to them.
+        CHECK(max_wx <= 522.5f && max_wy <= 252.5f);
+        CHECK(max_wx > 400.0f && max_wy > 150.0f);
         CHECK(mo.swell == mo.swell && mo.bounce == mo.bounce && mo.jig == mo.jig);
         CHECK(fabsf(mo.bounce) < 0.05f && fabsf(mo.jig) < 0.05f && fabsf(mo.drop) < 0.05f);
         jd_place(&mo, 1.0f, 16.0f / 9.0f, 0.0f, 0.02f, 0.40f, &P);

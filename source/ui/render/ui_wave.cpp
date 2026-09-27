@@ -197,6 +197,7 @@ static bool      s_jd_init   = false;
 static float     s_jd_morph  = 0.0f;   // 0 wave .. 1 bell, linear in time
 static jd_motion s_jd_mo;
 static jd_motes  s_jd_motes;
+static jd_rays   s_jd_rays;       // the radiating field
 static jd_pose   s_jd_pose;            // this frame's, zero = JellyWave
 static u64       s_jd_us     = 0;
 static u32       s_jd_toggles = 0;
@@ -299,6 +300,7 @@ static void jd_frame(float aspect)
     if (!s_jd_init) {
         jd_motion_init(&s_jd_mo);
         jd_motes_init(&s_jd_motes, 0x4A44524Fu);
+        jd_rays_init(&s_jd_rays, 0x52415953u);
         jd_load();
         s_jd_morph = s_jd_want ? 1.0f : 0.0f;       // a relaunch lands where it was left
         memset(&s_jd_pose, 0, sizeof s_jd_pose);
@@ -362,18 +364,29 @@ static void jd_frame(float aspect)
         static float lp[8];
         static bool  lp_init = false;
         float *v[8] = { &in.sub, &in.bass, &in.lowmid, &in.mid, &in.high, &in.air, &in.rms, &in.width };
-        const float a = dt > 0.0f ? 1.0f - __builtin_expf(-dt / 0.05f) : 1.0f;
+        // Fast attack, SLOW release: when the music stops every input fell
+        // to zero in 50 ms and the stiff springs rang -- the shake on going
+        // idle (2026-09-27).  Now it lets go over half a second.
+        const float a_up = dt > 0.0f ? 1.0f - __builtin_expf(-dt / 0.05f) : 1.0f;
+        const float a_dn = dt > 0.0f ? 1.0f - __builtin_expf(-dt / 0.55f) : 1.0f;
         for (int i = 0; i < 8; i++) {
             if (!lp_init) lp[i] = *v[i];
-            lp[i] += (*v[i] - lp[i]) * a;
+            lp[i] += (*v[i] - lp[i]) * (*v[i] > lp[i] ? a_up : a_dn);
             *v[i] = lp[i];
         }
         lp_init = true;
+        // Silence eases in over ~1 s once the music has gone: the bell
+        // settles and slows rather than stopping dead.
+        static float s_sil = 0.0f;
+        const float quiet = (in.rms < 0.015f && in.sub < 0.02f && in.mid < 0.02f) ? 1.0f : 0.0f;
+        s_sil += (quiet - s_sil) * (dt > 0.0f ? 1.0f - __builtin_expf(-dt / 0.9f) : 1.0f);
+        in.silence = s_sil;
     }
     if (gain <= 0.0f) in.silence = 0.0f;            // reactive off: it still breathes
     jd_motion_step(&s_jd_mo, &in, dt);
     jd_place(&s_jd_mo, s_jd_morph, aspect, 0.0f, JD_CENTRE_Y, JD_HEIGHT, &s_jd_pose);
     jd_motes_step(&s_jd_motes, dt, s_jd_mo.ts, s_band_lvl[1], in.onset_strength);
+    jd_rays_step(&s_jd_rays, dt, in.rms, in.onset_strength);
 }
 
 // --- a details page's poster colour ------------------------------------------
@@ -746,7 +759,7 @@ static bool s_jw_drawn    = false; // ... and whether it drew JellyWave at all
 // upload (whose rsxSync is the fence for both), drawn once after the gel with
 // an ADDITIVE blend.  A tiny particle is one flat quad; a larger one a fan,
 // bright centre to transparent rim (4 segments, 6 for the bokeh).
-#define MOTE_VERTS  ((WS_MAX + JD_MOTES) * 6 * 3)
+#define MOTE_VERTS  ((WS_MAX + JD_MOTES + JD_RAYS) * 6 * 3)
 static ws_state    s_snow;
 static ws_sprite   s_snow_spr[WS_MAX];
 static WaveVert    s_mote_stage[MOTE_VERTS] __attribute__((aligned(16)));
@@ -904,11 +917,16 @@ static u32 motes_build(float aspect)
     } else {
         for (int i = 0; i < s_snow.n; i++) s_snow_spr[i].a = 0;
     }
-    static jd_sprite s_jd_spr[JD_MOTES];
+    static jd_sprite s_jd_spr[JD_MOTES + JD_RAYS];
     for (int i = 0; i < JD_MOTES; i++) {
         s_jd_spr[i].a = 0;
         if (jd_vis > 0.0f)
             jd_motes_sprite(&s_jd_motes, i, &s_jd_pose, aspect, jd_vis, lvl[2], &s_jd_spr[i]);
+    }
+    for (int i = 0; i < JD_RAYS; i++) {
+        s_jd_spr[JD_MOTES + i].a = 0;
+        if (jd_vis > 0.0f)
+            jd_rays_sprite(&s_jd_rays, i, &s_jd_pose, aspect, jd_vis, lvl[2], &s_jd_spr[JD_MOTES + i]);
     }
 
     static const float C4[5] = { 1.0f, 0.0f, -1.0f, 0.0f, 1.0f };
@@ -958,7 +976,7 @@ static u32 motes_build(float aspect)
     }
     // JellyDrop's orbit: the far half in the behind pass, the near half in
     // front, as soft fans (a speck when small), same blend as the snow.
-    for (int i = 0; i < JD_MOTES; i++) {
+    for (int i = 0; i < JD_MOTES + JD_RAYS; i++) {
         const jd_sprite *o = &s_jd_spr[i];
         if (!o->a) continue;
         if ((o->front != 0) != (mp == 1)) continue;

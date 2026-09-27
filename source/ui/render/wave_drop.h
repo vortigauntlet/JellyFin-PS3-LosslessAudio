@@ -220,24 +220,37 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     // Wander, in 1280x720 stage px from rest.  The reach follows loudness; a
     // drop pulls it to centre and releases over seconds; a soft wall keeps it
     // inside the box.
+    // The whole screen (2026-09-27): a free body drifting at a steady speed,
+    // faster with the music, bouncing off the screen's edges -- a squash, a
+    // jiggle and a nudge of spin on every hit -- instead of wandering a
+    // small box round the middle.  Stage px: 1280 x 720, (0,0) the centre.
     en = jw_smooth(0.04f, 0.55f, F->rms * live);
     m->w_amp = jd_approach(m->w_amp, 0.18f + 0.82f * en, dt, 1.2f);
-    if (F->drop > 0.0f) m->calm = 1.0f;
-    m->calm *= jd_expn(dt / 3.2f);
-    m->wt += dtp * 0.22f * m->ts * (0.5f + 0.7f * m->w_amp);
-    if (m->wt > 1000.0f) m->wt -= 1000.0f;
-    reach = m->w_amp * (1.0f - 0.92f * m->calm);
-    tx = reach * (340.0f * wk_sinf(m->wt) + 50.0f * wk_sinf(m->wt * 2.3f + 1.0f));
-    ty = reach * (120.0f * wk_sinf(m->wt * 1.37f + 0.6f) + 24.0f * wk_sinf(m->wt * 3.1f));
-    #define JD_WALL(p, lo, hi) (((p) < (lo) ? ((lo) - (p)) : (p) > (hi) ? ((hi) - (p)) : 0.0f) * 26.0f)
-    ax = 3.2f * (tx - m->wx) - 2.3f * m->wvx + JD_WALL(m->wx, -370.0f, 370.0f)
-       + (F->drop > 0.0f ? -m->wx * 2.5f : 0.0f);
-    ay = 3.2f * (ty - m->wy) - 2.3f * m->wvy + JD_WALL(m->wy, -120.0f, 130.0f)
-       + (F->drop > 0.0f ? -m->wy * 2.5f : 0.0f);
-    #undef JD_WALL
-    m->wvx += ax * dt; m->wvy += ay * dt;
-    m->wx  += m->wvx * dt; m->wy += m->wvy * dt;
-    m->wax = jd_approach(m->wax, ax, dt, 0.25f);
+    (void)reach; (void)tx; (void)ty; (void)ax; (void)ay;
+    {
+        if (m->wvx == 0.0f && m->wvy == 0.0f) { m->wvx = 150.0f; m->wvy = 92.0f; }
+        const float want = (95.0f + 165.0f * en) * (1.0f - 0.55f * m->rest);
+        const float sp = jd_sqrt(m->wvx * m->wvx + m->wvy * m->wvy);
+        if (sp > 1.0f) {
+            float k = jd_approach(sp, want, dt, 1.5f) / sp;
+            if (F->onset > 0.0f) k *= 1.0f + 0.22f * F->onset_strength;   // a beat shoves it on
+            m->wvx *= k; m->wvy *= k;
+        }
+        m->wx += m->wvx * dt; m->wy += m->wvy * dt;
+        // The bell's half extent incl. its shells and the camera's dolly.
+        const float EX = 640.0f - 118.0f, EY = 360.0f - 108.0f;
+        float hit = 0.0f;
+        if (m->wx >  EX) { m->wx =  EX; m->wvx = -m->wvx * 0.96f; hit = 1.0f; m->wax = -160.0f; }
+        if (m->wx < -EX) { m->wx = -EX; m->wvx = -m->wvx * 0.96f; hit = 1.0f; m->wax =  160.0f; }
+        if (m->wy >  EY) { m->wy =  EY; m->wvy = -m->wvy * 0.96f; hit = 1.0f; }
+        if (m->wy < -EY) { m->wy = -EY; m->wvy = -m->wvy * 0.96f; hit = 1.0f; }
+        if (hit > 0.0f) {
+            m->sq_v  += 0.9f;                      // squash against the wall
+            m->jig_v += 0.5f;
+            m->yaw_v += (m->wvx > 0.0f ? 0.08f : -0.08f);
+        }
+        m->wax = jd_approach(m->wax, 0.0f, dt, 0.25f);
+    }
 
     if (F->onset > 0.0f) m->spin_w += 0.25f * F->onset_strength;
     m->spin_w = jd_approach(m->spin_w, 0.6f * m->ts, dt, 1.6f);
@@ -259,7 +272,7 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     // Paused / silent: sink slowly, dim the core, keep breathing; resume rises
     // with a wobble.
     m->rest = jd_approach(m->rest, F->silence, dt, F->silence > m->rest ? 2.2f : 0.8f);
-    if (m->last_sil > 0.5f && F->silence < 0.5f) { m->bounce_v += 0.9f; m->jig_v += 1.3f; }
+    if (m->last_sil > 0.5f && F->silence < 0.5f) { m->bounce_v += 0.35f; m->jig_v += 0.4f; }
     m->last_sil = F->silence;
     m->glow   = jd_approach(m->glow, 0.62f - 0.32f * m->rest + 0.5f * F->rms * live + 0.35f * m->kick, dt, 0.18f);
     m->bright = jd_approach(m->bright, 0.9f + 0.12f * F->rms * live, dt, 0.5f);
@@ -338,8 +351,8 @@ static inline void jd_place(const jd_motion *m, float morph, float aspect,
 
     // Local frame: the camera's (right, up, toward the camera), then the
     // design's Euler 'ZXY' -- R = Rbase * Rz * Rx * Ry.
-    bank = jd_clamp(m->wvx * 0.0032f, -0.3f, 0.3f);
-    dive = jd_clamp(m->wvy * 0.003f, -0.22f, 0.22f);
+    bank = jd_clamp(m->wvx * 0.0011f, -0.25f, 0.25f);
+    dive = jd_clamp(m->wvy * 0.0010f, -0.18f, 0.18f);
     ex = 0.08f + m->tilt + 0.08f * wk_sinf(t * 0.41f * m->ts) + dive;
     ey = m->turn + 0.18f * wk_sinf(m->orbit) + m->yaw      // spins all the way round
        + 0.50f * wk_sinf(m->cam_t * 0.061f + 0.7f);        // the camera swings round it
@@ -810,6 +823,89 @@ static inline void jd_motes_sprite(const jd_motes *m, int i, const jd_pose *P, f
     }
     b = jd_clamp(k * 235.0f, 0.0f, 255.0f);
     o->a = (unsigned char)b;
+}
+
+// --- the radiating field (2026-09-27) ------------------------------------------
+// The JellyWave particle field, in JellyDrop: specks thrown out of the bell
+// in every direction, across the whole screen, faster with the music and in a
+// burst on each kick, reborn at the bell when they leave the screen.  Screen
+// space around the bell's projected centre; half pass behind the gel.
+#define JD_RAYS 180
+
+typedef struct {
+    float    a[JD_RAYS], r[JD_RAYS], v[JD_RAYS], size[JD_RAYS], hue[JD_RAYS], ph[JD_RAYS];
+    unsigned char front[JD_RAYS];
+    uint32_t rng;
+} jd_rays;
+
+static inline void jd_rays_seed(jd_rays *m, int i, int born)
+{
+    m->a[i]    = jd_rand(&m->rng) * WK_TWO_PI;
+    m->r[i]    = born ? 0.03f + 0.06f * jd_rand(&m->rng) : 1.9f * jd_rand(&m->rng);
+    m->v[i]    = 0.07f + 0.22f * jd_rand(&m->rng);
+    m->size[i] = 0.6f + 1.8f * jd_rand(&m->rng) * jd_rand(&m->rng);
+    m->hue[i]  = jd_rand(&m->rng);
+    m->ph[i]   = jd_rand(&m->rng) * WK_TWO_PI;
+    m->front[i] = jd_rand(&m->rng) < 0.5f;
+}
+
+static inline void jd_rays_init(jd_rays *m, uint32_t seed)
+{
+    int i;
+    if (!m) return;
+    memset(m, 0, sizeof *m);
+    m->rng = seed ? seed : 0x5241u;
+    for (i = 0; i < JD_RAYS; i++) jd_rays_seed(m, i, 0);
+}
+
+// energy 0..1, kick 0..1 on a hit frame.
+static inline void jd_rays_step(jd_rays *m, float dt, float energy, float kick)
+{
+    int i;
+    if (!m || !(dt > 0.0f)) return;
+    if (dt > 0.1f) dt = 0.1f;
+    const float go = 0.55f + 1.5f * jd_clamp(energy, 0.0f, 1.0f);
+    for (i = 0; i < JD_RAYS; i++) {
+        m->r[i] += m->v[i] * dt * go * (1.0f + 0.9f * m->r[i]) + kick * 0.05f * m->v[i] * 6.0f;
+        m->ph[i] += dt * 1.3f;
+        if (m->ph[i] > WK_TWO_PI) m->ph[i] -= WK_TWO_PI;
+        if (m->r[i] > 1.9f) jd_rays_seed(m, i, 1);
+    }
+}
+
+static inline void jd_rays_sprite(const jd_rays *m, int i, const jd_pose *P, float aspect,
+                                  float vis, float twinkle, jd_sprite *o)
+{
+    jw_proj pc;
+    float r, k, h;
+    if (!o) return;
+    o->a = 0;
+    if (!m || !P || i < 0 || i >= JD_RAYS || !(vis > 0.004f)) return;
+    pc = jw_project(P->P, aspect);
+    if (!pc.ok) return;
+    r = m->r[i];
+    o->x = pc.x + jw_cosf(m->a[i]) * r / aspect;
+    o->y = pc.y + wk_sinf(m->a[i]) * r;
+    if (o->x < -1.1f || o->x > 1.1f || o->y < -1.1f || o->y > 1.1f) return;
+    o->front = m->front[i];
+    o->r_px = m->size[i] * (1.0f + 2.4f * r);          // nearer as it flies out
+    k = jd_clamp(r / 0.14f, 0.0f, 1.0f) * (1.0f - jd_clamp((r - 1.2f) / 0.7f, 0.0f, 1.0f)) * vis;
+    k *= 0.8f + 0.2f * wk_sinf(m->ph[i] * 3.0f) * (0.5f + twinkle);
+    if (!o->front) k *= 0.6f;
+    h = m->hue[i];
+    {
+        float r_, g_, b_;
+        if (h < 0.5f) {
+            const float u = h * 2.0f;
+            r_ = jw_lerp(JW_PURPLE_R, JW_BLUE_R, u); g_ = jw_lerp(JW_PURPLE_G, JW_BLUE_G, u); b_ = jw_lerp(JW_PURPLE_B, JW_BLUE_B, u);
+        } else {
+            const float u = (h - 0.5f) * 2.0f;
+            r_ = jw_lerp(JW_BLUE_R, JW_RIMC_R, u); g_ = jw_lerp(JW_BLUE_G, JW_RIMC_G, u); b_ = jw_lerp(JW_BLUE_B, JW_RIMC_B, u);
+        }
+        r_ = r_ * 0.7f + 0.3f; g_ = g_ * 0.7f + 0.3f; b_ = b_ * 0.7f + 0.3f;
+        o->r = jw_u8(r_); o->g = jw_u8(g_); o->b = jw_u8(b_);
+    }
+    o->a = (unsigned char)jd_clamp(k * 225.0f, 0.0f, 255.0f);
 }
 
 #endif // WAVE_DROP_H
