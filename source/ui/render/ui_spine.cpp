@@ -69,21 +69,24 @@ static unsigned long long s_last_us = 0;
 static bool           s_cat_fresh = true;  // snap the row on the first frame
 
 void spine_load(void) {
-    int v = 0;
+    // ON unless the file says 0.  It used to be off unless the file said 1,
+    // and nothing ever writes the file: v3.0 installed fresh ran the old tab
+    // strip, with no d-pad route to the categories (tester, 2026-09-27).
+    int v = 1;
     FILE *f = fopen(jf_data_path(SPINE_FILE), "r");
     if (f) {
-        if (fscanf(f, "%d", &v) != 1) v = 0;
+        if (fscanf(f, "%d", &v) != 1) v = 1;
         fclose(f);
     }
-    g_spine_on = (v == 1);
+    g_spine_on = (v != 0);
     s_level    = SPINE_L1;
     spine_approach_init(&s_dep, (float)SPINE_L1, SPINE_LEVEL_MS);
     spine_approach_init(&s_cat, 0.0f, SPINE_CATEGORY_MS);
     s_cat_fresh = true;
     s_last_us   = 0;
     depth_focus_init(&s_focus_mem);
-    plog(g_spine_on ? "spine: ON (jellyfin_spine.txt = 1) -- base layer + tabs, approach motion"
-                    : "spine: off -- tab strip");
+    plog(g_spine_on ? "spine: ON (default; jellyfin_spine.txt = 0 turns it off)"
+                    : "spine: off (jellyfin_spine.txt = 0) -- tab strip");
     crash_log(g_spine_on ? "spine on" : "spine off");
 }
 

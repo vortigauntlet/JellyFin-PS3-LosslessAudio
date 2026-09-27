@@ -1,5 +1,5 @@
 // The spine, drawn and driven.  Geometry lives in spine.h; this is the
-// XMB-side glue.  Everything here is inert unless jellyfin_spine.txt says 1.
+// XMB-side glue.  On by default; jellyfin_spine.txt = 0 makes all of it inert.
 //
 // Two levels today (SPINE-PLAN.md S1 + the base layer of S4):
 //
