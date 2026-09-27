@@ -9,7 +9,6 @@
 
 #include "rsxutil.h"
 #include "plog.h"
-#include "shot.h"
 
 extern void crash_log(const char *msg);
 
@@ -216,13 +215,6 @@ void rsxSync(void)
 void flip()
 {
 	if(first_fb) gcmResetFlipStatus();
-
-	// A requested screenshot (util/shot.h): let the GPU finish this frame,
-	// then read it back before it is shown.
-	if (shot_due()) {
-		rsxSync();
-		shot_write(color_buffer[curr_fb], (int)display_width, (int)display_height);
-	}
 
 	gcmSetFlip(context,curr_fb);
 	rsxFlushBuffer(context);

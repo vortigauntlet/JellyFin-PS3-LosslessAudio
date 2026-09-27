@@ -35,7 +35,6 @@ static void nav_step_to_wave(int slot) {
     else if (slot == NAV_right) wave_nav_event( 1, 0);
 }
 #include "plog.h"
-#include "shot.h"
 
 ButtonState btn_cur  = {0};
 ButtonState btn_prev = {0};
@@ -286,12 +285,6 @@ bool poll_buttons(void) {
             const padData *cur = &s_last[i];
             if (cur->len <= 0) continue;
             or_pad(&merged, cur);
-            // R3: screenshot of the next frame (util/shot.h).
-            {
-                static u8 s_r3[MAX_PORT_NUM];
-                if (cur->BTN_R3 && !s_r3[i]) shot_request();
-                s_r3[i] = cur->BTN_R3;
-            }
             // Sticks are words 4..7; a pad that sends fewer has none.
             if (cur->len >= 8) {
                 s_stick[i] = (u8)stick_dir(s_stick[i], (int)cur->ANA_L_H - 128,
