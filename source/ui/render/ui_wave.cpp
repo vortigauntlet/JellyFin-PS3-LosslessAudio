@@ -538,6 +538,11 @@ static inline float wave_field_px(int li, float fx, float W) {
 // caller arriving before the first refresh gets black rather than garbage.
 static bg_quad s_bg = { { 0, 0, 0, 0 } };
 
+// 0 = the gradient as themed .. 1 = black.  Set per frame by the screen that
+// wants it (the music screen's focus mode); everyone else leaves it at 0.
+static float s_bg_dim = 0.0f;
+void wave_set_bg_dim(float d) { s_bg_dim = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d); }
+
 static inline void wave_bg_refresh(void) {
     // month_bg_current() hands back exactly bg_from_two(top, bot) when no month
     // table is present, which is the shipping configuration -- so this is a
@@ -2177,10 +2182,17 @@ void wave_draw(void) {
     // simply being handed the same colour twice.  With a two-stop theme
     // bg_from_two() puts the old values back in that arrangement and the
     // output is unchanged.
-    const u8 gtlr=(s_bg.c[BG_TL]>>16)&0xFF, gtlg=(s_bg.c[BG_TL]>>8)&0xFF, gtlb=s_bg.c[BG_TL]&0xFF;
-    const u8 gtrr=(s_bg.c[BG_TR]>>16)&0xFF, gtrg=(s_bg.c[BG_TR]>>8)&0xFF, gtrb=s_bg.c[BG_TR]&0xFF;
-    const u8 gblr=(s_bg.c[BG_BL]>>16)&0xFF, gblg=(s_bg.c[BG_BL]>>8)&0xFF, gblb=s_bg.c[BG_BL]&0xFF;
-    const u8 gbrr=(s_bg.c[BG_BR]>>16)&0xFF, gbrg=(s_bg.c[BG_BR]>>8)&0xFF, gbrb=s_bg.c[BG_BR]&0xFF;
+    // wave_set_bg_dim(): the music screen's focus mode takes the gradient
+    // down to near black so only the wave / JellyDrop / particles light the
+    // screen.  Only the quad: s_bg itself (which the ribbons' haze samples)
+    // is left alone, so the ribbons keep their own brightness.
+    const u32 bgk = (u32)((1.0f - s_bg_dim) * 256.0f + 0.5f);
+    #define BGD(v) (u8)((((u32)(v) & 0xFF) * bgk) >> 8)
+    const u8 gtlr=BGD(s_bg.c[BG_TL]>>16), gtlg=BGD(s_bg.c[BG_TL]>>8), gtlb=BGD(s_bg.c[BG_TL]);
+    const u8 gtrr=BGD(s_bg.c[BG_TR]>>16), gtrg=BGD(s_bg.c[BG_TR]>>8), gtrb=BGD(s_bg.c[BG_TR]);
+    const u8 gblr=BGD(s_bg.c[BG_BL]>>16), gblg=BGD(s_bg.c[BG_BL]>>8), gblb=BGD(s_bg.c[BG_BL]);
+    const u8 gbrr=BGD(s_bg.c[BG_BR]>>16), gbrg=BGD(s_bg.c[BG_BR]>>8), gbrb=BGD(s_bg.c[BG_BR]);
+    #undef BGD
 
     // Slice k spans the fraction [k/NS, (k+1)/NS] of the distance from this
     // column's crest down to the screen bottom.  One triangle strip per

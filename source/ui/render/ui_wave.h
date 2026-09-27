@@ -124,3 +124,8 @@ void wave_draw_jf_logo_gpu(int cx, int cy, float half_w_px,
 // fenced with rsxSync() so CPU pixel writes may follow immediately.  Used to
 // dim the finished frame under a modal.
 void wave_dim_screen(u8 alpha);
+
+// Darken the background gradient alone (not the ribbons or particles):
+// 0 = as themed, 1 = black.  The music screen's focus mode sets it each
+// frame and puts it back to 0 on exit.
+void wave_set_bg_dim(float d);

@@ -236,6 +236,9 @@ static void music_fades_tick(bool focus_ok) {
     const float e = fade_ease(s_focus_p);
     s_up_a  = 1.0f - e;
     s_ctl_a = 1.0f - (1.0f - FOCUS_CTL_A) * e;
+    // Focus mode takes the background gradient to near black: the only
+    // light left is the wave / JellyDrop, its glow and the particles.
+    wave_set_bg_dim(0.92f * e);
 
     // the choreography, see above
     {
@@ -1435,6 +1438,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
 
     music_stop();
     wave_set_album_tint(0u, 0.0f);            // back to the plain palette
+    wave_set_bg_dim(0.0f);                    // the menus get their gradient back
     // Home's posters went blank after an album was played (they stayed fine
     // in the TV tab): nothing cached before or during this screen is trusted
     // on the way out.  See thumb_cache_verify_and_flush().
