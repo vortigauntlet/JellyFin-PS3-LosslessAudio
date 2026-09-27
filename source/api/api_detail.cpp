@@ -372,6 +372,22 @@ bool jellyfin_fetch_item_detail(const char *item_id, XMBItemDetail *out) {
     json_get_string(resp, "SeriesName", out->series_name, sizeof(out->series_name));
     json_get_string(resp, "SeasonId",   out->season_id,   sizeof(out->season_id));
     out->season_num = json_get_int_in_range(resp, (int)strlen(resp), "ParentIndexNumber", -1);
+    if (!out->series_id[0] || !out->season_id[0]) {
+        // A debrid episode's reply is ~400 KB -- every version and all their
+        // streams -- and is cut off at the buffer before SeriesId / SeasonId
+        // (log 2026-09-27: "body TRUNCATED 396090 -> 393215").  Ask again
+        // through the items query, which leaves the versions out.
+        static char small[24 * 1024];
+        char u2[512];
+        snprintf(u2, sizeof u2, "%s/Users/%s/Items?Ids=%s&Recursive=true", g_server, g_userid, item_id);
+        if (http_request(0, u2, NULL, g_token, small, sizeof small) == 200) {
+            if (!out->series_id[0])   json_get_string(small, "SeriesId",   out->series_id,   sizeof(out->series_id));
+            if (!out->series_name[0]) json_get_string(small, "SeriesName", out->series_name, sizeof(out->series_name));
+            if (!out->season_id[0])   json_get_string(small, "SeasonId",   out->season_id,   sizeof(out->season_id));
+            if (out->season_num < 0)
+                out->season_num = json_get_int_in_range(small, (int)strlen(small), "ParentIndexNumber", -1);
+        }
+    }
 
     parse_media_streams(resp, out->video_info, sizeof(out->video_info),
                               out->audio_info, sizeof(out->audio_info));

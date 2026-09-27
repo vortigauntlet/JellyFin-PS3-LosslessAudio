@@ -618,7 +618,8 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         // the spec face (swapped), and no "direct play / transcode" chip.
         (void)pchip;
         const int aw = achip[0] ? info_chip_width(achip, cpx, UI_FACE_REGULAR) : 0;
-        const int vw = vchip[0] ? info_chip_width(vchip, apx, UI_FACE_SPEC) : 0;
+        const float vpx = UIS_TF(12.5f);                 // the video chip's text: bigger (user, 09-27)
+        const int vw = vchip[0] ? info_chip_width(vchip, vpx, UI_FACE_SPEC) : 0;
         if (aw) { wave_draw_rrect_outline_gpu(cx, CY, aw, CH, CH / 2, 1,
                                               a_ll ? XMB_ACCENT_ALT : XMB_HAIRLINE, 255,
                                               XMB_PANEL, XMB_PANEL, 255); cx += aw + CG; }
@@ -780,8 +781,9 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             if (aw) { drawTTF((u32)(x + UIS_W(10)), (u32)ty_r, achip, cpx,
                               a_ll ? XMB_ACCENT_ALT : XMB_TEXT_DIM);
                       x += aw + CG; }
-            if (vw) { drawTTF_face((u32)(x + UIS_W(10)), (u32)ty_s, vchip, apx, XMB_TEXT_DIM,
-                                   UI_FACE_SPEC);
+            if (vw) { const float vpx = UIS_TF(12.5f);
+                      drawTTF_face((u32)(x + UIS_W(10)), (u32)(CY + (CH - (int)vpx) / 2 - UIS_H(1)),
+                                   vchip, vpx, XMB_TEXT_DIM, UI_FACE_SPEC);
                       x += vw + CG; }
             (void)x;                    // (the transcode chip is gone)
         }

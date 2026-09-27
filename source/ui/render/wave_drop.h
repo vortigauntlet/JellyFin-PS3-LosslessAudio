@@ -164,7 +164,8 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     // when it is loud.  The springs keep real time -- they are physics.
     // ... SMOOTHED over ~0.6 s: taken straight from the frame's loudness the
     // clock rate itself jittered, which read as jerky (hardware, 09-27).
-    m->pace = jd_approach(m->pace, 1.9f + 1.5f * jd_clamp(F->rms * live, 0.0f, 1.0f), dt, 0.6f);
+    // (1.9 + 1.5 x loudness was far too fast with music playing: user, 09-27.)
+    m->pace = jd_approach(m->pace, 1.25f + 0.6f * jd_clamp(F->rms * live, 0.0f, 1.0f), dt, 1.2f);
     const float dtp = dt * m->pace;
     m->t += dtp;
 
@@ -229,27 +230,31 @@ static inline void jd_motion_step(jd_motion *m, const jd_in *F, float dt)
     (void)reach; (void)tx; (void)ty; (void)ax; (void)ay;
     {
         if (m->wvx == 0.0f && m->wvy == 0.0f) { m->wvx = 150.0f; m->wvy = 92.0f; }
-        const float want = (95.0f + 165.0f * en) * (1.0f - 0.55f * m->rest);
+        // Slow and floaty (user, 09-27: far too fast), and SOFT edges: a
+        // spring pushes back from a band inside each edge, so it curves away
+        // from the wall instead of snapping round rigidly on contact.
+        const float want = (40.0f + 55.0f * en) * (1.0f - 0.5f * m->rest);
         const float sp = jd_sqrt(m->wvx * m->wvx + m->wvy * m->wvy);
         if (sp > 1.0f) {
-            float k = jd_approach(sp, want, dt, 1.5f) / sp;
-            if (F->onset > 0.0f) k *= 1.0f + 0.22f * F->onset_strength;   // a beat shoves it on
+            float k = jd_approach(sp, want, dt, 2.5f) / sp;
+            if (F->onset > 0.0f) k *= 1.0f + 0.05f * F->onset_strength;
             m->wvx *= k; m->wvy *= k;
         }
+        const float EX = 640.0f - 118.0f, EY = 360.0f - 108.0f;   // the bell's half extent
+        const float BX = EX - 170.0f, BY = EY - 120.0f;             // where the push starts
+        float ax_ = 0.0f, ay_ = 0.0f;
+        if (m->wx >  BX) ax_ -= 0.9f * (m->wx - BX);
+        if (m->wx < -BX) ax_ += 0.9f * (-BX - m->wx);
+        if (m->wy >  BY) ay_ -= 1.1f * (m->wy - BY);
+        if (m->wy < -BY) ay_ += 1.1f * (-BY - m->wy);
+        m->wvx += ax_ * dt; m->wvy += ay_ * dt;
         m->wx += m->wvx * dt; m->wy += m->wvy * dt;
-        // The bell's half extent incl. its shells and the camera's dolly.
-        const float EX = 640.0f - 118.0f, EY = 360.0f - 108.0f;
-        float hit = 0.0f;
-        if (m->wx >  EX) { m->wx =  EX; m->wvx = -m->wvx * 0.96f; hit = 1.0f; m->wax = -160.0f; }
-        if (m->wx < -EX) { m->wx = -EX; m->wvx = -m->wvx * 0.96f; hit = 1.0f; m->wax =  160.0f; }
-        if (m->wy >  EY) { m->wy =  EY; m->wvy = -m->wvy * 0.96f; hit = 1.0f; }
-        if (m->wy < -EY) { m->wy = -EY; m->wvy = -m->wvy * 0.96f; hit = 1.0f; }
-        if (hit > 0.0f) {
-            m->sq_v  += 0.9f;                      // squash against the wall
-            m->jig_v += 0.5f;
-            m->yaw_v += (m->wvx > 0.0f ? 0.08f : -0.08f);
-        }
-        m->wax = jd_approach(m->wax, 0.0f, dt, 0.25f);
+        // the hard limit, only ever a safety net
+        if (m->wx >  EX) { m->wx =  EX; if (m->wvx > 0.0f) m->wvx = -0.3f * m->wvx; }
+        if (m->wx < -EX) { m->wx = -EX; if (m->wvx < 0.0f) m->wvx = -0.3f * m->wvx; }
+        if (m->wy >  EY) { m->wy =  EY; if (m->wvy > 0.0f) m->wvy = -0.3f * m->wvy; }
+        if (m->wy < -EY) { m->wy = -EY; if (m->wvy < 0.0f) m->wvy = -0.3f * m->wvy; }
+        m->wax = jd_approach(m->wax, ax_ * 0.4f, dt, 0.4f);
     }
 
     if (F->onset > 0.0f) m->spin_w += 0.25f * F->onset_strength;
