@@ -53,6 +53,10 @@ SYS_PROCESS_PARAM(1001, 0x8000000);
 
 // Defined here; declared extern in ui.h so all other modules can read it.
 u32 running = 0;
+// Non-zero while the system draws over the app (PS button menu, dialogs).
+// The system only renders that overlay on the app's own flips, so any loop
+// that idles without flipping must keep flipping while this is set.
+volatile u32 g_sys_overlay = 0;
 
 // -------------------------------------------------------
 // System callbacks
@@ -71,6 +75,8 @@ static void sysutil_exit_callback(u64 status, u64 param, void *usrdata) {
     lc_logf("sysutil: event status=0x%llx param=0x%llx",
             (unsigned long long)status, (unsigned long long)param);
     if (status == SYSUTIL_EXIT_GAME) running = 0;
+    if (status == SYSUTIL_DRAW_BEGIN) g_sys_overlay = 1;
+    if (status == SYSUTIL_DRAW_END)   g_sys_overlay = 0;
 }
 }
 

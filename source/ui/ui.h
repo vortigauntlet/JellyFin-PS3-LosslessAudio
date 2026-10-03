@@ -41,6 +41,7 @@ typedef struct {
 
 // Defined in main.cpp; every input loop reads this.
 extern u32 running;
+extern volatile u32 g_sys_overlay;   // system overlay up (main.cpp)
 
 // Defined in ui.cpp
 extern ButtonState btn_cur;
