@@ -1179,7 +1179,9 @@ void show_player(const JFItem *item, u32 resume_secs,
             btn_cur.cross || btn_cur.circle || btn_cur.square || btn_cur.triangle ||
             btn_cur.start || btn_cur.select ||
             btn_cur.l1 || btn_cur.r1 || btn_cur.l2 || btn_cur.r2;
-        if (ps.paused && !any_input && act == HUD_ACTION_NONE &&
+        // Keep flipping while the system overlay is up: it is drawn on our
+        // flips, so idling here would hide it while it still takes input.
+        if (ps.paused && !any_input && act == HUD_ACTION_NONE && !g_sys_overlay &&
             !ps.show_seek_frame && ps.seek.pending_secs == 0 &&
             ps.seek.state == SEEK_IDLE && pause_settle == 0) {
             usleep(16000);
