@@ -3,8 +3,9 @@
 Written 2026-10-03 for a Sonnet session to implement. Scope decided with the
 user: **fixes + pending merges, Dolby Digital passthrough as a real menu option,
 a reorganised Settings screen, offline downloads (merged and finished),
-Favourites, whole-season download, Live TV / IPTV, and the ui_wave statics
-refactor.**
+Favourites, whole-season download, Live TV / IPTV, USB / external drive
+playback (NTFS, exFAT, FAT32; MKV, m2ts, ts; FLAC/MP3/WAV), a hard 10 GB
+free-space floor for downloads, and the ui_wave statics refactor.**
 
 3.2 is now a big release. Every item below is independently shippable.
 The order in §1 is chosen so each step lands on a stable base, and so the one
@@ -77,6 +78,12 @@ These come from incidents on this project. Each one has cost a day before.
 | D1 | ui_wave.cpp statics → state structs | new, separate branch | L (mechanical) | **high** | **yes, long** |
 | E1 | Offline downloads: merge `origin/feature/offline-downloads` onto main | merge, 11 conflicts | L | **high** | **yes** |
 | E2 | Offline: spine details-page button, Downloads section in Settings, list posters | new | M | med | yes |
+| E3 | **HDD safety: 10 GB always kept free, fail closed** | new | S | low | yes (quick) |
+| U1 | USB: port mohasi NTFS + exFAT readers (read-only) | vendor + port | M | **high** | yes |
+| U2 | USB: `lfs` read-only file layer, hotplug | new | M | med | yes |
+| U3 | USB: .ts/.m2ts, **MKV demuxer**, local track choice + subtitles | new | **L** | **high** | **yes** |
+| U4 | USB: local music (FLAC/MP3/WAV, quality resampler, albums) | new | M | med | yes |
+| U5 | USB: "Media" tab, browser, file details, local resume | new | M | med | yes |
 | F1 | Favourites: star toggle on details, Favourites row on Home | new | S | low | yes |
 | G1 | Download whole season | new (needs E) | S–M | med | yes |
 | H1 | Live TV: API + parsing + host tests | new | M | low | — |
@@ -84,8 +91,14 @@ These come from incidents on this project. Each one has cost a day before.
 | H3 | Live TV: playback (live mode in the player, channel up/down, close stream) | new | M | **high** | **yes** |
 | R  | Release 3.2 (version, changelog, fresh-install test, pkg) | — | S | — | yes |
 
-**Order:** A → **E1** → B → C (with E2's Settings rows) → E2 → F1 → G1 →
-H1 → H2 → H3 → R.
+**Order:** A → **E1 + E3** → B → C (with E2's Settings rows) → E2 → F1 → G1 →
+H1 → H2 → H3 → U1 → U2 → U3 → U4 → U5 → R.
+
+E3 lands **with** E1, in the same TV build. No build that can download may
+ever reach the console without the 10 GB floor.
+
+U1's host-side port and tests have no dependencies. They can run in parallel
+from the start, on a branch `feature/usb-fs`, merged when U2 begins.
 
 - E1 goes **before** B because offline moves the stream-URL decision out of
   `build_stream_url()` into `player/stream/stream_request.cpp`. Do that move
@@ -556,6 +569,77 @@ pass, including `test_offline` and the new `test_stream_request`. Then
    these screens `□` means the row's secondary action, **not** the visualiser
    cycle. Make sure `draw_hints_vis` doesn't append the visualiser hint there.
 
+### E3. HDD safety: downloads never fill the console's drive
+
+**User requirement:** downloads must stop before the internal HDD gets low.
+**At least 10 GB always stays free.** A PS3 with a full HDD can't save
+games, install updates or packages, or keep its system caches. Users must
+never get there because of this app.
+
+What the offline branch does today (`dl_manager.cpp`) isn't enough:
+- `reserve_bytes` is **1 GB**;
+- `space_ok()` returns **true when free space is unknown**
+  (`DL_FREE_UNKNOWN`, e.g. libsysfs failed to load or `sysFsGetFreeSize` errored).
+  That means *no limit at all*;
+- for a transcode of unknown length `size_hint` is 0, so enqueue checks only
+  the reserve, not what the file will need;
+- running out mid-transfer marks the item **failed** (`DL_ERR_NO_SPACE`).
+
+Required behaviour:
+
+1. **Floor:** `reserve_bytes = 10 GiB` (`DL_RESERVE_MIN`). An optional
+   `jellyfin_dlreserve.txt` (whole GB) may **raise** it and is clamped to
+   `>= 10`. Nothing can lower it. Log the effective value at service start.
+2. **Fail closed.** If free space can't be read (unknown, error, block size
+   0, or a value larger than the volume's total size), **no download starts
+   or continues.** The active one pauses with a new reason
+   `DL_ERR_SPACE_UNKNOWN`, shown as "Can't check free HDD space: downloads
+   paused". If `sysModuleLoad(SYSMODULE_FS)` fails at service start, the store
+   reports downloads **unavailable**. Already-downloaded files still play.
+3. **Check at enqueue against everything already committed.**
+   `need = estimate(new) + Σ remaining(estimate) of every queued/active item`.
+   Refuse when `free − reserve < need`. Estimates:
+   - a direct copy → the MediaSource `Size`;
+   - a transcode → `(vbitrate + abitrate) / 8 × runtime × 1.15`, using the
+     `StreamRequest` the download will use;
+   - no runtime and no size → refuse with "Size unknown, can't check space"
+     rather than guessing 0.
+   The refusal text gives the numbers: "Not enough space: needs 6.2 GB,
+   3.1 GB available (10 GB is always kept free)".
+4. **Check while writing:** before each 64 MB (`space_check_bytes`, already
+   64 MB; at ~3 MB/s that's every ~20 s) and on **every** failed write.
+   Continue only while `free − reserve ≥ 64 MB`. Never write within the
+   reserve, even by one chunk.
+5. **Pause, don't fail.** Hitting the floor pauses the item (state PAUSED,
+   reason `no_space`) with its partial file kept. No other queued item starts
+   while below the floor. When the user frees space, *Resume* continues by
+   Range. Downloads list banner: "Paused: the HDD is down to 10 GB free".
+6. **Show it:** the Downloads screen header reads "HDD: 42.0 GB free ·
+   downloads keep 10 GB free". The item page's Download button shows the
+   refusal reason as its toast. G's season sheet uses the same `need`
+   calculation and **refuses** (not merely warns) when the whole season doesn't
+   fit. Offer "Download the first N that fit" instead.
+7. **Log** every decision: `dl: space free=…MB reserve=…MB need=…MB -> ok|refused|paused|unknown`.
+8. The rule covers every byte the downloader writes: media, artwork and
+   records. Artwork and records are tiny, but they go through the same
+   `space_ok` gate.
+
+Tests (`test_offline.cpp`, fake platform's scripted free bytes):
+- refused at enqueue when below floor + need;
+- unknown free space → refused / paused;
+- an implausible value (> total) → treated as unknown;
+- the reserve file can raise but can't lower the floor;
+- crossing the floor mid-transfer → PAUSED with the partial kept, then
+  resumes after free space rises;
+- the queue-wide commitment refuses the 3rd item when two queued ones already
+  use the room;
+- the season "first N that fit" calculation.
+
+Hardware check (part of T-E): the logged `free=` matches XMB › Settings ›
+System Settings › System Information free space, within rounding. Using
+`/dev_hdd0/tmp/` as the fallback root is the same disk, so the floor applies
+unchanged.
+
 ---
 
 ## F. Favourites
@@ -801,6 +885,220 @@ wrap-around, debounce). The rest is TV.
 
 ---
 
+## U. USB / external drive playback (no server needed)
+
+Play the user's own files from **USB drives formatted NTFS, exFAT or
+FAT32**, and from the internal HDD: **MKV, .ts and .m2ts video**, and **FLAC,
+MP3, WAV music**. It needs no Jellyfin server or sign-in. Full-bitrate
+Blu-ray remuxes play untouched with lossless audio, which the ~25 Mbps
+server path can't do.
+
+**Read first:** `docs/local-media.md` on `origin/feature/offline-downloads`
+(scoping doc, now merged by E1). It's accurate except for two things: main now
+renders text and PGS subtitles on the console, and NTFS/exFAT come from mohasi
+below, not libntfs_ext.
+
+Hard limits, to be stated in the UI, not discovered by users:
+- H.264 only (up to Level 4.1/4.2, what VDEC takes).
+- **HEVC/H.265, 4K, 10-bit and VC-1 can't play**: the PS3 has no decoder.
+  The file row shows "HEVC (can't play on PS3)" in faint text, and opening it
+  explains why. Never let it reach VDEC.
+- MPEG-2 video: not in 3.2.
+- Audio output is 48 kHz: other rates are resampled.
+
+**The drives are read only.** The app never writes to a USB drive: no resume
+files, no thumbnails, no `.DS_Store`-style droppings. All local state goes
+to `/dev_hdd0/tmp/` (subject to nothing large: resume positions only).
+
+### U1. Filesystems: port mohasi's NTFS + exFAT readers
+
+Source: **github.com/mohasi/ps3-dev**, `libs/simple-lib-core/`:
+`src/ntfs.c` (5.8k lines), `src/exfat.c` (2.9k), `src/vfs.c`, `src/vfs-init.c`,
+`include/{ntfs,exfat,vfs,vfs-internal,storage-device,cellfs}.h`.
+**Licence Apache-2.0**, which may be included in this GPL-3 project. Keep
+their headers and add the NOTICE text to `LICENSE`/README credits ("NTFS and
+exFAT readers from mohasi/ps3-dev, Apache-2.0"). Pin the commit hash you
+vendored in `third_party/mohasi_fs/VERSION`.
+
+How it works: raw sector reads through the lv2 storage syscalls
+(`sys_storage_open` 600, `close` 601, `read` 602, `get_device_info` 609).
+USB mass storage device ids are `0x10300000000000A + port` (ports 0–5;
+6–7 use `…1F +`). `get_device_info` is non-DMA, so it's safe to poll for
+hotplug. Then hand-written NTFS (MFT, runlists, `$I30` index; MBR/GPT
+partition offsets) and exFAT parsing, endian-safe through explicit LE readers.
+These are the same syscalls ManaGunZ/webMAN use, and they need HEN/CFW,
+which this app already requires.
+
+Port into `third_party/mohasi_fs/`, with **minimal edits**, each marked
+`// jf-port:`:
+- `scCallN(...)` → PSL1GHT `lv2syscallN` (`ppu-lv2.h`; `lv2syscall7` exists).
+  Return the syscall result exactly as `scCall` did.
+- `thread.h` lwmutex helpers → `sysLwMutexCreate/Lock/Unlock` (`sys/mutex.h`).
+- `string-utilities.h` (`memCopy`, `memSet`, `utf16ToUtf8`, `strCmpICase`) →
+  a small `jf_port_strings.h` over libc. Keep their `utf16ToUtf8`
+  implementation if it isn't trivial.
+- `cell/rtc.h` (timestamps for the **write** path) and `sys/timer.h` →
+  PSL1GHT equivalents, or delete them along with the write path.
+- **Remove the write path entirely**: every function that allocates clusters,
+  writes MFT records/bitmaps/directory entries, and any `STORAGE_WRITE` (603).
+  Then `grep -n "603\|STORAGE_WRITE\|allocateClusters\|write" third_party/mohasi_fs`
+  must find no live write code. Mount read-only, always. Delete rather than
+  `#if 0`, so nobody can switch it back on.
+- Drop `disc-mount`, the Blu-ray/TOC helpers in `storage-device.h`, and the
+  `cellfs.c` backend if our own seam (U2) covers `/dev_usb`/`/dev_hdd0`.
+- Read buffers must be 32-byte aligned (their header says so): use
+  `memalign(128, …)`.
+
+Host tests (`tests/test_mohasi_fs.c`). Build 64 MB NTFS and exFAT images in
+WSL as root:
+- NTFS: `mkntfs --fast --force img`, mount with `ntfs-3g`, copy files in;
+- exFAT: `mkfs.exfat img`, `mount -o loop -t exfat`, copy files in.
+
+If WSL can't mount them, make them on Windows instead (a VHD via diskpart,
+format, copy, detach). Commit the images **compressed** (≤ 1 MB each) under
+`tests/fixtures/fs/`. Run the ported readers on the host with a fake
+`readStorageRaw` that reads the image file. Assert directory listings,
+file sizes, the SHA-256 of a 3 MB fragmented file, Unicode names, a
+non-zero partition offset (MBR and GPT), and files > 4 GB (sparse
+image). This also proves the big-endian port: run it under
+`qemu-ppc64` with `powerpc64-linux-gnu-gcc -static` (both installed).
+
+### U2. One read-only file layer: `source/local/lfs.{h,cpp}`
+
+```c
+typedef enum { LFS_HDD, LFS_USB_FAT, LFS_USB_NTFS, LFS_USB_EXFAT } lfs_kind;
+typedef struct { char id[16];        // "usb0", "hdd"
+                 char label[48];     // volume label or "USB drive 1"
+                 lfs_kind kind; u64 total, free; } lfs_drive;
+
+int  lfs_drives(lfs_drive *out, int max);         // present now (hotplug-polled)
+int  lfs_list(const char *path, lfs_entry *out, int max, int offset); // "usb0:/Movies"
+int  lfs_open(const char *path);                  // handle or <0
+int  lfs_read(int h, u64 off, void *buf, u32 n);  // positional, bytes or <0
+u64  lfs_size(int h);
+void lfs_close(int h);
+```
+Backends: FAT32 USB (`/dev_usb00N`) and the internal HDD via `sysLv2Fs*`
+(lv2 mounts FAT32 itself); NTFS and exFAT via U1. Probe order for a present
+USB port: lv2 FAT32 mount exists → FAT; else try the NTFS probe, then exFAT.
+Internal HDD root offered: `/dev_hdd0/video` and `/dev_hdd0/music` plus
+`/dev_hdd0/jellyfin_local` (created if missing). Not the whole HDD, since
+system folders are noise and risk.
+
+- Hotplug: a background thread polls `get_device_info` per port every 2 s,
+  mounts and unmounts. The UI reads a generation counter, not the devices.
+- Unplug mid-read: `lfs_read` returns an error, the player shows "The drive
+  was removed", and nothing crashes or hangs. Every syscall wait must be
+  bounded.
+- Thread safety: one lwmutex per mounted volume (mohasi already serialises).
+- Throughput: reads ≥ 256 KB per call (a remux needs ~6 MB/s, USB 2 gives
+  ~20–30). Log `lfs: usb0 ntfs read 64 MB in X ms` once per mount as a quick
+  benchmark.
+
+The offline branch's `stream_open_file()` / `stream_local` read with
+`sysLv2Fs` directly. **Switch them to `lfs_*`** so downloads (HDD) and USB
+files share one path.
+
+### U3. Containers
+
+1. **.ts:** plays through E1's local path as-is.
+2. **.m2ts** (192-byte BD packets): strip the 4-byte TP_extra_header per
+   packet in the local reader, then it's .ts. Detect by sync bytes at offsets
+   4 and 196. `stream_local`'s seek index works on the stripped stream.
+3. **MKV: new demuxer `source/video/mkv_demux.{h,cpp}`.** The large piece.
+   Design per `docs/local-media.md` §4b:
+   - EBML: Segment, SeekHead, Info (TimestampScale, Duration), Tracks,
+     Cues, Clusters, SimpleBlock/BlockGroup, and all three lacing modes
+     (Xiph, fixed, EBML).
+   - Video `V_MPEG4/ISO/AVC`: avcC from CodecPrivate → SPS/PPS. Rewrite
+     length-prefixed NALs to Annex B and re-send SPS/PPS before every keyframe.
+     Reject `V_MPEGH/ISO/HEVC`, `V_MS/VFW/FOURCC` (VC-1) and anything else
+     with a reason.
+   - Audio: `A_TRUEHD`, `A_DTS` (incl. HD MA), `A_AC3`, `A_EAC3` (no decoder:
+     fall back to another track or say so), `A_AAC` (libfaad, in portlibs;
+     GPL-2+, fine), `A_FLAC` (libFLAC), `A_PCM/INT/LIT`, `A_MPEG/L3` (minimp3),
+     `A_VORBIS` (libvorbis, if cheap; otherwise unsupported in 3.2).
+   - Subtitles: `S_TEXT/UTF8` (SRT), `S_TEXT/ASS` (strip styling to text),
+     `S_HDMV/PGS`. Feed them to the existing console renderers. Today
+     `subs_load()` / `subs_load_pgs()` fetch from the server, so add
+     `subs_load_cues_local(...)` / a PGS feed that takes demuxed blocks.
+     Read `player/subtitles.h` and `subtitles_pgs.h` first, and keep their
+     index/lazy-decode design.
+   - Output: hand the decoders **exactly** what `ts_demux` hands them
+     (same AU/PES structs, same 90 kHz PTS), so `vdec`/`adec` don't change.
+     Read `video/ts_demux.h` and how `player.cpp` consumes `ts_process` before
+     designing the interface. Bounded memory: no per-frame malloc, and the AU
+     ceiling from H.264 L4.1 (`ts_demux.h`).
+   - Seek: Cues; without Cues, a bounded cluster scan (interpolate by size,
+     then refine), the same approach as `stream_local`.
+   - Frame rate from DefaultDuration (or the SPS VUI), so the 24p auto switch
+     works for 23.976 files.
+   - Host tests `tests/test_mkv_demux.cpp`: small fixtures made with ffmpeg in
+     WSL (`-t 3`, 64×64 H.264 + AC-3/TrueHD/FLAC/AAC/PCM, laced audio, no-Cues
+     file, SRT and PGS tracks). Goldens = AU count, sizes, PTS and SHA-1 per AU.
+     Fixtures committed, ≤ 200 KB each.
+4. **Track choice** (local files have no server to choose): list audio tracks
+   with language + codec. Default to the best decodable one: TrueHD/DTS-HD MA →
+   DTS → AC-3 → others, then honour the Audio Output setting the way the
+   server path does (Stereo downmixes; Dolby Digital passes AC-3 through and
+   decodes others). Subtitles off by default, but forced tracks on. The
+   existing HUD audio/subtitle menus drive it. They're inert for downloads
+   (one track), but live for local files.
+
+### U4. Local music
+
+- A PCM source switch in the music player (`audio_set_source()` exists):
+  **FLAC** (libFLAC, 16/24-bit, up to 8 ch → stereo for music), **MP3**
+  (minimp3), **WAV**.
+- **Resampler:** the current linear `frame_to_48k` isn't acceptable for a
+  lossless library. Add a windowed-sinc polyphase resampler
+  (`source/audio/resample.{h,c}`) for 44.1→48 (L/M = 160/147), 88.2/96/176.4/192→48.
+  32–48 taps, Kaiser window, coefficients precomputed at init.
+  48 kHz input = pass-through (bit-exact). Host test: THD+N of a 1 kHz sine
+  44.1→48 below −90 dB, and passband flatness.
+- Album view: a folder of audio files = an album. Track order from tags
+  (FLAC Vorbis comments TRACKNUMBER, ID3 TRCK), else filename. Art from the
+  FLAC PICTURE block, else `cover.jpg`/`folder.jpg`. Decode art off the
+  render thread. Gapless between tracks of one folder.
+- Visualisers (JellyWave/JellyDrop/Canyon) read the PCM, so they work
+  unchanged. Verify.
+
+### U5. UI: the "Media" tab
+
+- New `TABKIND_LOCAL`, label **"Media"**, icon `ICON_COLLECTIONS`. It's
+  **always present** (the internal HDD is always there), placed after Live TV.
+  Also reachable from the sign-in-failure screen ("Open Offline" →
+  Offline Library + Media), so it works with no server at all.
+- Root: one card per drive (label, kind "NTFS · 1.8 TB", free space), plus
+  "Downloads" (E's Offline Library) as the first card. A drive appears or
+  disappears live when plugged or unplugged, with the menu SFX.
+- Folder browser: rows with icon (folder / video / music / unsupported),
+  name, size and duration (duration lazily probed for visible rows only).
+  Sorted folders first, natural sort. X opens, O goes up. Only playable
+  extensions and folders are shown: `.mkv .ts .m2ts .mts .flac .mp3 .wav`.
+  A **jump bar** (existing component) for long folders.
+- Video file → a light details page: file name (cleaned: dots/underscores →
+  spaces, year detected), duration, video codec/resolution, audio tracks,
+  subtitle tracks, then Play / Resume. No server metadata in 3.2.
+- Music folder → album page (art, track list) → plays in the existing music
+  screen.
+- **Resume:** `/dev_hdd0/tmp/jellyfin_local_resume.txt`, keyed by
+  `path + size + mtime`, atomic writer from `dl_store`, ≤ 500 entries (LRU).
+  It's written to the HDD, never to the USB drive.
+- Live TV and USB playback share nothing else. Downloads count as heavy for
+  the download gate (`dl_playback_begin_local(heavy)`) so they pause during
+  local playback too. It's disk I/O, not the network, but the HDD is the same
+  disk the download writes to, and a 40 Mbps remux shouldn't compete.
+
+### U order
+
+U1 (filesystems + host tests) → U2 (lfs + switch stream_local) → U3 .ts/.m2ts →
+**TV check (T-U1)** → U3 MKV → U3 track choice + subs → **TV check (T-U2)** →
+U4 music → U5 polish → **TV check (T-U3)**. U5's basic browser is needed from
+the first TV check, so build a minimal list first and polish it last.
+
+---
+
 ## D1. ui_wave.cpp statics → state structs (separate branch)
 
 The open item from the 09-27 external review: `source/ui/render/ui_wave.cpp`
@@ -910,6 +1208,34 @@ already queued.
   Right, the now line, a future programme's details;
 - Live TV with Dolby Digital output: DOLBY AUDIO on the soundbar.
 
+**T-E3 HDD floor:**
+- the log shows `reserve=10240MB`, and `free=` matches System Information;
+- create `jellyfin_dlreserve.txt` containing a value just under the current
+  free space minus a small film's size: the download is refused with numbers;
+- delete the file, then fill the HDD to ~10.5 GB free with a dummy file over
+  FTP and start a download: it pauses at the floor, the partial is kept, and
+  after deleting the dummy *Resume* continues. **Delete the dummy file
+  afterwards.**
+
+**T-U1 (filesystems + .ts/.m2ts):**
+- plug in an NTFS drive, an exFAT drive and a FAT32 stick: all three appear
+  under Media with labels and free space;
+- unplug one: it disappears without a hang;
+- play a 40 Mbps .m2ts remux from NTFS with TrueHD: no stalls, lossless audio;
+- pull the drive mid-play: "The drive was removed", back to the menu;
+- confirm on a PC that the drives are unchanged (no new files).
+
+**T-U2 (MKV):**
+- a MakeMKV remux (H.264 + TrueHD + PGS) plays, seeks, and switches audio
+  and subtitle tracks;
+- a 23.976 MKV triggers 24 Hz;
+- an HEVC MKV shows the "can't play on PS3" message;
+- an AAC and a FLAC-audio MKV both play;
+- Resume works after leaving and coming back.
+
+**T-U3 (music):** a 16/44.1 FLAC album and a 24/96 FLAC play gapless with
+art, the visualisers react, and MP3 and WAV play too.
+
 **T-D (D1 build only):** JellyWave in menus 10 min; JellyDrop + snow with
 music 10 min; Square cycles visualisers incl. Canyon; Off → JellyWave reveal;
 a 24p film start/stop; watch for strobing, black frames, or a stuck wave.
@@ -952,7 +1278,15 @@ a 24p film start/stop; watch for strobing, black frames, or a stuck wave.
   even after a restart. Watch downloads from Settings › Downloads › Offline
   Library, or from the Downloaded row on Home. When the server can't be
   reached at startup, the app offers your downloads instead.
+- **Play from USB drives, no server needed.** The new Media tab plays your own
+  MKV, .m2ts and .ts films and FLAC, MP3 and WAV music from USB drives
+  formatted **NTFS, exFAT or FAT32**, or from the PS3's hard drive. Blu-ray
+  remuxes play at full bitrate with their lossless TrueHD / DTS-HD MA audio
+  and subtitles. Drives are only ever read, never written to. (H.264 video
+  only: HEVC/4K and VC-1 files can't play on a PS3.)
 - **Download a whole season**: `△` on a season.
+- Downloads always leave at least **10 GB free** on the PS3's hard drive,
+  and pause rather than fill it.
 - **Favourites.** Star films and shows on their page; they get their own row
   on Home.
 - **Dolby Digital output.** Settings → Audio → Audio Output has a new
@@ -980,6 +1314,9 @@ a 24p film start/stop; watch for strobing, black frames, or a stuck wave.
 ## Things deliberately left out of 3.2
 
 - Live TV recording/DVR, timers, catch-up, and channel search.
+- USB: BDMV folder playlists, MPEG-2 video, E-AC-3 decoding, ALAC/M4A,
+  any write support for USB drives, a scanned local library index/search, and
+  server-style metadata for local files.
 - E-AC-3 / TrueHD / DTS bitstream — not reachable or not decodable on the
   test chain.
 - Changing how the 5.1/7.1 AC-3 routing request behaves.
@@ -1001,5 +1338,5 @@ Rough sizes; none designed yet.
 - **Synced lyrics** in the music player (`/Audio/{id}/Lyrics`, LRC timing). M.
 - **Sleep timer** (30/60/90 min, end of episode). S.
 - **Live TV recordings/DVR** (needs server-side recording set up). M–L.
-- **Local media playback** (own remuxes/FLACs from USB, no server). Scoped in
-  `docs/local-media.md` on the offline branch. L.
+- USB follow-ups: BDMV playlists, MPEG-2, E-AC-3, a local library index with
+  posters fetched from the server by title match.
