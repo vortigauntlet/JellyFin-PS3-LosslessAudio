@@ -181,6 +181,9 @@ static const char *ci_find(const char *hay, int hlen, const char *needle) {
 
 // Decode a Transfer-Encoding: chunked body in place. Returns decoded length.
 static int dechunk(char *body, int len) {
+    // A body announced as chunked that does not start with a chunk-size line
+    // is not chunk-framed; decoding it would discard it. Keep it as it is.
+    if (len > 0 && !isxdigit((unsigned char)body[0])) return len;
     int ri = 0, wi = 0;
     while (ri < len) {
         int sz = 0; bool any = false;
