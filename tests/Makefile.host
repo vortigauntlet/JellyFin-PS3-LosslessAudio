@@ -61,7 +61,8 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sourc
      test_wave_audio test_wave_motion test_wave_layers \
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
-     test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request
+     test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request \
+     test_settings_model test_settings_model_nostats
 
 test_iec61937: test_iec61937.c ../source/audio/iec61937.c $(A52_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -156,6 +157,17 @@ test_stream_request: test_stream_request.cpp stream_golden_cases.h \
 	    test_stream_request.cpp ../source/player/stream/stream_request.cpp \
 	    ../source/util/vquality.cpp ../source/util/jf_paths.cpp \
 	    ../source/api/jellyfin_api.cpp track_codec_host.o
+
+# The Settings screen model (rows, sections, layout, scrolling), built with
+# the player statistics row compiled in and out.
+test_settings_model: test_settings_model.c ../source/ui/settings_model.c \
+                     ../source/ui/settings_model.h ../source/net/update_page.h
+	$(CC) $(CFLAGS) -Wextra -I../source/ui -I../source/net -o $@ \
+	    test_settings_model.c ../source/ui/settings_model.c
+test_settings_model_nostats: test_settings_model.c ../source/ui/settings_model.c \
+                     ../source/ui/settings_model.h ../source/net/update_page.h
+	$(CC) $(CFLAGS) -Wextra -DENABLE_PLAYER_STATS=0 -I../source/ui -I../source/net -o $@ \
+	    test_settings_model.c ../source/ui/settings_model.c
 
 test_dts_hd: test_dts_hd.c $(DTS_HD_DEPS)
 	$(CC) $(DCAHD_CFLAGS) $(CFLAGS) -o $@ $^ -lm
@@ -316,6 +328,8 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_display_mode
 	./test_offline
 	./test_stream_request
+	./test_settings_model
+	./test_settings_model_nostats
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -327,6 +341,7 @@ clean:
 	      test_wave_audio test_wave_motion test_wave_layers \
 	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq test_wave_motes test_display_mode \
 	      test_offline test_stream_request track_codec_host.o \
+	      test_settings_model test_settings_model_nostats \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean

@@ -50,14 +50,16 @@ void surround_set_mode(surround_mode_t m) {
     surround_save();
 }
 
-void surround_cycle(void) {
+void surround_step(int dir) {
     surround_mode_t o[4];
     const int n = surround_order(o);
     int i = 0;
     for (int k = 0; k < n; k++)
         if (o[k] == s_mode) { i = k; break; }
-    surround_set_mode(o[(i + 1) % n]);
+    surround_set_mode(o[((i + (dir < 0 ? -1 : 1)) % n + n) % n]);
 }
+
+void surround_cycle(void) { surround_step(+1); }
 
 const char *surround_mode_label(void) {
     switch (s_mode) {

@@ -1,16 +1,22 @@
-// Settings tab rendering — account card (avatar + identity) and selectable
-// action rows: "Log Out" and the "Debug Logging" toggle.
+// Settings tab rendering: the account card and the sectioned list of
+// settings.  What the rows are, their order and the layout/scroll rules are
+// the host-tested model in ui/settings_model.c; this file keeps what only the
+// console knows about each row -- its icon, how its value reads, and what
+// X and Left/Right do -- in a table keyed by setting_id.
 
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
 
 #include "ui_visuals.h"
+#include "settings_model.h"
 #include "jellyfin_api.h"
 #include "update_check.h"
+#include "log_upload.h"
 #include "plog.h"
 #include "hd1080.h"
 #include "surround.h"
+#include "audio_bitstream.h"   // audio_passthrough_wanted(): Dialogue Boost n/a
 #include "centermix.h"
 #include "statsovl.h"
 #include "menusnow.h"
@@ -20,60 +26,194 @@
 #include "ui_wave_audio.h"  // Wave Intensity
 #include "subfont.h"
 #include "subcolor.h"
+#include "dl_manager.h"     // Downloads / Offline Library rows
 
 // xmb/ui_peek.cpp (declared in ui_internal.h, not included here).
 void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
-#include "dl_manager.h"   // Downloads / Offline Library rows
 
-static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
-    { "Log Out", "Debug Logging", "Screen Size", "1080p Playback (Alpha)",
-      "Audio Output", "Dialogue Boost", "Subtitle Font", "Subtitle Colour",
-      "Theme", "Menu Particles", "Day / Night Palette", "Wave Intensity",
-      "Auto Skip", "24Hz Output", "Software Update"
-#if ENABLE_PLAYER_STATS
-    , "Player Stats Overlay"
-#endif
-    , "Downloads", "Offline Library"
-    };
-// ICON_BUG is reused for the stats row: it is the same diagnostics family as
-// Debug Logging, and the Tabler font here is a 20-glyph subset (see
-// ui/fonts/tabler_icons.h) — a new glyph would mean regenerating the subset.
-// ICON_MUSIC (already in the subset) marks the surround audio row.
-static const int   SETTINGS_ICONS[XMB_SETTINGS_COUNT]  =
-    { ICON_LOGOUT, ICON_BUG, ICON_TV, ICON_MOVIE, ICON_MUSIC, ICON_MUSIC,
-      ICON_TV, ICON_TV, ICON_PHOTO, ICON_PHOTO, ICON_PHOTO, ICON_MUSIC,
-      ICON_MOVIE, ICON_TV, ICON_TV
-#if ENABLE_PLAYER_STATS
-    , ICON_BUG
-#endif
-    // Downloads: the stacked-cards glyph (a queue); Offline: play.  Both are
-    // already in the 20-glyph icon subset.
-    , ICON_COLLECTIONS, ICON_PLAY
-    };
+// -------------------------------------------------------------------------
+//  The console half of each row
+// -------------------------------------------------------------------------
+//  value:    the right-aligned text and whether it is drawn lit (accent)
+//  activate: X.  NULL = nothing.
+//  step:     Left / Right.  NULL on action rows (Log Out, Screen Size,
+//            Software Update, Send Log, Downloads), which ignore it; a toggle
+//            flips on either direction.
 
-// Triangle's descriptions, one per row, two short lines each ('\n' splits).
-static const char *SETTINGS_HELP[XMB_SETTINGS_COUNT] = {
-    "Sign out of this Jellyfin account.\nYou will need to log in again to browse your library.",
-    "Write a diagnostic log to /dev_hdd0/tmp/player_log.txt.\nUseful when reporting a problem; takes effect on the next launch.",
-    "Shrink the picture to fit TVs that crop the edges (overscan).\nLine the corners up with your screen's edges.",
-    "Ask the server for full 1920x1080 video instead of 720p.\nSharper, but needs more bandwidth. Still experimental.",
-    "Stereo, 5.1 or 7.1 over HDMI. Dolby Digital sends the film's Dolby\ntrack untouched: use it if your soundbar drops the centre channel.",
-    "Raise the centre channel, where the dialogue is.\nHelps when voices are quiet next to music and effects.",
-    "The typeface subtitles are drawn in.",
-    "The colour subtitles are drawn in.",
-    "The interface colour theme.\nJellywave is the default; extra .ini themes appear here too.",
-    "Let the floating particles drift behind the menus too,\nnot only while music is playing.",
-    "Brighten the background and wave by day, back to the night look\nafter dark, with a glow at dawn and dusk. Follows the console clock.",
-    "How strongly the wave reacts to music.\nOff keeps it calm; Max makes every beat hit hard.",
-    "Skip intros and recaps automatically, without pressing X.\nCredits start the next episode's 25 second countdown instead.",
-    "Auto: 24fps films switch the TV to 24Hz for smooth motion.\nEach TV is checked once first. Off keeps everything at 60Hz.",
-    "Checked at every launch. X checks again. New versions:\n" UPDATE_PAGE_TEXT,
+typedef struct {
+    setting_id id;
+    int        icon;
+    void     (*value)(char *buf, int cap, bool *lit);
+    void     (*activate)(void);
+    void     (*step)(int dir);
+} UiRow;
+
+static void val_text(char *buf, int cap, bool *lit, const char *t, bool on) {
+    snprintf(buf, (size_t)cap, "%s", t);
+    *lit = on;
+}
+static void val_onoff(char *buf, int cap, bool *lit, bool on) {
+    val_text(buf, cap, lit, on ? "On" : "Off", on);
+}
+
+// ---- values ----
+static void v_debug(char *b, int c, bool *l)    { val_onoff(b, c, l, plog_enabled()); }
+static void v_hd1080(char *b, int c, bool *l)   { val_onoff(b, c, l, hd1080_enabled()); }
+static void v_particles(char *b, int c, bool *l){ val_onoff(b, c, l, menusnow_enabled()); }
+static void v_daynight(char *b, int c, bool *l) { val_onoff(b, c, l, daynight_enabled()); }
+static void v_autoskip(char *b, int c, bool *l) { val_onoff(b, c, l, autoskip_enabled()); }
 #if ENABLE_PLAYER_STATS
-    "Show playback statistics over the video:\nframe rate, bitrate, buffer and decoder figures.",
+static void v_stats(char *b, int c, bool *l)    { val_onoff(b, c, l, statsovl_enabled()); }
 #endif
-    "Downloads in progress, with pause and cancel.\nThey wait while you stream and carry on by themselves.",
-    "Films and episodes saved on this PS3, ready to play.\nThey play without a connection to your server.",
+static void v_24hz(char *b, int c, bool *l)     { val_text(b, c, l, d24_enabled() ? "Auto" : "Off", d24_enabled()); }
+static void v_audio(char *b, int c, bool *l)    { val_text(b, c, l, surround_mode_label(), surround_enabled()); }
+static void v_dialogue(char *b, int c, bool *l) {
+    // Nothing is decoded here with Dolby Digital output, so there is nothing
+    // to boost: the value reads n/a and is drawn faint.
+    if (audio_passthrough_wanted()) val_text(b, c, l, "n/a", false);
+    else                            val_text(b, c, l, centermix_label(), centermix_active());
+}
+static void v_subfont(char *b, int c, bool *l)  { val_text(b, c, l, subfont_label(), subfont_get() != 0); }
+static void v_subcolor(char *b, int c, bool *l) { val_text(b, c, l, subcolor_label(), subcolor_get() != 0); }
+// Always lit: the accent IS what the row changes, so its colour previews it.
+static void v_theme(char *b, int c, bool *l)    { val_text(b, c, l, theme_current_name(), true); }
+static void v_wave(char *b, int c, bool *l)     { val_text(b, c, l, wave_audio_level_label(), wave_audio_level() != 0); }
+static void v_screen(char *b, int c, bool *l) {
+    const int pm = (int)(overscan_frac() * 1000.0f + 0.5f);   // permille
+    if (pm == 0) val_text(b, c, l, "Off", false);
+    else { snprintf(b, (size_t)c, "%d.%d%%", pm / 10, pm % 10); *l = true; }
+}
+static void v_update(char *b, int c, bool *l) {
+    const int st = update_check_state();
+    if (st == UPD_AVAILABLE) {
+        char tag[32] = "";
+        update_check_result(tag, sizeof tag);
+        const char *v = (tag[0] == 'v' || tag[0] == 'V') ? tag + 1 : tag;
+        snprintf(b, (size_t)c, "%s available", v);
+    } else {
+        snprintf(b, (size_t)c, "%s",
+                 st == UPD_CHECKING ? "Checking..."
+               : st == UPD_CURRENT  ? "Up to date (" APP_VERSION ")"
+               : st == UPD_FAILED   ? "Couldn't check"
+               :                      APP_VERSION);
+    }
+    *l = st == UPD_AVAILABLE;
+}
+static void v_sendlog(char *b, int c, bool *l) {
+    const int st = log_upload_state();
+    val_text(b, c, l,
+             st == LOGUP_SENDING ? "Sending..."
+           : st == LOGUP_SENT    ? "Sent"
+           : st == LOGUP_FAILED  ? "Failed"
+           : st == LOGUP_NOLOG   ? "No log yet"
+           :                       "X to send",
+             st == LOGUP_SENT);
+}
+// The tallies are a lock and a walk of the slot table (no copies, no disk).
+static void v_downloads(char *b, int c, bool *l) {
+    int active = 0, completed = 0, failed = 0;
+    dl_counts(&active, &completed, &failed);
+    if (!dl_manager_ready())  { val_text(b, c, l, "Unavailable", false); return; }
+    if (active)      { snprintf(b, (size_t)c, "%d active", active); *l = true; }
+    else if (failed) { snprintf(b, (size_t)c, "%d failed", failed); *l = false; }
+    else             val_text(b, c, l, "None", false);
+}
+static void v_offline(char *b, int c, bool *l) {
+    int active = 0, completed = 0, failed = 0;
+    dl_counts(&active, &completed, &failed);
+    if (!dl_manager_ready())  { val_text(b, c, l, "Unavailable", false); return; }
+    if (completed) { snprintf(b, (size_t)c, "%d", completed); *l = true; }
+    else           val_text(b, c, l, "Empty", false);
+}
+
+// ---- activation and stepping ----
+static void a_logout(void)     { g_settings_confirm = true; }
+static void a_screen(void)     { g_overscan_calib_prev = overscan_frac(); g_overscan_calib = true; }
+static void a_update(void) {
+    if (update_check_state() == UPD_AVAILABLE) xmb_update_popup_reopen();
+    else                                       update_check_again();
+}
+static void a_sendlog(void)    { log_upload_start(); }
+static void a_downloads(void)  { xmb_show_downloads(); }
+static void a_offline(void)    { xmb_show_offline(); }
+
+static void t_debug(int)       { plog_set_enabled(!plog_enabled()); }
+static void t_hd1080(int)      { hd1080_set_enabled(!hd1080_enabled()); }
+static void t_particles(int)   { menusnow_set_enabled(!menusnow_enabled()); }
+static void t_daynight(int)    { daynight_set_enabled(!daynight_enabled()); }
+static void t_autoskip(int)    { autoskip_set_enabled(!autoskip_enabled()); }
+#if ENABLE_PLAYER_STATS
+static void t_stats(int)       { statsovl_set_enabled(!statsovl_enabled()); }
+#endif
+static void t_24hz(int)        { d24_set_enabled(!d24_enabled()); }
+static void s_audio(int d)     { surround_step(d); }
+static void s_dialogue(int d)  { if (!audio_passthrough_wanted()) centermix_step(d); }
+static void s_subfont(int d)   { subfont_step(d); }
+static void s_subcolor(int d)  { subcolor_step(d); }
+static void s_theme(int d)     { theme_step(d); }
+static void s_wave(int d)      { wave_audio_step(d); }
+
+// A toggle takes X and either direction as the same flip; a value row takes X
+// as a step forward.  Neither names an activate function: X falls through to
+// step(+1).  An action row has no step, so Left and Right ignore it.
+#define TOGGLE(id, icon, val, flip) { id, icon, val, NULL, flip }
+#define VALUE(id, icon, val, st)    { id, icon, val, NULL, st }
+#define ACTION(id, icon, val, act)  { id, icon, val, act, NULL }
+
+// ICON_BUG is reused for diagnostics rows and ICON_MUSIC for audio: the icon
+// font is a 20-glyph subset (ui/fonts/tabler_icons.h) and a new glyph would
+// mean regenerating it.
+static const UiRow k_ui[] = {
+    TOGGLE(SET_DEBUG_LOG,   ICON_BUG,         v_debug,     t_debug),
+    ACTION(SET_SCREEN_SIZE, ICON_TV,          v_screen,    a_screen),
+    TOGGLE(SET_HD1080,      ICON_MOVIE,       v_hd1080,    t_hd1080),
+    VALUE (SET_AUDIO_OUT,   ICON_MUSIC,       v_audio,     s_audio),
+    VALUE (SET_DIALOGUE,    ICON_MUSIC,       v_dialogue,  s_dialogue),
+    VALUE (SET_SUB_FONT,    ICON_TV,          v_subfont,   s_subfont),
+    VALUE (SET_SUB_COLOUR,  ICON_TV,          v_subcolor,  s_subcolor),
+    VALUE (SET_THEME,       ICON_PHOTO,       v_theme,     s_theme),
+    TOGGLE(SET_PARTICLES,   ICON_PHOTO,       v_particles, t_particles),
+    TOGGLE(SET_DAYNIGHT,    ICON_PHOTO,       v_daynight,  t_daynight),
+    VALUE (SET_WAVE_INT,    ICON_MUSIC,       v_wave,      s_wave),
+    TOGGLE(SET_AUTOSKIP,    ICON_MOVIE,       v_autoskip,  t_autoskip),
+    TOGGLE(SET_24HZ,        ICON_TV,          v_24hz,      t_24hz),
+    ACTION(SET_UPDATE,      ICON_TV,          v_update,    a_update),
+    ACTION(SET_SEND_LOG,    ICON_BUG,         v_sendlog,   a_sendlog),
+#if ENABLE_PLAYER_STATS
+    TOGGLE(SET_STATS,       ICON_BUG,         v_stats,     t_stats),
+#endif
+    // Downloads: the stacked-cards glyph (a queue); Offline: play.
+    ACTION(SET_DOWNLOADS,   ICON_COLLECTIONS, v_downloads, a_downloads),
+    ACTION(SET_OFFLINE_LIB, ICON_PLAY,        v_offline,   a_offline),
+    ACTION(SET_LOGOUT,      ICON_LOGOUT,      NULL,        a_logout),
 };
+
+static const UiRow *ui_of(setting_id id) {
+    for (unsigned i = 0; i < sizeof(k_ui) / sizeof(k_ui[0]); i++)
+        if (k_ui[i].id == id) return &k_ui[i];
+    return NULL;
+}
+
+// Rows by their position in the displayed order (what g_settings_sel is).
+static const setting_row *row_at(int i) { return settings_row(i); }
+
+void settings_activate(int row) {
+    const setting_row *r = row_at(row);
+    const UiRow *u = r ? ui_of(r->id) : NULL;
+    if (!u) return;
+    if (u->activate)  u->activate();
+    else if (u->step) u->step(+1);
+}
+
+void settings_step(int row, int dir) {
+    const setting_row *r = row_at(row);
+    const UiRow *u = r ? ui_of(r->id) : NULL;
+    if (u && u->step) u->step(dir);
+}
+
+// -------------------------------------------------------------------------
+//  Geometry
+// -------------------------------------------------------------------------
 
 static void help_rect(int *x, int *y, int *w, int *h) {
     *w = XMB_LIST_W;
@@ -84,63 +224,62 @@ static void help_rect(int *x, int *y, int *w, int *h) {
 
 #define SET_PANEL_H UIS_H(96)
 #define SET_ROW_H   UIS_H(56)
+#define SET_HEADER_H UIS_H(34)
 
 static int settings_panel_y(void) { return XMB_CONTENT_Y + 16; }
 
-// Y of the first action row, below the account info card.
-static int settings_rows_top(void) {
-    return settings_panel_y() + SET_PANEL_H + 24;
+// The band the list scrolls in: below the account card, above the safe area.
+static int band_top(void)    { return settings_panel_y() + SET_PANEL_H + UIS_H(14); }
+static int band_bottom(void) { return (int)display_height - XMB_BOTTOM_PAD; }
+
+// The row rhythm never changes; the list scrolls instead of compressing.
+static int settings_row_pitch(void) { return SET_ROW_H + UIS_H(10); }
+
+static struct {
+    settings_item items[SETTINGS_MAX_ITEMS];
+    int n, total, scroll;
+} s_lay;
+
+// Rebuild the layout for this frame's geometry and move the scroll just far
+// enough to keep the selection, and its section header, on screen.  Called by
+// both draw phases; the second finds nothing left to move.
+static void layout_update(void) {
+    s_lay.n = settings_layout(s_lay.items, SETTINGS_MAX_ITEMS, SET_HEADER_H,
+                              SET_ROW_H, settings_row_pitch(), &s_lay.total);
+    s_lay.scroll = settings_scroll_for(s_lay.items, s_lay.n, g_settings_sel,
+                                       band_bottom() - band_top(), s_lay.scroll,
+                                       s_lay.total);
 }
 
-// Keep a stable XMB row rhythm. When the list is longer than the safe area,
-// selection scrolling (rather than row compression) moves the visible window.
-static int settings_row_pitch(void) {
-    return SET_ROW_H + UIS_H(10);
+static int item_y(const settings_item *it) { return band_top() + it->y - s_lay.scroll; }
+
+// Only items that fit the band whole are drawn: text and rects have no clip
+// here, so a half-visible row would spill over the account card or the hints.
+static bool item_on_screen(const settings_item *it) {
+    const int y = item_y(it);
+    return y >= band_top() && y + it->h <= band_bottom();
 }
 
-static int settings_visible_rows(void) {
-    int avail = (int)display_height - XMB_BOTTOM_PAD - settings_rows_top();
-    int pitch = settings_row_pitch();
-    if (avail < SET_ROW_H) return 1;
-
-    int n = 1 + (avail - SET_ROW_H) / pitch;
-    if (n < 1) n = 1;
-    if (n > XMB_SETTINGS_COUNT) n = XMB_SETTINGS_COUNT;
-    return n;
-}
-
-// First row in the visible settings window. The selected row is always kept
-// visible by advancing this window; the row height itself never changes.
-static int settings_first_row(void) {
-    int vis = settings_visible_rows();
-    int first = g_settings_sel - vis + 1;
-    if (first < 0) first = 0;
-
-    int max_first = XMB_SETTINGS_COUNT - vis;
-    if (max_first < 0) max_first = 0;
-    if (first > max_first) first = max_first;
-    return first;
-}
-
-static int settings_row_y(int i) {
-    return settings_rows_top()
-         + (i - settings_first_row()) * settings_row_pitch();
+static int row_y(int row) {
+    const int k = settings_item_of_row(s_lay.items, s_lay.n, row);
+    return k < 0 ? band_top() : item_y(&s_lay.items[k]);
 }
 
 // Triangle (spine gate): the highlighted row turns over like a poster's
 // quick-peek (xmb/ui_peek.cpp), its back the row's description.
 void settings_open_help_peek(void) {
-    if (g_settings_sel < 0 || g_settings_sel >= XMB_SETTINGS_COUNT) return;
+    const setting_row *r = row_at(g_settings_sel);
+    if (!r) return;
+    layout_update();
     const int list_x = ((int)display_width - XMB_LIST_W) / 2;
-    peek_open_text(SETTINGS_LABELS[g_settings_sel], SETTINGS_HELP[g_settings_sel],
-                   list_x, settings_row_y(g_settings_sel), XMB_LIST_W, SET_ROW_H);
+    peek_open_text(r->label, r->help, list_x, row_y(g_settings_sel), XMB_LIST_W, SET_ROW_H);
 }
 
 // Centered confirm dialog rect.
 static void settings_confirm_rect(int *x, int *y, int *w, int *h) {
-    *w = 520; *h = 118;
+    *w = UIS_W(520); *h = UIS_H(118);
     *x = ((int)display_width - *w) / 2;
-    *y = XMB_CONTENT_Y + 100;
+    *y = XMB_CONTENT_Y + UIS_H(100);
 }
 
 // 1px hairline outline around a rect.
@@ -159,7 +298,27 @@ static void fill_circle(int cx, int cy, int r, u32 color) {
     }
 }
 
-// CPU phase: account card, row highlight, confirm dialog panel.
+// A section header's label, upper case with a little air between letters.
+static void header_label(const char *src, char *out, int cap) {
+    int n = 0;
+    for (int i = 0; src[i] && n < cap - 1; i++)
+        out[n++] = (src[i] >= 'a' && src[i] <= 'z') ? (char)(src[i] - 32) : src[i];
+    out[n] = '\0';
+}
+
+#define HEADER_PX      UIS_TF(13)
+#define HEADER_TRACK   UIS_W(2)       // letter spacing
+
+static int header_label_width(const char *label) {
+    int w = 0;
+    for (int i = 0; label[i]; i++) {
+        const char one[2] = { label[i], '\0' };
+        w += ttf_text_width(one, HEADER_PX) + HEADER_TRACK;
+    }
+    return w;
+}
+
+// CPU phase: account card, section rules, row highlight, confirm dialog panel.
 void xmb_cpu_draw_settings(void) {
     int W      = (int)display_width;
     int list_x = (W - XMB_LIST_W) / 2;
@@ -172,21 +331,27 @@ void xmb_cpu_draw_settings(void) {
         return;
     }
 
+    layout_update();
+
     // Account card with avatar disc.
     int py = settings_panel_y();
     drawRect((u32)list_x, (u32)py, (u32)XMB_LIST_W, SET_PANEL_H, XMB_PANEL);
     hairline_frame(list_x, py, XMB_LIST_W, SET_PANEL_H);
-    fill_circle(list_x + 46, py + SET_PANEL_H / 2, 22, XMB_ACCENT_DEEP);
+    fill_circle(list_x + UIS_W(46), py + SET_PANEL_H / 2, UIS_H(22), XMB_ACCENT_DEEP);
 
-    // Selected action row. The visible window is derived from the selected
-    // row, so navigation can reach every setting without putting anything
-    // below the safe area.
-    {
-        int first = settings_first_row();
-        int last  = first + settings_visible_rows();
-        for (int i = first; i < last; i++) {
-            if (i != g_settings_sel) continue;
-            int iy = settings_row_y(i);
+    for (int k = 0; k < s_lay.n; k++) {
+        const settings_item *it = &s_lay.items[k];
+        if (!item_on_screen(it)) continue;
+        const int iy = item_y(it);
+        if (it->is_header) {
+            // A 1px rule from the end of the label to the list's right edge.
+            char lab[24];
+            header_label(settings_section_label((setting_section)it->index), lab, sizeof lab);
+            const int x0 = list_x + UIS_W(20) + header_label_width(lab) + UIS_W(12);
+            const int x1 = list_x + XMB_LIST_W;
+            if (x1 > x0)
+                drawRect((u32)x0, (u32)(iy + it->h - UIS_H(14)), (u32)(x1 - x0), 1, XMB_HAIRLINE);
+        } else if (it->index == g_settings_sel) {
             drawRect((u32)list_x, (u32)iy, (u32)XMB_LIST_W, SET_ROW_H, XMB_PANEL_HI);
             drawRect((u32)(list_x - UIS_W(4)), (u32)iy, UIS_W(3), SET_ROW_H, XMB_ACCENT);
         }
@@ -201,7 +366,7 @@ void xmb_cpu_draw_settings(void) {
     }
 }
 
-// RSX phase: account text, action labels, confirm prompt.
+// RSX phase: account text, section labels, rows, confirm prompt.
 void xmb_draw_settings(void) {
     int W      = (int)display_width;
     int list_x = (W - XMB_LIST_W) / 2;
@@ -217,6 +382,8 @@ void xmb_draw_settings(void) {
         drawTTF((u32)(mx + (mw - sw) / 2), (u32)(my + UIS_H(66)), s, UIS_TF(14), XMB_TEXT_DIM);
         return;
     }
+
+    layout_update();
 
     int py = settings_panel_y();
     int tx = list_x + UIS_W(84);
@@ -241,164 +408,41 @@ void xmb_draw_settings(void) {
     snprintf(line, sizeof(line), "%s", g_server[0] ? g_server : "(no server)");
     drawTTF((u32)tx, (u32)(py + UIS_H(64)), line, UIS_TF(14), XMB_TEXT_DIM);
 
-    // Action rows. Draw only the visible window; the input handler still
-    // owns the full selection range.
-    int first_row = settings_first_row();
-    int last_row  = first_row + settings_visible_rows();
-    for (int i = first_row; i < last_row; i++) {
-        int  iy  = settings_row_y(i);
-        bool sel = (i == g_settings_sel);
-        u32  clr = sel ? XMB_WHITE : XMB_TEXT_DIM;
+    // Headers and rows.  Only what is fully inside the band is drawn; the
+    // input handler owns the whole selection range.
+    int last_bottom = band_top();
+    for (int k = 0; k < s_lay.n; k++) {
+        const settings_item *it = &s_lay.items[k];
+        if (!item_on_screen(it)) continue;
+        const int iy = item_y(it);
+        last_bottom = iy + it->h;
+
+        if (it->is_header) {
+            char lab[24];
+            header_label(settings_section_label((setting_section)it->index), lab, sizeof lab);
+            int x = list_x + UIS_W(20);
+            const int ty = iy + it->h - UIS_H(14) - (int)HEADER_PX / 2;
+            for (int i = 0; lab[i]; i++) {
+                const char one[2] = { lab[i], '\0' };
+                drawTTF((u32)x, (u32)ty, one, HEADER_PX, XMB_TEXT_FAINT);
+                x += ttf_text_width(one, HEADER_PX) + HEADER_TRACK;
+            }
+            continue;
+        }
+
+        const setting_row *r = row_at(it->index);
+        const UiRow *u = ui_of(r->id);
+        const bool sel = (it->index == g_settings_sel);
+        const u32  clr = sel ? XMB_WHITE : XMB_TEXT_DIM;
         drawIcon((u32)(list_x + UIS_W(20)), (u32)(iy + (SET_ROW_H - UIS_H(20)) / 2),
-                 SETTINGS_ICONS[i], UIS_TF(20.0f), clr);
+                 u ? u->icon : ICON_TV, UIS_TF(20.0f), clr);
         drawTTF((u32)(list_x + UIS_W(52)), (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                SETTINGS_LABELS[i], UIS_TF(18), clr, sel);
-        if (i == 1) {   // Debug Logging — right-aligned On/Off state
-            const char *val = plog_enabled() ? "On" : "Off";
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), plog_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 2) {   // Screen Size — right-aligned overscan percentage
-            int pm = (int)(overscan_frac() * 1000.0f + 0.5f);   // permille
-            char val[16];
-            if (pm == 0) snprintf(val, sizeof(val), "Off");
-            else         snprintf(val, sizeof(val), "%d.%d%%", pm / 10, pm % 10);
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), pm ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 3) {   // 1080p Playback (Alpha) — right-aligned On/Off state
-            const char *val = hd1080_enabled() ? "On" : "Off";
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), hd1080_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 4) {   // Audio Output — right-aligned Stereo/5.1/7.1 state
-            const char *val = surround_mode_label();
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), surround_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 5) {   // Dialogue Boost — right-aligned gain state
-            const char *val = centermix_label();
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), centermix_active() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 6) {   // Subtitle Font — right-aligned typeface name
-            const char *val = subfont_label();
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18),
-                    subfont_get() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 7) {   // Subtitle Colour — right-aligned look name
-            const char *val = subcolor_label();
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18),
-                    subcolor_get() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 8) {   // Theme — right-aligned live theme name
-            // Always drawn in the accent, because the accent IS the thing the
-            // row changes: the value's colour previews the choice.
-            const char *val = theme_current_name();
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), XMB_ACCENT, sel);
-        }
-        if (i == 9) {   // Menu Particles — right-aligned On/Off state
-            const char *val = menusnow_enabled() ? "On" : "Off";
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), menusnow_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 10) {  // Day / Night Palette -- right-aligned On/Off state
-            const char *val = daynight_enabled() ? "On" : "Off";
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), daynight_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 11) {  // Wave Intensity -- right-aligned Off/Normal/Strong/Max
-            const char *val = wave_audio_level_label();
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), wave_audio_level() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 12) {  // Auto Skip -- right-aligned On/Off state
-            const char *val = autoskip_enabled() ? "On" : "Off";
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), autoskip_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 13) {  // 24Hz Output -- right-aligned Auto/Off state
-            const char *val = d24_enabled() ? "Auto" : "Off";
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), d24_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-        if (i == 14) {  // Software Update -- right-aligned check state
+                r->label, UIS_TF(18), clr, sel);
+        if (u && u->value) {
             char val[48];
-            const int st = update_check_state();
-            if (st == UPD_AVAILABLE) {
-                char tag[32] = "";
-                update_check_result(tag, sizeof tag);
-                const char *v = (tag[0] == 'v' || tag[0] == 'V') ? tag + 1 : tag;
-                snprintf(val, sizeof val, "%s available", v);
-            } else {
-                snprintf(val, sizeof val, "%s",
-                         st == UPD_CHECKING ? "Checking..."
-                       : st == UPD_CURRENT  ? "Up to date (" APP_VERSION ")"
-                       : st == UPD_FAILED   ? "Couldn't check"
-                       :                      APP_VERSION);
-            }
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), st == UPD_AVAILABLE ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-#if ENABLE_PLAYER_STATS
-        if (i == 15) {  // Player Stats Overlay — right-aligned On/Off state
-            const char *val = statsovl_enabled() ? "On" : "Off";
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
-            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
-                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                    val, UIS_TF(18), statsovl_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
-        }
-#endif
-        if (i == XMB_SET_ROW_DOWNLOADS || i == XMB_SET_ROW_OFFLINE) {
-            // Right-aligned tally.  dl_counts is a lock and a walk of the
-            // slot table -- no copies, no disk -- so it is fine per frame.
-            int active = 0, completed = 0, failed = 0;
-            dl_counts(&active, &completed, &failed);
-            char val[32];
-            bool lit;
-            if (!dl_manager_ready()) { snprintf(val, sizeof(val), "Unavailable"); lit = false; }
-            else if (i == XMB_SET_ROW_DOWNLOADS) {
-                if (active)      snprintf(val, sizeof(val), "%d active", active);
-                else if (failed) snprintf(val, sizeof(val), "%d failed", failed);
-                else             snprintf(val, sizeof(val), "None");
-                lit = active > 0;
-            } else {
-                if (completed) snprintf(val, sizeof(val), "%d", completed);
-                else           snprintf(val, sizeof(val), "Empty");
-                lit = completed > 0;
-            }
-            int vw = ttf_text_width(val, UIS_TF(18), sel);
+            bool lit = false;
+            u->value(val, sizeof val, &lit);
+            const int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), lit ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
@@ -406,40 +450,30 @@ void xmb_draw_settings(void) {
     }
 
     // Triangle's description panel, over the list.
-    if (g_settings_help && g_settings_sel >= 0 && g_settings_sel < XMB_SETTINGS_COUNT) {
+    const setting_row *cur = row_at(g_settings_sel);
+    if (g_settings_help && cur) {
         int hx, hy, hw, hh;
         help_rect(&hx, &hy, &hw, &hh);
         drawTTF((u32)(hx + UIS_W(24)), (u32)(hy + UIS_H(12)),
-                SETTINGS_LABELS[g_settings_sel], UIS_TF(17), XMB_ACCENT, true);
-        char line[160];
-        const char *t = SETTINGS_HELP[g_settings_sel];
+                cur->label, UIS_TF(17), XMB_ACCENT, true);
+        char hl[160];
+        const char *t = cur->help;
         for (int ln = 0; ln < 2 && t && *t; ln++) {
             const char *nl = strchr(t, '\n');
             int n = nl ? (int)(nl - t) : (int)strlen(t);
-            if (n > (int)sizeof(line) - 1) n = (int)sizeof(line) - 1;
-            memcpy(line, t, (size_t)n); line[n] = '\0';
+            if (n > (int)sizeof(hl) - 1) n = (int)sizeof(hl) - 1;
+            memcpy(hl, t, (size_t)n); hl[n] = '\0';
             drawTTF((u32)(hx + UIS_W(24)), (u32)(hy + UIS_H(42) + ln * UIS_H(24)),
-                    line, UIS_TF(15), XMB_TEXT, false);
+                    hl, UIS_TF(15), XMB_TEXT, false);
             t = nl ? nl + 1 : NULL;
         }
         return;      // the panel sits where the footer would
     }
 
-    // A quiet hint that Triangle explains the rows.
-    {
-        const char *hint = "Triangle  About this setting";
-        int hw_ = ttf_text_width(hint, UIS_TF(13));
-        drawTTF((u32)((W + XMB_LIST_W) / 2 - hw_), (u32)(settings_panel_y() + SET_PANEL_H + UIS_H(4)),
-                hint, UIS_TF(13), XMB_TEXT_FAINT);
-    }
-
-    // Version footer — skip it if the visible settings window already
-    // occupies the bottom of the safe area.
+    // Version footer, when the list is scrolled to its end with room to spare.
     {
         int footer_y = (int)display_height - XMB_BOTTOM_PAD - UIS_H(26);
-        int last_visible = settings_first_row() + settings_visible_rows() - 1;
-        int last_row_bottom = settings_row_y(last_visible) + SET_ROW_H;
-        if (footer_y > last_row_bottom + 6) {
+        if (footer_y > last_bottom + 6) {
             const char *ver = "Jellyfin for PS3 " APP_VERSION " \xC2\xB7 built " __DATE__;
             int vw = ttf_text_width(ver, UIS_TF(13));
             drawTTF((u32)((W - vw) / 2), (u32)footer_y, ver, UIS_TF(13), XMB_TEXT_FAINT);

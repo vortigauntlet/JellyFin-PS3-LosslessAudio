@@ -8,6 +8,7 @@
 #include <sysutil/sysutil.h>
 
 #include "ui_internal.h"
+#include "settings_model.h"   // settings_count()
 #include "ui_wave.h"
 #include "ui_sfx.h"
 #include "ui_card_gpu.h"
@@ -106,7 +107,7 @@ static void slog_menu_tick(void) {
     int         sel   = -1, total = 0, depth = 0;
 
     if (tab == XMB_TAB_SETTINGS) {
-        sel = g_settings_sel; total = XMB_SETTINGS_COUNT;
+        sel = g_settings_sel; total = settings_count();
     } else if (tab == XMB_TAB_SEARCH) {
         sel = g_search_focus_results ? 1 : 0; total = g_search_results_count;
     } else {
@@ -444,8 +445,10 @@ static void xmb_draw_hints(int tab) {
             static const Hint h[] = {{'X',"Confirm"},{'C',"Cancel"}};
             draw_hints_vis(h, 2);
         } else {
-            static const Hint h[] = {{'X',"Select"},{'T',"Details"}};
-            draw_hints_vis(h, 2);
+            // L2 and R2 pair into one "Section" hint (an empty label pairs a
+            // hint with the next).
+            static const Hint h[] = {{'X',"Select"},{'T',"About"},{'L',""},{'R',"Section"}};
+            draw_hints_vis(h, 4);
         }
     } else if (tab == XMB_TAB_SEARCH) {
         if (g_search_focus_results) {

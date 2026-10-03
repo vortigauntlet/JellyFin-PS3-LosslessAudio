@@ -11,6 +11,7 @@
 #include <ctype.h>
 
 #include "ui_internal.h"
+#include "settings_model.h"   // the Settings rows
 #include "ui_spine.h"        // each category remembers its focus
 #include "thumbnail_cache.h"
 #include "jellyfin_api.h"
@@ -240,50 +241,19 @@ static bool xmb_input_settings(void) {
     if (g_settings_help && BTN_PRESSED(circle)) { g_settings_help = false; return false; }
     if (BTN_PRESSED(l1)) { g_settings_help = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { g_settings_help = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
-    if (BTN_REPEAT(up)   && g_settings_sel > 0)                      g_settings_sel--;
-    if (BTN_REPEAT(down) && g_settings_sel < XMB_SETTINGS_COUNT - 1) g_settings_sel++;
-    if (BTN_PRESSED(cross)) {
-        if (g_settings_sel == 0) g_settings_confirm = true;             // Log Out
-        if (g_settings_sel == 1) plog_set_enabled(!plog_enabled());     // Debug Logging
-        if (g_settings_sel == 2) {                                      // Screen Size
-            g_overscan_calib_prev = overscan_frac();
-            g_overscan_calib      = true;
-        }
-        if (g_settings_sel == 3)                                        // 1080p (Alpha)
-            hd1080_set_enabled(!hd1080_enabled());
-        if (g_settings_sel == 4)                                        // Audio Output
-            surround_cycle();    // Stereo -> 5.1 -> [7.1 where offered]
-        if (g_settings_sel == 5)                                        // Dialogue Boost
-            centermix_cycle();   // Off -> +3 -> +6 -> +10
-        if (g_settings_sel == 6)                                        // Subtitle Font
-            subfont_cycle();     // Open Sans -> Noto Sans -> Roboto Cond.
-        if (g_settings_sel == 7)                                        // Subtitle Colour
-            subcolor_cycle();    // White -> Soft Yellow -> Soft Grey
-        if (g_settings_sel == 8)                                        // Theme
-            theme_cycle();       // XMB wave -> Golden Age -> any USRDIR/tmp .ini
-        if (g_settings_sel == 9)                                        // Menu Particles
-            menusnow_set_enabled(!menusnow_enabled());
-        if (g_settings_sel == 10)                                       // Day / Night Palette
-            daynight_set_enabled(!daynight_enabled());
-        if (g_settings_sel == 11)                                       // Wave Intensity
-            wave_audio_set_level((wave_audio_level() + 1) % 4);         // Off -> Normal -> Strong -> Max
-        if (g_settings_sel == 12)                                       // Auto Skip
-            autoskip_set_enabled(!autoskip_enabled());
-        if (g_settings_sel == 13)                                       // 24Hz Output
-            d24_set_enabled(!d24_enabled());
-        if (g_settings_sel == 14) {                                     // Software Update
-            if (update_check_state() == UPD_AVAILABLE) xmb_update_popup_reopen();
-            else                                       update_check_again();
-        }
-#if ENABLE_PLAYER_STATS
-        if (g_settings_sel == 15)                                       // Player Stats Overlay
-            statsovl_set_enabled(!statsovl_enabled());
-#endif
-        // Offline downloads (Stage 5): full-screen overlays, like the info
-        // page -- they own input until Circle, then the tab resumes.
-        if (g_settings_sel == XMB_SET_ROW_DOWNLOADS) xmb_show_downloads();
-        if (g_settings_sel == XMB_SET_ROW_OFFLINE)   xmb_show_offline();
+    const int n_rows = settings_count();
+    if (BTN_REPEAT(up)   && g_settings_sel > 0)          g_settings_sel--;
+    if (BTN_REPEAT(down) && g_settings_sel < n_rows - 1) g_settings_sel++;
+    // L2 / R2: the first row of the previous / next section.
+    if (BTN_PRESSED(l2) || BTN_PRESSED(r2)) {
+        const int to = settings_section_jump(g_settings_sel, BTN_PRESSED(r2) ? +1 : -1);
+        if (to >= 0) g_settings_sel = to;
     }
+    // X: activate / next value.  Left / Right: previous / next value on value
+    // rows (toggles flip either way, action rows ignore them).
+    if (BTN_PRESSED(cross)) settings_activate(g_settings_sel);
+    if (BTN_PRESSED(left))  settings_step(g_settings_sel, -1);
+    if (BTN_PRESSED(right)) settings_step(g_settings_sel, +1);
     return false;
 }
 

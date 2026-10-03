@@ -53,10 +53,12 @@ static void subcolor_save(void) {
     fclose(f);
 }
 
-void subcolor_cycle(void) {
-    s_col = (subcolor_t)((s_col + 1) % SUBCOLOR_COUNT);
+void subcolor_step(int dir) {
+    s_col = (subcolor_t)((s_col + (dir < 0 ? SUBCOLOR_COUNT - 1 : 1)) % SUBCOLOR_COUNT);
     subcolor_save();
 }
+
+void subcolor_cycle(void) { subcolor_step(+1); }
 
 // Missing file => White, the broadcast default.
 void subcolor_load(void) {

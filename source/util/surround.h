@@ -70,6 +70,7 @@ void surround_save(void);                    // persist the current value
 surround_mode_t surround_get_mode(void);
 void surround_set_mode(surround_mode_t m);   // set + persist immediately
 void surround_cycle(void);                   // Stereo -> 5.1 -> [7.1] -> Dolby Digital -> Stereo
+void surround_step(int dir);                 // the same walk, either way round (+1 / -1)
 const char *surround_mode_label(void);       // "Stereo" / "5.1" / "7.1" / "Dolby Digital"
 
 // True for any non-stereo mode: the one question the audio port, the demux

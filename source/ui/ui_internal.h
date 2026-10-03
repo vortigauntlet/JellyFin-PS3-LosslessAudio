@@ -173,6 +173,11 @@ void depth_lib_prefetch(int tab, int n);
 void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
 // Settings: open the highlighted row's description as a peek (ui_settings.cpp).
 void settings_open_help_peek(void);
+// X and Left/Right on a Settings row, by its position in the displayed order
+// (ui_settings.cpp owns what each row does).  Left/Right are ignored on
+// action rows; toggles flip on either direction.
+void settings_activate(int row);
+void settings_step(int row, int dir);
 bool peek_active(void);    // opening or open: owns input
 bool peek_visible(void);   // anything on screen, including the close
 void peek_draw_over(void);

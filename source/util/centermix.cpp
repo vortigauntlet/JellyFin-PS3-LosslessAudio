@@ -38,12 +38,15 @@ void centermix_set(center_mode_t m) {
     centermix_save();
 }
 
-void centermix_cycle(void) {
+void centermix_step(int dir) {
     int i = 0;
     for (int k = 0; k < CENTERMIX_ORDER_N; k++)
         if (CENTERMIX_ORDER[k] == s_mode) { i = k; break; }
-    centermix_set(CENTERMIX_ORDER[(i + 1) % CENTERMIX_ORDER_N]);
+    const int n = CENTERMIX_ORDER_N;
+    centermix_set(CENTERMIX_ORDER[((i + (dir < 0 ? -1 : 1)) % n + n) % n]);
 }
+
+void centermix_cycle(void) { centermix_step(+1); }
 
 const char *centermix_label(void) {
     switch (s_mode) {

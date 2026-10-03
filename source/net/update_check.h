@@ -6,7 +6,7 @@
 #define APP_VERSION "3.1"
 
 // Where a newer release is, as the popup and Settings show it.
-#define UPDATE_PAGE_TEXT "github.com/vortigauntlet/JellyFin-PS3-LosslessAudio/releases"
+#include "update_page.h"
 
 // One-shot background check of the project's GitHub releases.  Runs entirely
 // on its own low-priority thread: start it once after http_init() succeeds

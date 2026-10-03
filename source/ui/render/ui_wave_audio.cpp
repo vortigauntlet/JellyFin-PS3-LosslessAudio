@@ -193,7 +193,13 @@ const char *wave_audio_level_label(void)
     return L[l < 0 ? 0 : (l > 3 ? 3 : l)];
 }
 
-// Render thread (the Settings row).  Off -> Normal -> Strong -> Max -> Off.
+// Render thread (the Settings row).  Off -> Normal -> Strong -> Max -> Off,
+// either way round.
+void wave_audio_step(int dir)
+{
+    wave_audio_set_level((wave_audio_level() + (dir < 0 ? 3 : 1)) % 4);
+}
+
 void wave_audio_set_level(int level)
 {
     if (level < 0) level = 0;

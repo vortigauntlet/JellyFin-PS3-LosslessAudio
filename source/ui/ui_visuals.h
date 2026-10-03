@@ -420,15 +420,9 @@ extern bool g_jumpbar_active;
 extern int  g_jumpbar_sel;
 extern char g_tab_name_filter[XMB_TAB_COUNT][4];
 
-// Settings tab state (defined in ui_xmb_state.cpp)
-// The "Player Stats Overlay" row only exists when the diagnostics module is
-// compiled in — a build with ENABLE_PLAYER_STATS 0 has nothing for it to
-// toggle, so the row goes away rather than sitting there doing nothing.
-// Offline downloads are the last two rows, after every row that existed
-// before them, so no existing row changes its index.
-#define XMB_SET_ROW_DOWNLOADS (15 + ENABLE_PLAYER_STATS)
-#define XMB_SET_ROW_OFFLINE   (16 + ENABLE_PLAYER_STATS)
-#define XMB_SETTINGS_COUNT (17 + ENABLE_PLAYER_STATS)  // selectable settings entries
+// Settings tab state (defined in ui_xmb_state.cpp).  The rows themselves are
+// the model in ui/settings_model.c; g_settings_sel is a position in its
+// displayed order.
 extern int   g_settings_sel;       // highlighted settings entry
 extern bool  g_settings_confirm;   // true while the logout confirm prompt is up
 extern bool  g_settings_help;      // Triangle: the highlighted row's description is up
