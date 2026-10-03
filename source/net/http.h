@@ -28,6 +28,11 @@ void http_end(void);
 int  http_request(int method, const char *url, const char *body,
                   const char *token, char *out, int out_size);
 
+// POST a NUL-terminated text/plain body (client log upload).  Same return
+// contract as http_request().
+int  http_post_text(const char *url, const char *body, const char *token,
+                    char *out, int out_size);
+
 // Fetches a binary resource (e.g. JPEG image) into caller-supplied buffer.
 // Returns number of bytes written, or -1 on failure.
 int http_fetch_binary(const char *url, const char *token,

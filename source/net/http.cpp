@@ -302,7 +302,8 @@ static int read_response(int sock, char *buf, int cap,
 
 static int build_headers(char *req, int cap, const char *method,
                          const char *path, const char *host, int port,
-                         const char *token, const char *accept, int blen) {
+                         const char *token, const char *accept, int blen,
+                         const char *ctype = NULL) {
     // Always send the full client identity (Client/Device/DeviceId/Version),
     // appending the access token when we have one.  Sending only the token —
     // without DeviceId — means Jellyfin can't bind the request to a device
@@ -331,8 +332,9 @@ static int build_headers(char *req, int cap, const char *method,
         method, path, host, port, auth, accept);
     if (blen > 0)
         rlen += snprintf(req+rlen, cap-rlen,
-            "Content-Type: application/json\r\n"
-            "Content-Length: %d\r\n", blen);
+            "Content-Type: %s\r\n"
+            "Content-Length: %d\r\n",
+            ctype ? ctype : "application/json", blen);
     rlen += snprintf(req+rlen, cap-rlen, "Connection: close\r\n\r\n");
     return rlen;
 }
@@ -448,7 +450,8 @@ void http_end(void) {
 }
 
 static int http_request_once(int method, const char *url, const char *body,
-                             const char *token, char *out, int out_size) {
+                             const char *token, char *out, int out_size,
+                             const char *ctype = NULL) {
     if (s_http_mtx_ok) sysMutexLock(s_http_mtx, 0);
     char host[256]; int port; char path[512];
     url_parse(url, host, sizeof(host), &port, path, sizeof(path));
@@ -464,7 +467,7 @@ static int http_request_once(int method, const char *url, const char *body,
     int  blen = (method == HTTP_POST && body) ? (int)strlen(body) : 0;
     char req[4096];
     int  rlen = build_headers(req, sizeof(req), verb,
-                              path, host, port, token, "application/json", blen);
+                              path, host, port, token, "application/json", blen, ctype);
 
     // ONE send for headers AND body.
     //
@@ -562,6 +565,13 @@ int http_request(int method, const char *url, const char *body,
         return -3;
     }
     return status;
+}
+
+// POST a text/plain body (a log file); the body must be NUL-terminated.
+int http_post_text(const char *url, const char *body, const char *token,
+                   char *out, int out_size) {
+    return http_request_once(HTTP_POST, url, body, token, out, out_size,
+                             "text/plain");
 }
 
 int http_fetch_binary(const char *url, const char *token,
