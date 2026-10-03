@@ -12,6 +12,7 @@
 
 #include "ui_internal.h"
 #include "settings_model.h"   // the Settings rows
+#include "dl_manager.h"       // dl_manager_ready(): the season sheet
 #include "ui_spine.h"        // each category remembers its focus
 #include "thumbnail_cache.h"
 #include "jellyfin_api.h"
@@ -339,6 +340,14 @@ static void xmb_input_tv_sub(void) {
     }
     if (BTN_REPEAT(left)) {
         if ((g_tv_sub_sel % C) > 0) g_tv_sub_sel--;
+    }
+    // Triangle on a SEASON (depth 1): the whole-season download sheet, when
+    // downloads are available.  (At depth 2 it is the episode's details.)
+    if (BTN_PRESSED(triangle) && g_tv_depth == 1 && g_tv_sub_count > 0 &&
+        g_tv_sub_sel < g_tv_sub_count && dl_manager_ready()) {
+        xmb_season_download_sheet(&g_tv_sub_items[g_tv_sub_sel]);
+        init_btns();
+        return;
     }
     // Triangle opens the info screen for an EPISODE, the same as it does for a
     // movie in the library grid — which is where the Version and Quality rows

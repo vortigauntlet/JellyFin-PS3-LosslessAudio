@@ -9,6 +9,7 @@
 
 #include "ui_internal.h"
 #include "settings_model.h"   // settings_count()
+#include "dl_manager.h"       // dl_manager_ready(): the season hint
 #include "ui_wave.h"
 #include "ui_sfx.h"
 #include "ui_card_gpu.h"
@@ -302,6 +303,7 @@ static void xmb_draw_text_phase(int tab) {
                 xmb_draw_breadcrumb(XMB_ITEM_PAD, XMB_CONTENT_Y + UIS_H(2),
                                     g_tv_series_name, g_tv_season_name,
                                     "Episodes");
+            xmb_season_toast_draw();
         } else if (g_col_depth > 0) {
             xmb_draw_breadcrumb(XMB_ITEM_PAD, XMB_CONTENT_Y + UIS_H(2),
                                 g_col_name, "Movies", NULL);
@@ -464,6 +466,12 @@ static void xmb_draw_hints(int tab) {
     } else if (g_music_depth > 0 && xmb_kind(tab) == TABKIND_MUSIC) {
         static const Hint h[] = {{'X',"Select"},{'C',"Back"}};
         draw_hints_vis(h, 2);
+    } else if (g_tv_depth == 1 && !in_col_sub) {
+        // Seasons: Triangle queues the whole season, when downloads work.
+        static const Hint h[] = {{'X',"Select"},{'T',"Download season"},{'C',"Back"}};
+        static const Hint hx[] = {{'X',"Select"},{'C',"Back"}};
+        if (dl_manager_ready()) draw_hints_vis(h, 3);
+        else                    draw_hints_vis(hx, 2);
     } else if (in_tv_sub || in_col_sub) {
         static const Hint h[] = {{'X',"Select"},{'T',"Details"},{'C',"Back"}};
         draw_hints_vis(h, 3);

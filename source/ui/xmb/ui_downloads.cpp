@@ -145,6 +145,46 @@ bool xmb_dl_confirm(const char *title, const char *line, const char *safe,
     return false;
 }
 
+// The same panel with one option, for something that can only be read.
+void xmb_dl_notice(const char *title, const char *line) {
+    rsxSync();
+    flip();
+    init_btns();
+    bool armed = false;
+    while (running) {
+        waitflip();
+        sysUtilCheckCallback();
+        poll_buttons();
+        if (!armed) {
+            if (!btn_cur.cross && !btn_cur.circle && !btn_cur.square) armed = true;
+        } else if (BTN_PRESSED(cross) || BTN_PRESSED(circle)) {
+            ui_sfx_play(BTN_PRESSED(cross) ? SFX_DECIDE : SFX_CANCEL);
+            break;
+        }
+        frame_begin();
+        const int pw = UIS_W(600), ph = UIS_H(190);
+        const int px = ((int)display_width - pw) / 2, py = ((int)display_height - ph) / 2;
+        drawRect((u32)px, (u32)py, (u32)pw, (u32)ph, XMB_PANEL);
+        drawRect((u32)px, (u32)py, (u32)pw, 1, XMB_HAIRLINE);
+        drawRect((u32)px, (u32)(py + ph - 1), (u32)pw, 1, XMB_HAIRLINE);
+        drawRect((u32)px, (u32)py, 1, (u32)ph, XMB_HAIRLINE);
+        drawRect((u32)(px + pw - 1), (u32)py, 1, (u32)ph, XMB_HAIRLINE);
+        const int cx = px + UIS_W(32), mw = pw - UIS_W(64);
+        int y = py + UIS_H(28);
+        clip_text(cx, y, title, UIS_TF(24), XMB_WHITE, mw, true);
+        y += UIS_H(42);
+        clip_text(cx, y, line, UIS_TF(15), XMB_TEXT_DIM, mw, false);
+        const int oh = UIS_H(44), oy = py + ph - oh - UIS_H(24);
+        drawRect((u32)cx, (u32)oy, (u32)mw, (u32)oh, XMB_PANEL_HI);
+        drawRect((u32)(cx - UIS_W(4)), (u32)oy, UIS_W(3), (u32)oh, XMB_ACCENT);
+        drawTTF_vcentered((u32)(cx + UIS_W(16)), oy + oh / 2, "OK", UIS_TF(19), XMB_TEXT);
+        { static const Hint h[] = {{'X', "OK"}};
+          draw_hints_bar(h, 1); }
+        flip();
+    }
+    init_btns();
+}
+
 // ---------------------------------------------------------------------------
 // Shared row drawing
 // ---------------------------------------------------------------------------

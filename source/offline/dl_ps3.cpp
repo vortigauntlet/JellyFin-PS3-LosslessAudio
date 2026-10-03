@@ -342,12 +342,21 @@ int dl_download_item(const JFItem *item, const XMBItemDetail *detail,
     StreamPrefs prefs;
     stream_prefs_current(&prefs);
     DlRequestInput in = { g_server, jf_device_id(), item, detail, source, &prefs };
-    static DlRequest rq;   // ~5 KB, UI thread
-    if (!dl_request_build(&in, &rq)) return DL_E_INVALID;
-    // Space has to be checkable: with neither a size nor a runtime there is
-    // nothing to check against, and nothing is queued.
-    if (!rq.size_known) return DL_E_SIZE_UNKNOWN;
-    DlResult r = dl_enqueue(&rq.meta, rq.url, 0, &rq.extras);
+    // ~5 KB, on the heap: the item page and a season being queued on its own
+    // thread both come through here.
+    DlRequest *rq = (DlRequest *)malloc(sizeof(DlRequest));
+    if (!rq) return DL_E_IO;
+    DlResult r;
+    if (!dl_request_build(&in, rq)) {
+        r = DL_E_INVALID;
+    } else if (!rq->size_known) {
+        // Space has to be checkable: with neither a size nor a runtime there
+        // is nothing to check against, and nothing is queued.
+        r = DL_E_SIZE_UNKNOWN;
+    } else {
+        r = dl_enqueue(&rq->meta, rq->url, 0, &rq->extras);
+    }
+    free(rq);
     char b[96];
     snprintf(b, sizeof(b), "dl: request %.8s -> %d", item ? item->id : "?", (int)r);
     plog(b);

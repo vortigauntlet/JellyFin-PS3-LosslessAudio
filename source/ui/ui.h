@@ -200,6 +200,13 @@ void xmb_show_offline(void);
 // Two-option confirm, the safe option first and selected.  True = action.
 bool xmb_dl_confirm(const char *title, const char *line, const char *safe,
                     const char *action);
+// A one-option notice in the same style, for a refusal the user can only read.
+void xmb_dl_notice(const char *title, const char *line);
+// Whole-season download (xmb/ui_season.cpp): the sheet Triangle opens on a
+// season, the progress line beside the breadcrumb, and the stop at exit.
+void xmb_season_download_sheet(const XMBItem *season);
+void xmb_season_toast_draw(void);
+void xmb_season_stop(void);
 // If there are downloads to play, ask whether to open them.  True when the
 // Offline library was opened (the caller then retries sign-in as before).
 bool xmb_offer_offline_after_login_failure(void);

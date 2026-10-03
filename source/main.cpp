@@ -369,6 +369,7 @@ int main(int argc, const char *argv[]) {
     crash_log("14 done");
     // First, while the network is still up: the active download parks itself
     // back in the queue with its data (resumes next launch).
+    xmb_season_stop();       // a season being queued reads the server: let it finish
     dl_service_stop();
     update_check_shutdown();
     thumb_cache_shutdown();

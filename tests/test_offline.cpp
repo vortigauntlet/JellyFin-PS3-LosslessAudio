@@ -18,6 +18,7 @@
 #include "dl_library.h"
 #include "dl_ui.h"
 #include "stream_local.h"
+#include "dl_season.h"
 #include "stream_request.h"
 
 #include <stdio.h>
@@ -1370,6 +1371,142 @@ static void test_space_estimates_and_text(void) {
     st.rec.error = DL_ERR_NONE;                                 // a user pause is not a warning
     dl_ui_row(&st, &cx2, &row);
     CHECK(!row.warning && !strcmp(row.status, "Paused"));
+}
+
+// =========================================================================
+// Whole-season download
+// =========================================================================
+
+struct SeasonScript {
+    int  n = 0;                    // episodes listed (-1: the list fails)
+    int  fail_at = -1;             // queue() answers fail_with here
+    int  fail_with = DL_E_INVALID;
+    int  cancel_after = -1;        // cancel once this many queue() calls were made
+    int  calls = 0;
+    std::string queued;            // ids, in the order queue() saw them
+};
+
+static int season_list(void *ctx, const char *, const char *, DlSeasonEp *out, int max) {
+    SeasonScript *sc = (SeasonScript *)ctx;
+    if (sc->n < 0) return -1;
+    const int n = sc->n < max ? sc->n : max;
+    for (int i = 0; i < n; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        snprintf(out[i].id, sizeof(out[i].id), "ep%02d", i + 1);
+        snprintf(out[i].name, sizeof(out[i].name), "Episode %d", i + 1);
+        out[i].runtime_secs = 1800;
+        out[i].identity.season = 2;
+        out[i].identity.episode = i + 1;
+    }
+    return n;
+}
+
+static int season_queue(void *ctx, const DlSeasonEp *ep) {
+    SeasonScript *sc = (SeasonScript *)ctx;
+    const int call = sc->calls++;
+    if (sc->cancel_after >= 0 && sc->calls >= sc->cancel_after) dl_season_cancel();
+    if (call == sc->fail_at) return sc->fail_with;
+    DlMeta m = meta_for(ep->id, ep->name);
+    const DlResult r = dl_enqueue(&m, URL, 0);
+    if (r == DL_OK) sc->queued += std::string(ep->id) + " ";
+    return r;
+}
+
+static void test_season(void) {
+    const DlSeasonOps ops = { season_list, season_queue };
+    DlSeasonStatus st;
+
+    begin("season: every episode is queued, in order");
+    SeasonScript a; a.n = 6;
+    dl_season_run(&ops, &a, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_DONE && st.total == 6 && st.added == 6 && st.skipped == 0 && st.failed == 0);
+    CHECK(a.queued == "ep01 ep02 ep03 ep04 ep05 ep06 ");
+    CHECK(status_of("ep03").rec.state == DL_QUEUED);
+    CHECK(!dl_season_busy());
+
+    begin("season: run twice adds nothing");
+    SeasonScript b1; b1.n = 4;
+    dl_season_run(&ops, &b1, "series", "season2", 0);
+    SeasonScript b2; b2.n = 4;
+    dl_season_run(&ops, &b2, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_DONE && st.added == 0 && st.skipped == 4 && b2.calls == 0);
+
+    begin("season: a failed or cancelled episode is queued again, the rest are skipped");
+    SeasonScript c1; c1.n = 3;
+    dl_season_run(&ops, &c1, "series", "season2", 0);
+    CHECK(dl_cancel("ep02") == DL_OK);
+    SeasonScript c2; c2.n = 3;
+    dl_season_run(&ops, &c2, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.added == 1 && st.skipped == 2 && c2.queued == "ep02 ");
+
+    begin("season: cancel stops between episodes");
+    SeasonScript d; d.n = 6; d.cancel_after = 2;
+    dl_season_run(&ops, &d, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_CANCELLED && st.added == 2 && d.calls == 2);
+    CHECK(status_of("ep03").rec.state == DL_STATE_COUNT);       // never queued
+    SeasonScript d2; d2.n = 2;                                   // the flag does not stick
+    dl_season_run(&ops, &d2, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_DONE && st.added == 0 && st.skipped == 2);
+
+    begin("season: no space stops the run, what was queued stays");
+    SeasonScript e; e.n = 6; e.fail_at = 2; e.fail_with = DL_E_NO_SPACE;
+    dl_season_run(&ops, &e, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_NO_SPACE && st.added == 2 && e.calls == 3);
+    CHECK(status_of("ep01").rec.state == DL_QUEUED && status_of("ep02").rec.state == DL_QUEUED);
+    CHECK(status_of("ep04").rec.state == DL_STATE_COUNT);
+    begin("season: space that cannot be read stops it too");
+    SeasonScript e2; e2.n = 4; e2.fail_at = 0; e2.fail_with = DL_E_SPACE_UNKNOWN;
+    dl_season_run(&ops, &e2, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_NO_SPACE && st.added == 0 && e2.calls == 1);
+
+    begin("season: another refusal skips that episode and carries on");
+    SeasonScript f; f.n = 4; f.fail_at = 1; f.fail_with = DL_E_INVALID;
+    dl_season_run(&ops, &f, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_DONE && st.added == 3 && st.failed == 1);
+    CHECK(f.queued == "ep01 ep03 ep04 ");
+
+    begin("season: only the first N");
+    SeasonScript g; g.n = 8;
+    dl_season_run(&ops, &g, "series", "season2", 3);
+    dl_season_status(&st);
+    CHECK(st.total == 3 && st.added == 3 && g.queued == "ep01 ep02 ep03 ");
+
+    begin("season: the episode list failing");
+    SeasonScript h; h.n = -1;
+    dl_season_run(&ops, &h, "series", "season2", 0);
+    dl_season_status(&st);
+    CHECK(st.state == DL_SEASON_FAILED && st.total == 0 && h.calls == 0);
+
+    begin("season: estimates, and how many fit");
+    StreamPrefs p;
+    memset(&p, 0, sizeof(p));
+    p.quality = VQ_1080P_25; p.display_w = 1920; p.display_h = 1080; p.budget = true;
+    StreamSelection sel;
+    memset(&sel, 0, sizeof(sel));
+    sel.item_id = "x"; sel.cur_audio = -1; sel.cur_sub = -1;
+    StreamRequest rq;
+    stream_request_resolve(&p, &sel, &rq);
+    DlSeasonEp eps[3];
+    memset(eps, 0, sizeof(eps));
+    eps[0].runtime_secs = 3600; eps[1].runtime_secs = 1800; eps[2].runtime_secs = 0;
+    uint64_t est[3];
+    dl_season_estimates(&rq, eps, 3, est);
+    CHECK(est[0] > est[1] && est[1] > 0);
+    CHECK(est[2] == est[0]);                                    // none reported: an hour
+    g_fake_free = FLOOR + est[0] + est[1] + 1000;               // room for two of the three
+    DlSpaceReport rep = dl_space_report(0);
+    CHECK(dl_space_fit_prefix(&rep, est, 3) == 2);
+    g_fake_free = FLOOR + est[0] - 1;
+    rep = dl_space_report(0);
+    CHECK(dl_space_fit_prefix(&rep, est, 3) == 0);
 }
 
 // =========================================================================
@@ -3471,6 +3608,7 @@ int main(int argc, char **argv) {
     test_deletion();
     test_storage_limits();
     test_space_estimates_and_text();
+    test_season();
     test_restore_interrupted();
     test_restore_malformed();
     test_offline_startup();
