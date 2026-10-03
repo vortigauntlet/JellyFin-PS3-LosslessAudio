@@ -48,7 +48,9 @@ static bool           s_q_fresh = true;
 // Which rows are worth landing on: loading (it may fill) or not empty.
 static void q_visit(unsigned char v[HOME_ROWS_N]) {
     for (int r = 0; r < HOME_ROWS_N; r++)
-        v[r] = s_rows[r].kind != HROW_STUB && (!s_rows[r].loaded || s_rows[r].count > 0);
+        v[r] = s_rows[r].kind != HROW_STUB &&
+               (row_optional(r) ? s_rows[r].count > 0
+                                : (!s_rows[r].loaded || s_rows[r].count > 0));
 }
 
 static void q_clamp_cols(void) {
@@ -182,7 +184,7 @@ typedef struct {
 
 static void q_facts_layout(int r, float dy, float alpha, float e, QFacts *f) {
     const int c = s_row_col[r];
-    f->tech = s_rows[r].count > 0 && facts_wanted(s_rows[r].items[c].type);
+    f->tech = s_rows[r].count > 0 && !row_local(r) && facts_wanted(s_rows[r].items[c].type);
     const depth_facts L = depth_facts_layout(q_shape(r), f->tech, e, dy);
     f->x       = depth_sx(L.x);
     f->y_eye   = depth_sy(L.y_eye);
@@ -292,7 +294,7 @@ void xmb_home_stage_cpu(void) {
         st.i0 = col - 1;
         st.i1 = col + (focus ? DEPTH_KMAX + 1 : 2) + 1;
         depth_stage_request(&st);
-        if (focus && facts_wanted(row->items[col].type) &&
+        if (focus && !row_local(r) && facts_wanted(row->items[col].type) &&
             fabsf(s_qpos[r].value - (float)col) < 0.35f)
             facts_request(row->items[col].id);
     }
@@ -548,6 +550,7 @@ bool xmb_home_open_focused(void) {
     const int c = g_spine_on ? s_row_col[s_focus_row] : s_focus_col;
     if (row->count <= 0 || c < 0 || c >= row->count) return false;
     const XMBItem *it = &row->items[c];
+    if (home_play_downloaded(it)) return true;
     if (strcmp(it->type, "Series") == 0) {
         spine_set_level(SPINE_L2);          // its seasons live inside the TV tab
         if (xmb_open_series(it)) init_btns();
@@ -572,6 +575,7 @@ bool xmb_home_peek_focused(void) {
     const int c = g_spine_on ? s_row_col[s_focus_row] : s_focus_col;
     if (row->count <= 0 || c < 0 || c >= row->count) return false;
     const XMBItem *it = &row->items[c];
+    if (strncmp(it->id, "offp:", 5) == 0) return false;     // a download has no page to peek
     if (strcmp(it->type, "MusicAlbum") == 0) return xmb_home_open_focused();
     peek_open_item(it, 0, 0, home_peek_open);   // the stage notes the image
     return true;

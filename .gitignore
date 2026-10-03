@@ -59,3 +59,4 @@ tests/test_iec61937
 tests/test_stream_request
 tests/test_settings_model
 tests/test_settings_model_nostats
+tests/test_userdata

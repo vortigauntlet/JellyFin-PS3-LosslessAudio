@@ -12,6 +12,7 @@
 #include "dl_store.h"
 #include "dl_request.h"
 #include "stream_request.h"   // stream_prefs_current
+#include "thumbnail_cache.h"   // thumb_set_local_source
 
 #include "../build_config.h"   // relative: source/ is not on the -I path
 #include "http.h"              // http_open_socket
@@ -272,6 +273,18 @@ bool dl_plat_app_running(void) { return running != 0; }
 // Service glue (dl_service.h)
 // -------------------------------------------------------------------------
 
+// Thumbnail keys for a download's own artwork: "offp:<id>" is its poster and
+// "offb:<id>" its backdrop.  The cache's fetch thread asks for the path; the
+// file is only offered when it exists.
+static bool thumb_resolve(const char *key, char *path, int cap) {
+    const char *leaf = NULL;
+    if (strncmp(key, "offp:", 5) == 0)      leaf = DL_FILE_POSTER;
+    else if (strncmp(key, "offb:", 5) == 0) leaf = DL_FILE_BACKDROP;
+    if (!leaf || !dl_id_valid(key + 5)) return false;
+    if (!dl_store_item_file(path, cap, key + 5, leaf)) return false;
+    return dl_plat_file_size(path) > 0;
+}
+
 // Where the store lives.  Tried in order on the worker; the first that can
 // be created AND written (dl_store_init writes a marker to prove it) wins.
 //
@@ -302,6 +315,7 @@ bool dl_service_start(void) {
         if (!s_mtx_ok) { plog("dl: mutex create failed"); return false; }
     }
     if (!s_fs_module) s_fs_module = (sysModuleLoad(SYSMODULE_FS) == 0);
+    thumb_set_local_source(thumb_resolve);
     snprintf(s_fallback_root, sizeof(s_fallback_root), "%s",
              jf_data_path("jellyfin_offline"));
     // Whatever session exists already (a saved login) -- or none, which

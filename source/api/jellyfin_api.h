@@ -94,6 +94,7 @@ typedef struct {
     char     series_name[128];
     char     season_id[64];
     int      season_num;             // ParentIndexNumber; -1 unknown, 0 = Specials
+    bool     is_favourite;           // UserData.IsFavorite
     JFItemIdentity identity;   // offline downloads (dl_request.cpp)
 } XMBItemDetail;
 

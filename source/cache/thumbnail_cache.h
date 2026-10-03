@@ -8,6 +8,16 @@ void thumb_cache_init(void);
 // Call once on shutdown.
 void thumb_cache_shutdown(void);
 
+// Local artwork.  A key the resolver recognises (an offline download's poster,
+// say) is read from the path it returns instead of being fetched from the
+// server, through the same slots, decode thread and VRAM mirrors as every
+// other thumbnail.  The image is scaled to cover the requested size and the
+// excess cropped, since nothing resized it on the way.  The resolver runs on
+// the fetch thread; it must be thread-safe and quick.  Set once, before any
+// request.
+typedef bool (*ThumbLocalResolver)(const char *key, char *path, int cap);
+void thumb_set_local_source(ThumbLocalResolver resolve);
+
 // Which Jellyfin image to fetch for an item.
 //
 // Primary is the right default nearly everywhere: it's the portrait poster for

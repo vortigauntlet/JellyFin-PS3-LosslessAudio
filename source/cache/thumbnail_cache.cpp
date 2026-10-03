@@ -119,6 +119,20 @@ static const char *img_name(u8 img) {
     return (img == THUMB_IMG_THUMB) ? "Thumb" : "Primary";
 }
 
+static ThumbLocalResolver s_local_resolver = NULL;
+void thumb_set_local_source(ThumbLocalResolver resolve) { s_local_resolver = resolve; }
+
+// A whole local file into buf.  Returns its length, or -1 when it is missing
+// or does not fit.
+static int read_local_file(const char *path, uint8_t *buf, int cap) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    const size_t n = fread(buf, 1, (size_t)cap, f);
+    const bool more = fgetc(f) != EOF;
+    fclose(f);
+    return (n == 0 || more) ? -1 : (int)n;
+}
+
 static ThumbSlot        s_slots[THUMB_CACHE_SIZE];
 static u32              s_frame      = 0;   // advanced by thumb_cache_tick()
 static u32              s_fetch_hold = 0;   // fetches paused until this frame
@@ -275,13 +289,16 @@ static void fetch_thread_fn(void *arg) {
         // size (portrait posters or landscape stills as requested).
         // format=Jpeg keeps PNG originals from arriving huge and slow.
         char url[512];
+        char lpath[160];
+        const bool local = s_local_resolver && s_local_resolver(item_id, lpath, sizeof lpath);
         snprintf(url, sizeof(url),
             "%s/Items/%s/Images/%s?fillWidth=%d&fillHeight=%d"
             "&quality=75&format=Jpeg",
             g_server, item_id, img_name(img), tw, th);
 
-        glogf("fetch START %s %dx%d", item_id, tw, th);
-        int bytes = http_fetch_binary(url, g_token, s_fetch_buf, FETCH_BUF_SIZE);
+        glogf("fetch START %s %dx%d%s", item_id, tw, th, local ? " (local)" : "");
+        int bytes = local ? read_local_file(lpath, s_fetch_buf, FETCH_BUF_SIZE)
+                          : http_fetch_binary(url, g_token, s_fetch_buf, FETCH_BUF_SIZE);
         if (bytes <= 0) {
             char msg[128];
             snprintf(msg, sizeof(msg), "thumb: fetch failed %s (%d)", item_id, bytes);
@@ -352,14 +369,29 @@ static void fetch_thread_fn(void *arg) {
         // return different dimensions than requested, and a straight clamped
         // copy would letterbox instead of filling the card.  Every output
         // pixel is written, so no pre-clear is needed.
+        //
+        // A local image was not resized by anyone: it covers the card and the
+        // excess is cropped from the centre, as fillWidth/fillHeight does.
         Bitmap *bmp = &s_slots[si].bmp;
+        int sx0 = 0, sy0 = 0, sw = w, sh = h;
+        if (local && bmp->width && bmp->height) {
+            if ((u64)w * bmp->height > (u64)h * bmp->width) {      // wider than the card
+                sw  = (int)((u64)h * bmp->width / bmp->height);
+                sx0 = (w - sw) / 2;
+            } else {                                               // taller than the card
+                sh  = (int)((u64)w * bmp->height / bmp->width);
+                sy0 = (h - sh) / 2;
+            }
+            if (sw < 1) sw = 1;
+            if (sh < 1) sh = 1;
+        }
         for (u32 y = 0; y < bmp->height; y++) {
             u32 *dst = bmp->pixels + y * bmp->width;
             const unsigned char *src =
-                px + (size_t)((u64)y * h / bmp->height) * w * 4;
+                px + (size_t)(sy0 + (int)((u64)y * sh / bmp->height)) * w * 4;
             for (u32 x = 0; x < bmp->width; x++) {
                 const unsigned char *s =
-                    src + (size_t)((u64)x * w / bmp->width) * 4;
+                    src + (size_t)(sx0 + (int)((u64)x * sw / bmp->width)) * 4;
                 dst[x] = ((u32)s[0] << 16) | ((u32)s[1] << 8) | s[2];
             }
         }

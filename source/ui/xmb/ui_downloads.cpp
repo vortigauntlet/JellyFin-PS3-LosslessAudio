@@ -21,6 +21,8 @@
 #include "ui_wave.h"
 #include "rsxutil.h"
 #include "timing.h"
+#include "ui_sfx.h"            // menu sounds
+#include "thumbnail_cache.h"   // thumb_cache_tick: the posters load behind these lists
 #include "plog.h"
 #include "slog.h"
 #include "player.h"
@@ -68,12 +70,12 @@ static void draw_title(const char *title, const char *hdd, const char *banner,
                        u32 banner_clr) {
     const int x = XMB_ITEM_PAD, y = XMB_OY + UIS_H(28);
     const int right = (int)display_width - XMB_ITEM_PAD;
-    drawTTF((u32)x, (u32)y, title, 28, XMB_TEXT, true);
+    drawTTF((u32)x, (u32)y, title, UIS_TF(28), XMB_TEXT, true);
     if (hdd && hdd[0])
-        drawTTF((u32)x, (u32)(y + UIS_H(42)), hdd, 15, XMB_TEXT_DIM);
+        drawTTF((u32)x, (u32)(y + UIS_H(42)), hdd, UIS_TF(15), XMB_TEXT_DIM);
     if (banner && banner[0]) {
-        const int bw = ttf_text_width(banner, 15);
-        drawTTF((u32)(right - bw), (u32)(y + UIS_H(42)), banner, 15, banner_clr);
+        const int bw = ttf_text_width(banner, UIS_TF(15));
+        drawTTF((u32)(right - bw), (u32)(y + UIS_H(42)), banner, UIS_TF(15), banner_clr);
     }
 }
 
@@ -106,10 +108,10 @@ bool xmb_dl_confirm(const char *title, const char *line, const char *safe,
         if (!armed) {
             if (!btn_cur.cross && !btn_cur.circle && !btn_cur.square) armed = true;
         } else {
-            if (BTN_PRESSED(circle)) { init_btns(); return false; }
-            if (BTN_PRESSED(up))     sel = 0;
-            if (BTN_PRESSED(down))   sel = 1;
-            if (BTN_PRESSED(cross))  { init_btns(); return sel == 1; }
+            if (BTN_PRESSED(circle)) { ui_sfx_play(SFX_CANCEL); init_btns(); return false; }
+            if (BTN_PRESSED(up)   && sel != 0) { sel = 0; ui_sfx_play(SFX_CURSOR); }
+            if (BTN_PRESSED(down) && sel != 1) { sel = 1; ui_sfx_play(SFX_CURSOR); }
+            if (BTN_PRESSED(cross))  { ui_sfx_play(SFX_DECIDE); init_btns(); return sel == 1; }
         }
         frame_begin();
         int pw = UIS_W(600), ph = UIS_H(236);
@@ -119,20 +121,20 @@ bool xmb_dl_confirm(const char *title, const char *line, const char *safe,
         drawRect((u32)px, (u32)(py + ph - 1), (u32)pw, 1, XMB_HAIRLINE);
         drawRect((u32)px, (u32)py, 1, (u32)ph, XMB_HAIRLINE);
         drawRect((u32)(px + pw - 1), (u32)py, 1, (u32)ph, XMB_HAIRLINE);
-        const int cx = px + 32, mw = pw - 64;
-        int y = py + 28;
-        clip_text(cx, y, title, 24, XMB_WHITE, mw, true);
-        y += 38;
-        clip_text(cx, y, line, 15, XMB_TEXT_DIM, mw, false);
-        y += 36;
+        const int cx = px + UIS_W(32), mw = pw - UIS_W(64);
+        int y = py + UIS_H(28);
+        clip_text(cx, y, title, UIS_TF(24), XMB_WHITE, mw, true);
+        y += UIS_H(38);
+        clip_text(cx, y, line, UIS_TF(15), XMB_TEXT_DIM, mw, false);
+        y += UIS_H(36);
         const int oh = UIS_H(44);
         for (int i = 0; i < 2; i++) {
-            int oy = y + i * (oh + 8);
+            int oy = y + i * (oh + UIS_H(8));
             if (i == sel) {
                 drawRect((u32)cx, (u32)oy, (u32)mw, (u32)oh, XMB_PANEL_HI);
-                drawRect((u32)(cx - 4), (u32)oy, 3, (u32)oh, XMB_ACCENT);
+                drawRect((u32)(cx - UIS_W(4)), (u32)oy, UIS_W(3), (u32)oh, XMB_ACCENT);
             }
-            drawTTF_vcentered((u32)(cx + 16), oy + oh / 2, opts[i], 19,
+            drawTTF_vcentered((u32)(cx + UIS_W(16)), oy + oh / 2, opts[i], UIS_TF(19),
                               i == sel ? XMB_TEXT : XMB_TEXT_DIM);
         }
         { static const Hint h[] = {{'X', "Select"}, {'C', "Back"}};
@@ -149,24 +151,42 @@ bool xmb_dl_confirm(const char *title, const char *line, const char *safe,
 
 static void draw_row_frame(int x, int y, int w, int h, bool sel) {
     drawRect((u32)x, (u32)y, (u32)w, (u32)h, sel ? XMB_PANEL_HI : XMB_PANEL);
-    if (sel) drawRect((u32)(x - 4), (u32)y, 3, (u32)h, XMB_ACCENT);
+    if (sel) drawRect((u32)(x - UIS_W(4)), (u32)y, UIS_W(3), (u32)h, XMB_ACCENT);
 }
 
 static void draw_bar(int x, int y, int w, int permille) {
-    drawRect((u32)x, (u32)y, (u32)w, 4, XMB_HAIRLINE);
+    drawRect((u32)x, (u32)y, (u32)w, UIS_H(4), XMB_HAIRLINE);
     int fw = (int)((long long)w * (permille < 0 ? 0 : permille > 1000 ? 1000 : permille) / 1000);
-    if (fw > 0) drawRect((u32)x, (u32)y, (u32)fw, 4, XMB_ACCENT);
+    if (fw > 0) drawRect((u32)x, (u32)y, (u32)fw, UIS_H(4), XMB_ACCENT);
+}
+
+// A row's poster, from the download's own folder.  The slot is 2:3, or 16:9
+// for an episode, whose picture is a still.  The cache loads it off the render
+// thread; until it lands (or when the item has none yet) the slot is a plain
+// panel, so the row never shifts.
+static int art_w(bool landscape) { return UIS_W(landscape ? 112 : 42); }
+static int art_h(void)           { return UIS_H(63); }
+
+static void draw_art(const char *id, bool have_art, int x, int y, bool landscape) {
+    const int w = art_w(landscape), h = art_h();
+    bool drawn = false;
+    if (have_art) {
+        char key[DL_ID_MAX + 8];
+        snprintf(key, sizeof key, "offp:%s", id);
+        drawn = xmb_cpu_blit_thumb(key, x, y, w, h);
+    }
+    if (!drawn) drawRect((u32)x, (u32)y, (u32)w, (u32)h, XMB_THUMB_DIM);
 }
 
 static void draw_empty(const char *line1, const char *line2) {
     int y = list_top() + UIS_H(40);
-    drawTTF((u32)XMB_ITEM_PAD, (u32)y, line1, 20, XMB_TEXT_DIM);
-    drawTTF((u32)XMB_ITEM_PAD, (u32)(y + 32), line2, 15, XMB_TEXT_FAINT);
+    drawTTF((u32)XMB_ITEM_PAD, (u32)y, line1, UIS_TF(20), XMB_TEXT_DIM);
+    drawTTF((u32)XMB_ITEM_PAD, (u32)(y + UIS_H(32)), line2, UIS_TF(15), XMB_TEXT_FAINT);
 }
 
 static void draw_toast(const char *msg, u64 until) {
     if (!msg[0] || timing_get_us() > until) return;
-    drawTTF((u32)XMB_ITEM_PAD, (u32)(list_bottom() - UIS_H(4)), msg, 15, DL_WARN_CLR);
+    drawTTF((u32)XMB_ITEM_PAD, (u32)(list_bottom() - UIS_H(4)), msg, UIS_TF(15), DL_WARN_CLR);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,11 +216,12 @@ void xmb_show_downloads(void) {
         if (!armed) {
             if (!btn_cur.cross && !btn_cur.circle && !btn_cur.square) armed = true;
         } else {
-            if (BTN_PRESSED(circle)) break;
+            if (BTN_PRESSED(circle)) { ui_sfx_play(SFX_CANCEL); break; }
             int moved = sel;
             if (BTN_REPEAT(up)   && sel > 0)     sel--;
             if (BTN_REPEAT(down) && sel < n - 1) sel++;
             if (moved != sel) {
+                ui_sfx_play(SFX_CURSOR);
                 sel = dl_ui_clamp_selection(sel, n, visible, &top);
                 next_refresh = 0;
             }
@@ -211,6 +232,7 @@ void xmb_show_downloads(void) {
             if (have && BTN_PRESSED(cross))  act = dl_ui_row_primary(&vis[vi]);
             if (have && BTN_PRESSED(square)) act = dl_ui_row_secondary(&vis[vi]);
             if (act != DL_UI_NONE) {
+                ui_sfx_play(act == DL_UI_REMOVE || act == DL_UI_CANCEL ? SFX_OPTION : SFX_DECIDE);
                 const DlStatus st = vis[vi];
                 const char *id = st.rec.id;
                 int r = DL_OK;
@@ -258,6 +280,7 @@ void xmb_show_downloads(void) {
         }
 
         // ---- draw ----
+        thumb_cache_tick();
         const DlUiContext cx = ui_context();
         char hdd[96], banner[128];
         {
@@ -283,25 +306,32 @@ void xmb_show_downloads(void) {
             const bool s = (top + i == sel);
             const int y = list_top() + i * row_pitch();
             draw_row_frame(x, y, w, row_h(), s);
-            clip_text(x + 20, y + UIS_H(10), row.title, 19, s ? XMB_WHITE : XMB_TEXT,
-                      w - 280, s);
+            const int ax = x + UIS_W(14), ay = y + (row_h() - art_h()) / 2;
+            draw_art(vis[i].rec.id, true, ax, ay, false);
+            const int tx = ax + art_w(false) + UIS_W(16);
+            const int tw = w - (tx - x) - UIS_W(260);
+            clip_text(tx, y + UIS_H(10), row.title, UIS_TF(19), s ? XMB_WHITE : XMB_TEXT,
+                      tw, s);
             const u32 sc = row.warning ? DL_WARN_CLR : row.emphasis ? XMB_ACCENT : XMB_TEXT_DIM;
-            clip_text(x + 20, y + UIS_H(38), row.status, 14, sc, w - 280, false);
+            clip_text(tx, y + UIS_H(38), row.status, UIS_TF(14), sc, tw, false);
             if (row.size[0]) {
-                int sw = ttf_text_width(row.size, 14);
-                drawTTF((u32)(x + w - 20 - sw), (u32)(y + UIS_H(38)), row.size, 14, XMB_TEXT_DIM);
+                int sw = ttf_text_width(row.size, UIS_TF(14));
+                drawTTF((u32)(x + w - UIS_W(20) - sw), (u32)(y + UIS_H(38)), row.size,
+                        UIS_TF(14), XMB_TEXT_DIM);
             }
             if (row.permille >= 0)
-                draw_bar(x + 20, y + row_h() - UIS_H(12), w - 40, row.permille);
+                draw_bar(tx, y + row_h() - UIS_H(12), w - (tx - x) - UIS_W(20), row.permille);
         }
         if (n > visible) {
             char pos[24];
             snprintf(pos, sizeof(pos), "%d / %d", sel + 1, n);
-            int pw = ttf_text_width(pos, 14);
-            drawTTF((u32)(x + w - pw), (u32)(XMB_OY + UIS_H(40)), pos, 14, XMB_TEXT_FAINT);
+            int pw = ttf_text_width(pos, UIS_TF(14));
+            drawTTF((u32)(x + w - pw), (u32)(XMB_OY + UIS_H(40)), pos, UIS_TF(14), XMB_TEXT_FAINT);
         }
         draw_toast(toast, toast_until);
         {
+            // Square here is the row's own secondary action, not the visualiser
+            // cycle, so this bar is drawn without the visualiser hint.
             Hint h[3]; int nh = 0;
             h[nh].glyph = 'C'; h[nh].label = "Back"; nh++;
             const int vi = sel - top;
@@ -346,13 +376,17 @@ void xmb_show_offline(void) {
         if (!armed) {
             if (!btn_cur.cross && !btn_cur.circle && !btn_cur.square) armed = true;
         } else {
-            if (BTN_PRESSED(circle)) break;
+            if (BTN_PRESSED(circle)) { ui_sfx_play(SFX_CANCEL); break; }
+            const int was = sel;
             if (BTN_REPEAT(up)   && sel > 0)     sel--;
             if (BTN_REPEAT(down) && sel < n - 1) sel++;
+            if (was != sel) ui_sfx_play(SFX_CURSOR);
             sel = dl_ui_clamp_selection(sel, n, visible, &top);
             const int vi = sel - top;
             const bool have = loaded_top == top && n > 0 && vi >= 0 && vi < visible &&
                               vis_ok[vi];
+            if (have && (BTN_PRESSED(cross) || BTN_PRESSED(square)))
+                ui_sfx_play(BTN_PRESSED(cross) ? SFX_DECIDE : SFX_OPTION);
             if (have && BTN_PRESSED(cross)) {
                 static char id[DL_ID_MAX];
                 snprintf(id, sizeof(id), "%s", vis[vi].meta.id);
@@ -393,6 +427,7 @@ void xmb_show_offline(void) {
         }
 
         // ---- draw ----
+        thumb_cache_tick();
         frame_begin();
         draw_title("Offline", n > 0 ? "Plays from the HDD -- no server needed" : "", "", XMB_TEXT_DIM);
         const int x = XMB_ITEM_PAD, w = (int)display_width - 2 * XMB_ITEM_PAD;
@@ -408,14 +443,21 @@ void xmb_show_offline(void) {
             const bool s = (top + i == sel);
             const int y = list_top() + i * row_pitch();
             draw_row_frame(x, y, w, row_h(), s);
-            clip_text(x + 20, y + UIS_H(12), title, 19, s ? XMB_WHITE : XMB_TEXT, w - 40, s);
-            clip_text(x + 20, y + UIS_H(40), sub, 14, XMB_TEXT_DIM, w - 40, false);
+            // An episode's picture is a 16:9 still; anything else a poster.
+            const bool wide = vis[i].meta_ok && strcmp(vis[i].meta.type, "Episode") == 0;
+            const int ax = x + UIS_W(14), ay = y + (row_h() - art_h()) / 2;
+            draw_art(vis[i].meta.id, vis[i].meta_ok && vis[i].meta.poster[0], ax, ay, wide);
+            const int tx = ax + art_w(wide) + UIS_W(16);
+            clip_text(tx, y + UIS_H(12), title, UIS_TF(19), s ? XMB_WHITE : XMB_TEXT,
+                      w - (tx - x) - UIS_W(20), s);
+            clip_text(tx, y + UIS_H(40), sub, UIS_TF(14), XMB_TEXT_DIM,
+                      w - (tx - x) - UIS_W(20), false);
         }
         if (n > visible) {
             char pos[24];
             snprintf(pos, sizeof(pos), "%d / %d", sel + 1, n);
-            int pw = ttf_text_width(pos, 14);
-            drawTTF((u32)(x + w - pw), (u32)(XMB_OY + UIS_H(40)), pos, 14, XMB_TEXT_FAINT);
+            int pw = ttf_text_width(pos, UIS_TF(14));
+            drawTTF((u32)(x + w - pw), (u32)(XMB_OY + UIS_H(40)), pos, UIS_TF(14), XMB_TEXT_FAINT);
         }
         draw_toast(toast, toast_until);
         {
