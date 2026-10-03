@@ -41,6 +41,8 @@ typedef enum {
     DL_E_IO,          // could not write the item's files
     DL_E_NOT_FOUND,   // no such item
     DL_E_STATE,       // not possible in the item's current state
+    DL_E_SPACE_UNKNOWN, // free HDD space cannot be read: nothing may start
+    DL_E_SIZE_UNKNOWN,  // neither a size nor a runtime: space cannot be checked
 } DlResult;
 
 typedef struct {
@@ -51,7 +53,8 @@ typedef struct {
 
 // Tunables.  The defaults are for the console; the host tests shrink them.
 typedef struct {
-    uint64_t reserve_bytes;      // HDD space never used by downloads
+    uint64_t reserve_bytes;      // HDD space never used by downloads; raised
+                                 // to DL_RESERVE_MIN when lower, at init
     uint32_t head_timeout_ms;    // wait for response headers
     uint32_t idle_timeout_ms;    // body silence that counts as a timeout
     uint32_t checkpoint_ms;      // persist progress at least this often
@@ -93,10 +96,48 @@ typedef struct {
     uint32_t    expect_secs;    // runtime the TS must roughly cover; 0 = skip
     const char *poster_url;     // fetched once, best effort; NULL/"" = none
     const char *backdrop_url;
+    uint64_t    estimate_bytes; // upper estimate of what the file will need;
+                                // used for space accounting when size_hint
+                                // (an exact size) is 0
 } DlExtras;
 
 DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint,
                     const DlExtras *extras = NULL);
+
+// -------------------------------------------------------------------------
+//  HDD space
+// -------------------------------------------------------------------------
+//  At least reserve_bytes (never under DL_RESERVE_MIN) of the HDD stays free.
+//  The rules, all fail-closed:
+//    * free space that cannot be read, or reads as implausible, is UNKNOWN,
+//      and nothing starts or continues while it is;
+//    * an item is accepted only if its estimate plus what every queued,
+//      active and paused item still has to fetch fits above the reserve;
+//    * a transfer re-checks before every space_check_bytes it writes and on
+//      every failed write, and stops short of the reserve rather than at it:
+//      the item goes to PAUSED (error = DL_ERR_NO_SPACE / DL_ERR_SPACE_UNKNOWN)
+//      with its partial kept, and no other item starts until space returns.
+typedef enum { DL_SPACE_OK = 0, DL_SPACE_LOW, DL_SPACE_UNKNOWN } DlSpaceState;
+
+typedef struct {
+    DlSpaceState state;
+    uint64_t free_bytes;       // 0 when unknown
+    uint64_t reserve_bytes;
+    uint64_t committed_bytes;  // still to fetch for items already queued
+    uint64_t need_bytes;       // the new item(s) plus committed_bytes
+    uint64_t avail_bytes;      // free less the reserve (0 below it)
+} DlSpaceReport;
+
+// Would new_bytes more fit right now?  A pure query: nothing is reserved.
+DlSpaceReport dl_space_report(uint64_t new_bytes);
+// The report behind the last dl_enqueue() refusal, for the message.
+DlSpaceReport dl_last_space_report(void);
+uint64_t dl_reserve_bytes(void);
+// How many of est[0..n) fit, in order, above the reserve (0..n).  Pure given
+// the report's avail/committed figures.
+int dl_space_fit_prefix(const DlSpaceReport *rep, const uint64_t *est, int n);
+// True while the manager is holding the whole queue because of space.
+bool dl_space_held(void);
 DlResult dl_pause(const char *id);
 DlResult dl_resume(const char *id);
 DlResult dl_cancel(const char *id);    // deletes partial data, keeps the entry

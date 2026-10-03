@@ -10,6 +10,29 @@ static void copy(char *dst, size_t cap, const char *src) {
     snprintf(dst, cap, "%s", src ? src : "");
 }
 
+// Direct play of a disc remux: video up to 40 Mbit/s plus the audio track.
+#define DL_DISC_MAX_BPS 50000000ull
+// An HD audio copy when the track's own rate is not known.
+#define DL_HD_AUDIO_BPS  4500000ull
+
+bool dl_estimate_bytes(const StreamRequest *d, uint32_t runtime_secs,
+                       uint64_t source_size_bytes, uint64_t *out) {
+    uint64_t base;
+    if (d->vreq == 0) {
+        if (source_size_bytes) base = source_size_bytes;
+        else if (runtime_secs) base = DL_DISC_MAX_BPS / 8 * runtime_secs;
+        else return false;
+    } else {
+        if (!runtime_secs) return false;
+        const uint64_t audio = d->hd_codec
+            ? (d->audio_cost ? d->audio_cost : DL_HD_AUDIO_BPS)
+            : d->abitrate;
+        base = ((uint64_t)d->vreq + audio) / 8 * runtime_secs;
+    }
+    *out = base + base / 100 * 15;
+    return true;
+}
+
 bool dl_request_build(const DlRequestInput *in, DlRequest *out) {
     if (!in || !in->item || !in->source || !in->prefs || !in->server ||
         !in->server[0] || !in->device_id || !dl_id_valid(in->item->id) ||
@@ -82,6 +105,10 @@ bool dl_request_build(const DlRequestInput *in, DlRequest *out) {
         snprintf(r.backdrop_url, sizeof(r.backdrop_url),
                  "%s/Items/%s/Images/Backdrop?maxWidth=%d&quality=80&format=Jpeg",
                  in->server, bd, DL_BACKDROP_MAX_W);
+
+    r.size_known = dl_estimate_bytes(d, m->runtime_secs, in->source->size_bytes,
+                                     &r.size_estimate);
+    r.extras.estimate_bytes = r.size_known ? r.size_estimate : 0;
 
     r.extras.container    = "ts";
     r.extras.expect_secs  = m->runtime_secs;

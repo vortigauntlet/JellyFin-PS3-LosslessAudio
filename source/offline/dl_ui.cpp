@@ -81,6 +81,8 @@ const char *dl_ui_result_text(int r) {
     case DL_E_EXISTS:    return "Already downloaded or in the queue";
     case DL_E_FULL:      return "The download list is full";
     case DL_E_NO_SPACE:  return "Not enough HDD space";
+    case DL_E_SPACE_UNKNOWN: return "Can't check free HDD space: downloads paused";
+    case DL_E_SIZE_UNKNOWN:  return "Size unknown, can't check space";
     case DL_E_IO:        return "Could not write to the HDD";
     case DL_E_NOT_FOUND: return "No longer in the download list";
     case DL_E_STATE:     return "Not possible right now";
@@ -97,6 +99,47 @@ const char *dl_ui_queue_banner(const DlUiContext *cx) {
     if (cx->auth_held)      return "Sign in to continue downloads";
     if (cx->playback_block) return "Downloads pause while you stream -- they resume afterwards";
     return "";
+}
+
+// "10 GB" / "6.2 GB" for the numbers in the messages below.
+static void gb(uint64_t b, char *out, int cap) { dl_ui_format_bytes(b, out, cap); }
+
+void dl_ui_result_message(int r, const DlSpaceReport *rep, char *out, int cap) {
+    if (r == DL_E_NO_SPACE && rep && rep->state == DL_SPACE_LOW) {
+        char need[24], avail[24], keep[24];
+        gb(rep->need_bytes, need, sizeof(need));
+        gb(rep->avail_bytes, avail, sizeof(avail));
+        gb(rep->reserve_bytes, keep, sizeof(keep));
+        snprintf(out, (size_t)cap,
+                 "Not enough space: needs %s, %s available (%s is always kept free)",
+                 need, avail, keep);
+        return;
+    }
+    snprintf(out, (size_t)cap, "%s", dl_ui_result_text(r));
+}
+
+void dl_ui_banner(const DlUiContext *cx, const DlSpaceReport *space, bool held,
+                  char *out, int cap) {
+    const char *base = dl_ui_queue_banner(cx);
+    if (base[0] || !held || !space) { snprintf(out, (size_t)cap, "%s", base); return; }
+    if (space->state == DL_SPACE_UNKNOWN) {
+        snprintf(out, (size_t)cap, "Can't check free HDD space: downloads paused");
+        return;
+    }
+    char keep[24];
+    gb(space->reserve_bytes, keep, sizeof(keep));
+    snprintf(out, (size_t)cap, "Paused: the HDD is down to %s free", keep);
+}
+
+void dl_ui_hdd_header(const DlSpaceReport *space, char *out, int cap) {
+    if (!space || space->state == DL_SPACE_UNKNOWN) {
+        snprintf(out, (size_t)cap, "HDD: free space unknown \xC2\xB7 downloads are paused");
+        return;
+    }
+    char fr[24], keep[24];
+    gb(space->free_bytes, fr, sizeof(fr));
+    gb(space->reserve_bytes, keep, sizeof(keep));
+    snprintf(out, (size_t)cap, "HDD: %s free \xC2\xB7 downloads keep %s free", fr, keep);
 }
 
 void dl_ui_row(const DlStatus *st, const DlUiContext *cx, DlUiRow *o) {
@@ -138,7 +181,13 @@ void dl_ui_row(const DlStatus *st, const DlUiContext *cx, DlUiRow *o) {
         if (r->bytes_done > 0) o->permille = pm;
         break;
     case DL_PAUSED:
-        snprintf(o->status, sizeof(o->status), "Paused");
+        // The manager pauses an item for space; the reason is in its error.
+        if (r->error == DL_ERR_NO_SPACE || r->error == DL_ERR_SPACE_UNKNOWN) {
+            snprintf(o->status, sizeof(o->status), "%s", dl_error_text(r->error));
+            o->warning = true;
+        } else {
+            snprintf(o->status, sizeof(o->status), "Paused");
+        }
         if (r->bytes_done > 0) o->permille = pm;
         break;
     case DL_COMPLETED:
@@ -224,7 +273,7 @@ void dl_ui_offline_lines(const DlMeta *m, bool meta_ok, uint64_t bytes,
     sub[0] = '\0';
     for (int i = 0; i < n; i++) {
         size_t len = strlen(sub);
-        snprintf(sub + len, (size_t)scap - len, "%s%s", i ? "  \xB7  " : "", parts[i]);
+        snprintf(sub + len, (size_t)scap - len, "%s%s", i ? "  \xC2\xB7  " : "", parts[i]);
     }
 }
 

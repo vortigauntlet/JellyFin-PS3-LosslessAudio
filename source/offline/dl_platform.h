@@ -55,8 +55,15 @@ bool     dl_plat_truncate(const char *path);       // to 0 bytes, creating it
 // Returns the number of entries reported, or -1 if path cannot be read.
 int      dl_plat_list_dirs(const char *path,
                            void (*cb)(const char *name, void *ctx), void *ctx);
-// Free bytes on the filesystem holding path, or DL_FREE_UNKNOWN.
+// Free bytes on the filesystem holding path, or DL_FREE_UNKNOWN when the
+// filesystem will not say (the call failed, the block size came back 0, the
+// library that answers is not loaded).  Never a guess: the manager treats
+// unknown as "no downloads", so a wrong number is worse than none.
 uint64_t dl_plat_free_bytes(const char *path);
+// The optional user setting that RAISES the free-space reserve, in whole
+// GB; 0 when absent or unreadable.  The manager clamps it to DL_RESERVE_MIN
+// from below, so no value here can lower the floor.
+int      dl_plat_reserve_gb(void);
 
 // Media file, append-only.  Opened positioned at end-of-file.
 int  dl_plat_file_open_append(const char *path);   // handle >= 0, or -1

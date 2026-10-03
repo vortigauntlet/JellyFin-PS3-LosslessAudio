@@ -16,6 +16,11 @@
 // -------------------------------------------------------------------------
 
 #define DL_MAX_ITEMS     64      // queue + library, hard cap
+
+// HDD space downloads never touch: the console needs it to save games,
+// install updates and keep its system caches.  A floor, not a default: the
+// configured reserve can raise it and nothing can lower it.
+#define DL_RESERVE_MIN   (10ull * 1024 * 1024 * 1024)
 #define DL_ID_MAX        64      // Jellyfin ids are 32 hex chars
 #define DL_URL_MAX       1024
 #define DL_TITLE_MAX     128
@@ -75,6 +80,9 @@ typedef enum {
     DL_ERR_BAD_MEDIA,     // arrived whole but is not a complete TS (e.g. the
                           // server's transcode died part way): retried once
                           // (DL_MEDIA_MAX_ATTEMPTS), then failed
+    // Why a PAUSED item is paused by the manager rather than the user.  The
+    // item keeps its partial data and Resume continues it.
+    DL_ERR_SPACE_UNKNOWN, // free HDD space cannot be read: nothing may write
     DL_ERR_COUNT
 } DlError;
 
@@ -90,6 +98,8 @@ typedef struct {
     uint32_t attempts;             // consecutive failed attempts
     uint64_t bytes_done;           // bytes on disk
     uint64_t bytes_total;          // 0 = not known yet
+    uint64_t est_bytes;            // what the item is expected to need, for
+                                   // space accounting; 0 = no estimate
     uint8_t  resumable;            // server has honoured a Range request
     // Stage 3.  All optional: a record without them loads as before.
     char     container[8];         // "ts" -> the MPEG-TS checks at completion

@@ -160,13 +160,43 @@ int dl_plat_list_dirs(const char *path, void (*cb)(const char *, void *),
 
 static bool s_fs_module = false;   // libsysfs loaded (for free space)
 
+// The mount point holding a path ("/dev_hdd0/" for anything under it): the
+// free-size call is documented for mount points, and every path under
+// /dev_hdd0 is the same disk.
+static void mount_point(const char *path, char *out, size_t cap) {
+    out[0] = '\0';
+    if (strncmp(path, "/dev_", 5) == 0) {
+        const char *slash = strchr(path + 1, '/');
+        const size_t n = slash ? (size_t)(slash - path) : strlen(path);
+        if (n + 2 <= cap) {
+            memcpy(out, path, n);
+            out[n] = '/';
+            out[n + 1] = '\0';
+        }
+    }
+}
+
 uint64_t dl_plat_free_bytes(const char *path) {
     if (!s_fs_module) return DL_FREE_UNKNOWN;
+    char mp[32];
+    mount_point(path, mp, sizeof(mp));
     u32 block = 0;
     u64 blocks = 0;
-    if (sysFsGetFreeSize(path, &block, &blocks) != 0 || block == 0)
-        return DL_FREE_UNKNOWN;
+    const bool ok = (mp[0] && sysFsGetFreeSize(mp, &block, &blocks) == 0 && block != 0) ||
+                    (sysFsGetFreeSize(path, &block, &blocks) == 0 && block != 0);
+    if (!ok) return DL_FREE_UNKNOWN;
     return (uint64_t)block * blocks;
+}
+
+// jellyfin_dlreserve.txt: whole GB the downloads must leave free.  It can
+// only raise the floor (dl_manager_init clamps it), so a stray value is safe.
+int dl_plat_reserve_gb(void) {
+    FILE *f = fopen(jf_data_path("jellyfin_dlreserve.txt"), "r");
+    if (!f) return 0;
+    int gb = 0;
+    if (fscanf(f, "%d", &gb) != 1 || gb < 0) gb = 0;
+    fclose(f);
+    return gb;
 }
 
 int dl_plat_file_open_append(const char *path) {
@@ -300,6 +330,9 @@ int dl_download_item(const JFItem *item, const XMBItemDetail *detail,
     DlRequestInput in = { g_server, jf_device_id(), item, detail, source, &prefs };
     static DlRequest rq;   // ~5 KB, UI thread
     if (!dl_request_build(&in, &rq)) return DL_E_INVALID;
+    // Space has to be checkable: with neither a size nor a runtime there is
+    // nothing to check against, and nothing is queued.
+    if (!rq.size_known) return DL_E_SIZE_UNKNOWN;
     DlResult r = dl_enqueue(&rq.meta, rq.url, 0, &rq.extras);
     char b[96];
     snprintf(b, sizeof(b), "dl: request %.8s -> %d", item ? item->id : "?", (int)r);

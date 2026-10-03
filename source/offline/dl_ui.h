@@ -43,6 +43,11 @@ void dl_ui_item_label(const DlStatus *st, bool can_download,
 // A one-line message for a request that could not be made (shown under the
 // button for a few seconds).  "" for DL_OK.
 const char *dl_ui_result_text(int dl_result);
+// The same, with the numbers when there are any to give: a refusal for lack
+// of space says what was needed and what is available (rep from
+// dl_last_space_report()).  Falls back to dl_ui_result_text().
+void dl_ui_result_message(int dl_result, const DlSpaceReport *rep,
+                          char *out, int cap);
 
 // ---- the Downloads list ---------------------------------------------------
 
@@ -69,6 +74,15 @@ bool dl_ui_action_needs_confirm(DlUiAction a, const DlStatus *st);
 // A banner above the list when the queue as a whole is held ("Paused while
 // streaming", "Sign in to continue downloads"), or "".
 const char *dl_ui_queue_banner(const DlUiContext *cx);
+// The same, plus the two space holds, which carry numbers: "Paused: the HDD
+// is down to 10 GB free".  `space` is dl_space_report(0) and held is
+// dl_space_held().
+void dl_ui_banner(const DlUiContext *cx, const DlSpaceReport *space, bool held,
+                  char *out, int cap);
+// The Downloads screen's one-line header, e.g. "HDD: 42.0 GB free, downloads
+// keep 10 GB free" with a middle dot between the two; it says the free space
+// is unknown when it cannot be read.
+void dl_ui_hdd_header(const DlSpaceReport *space, char *out, int cap);
 
 // ---- the Offline library --------------------------------------------------
 

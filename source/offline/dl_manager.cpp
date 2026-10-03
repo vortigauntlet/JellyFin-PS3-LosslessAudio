@@ -29,6 +29,10 @@
 // at 64 KB+ while leaving most of the buffer to batch the writes.
 #define DL_RECV_MIN (64 * 1024)
 
+// Free space above this is not a reading but a fault: no console drive is
+// anywhere near it.  Treated as unknown, like an error.
+#define DL_FREE_SANE_MAX (8ull * 1024 * 1024 * 1024 * 1024)
+
 enum { CTL_NONE = 0, CTL_PAUSE, CTL_CANCEL, CTL_REMOVE };
 
 typedef struct {
@@ -46,6 +50,8 @@ static DlConfig s_cfg;
 static char     s_auth[512] = "";
 static volatile bool s_suspended = false;
 static volatile bool s_auth_hold = false;    // a 401 until the next login
+static volatile bool s_space_hold = false;   // the HDD is at its reserve, or unreadable
+static DlSpaceReport s_last_report;          // behind the last enqueue refusal
 // Playback, from dl_playback_begin/end: a heavy stream blocks downloads
 // outright; a light one lets them run, paced to stream_share_bps.
 static volatile bool s_play_block = false;
@@ -63,10 +69,9 @@ static void logf_id(const char *id, const char *what) {
 }
 
 void dl_config_defaults(DlConfig *c) {
-    // 1 GB of headroom: the console needs free HDD for its own caches and
-    // for game data, and a download that fills the disk to the last byte
-    // breaks things well outside this app.
-    c->reserve_bytes     = 1024ull * 1024 * 1024;
+    // The console needs free HDD to save games, install updates and keep its
+    // caches; a full drive breaks things well outside this app.
+    c->reserve_bytes     = DL_RESERVE_MIN;
     // Same header deadline as the player's stream_open(): a transcode that
     // extracts a subtitle or re-encodes 4K can take over a minute to start.
     c->head_timeout_ms   = 120000;
@@ -151,10 +156,79 @@ static bool apply(DlRecord *r, DlEvent ev) {
     return true;
 }
 
-static bool space_ok(uint64_t need) {
-    uint64_t freeb = dl_plat_free_bytes(dl_store_root());
-    if (freeb == DL_FREE_UNKNOWN) return true;
-    return freeb >= s_cfg.reserve_bytes && freeb - s_cfg.reserve_bytes >= need;
+// What the HDD can take above the reserve.  Anything that cannot be read, or
+// reads as impossible, is UNKNOWN -- and unknown means no writes.
+static void space_eval(uint64_t need, uint64_t committed, DlSpaceReport *out) {
+    memset(out, 0, sizeof(*out));
+    out->reserve_bytes    = s_cfg.reserve_bytes;
+    out->committed_bytes  = committed;
+    out->need_bytes       = need + committed;
+    const uint64_t freeb  = dl_plat_free_bytes(dl_store_root());
+    if (freeb == DL_FREE_UNKNOWN || freeb > DL_FREE_SANE_MAX) {
+        out->state = DL_SPACE_UNKNOWN;
+        return;
+    }
+    out->free_bytes  = freeb;
+    out->avail_bytes = freeb > out->reserve_bytes ? freeb - out->reserve_bytes : 0;
+    out->state = out->need_bytes <= out->avail_bytes ? DL_SPACE_OK : DL_SPACE_LOW;
+}
+
+static void space_log(const DlSpaceReport *r, const char *verdict) {
+    char b[128];
+    snprintf(b, sizeof(b), "dl: space free=%lluMB reserve=%lluMB need=%lluMB -> %s",
+             (unsigned long long)(r->free_bytes >> 20),
+             (unsigned long long)(r->reserve_bytes >> 20),
+             (unsigned long long)(r->need_bytes >> 20), verdict);
+    dl_plat_log(b);
+}
+
+// What an item still has to fetch, as far as anyone knows: the larger of its
+// estimate and the length the server declared, less what is on disk.
+static uint64_t item_remaining(const DlRecord *r) {
+    const uint64_t total = r->est_bytes > r->bytes_total ? r->est_bytes : r->bytes_total;
+    return total > r->bytes_done ? total - r->bytes_done : 0;
+}
+
+// Still to fetch for everything queued, active or paused, except `skip`.
+// The caller holds the lock.
+static uint64_t committed_locked(const Slot *skip) {
+    uint64_t sum = 0;
+    for (int i = 0; i < DL_MAX_ITEMS; i++) {
+        const Slot *s = &s_slots[i];
+        if (!s->used || s->removing || s == skip) continue;
+        if (s->rec.state == DL_QUEUED || s->rec.state == DL_DOWNLOADING ||
+            s->rec.state == DL_PAUSED)
+            sum += item_remaining(&s->rec);
+    }
+    return sum;
+}
+
+// How much free room a transfer must see before it writes on: the next
+// space_check_bytes it will write, plus what is still buffered and not yet
+// written, so no write ever lands inside the reserve.
+static uint64_t write_margin(void) { return s_cfg.space_check_bytes + DL_XFER_BUF; }
+
+uint64_t dl_reserve_bytes(void) { return s_cfg.reserve_bytes; }
+bool dl_space_held(void) { return s_space_hold; }
+
+DlSpaceReport dl_space_report(uint64_t new_bytes) {
+    DlSpaceReport r;
+    memset(&r, 0, sizeof(r));
+    if (!s_ready) { r.state = DL_SPACE_UNKNOWN; return r; }
+    LOCK();
+    space_eval(new_bytes, committed_locked(NULL), &r);
+    UNLOCK();
+    return r;
+}
+
+DlSpaceReport dl_last_space_report(void) { return s_last_report; }
+
+int dl_space_fit_prefix(const DlSpaceReport *rep, const uint64_t *est, int n) {
+    if (!rep || rep->state == DL_SPACE_UNKNOWN) return 0;
+    uint64_t used = rep->committed_bytes;
+    int k = 0;
+    while (k < n && used + est[k] <= rep->avail_bytes) { used += est[k]; k++; }
+    return k;
 }
 
 // -------------------------------------------------------------------------
@@ -229,7 +303,29 @@ static void restore_one(const char *id) {
 bool dl_manager_init(const char *root, const DlConfig *cfg) {
     s_ready = false;
     if (cfg) s_cfg = *cfg; else dl_config_defaults(&s_cfg);
+    // The reserve may be raised, never lowered: below DL_RESERVE_MIN it is
+    // DL_RESERVE_MIN, and the optional setting (whole GB) can only add to it.
+    {
+        const int gb = dl_plat_reserve_gb();
+        const uint64_t want = gb > 0 ? (uint64_t)gb * 1024ull * 1024 * 1024 : 0;
+        if (want > s_cfg.reserve_bytes) s_cfg.reserve_bytes = want;
+        if (s_cfg.reserve_bytes < DL_RESERVE_MIN) s_cfg.reserve_bytes = DL_RESERVE_MIN;
+    }
+    s_space_hold = false;
     if (!dl_store_init(root)) return false;
+    {
+        DlSpaceReport rep;
+        space_eval(0, 0, &rep);
+        char b[160];
+        if (rep.state == DL_SPACE_UNKNOWN)
+            snprintf(b, sizeof(b), "dl: root %s free=unknown reserve=%lluMB (downloads paused)",
+                     root, (unsigned long long)(rep.reserve_bytes >> 20));
+        else
+            snprintf(b, sizeof(b), "dl: root %s free=%lluMB reserve=%lluMB",
+                     root, (unsigned long long)(rep.free_bytes >> 20),
+                     (unsigned long long)(rep.reserve_bytes >> 20));
+        dl_plat_log(b);
+    }
 
     LOCK();
     memset(s_slots, 0, sizeof(s_slots));
@@ -304,8 +400,19 @@ DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint,
         s->rec.bytes_total = 0;
     }
     uint64_t have = requeue ? s->rec.bytes_done : 0;
-    uint64_t need = size_hint > have ? size_hint - have : 0;
-    if (!space_ok(need)) { UNLOCK(); return DL_E_NO_SPACE; }
+    const uint64_t estimate = size_hint ? size_hint
+                            : (extras ? extras->estimate_bytes : 0);
+    uint64_t need = estimate > have ? estimate - have : 0;
+    if (need == 0) need = s_cfg.space_check_bytes;   // size unknown: at least a chunk
+    {
+        DlSpaceReport rep;
+        space_eval(need, committed_locked(s), &rep);
+        s_last_report = rep;
+        space_log(&rep, rep.state == DL_SPACE_OK ? "ok"
+                      : rep.state == DL_SPACE_LOW ? "refused" : "unknown");
+        if (rep.state == DL_SPACE_UNKNOWN) { UNLOCK(); return DL_E_SPACE_UNKNOWN; }
+        if (rep.state == DL_SPACE_LOW)     { UNLOCK(); return DL_E_NO_SPACE; }
+    }
 
     if (!dl_store_make_item_dir(meta->id) || !dl_store_save_meta(meta)) {
         if (!requeue) dl_store_remove_item(meta->id);
@@ -328,6 +435,7 @@ DlResult dl_enqueue(const DlMeta *meta, const char *url, uint64_t size_hint,
     r.http_status = 0;
     r.attempts = 0;
     if (!requeue) r.bytes_total = size_hint;   // refined by the response
+    r.est_bytes = estimate;
     snprintf(r.container, sizeof(r.container), "%s",
              extras && extras->container ? extras->container : "");
     r.expect_secs = extras ? extras->expect_secs : 0;
@@ -549,7 +657,7 @@ uint32_t dl_next_wake_ms(void) {
 // The transfer
 // -------------------------------------------------------------------------
 
-typedef enum { OUT_DONE, OUT_CTL, OUT_SUSPENDED, OUT_FAIL } OutKind;
+typedef enum { OUT_DONE, OUT_CTL, OUT_SUSPENDED, OUT_FAIL, OUT_SPACE } OutKind;
 
 typedef struct {
     OutKind  kind;
@@ -560,6 +668,27 @@ typedef struct {
 
 static Outcome fail(DlError e, int status = 0) {
     Outcome o = { OUT_FAIL, e, status, false };
+    return o;
+}
+
+// May a transfer write on?  `remaining` is what it still has to fetch (0 =
+// unknown).  Decided against the reserve plus a write margin, logged either
+// way.  On refusal the item pauses; the queue is held until space returns.
+static bool space_gate(uint64_t remaining, DlError *why) {
+    uint64_t margin = write_margin();
+    if (remaining && remaining < margin) margin = remaining;
+    DlSpaceReport rep;
+    space_eval(margin, 0, &rep);
+    space_log(&rep, rep.state == DL_SPACE_OK ? "ok"
+                  : rep.state == DL_SPACE_LOW ? "paused" : "unknown");
+    if (rep.state == DL_SPACE_OK) return true;
+    s_space_hold = true;
+    *why = rep.state == DL_SPACE_LOW ? DL_ERR_NO_SPACE : DL_ERR_SPACE_UNKNOWN;
+    return false;
+}
+
+static Outcome space_pause(DlError why, int status) {
+    Outcome o = { OUT_SPACE, why, status, false };
     return o;
 }
 
@@ -576,8 +705,14 @@ static DlTsScan s_ts;            // the scan of the current attempt's bytes
 static DlError flush_buf(int fh, int *fill, uint64_t *on_disk) {
     if (*fill == 0) return DL_ERR_NONE;
     dl_ts_feed(&s_ts, s_buf, *fill);   // exactly the bytes that go to disk
-    if (dl_plat_file_write(fh, s_buf, *fill) != *fill)
-        return space_ok(1) ? DL_ERR_DISK : DL_ERR_NO_SPACE;
+    if (dl_plat_file_write(fh, s_buf, *fill) != *fill) {
+        DlSpaceReport rep;
+        space_eval(1, 0, &rep);
+        space_log(&rep, rep.state == DL_SPACE_OK ? "write failed" : "paused");
+        return rep.state == DL_SPACE_LOW     ? DL_ERR_NO_SPACE
+             : rep.state == DL_SPACE_UNKNOWN ? DL_ERR_SPACE_UNKNOWN
+                                             : DL_ERR_DISK;
+    }
     *on_disk += (uint64_t)*fill;
     *fill = 0;
     return DL_ERR_NONE;
@@ -771,8 +906,12 @@ static Outcome attempt(Slot *s, DlRecord *r) {
     bool ts_from_zero = false;
     const bool is_ts = strcmp(r->container, "ts") == 0;
 
-    if (!space_ok(r->bytes_total > have ? r->bytes_total - have : 0))
-        return fail(DL_ERR_NO_SPACE);
+    {
+        DlError why;
+        const uint64_t total = r->bytes_total > r->est_bytes ? r->bytes_total : r->est_bytes;
+        if (!space_gate(total > have ? total - have : 0, &why))
+            return space_pause(why, 0);
+    }
 
     DlUrl u;
     if (!dl_url_parse(r->url, &u)) return fail(DL_ERR_UNSUPPORTED);
@@ -882,9 +1021,12 @@ static Outcome attempt(Slot *s, DlRecord *r) {
         have = 0;
         r->bytes_done = 0;
     }
-    if (!space_ok(r->bytes_total > have ? r->bytes_total - have : 0)) {
-        dl_plat_close(h);
-        return fail(DL_ERR_NO_SPACE, hd.status);
+    {
+        DlError why;
+        if (!space_gate(r->bytes_total > have ? r->bytes_total - have : 0, &why)) {
+            dl_plat_close(h);
+            return space_pause(why, hd.status);
+        }
     }
 
     {
@@ -953,8 +1095,9 @@ static Outcome attempt(Slot *s, DlRecord *r) {
             }
             if (have - last_space_bytes >= s_cfg.space_check_bytes) {
                 last_space_bytes = have;
-                if (!space_ok(r->bytes_total > have ? r->bytes_total - have : 0)) {
-                    err = DL_ERR_NO_SPACE;
+                DlError why;
+                if (!space_gate(r->bytes_total > have ? r->bytes_total - have : 0, &why)) {
+                    err = why;
                     break;
                 }
             }
@@ -1003,7 +1146,8 @@ static Outcome attempt(Slot *s, DlRecord *r) {
         // Keep whatever arrived, whatever ended the attempt: the partial on
         // disk is what the next attempt resumes from.  (Not after a failed
         // write -- the disk is what failed.)
-        if (fill > 0 && err != DL_ERR_DISK && err != DL_ERR_NO_SPACE) {
+        if (fill > 0 && err != DL_ERR_DISK && err != DL_ERR_NO_SPACE &&
+            err != DL_ERR_SPACE_UNKNOWN) {
             DlError werr = flush_buf(fh, &fill, &on_disk);
             if (werr != DL_ERR_NONE && !stopped) { err = werr; finished = false; }
         }
@@ -1017,7 +1161,8 @@ static Outcome attempt(Slot *s, DlRecord *r) {
 
         if (stopped) return o;
         if (!finished) {
-            o.kind = OUT_FAIL;
+            o.kind = (err == DL_ERR_NO_SPACE || err == DL_ERR_SPACE_UNKNOWN)
+                         ? OUT_SPACE : OUT_FAIL;
             o.err = err;
             return o;
         }
@@ -1090,6 +1235,15 @@ static void finish(Slot *s, DlRecord *r, const Outcome *o) {
         apply(r, DL_EV_PAUSE);
         snprintf(msg, sizeof(msg), "paused at %llu",
                  (unsigned long long)r->bytes_done);
+    } else if (o->kind == OUT_SPACE) {
+        // Not a failure: the partial is kept and Resume carries on once the
+        // user has freed space.  The reason rides in the record's error.
+        apply(r, DL_EV_PAUSE);
+        r->error = o->err;
+        if (o->http_status) r->http_status = o->http_status;
+        s->retry_at_ms = 0;
+        snprintf(msg, sizeof(msg), "paused at %llu: %s",
+                 (unsigned long long)r->bytes_done, dl_error_name(o->err));
     } else if (o->kind == OUT_SUSPENDED) {
         apply(r, DL_EV_INTERRUPTED);
         s->retry_at_ms = 0;
@@ -1136,6 +1290,15 @@ static void finish(Slot *s, DlRecord *r, const Outcome *o) {
 bool dl_manager_step(void) {
     if (!s_ready || s_suspended || s_play_block || s_auth_hold || !s_auth[0])
         return false;
+    // Space is checked again before anything starts while the queue is held;
+    // the hold lifts by itself once the HDD reads above the reserve again.
+    if (s_space_hold) {
+        DlSpaceReport rep;
+        space_eval(write_margin(), 0, &rep);
+        if (rep.state != DL_SPACE_OK) return false;
+        s_space_hold = false;
+        dl_plat_log("dl: space available again -- queue released");
+    }
     const uint64_t now = dl_plat_now_ms();
     LOCK();
     Slot *pick = NULL;

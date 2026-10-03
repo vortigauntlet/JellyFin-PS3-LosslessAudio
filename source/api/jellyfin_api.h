@@ -142,6 +142,7 @@ typedef struct {
     char     label[128];         // MediaSource.Name (HUD display text)
     char     summary[96];        // "1080p · REMUX · DTS-HD MA 7.1 · 38.8 GB" (api/version_summary.h)
     unsigned runtime_secs;
+    unsigned long long size_bytes;   // MediaSource.Size; 0 = not reported
     JFTracks tracks;
 } JFMediaSource;
 

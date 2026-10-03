@@ -310,6 +310,10 @@ static bool parse_source(const char *obj, const char *end, JFMediaSource *out) {
     v = find_top_value(obj, end, "RunTimeTicks");
     long long ticks = v ? read_json_int(v, end, 0) : 0;
     if (ticks > 0) out->runtime_secs = (unsigned)(ticks / 10000000LL);
+    // The file's size in bytes, as the server reports it (0 = not reported).
+    v = find_top_value(obj, end, "Size");
+    long long size = v ? read_json_int(v, end, 0) : 0;
+    if (size > 0) out->size_bytes = (unsigned long long)size;
 
     char video[64] = "";
     parse_tracks(obj, end, &out->tracks, video, sizeof(video));

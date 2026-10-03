@@ -43,7 +43,8 @@ extern std::vector<FakeResp>    g_fake_queue;     // consumed front-first
 extern FakeResp                 g_fake_default;
 extern std::vector<std::string> g_fake_requests;  // every request received
 extern int64_t                  g_fake_total;     // default content size
-extern uint64_t                 g_fake_free;      // UINT64_MAX = unknown
+extern uint64_t                 g_fake_free;      // UINT64_MAX = unknown; default 1 TiB
+extern int                      g_fake_reserve_gb; // the optional reserve setting; 0 = none
 extern int64_t                  g_fake_write_budget; // -1 = unlimited
 extern uint64_t                 g_fake_now_ms;
 extern int                      g_fake_connects;

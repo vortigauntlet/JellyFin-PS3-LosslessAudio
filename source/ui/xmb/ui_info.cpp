@@ -1138,9 +1138,13 @@ void xmb_show_item_info(const XMBItem *root) {
                     snprintf(jf.name, sizeof(jf.name), "%s", it->name);
                     snprintf(jf.type, sizeof(jf.type), "%s", it->type);
                     r = dl_download_item(&jf, &detail, &versions.source[version_sel]);
-                    snprintf(dl_toast, sizeof(dl_toast), "%s",
-                             r == DL_OK ? "Added to Downloads (Settings > Downloads)"
-                                        : dl_ui_result_text(r));
+                    if (r == DL_OK) {
+                        snprintf(dl_toast, sizeof(dl_toast), "%s",
+                                 "Added to Downloads (Settings > Downloads)");
+                    } else {
+                        const DlSpaceReport rep = dl_last_space_report();
+                        dl_ui_result_message(r, &rep, dl_toast, sizeof(dl_toast));
+                    }
                 } else if (a == DL_UI_PAUSE) {
                     r = dl_pause(it->id);
                     snprintf(dl_toast, sizeof(dl_toast), "%s", dl_ui_result_text(r));

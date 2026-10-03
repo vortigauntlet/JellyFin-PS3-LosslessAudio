@@ -16,7 +16,8 @@ std::vector<FakeResp>    g_fake_queue;
 FakeResp                 g_fake_default;
 std::vector<std::string> g_fake_requests;
 int64_t                  g_fake_total = 0;
-uint64_t                 g_fake_free = DL_FREE_UNKNOWN;
+uint64_t                 g_fake_free = 1ull << 40;
+int                      g_fake_reserve_gb = 0;
 int64_t                  g_fake_write_budget = -1;
 uint64_t                 g_fake_now_ms = 1000000;
 int                      g_fake_connects = 0;
@@ -37,7 +38,8 @@ void fake_reset(void) {
     g_fake_default = FakeResp();
     g_fake_requests.clear();
     g_fake_total = 300000;
-    g_fake_free = DL_FREE_UNKNOWN;
+    g_fake_free = 1ull << 40;      // plenty: unknown would mean no downloads
+    g_fake_reserve_gb = 0;
     g_fake_write_budget = -1;
     g_fake_connects = 0;
     g_fake_data_recvs = 0;
@@ -368,6 +370,7 @@ int dl_plat_list_dirs(const char *path, void (*cb)(const char *, void *), void *
 }
 
 uint64_t dl_plat_free_bytes(const char *path) { (void)path; return g_fake_free; }
+int      dl_plat_reserve_gb(void) { return g_fake_reserve_gb; }
 
 int dl_plat_file_open_append(const char *path) {
     return open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);

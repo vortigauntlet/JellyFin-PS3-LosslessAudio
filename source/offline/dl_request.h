@@ -44,7 +44,23 @@ typedef struct {
     char          backdrop_url[DL_ART_URL_MAX];
     DlExtras      extras;            // points into this struct
     StreamRequest decision;          // what was decided, for logging/tests
+    // What the file is expected to need, as an upper bound, for the space
+    // check (also in extras.estimate_bytes).  size_known is false when there
+    // is neither a runtime nor a size to estimate from: the caller must then
+    // refuse, since space cannot be checked.
+    uint64_t      size_estimate;
+    bool          size_known;
 } DlRequest;
+
+// The estimate itself, pure:
+//   direct play (no video ceiling): the server's MediaSource.Size when it
+//     reports one, else the largest rate a disc video stream carries over
+//     the runtime;
+//   a ceiling: (video ceiling + audio) bit/s over the runtime;
+// both with 15% headroom for the transport stream.  False when neither a size
+// nor a runtime is known.
+bool dl_estimate_bytes(const StreamRequest *d, uint32_t runtime_secs,
+                       uint64_t source_size_bytes, uint64_t *out);
 
 // Artwork sizes: bounded server-side so each fits the worker's buffer, and
 // big enough for a detail page (poster) or a full-width background.

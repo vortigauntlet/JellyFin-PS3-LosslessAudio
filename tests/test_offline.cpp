@@ -39,7 +39,6 @@ static DlConfig    s_cfg;
 
 static void small_config(DlConfig *c) {
     dl_config_defaults(c);
-    c->reserve_bytes     = 1000;
     c->head_timeout_ms   = 10000;
     c->idle_timeout_ms   = 5000;
     c->checkpoint_ms     = 1000000;   // byte-driven in tests
@@ -1115,53 +1114,262 @@ static void test_deletion(void) {
     CHECK(dl_plat_file_size(item_file("del3", DL_FILE_STATE).c_str()) == -1);
 }
 
+static const uint64_t GIB   = 1ull << 30;
+static const uint64_t FLOOR = 10 * GIB;     // DL_RESERVE_MIN
+
 static void test_storage_limits(void) {
-    begin("refused up front when it cannot fit");
-    g_fake_free = 100000;   // reserve is 1000
+    begin("the floor is 10 GiB and the reserve can only raise it");
+    CHECK(DL_RESERVE_MIN == FLOOR);
+    CHECK(dl_reserve_bytes() == FLOOR);
+    s_cfg.reserve_bytes = 1000;                     // a lower configured value...
+    restart_app();
+    CHECK(dl_reserve_bytes() == FLOOR);             // ...is lifted to the floor
+    g_fake_reserve_gb = 3;                          // the setting cannot lower it
+    restart_app();
+    CHECK(dl_reserve_bytes() == FLOOR);
+    g_fake_reserve_gb = 25;                         // but it can raise it
+    restart_app();
+    CHECK(dl_reserve_bytes() == 25 * GIB);
+    g_fake_reserve_gb = -4;                         // nonsense is ignored
+    restart_app();
+    CHECK(dl_reserve_bytes() == FLOOR);
+
+    begin("refused up front when it cannot fit above the floor");
+    g_fake_free = FLOOR + 100000;
     DlMeta m = meta_for("big");
     CHECK(dl_enqueue(&m, URL, 300000) == DL_E_NO_SPACE);
     CHECK(status_of("big").rec.state == DL_STATE_COUNT);
+    DlSpaceReport rep = dl_last_space_report();     // the numbers behind the refusal
+    CHECK(rep.state == DL_SPACE_LOW && rep.need_bytes == 300000 &&
+          rep.avail_bytes == 100000 && rep.reserve_bytes == FLOOR);
     char dir[DL_PATH_MAX];
     dl_store_item_dir(dir, sizeof(dir), "big");
     CHECK(!dl_plat_exists(dir));                   // nothing left behind
-    CHECK(dl_enqueue(&m, URL, 99000) == DL_OK);    // fits (with reserve)
+    CHECK(dl_enqueue(&m, URL, 99000) == DL_OK);    // fits above the floor
 
-    begin("refused when the server says it is too big");
-    g_fake_free = 200000;
-    DlMeta m2 = meta_for("big2");
-    CHECK(dl_enqueue(&m2, URL, 0) == DL_OK);       // size unknown: accepted
-    CHECK(dl_manager_step());
-    DlStatus st = status_of("big2");
-    CHECK(st.rec.state == DL_FAILED && st.rec.error == DL_ERR_NO_SPACE);
-    CHECK(st.rec.bytes_done == 0);
-    g_fake_free = DL_FREE_UNKNOWN;                 // user freed space
-    CHECK(dl_retry("big2") == DL_OK);
-    CHECK(dl_manager_step());
-    CHECK(status_of("big2").rec.state == DL_COMPLETED);
+    begin("at the floor exactly, nothing fits");
+    g_fake_free = FLOOR;
+    DlMeta mz = meta_for("zero");
+    CHECK(dl_enqueue(&mz, URL, 1000) == DL_E_NO_SPACE);
+    g_fake_free = FLOOR - 1;                        // below it: avail is 0, not negative
+    CHECK(dl_enqueue(&mz, URL, 1000) == DL_E_NO_SPACE);
+    CHECK(dl_last_space_report().avail_bytes == 0);
 
-    begin("disk fills during the transfer");
-    g_fake_default.chunked = true;                 // size unknown up front
-    g_fake_default.accept_ranges = false;
-    g_fake_write_budget = 150000;
-    DlMeta m3 = meta_for("fill");
-    CHECK(dl_enqueue(&m3, URL, 0) == DL_OK);
-    CHECK(dl_manager_step());
-    st = status_of("fill");
-    CHECK(st.rec.state == DL_FAILED && st.rec.error == DL_ERR_NO_SPACE);
-    CHECK(dl_plat_file_size(item_file("fill", DL_FILE_MEDIA).c_str()) == -1);
+    begin("the queue's own commitments count against the next item");
+    g_fake_free = FLOOR + 250000;
+    DlExtras ex; memset(&ex, 0, sizeof(ex));
+    ex.estimate_bytes = 100000;                    // an estimate, not an exact size
+    DlMeta qa = meta_for("qa"), qb = meta_for("qb"), qc = meta_for("qc");
+    CHECK(dl_enqueue(&qa, URL, 0, &ex) == DL_OK);
+    CHECK(dl_enqueue(&qb, URL, 0, &ex) == DL_OK);
+    CHECK(dl_enqueue(&qc, URL, 0, &ex) == DL_E_NO_SPACE);   // 300000 > 250000
+    rep = dl_last_space_report();
+    CHECK(rep.committed_bytes == 200000 && rep.need_bytes == 300000);
+    CHECK(dl_remove("qb") == DL_OK);                // room again
+    CHECK(dl_enqueue(&qc, URL, 0, &ex) == DL_OK);
+    // The same query without enqueuing:
+    rep = dl_space_report(100000);
+    CHECK(rep.state == DL_SPACE_LOW && rep.committed_bytes == 200000);
 
-    begin("free space drops below the reserve mid-transfer");
+    begin("unknown free space: nothing is accepted");
     g_fake_free = DL_FREE_UNKNOWN;
+    DlMeta mu = meta_for("unk");
+    CHECK(dl_enqueue(&mu, URL, 1000) == DL_E_SPACE_UNKNOWN);
+    CHECK(status_of("unk").rec.state == DL_STATE_COUNT);
+    CHECK(dl_space_report(1).state == DL_SPACE_UNKNOWN);
+
+    begin("an implausible reading counts as unknown");
+    g_fake_free = 9ull * 1024 * GIB;                // 9 TiB: no console drive reads this
+    CHECK(dl_enqueue(&mu, URL, 1000) == DL_E_SPACE_UNKNOWN);
+    g_fake_free = UINT64_MAX - 1;
+    CHECK(dl_enqueue(&mu, URL, 1000) == DL_E_SPACE_UNKNOWN);
+
+    begin("size unknown still has to leave room for the next chunk");
+    g_fake_free = FLOOR + 1000;                     // less than one chunk above the floor
+    DlMeta ms = meta_for("nosize");
+    CHECK(dl_enqueue(&ms, URL, 0) == DL_E_NO_SPACE);
+    g_fake_free = FLOOR + (1ull << 30);
+    CHECK(dl_enqueue(&ms, URL, 0) == DL_OK);
+
+    begin("an item that cannot start pauses, it does not fail");
+    g_fake_free = FLOOR + (1ull << 30);
+    DlMeta m2 = meta_for("late");
+    CHECK(dl_enqueue(&m2, URL, 0) == DL_OK);
+    g_fake_free = FLOOR + 10;                       // the disk filled up meanwhile
+    CHECK(dl_manager_step());
+    DlStatus st = status_of("late");
+    CHECK(st.rec.state == DL_PAUSED && st.rec.error == DL_ERR_NO_SPACE);
+    CHECK(st.rec.bytes_done == 0);
+    CHECK(dl_space_held());
+    g_fake_free = FLOOR + (1ull << 30);             // the user freed space
+    CHECK(dl_resume("late") == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of("late").rec.state == DL_COMPLETED);
+    CHECK(!dl_space_held());
+
+    begin("crossing the floor mid-transfer pauses with the partial kept");
+    g_fake_free = FLOOR + (1ull << 30);
+    g_fake_default.chunked = true;                  // size unknown up front
+    g_fake_default.accept_ranges = true;
     static bool dropped; dropped = false;
     g_fake_default.on_body = [](int64_t sent) {
-        if (!dropped && sent > 30000) { dropped = true; g_fake_free = 500; }
+        if (!dropped && sent > 30000) { dropped = true; g_fake_free = FLOOR + 100; }
     };
-    DlMeta m4 = meta_for("drain");
-    CHECK(dl_enqueue(&m4, URL, 0) == DL_OK);
+    DlMeta m3 = meta_for("drain");
+    CHECK(dl_enqueue(&m3, URL, 0) == DL_OK);
+    DlMeta m3b = meta_for("waiting");
+    CHECK(dl_enqueue(&m3b, URL, 0) == DL_OK);
     CHECK(dl_manager_step());
     st = status_of("drain");
-    CHECK(st.rec.state == DL_FAILED && st.rec.error == DL_ERR_NO_SPACE);
-    CHECK(st.rec.bytes_done < (uint64_t)g_fake_total);
+    CHECK(st.rec.state == DL_PAUSED && st.rec.error == DL_ERR_NO_SPACE);
+    CHECK(st.rec.bytes_done > 0 && st.rec.bytes_done < (uint64_t)g_fake_total);
+    CHECK(dl_plat_file_size(item_file("drain", DL_FILE_PART).c_str()) ==
+          (int64_t)st.rec.bytes_done);              // kept, and what the record says
+    CHECK(!dl_manager_step());                      // nothing else starts below the floor
+    CHECK(status_of("waiting").rec.state == DL_QUEUED);
+    // Nothing was written inside the reserve: what is on disk plus the floor
+    // never exceeded what was free when the last check passed.
+    g_fake_free = FLOOR + (1ull << 30);             // space comes back
+    g_fake_default.on_body = nullptr;
+    CHECK(dl_resume("drain") == DL_OK);
+    CHECK(dl_manager_step());                       // the held queue is released
+    CHECK(last_request_has_range(st.rec.bytes_done));   // a resume, by Range
+    CHECK(status_of("drain").rec.state == DL_COMPLETED);
+
+    begin("a failed write pauses for space, not as a disk error");
+    g_fake_free = FLOOR + (1ull << 30);
+    g_fake_default.chunked = true;
+    g_fake_default.accept_ranges = false;
+    g_fake_write_budget = 150000;                   // the fake zeroes free space when this runs out
+    DlMeta m4 = meta_for("fill");
+    CHECK(dl_enqueue(&m4, URL, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    st = status_of("fill");
+    CHECK(st.rec.state == DL_PAUSED && st.rec.error == DL_ERR_NO_SPACE);
+    CHECK(dl_plat_file_size(item_file("fill", DL_FILE_MEDIA).c_str()) == -1);
+
+    begin("free space becomes unreadable mid-transfer");
+    g_fake_free = FLOOR + (1ull << 30);
+    g_fake_default.on_body = [](int64_t sent) {
+        if (sent > 30000) g_fake_free = DL_FREE_UNKNOWN;
+    };
+    DlMeta m5 = meta_for("blind");
+    CHECK(dl_enqueue(&m5, URL, 0) == DL_OK);
+    CHECK(dl_manager_step());
+    st = status_of("blind");
+    CHECK(st.rec.state == DL_PAUSED && st.rec.error == DL_ERR_SPACE_UNKNOWN);
+    CHECK(st.rec.bytes_done > 0);
+    CHECK(!dl_manager_step());                      // still unreadable: still held
+    g_fake_default.on_body = nullptr;
+    g_fake_free = FLOOR + (1ull << 30);
+    CHECK(dl_resume("blind") == DL_OK);
+    CHECK(dl_manager_step());
+    CHECK(status_of("blind").rec.state == DL_COMPLETED);
+
+    begin("the pause reason and the estimate survive a restart");
+    g_fake_free = FLOOR + (1ull << 30);
+    ex.estimate_bytes = 123456;
+    DlMeta m6 = meta_for("keep");
+    CHECK(dl_enqueue(&m6, URL, 0, &ex) == DL_OK);
+    g_fake_free = FLOOR + 5;
+    CHECK(dl_manager_step());
+    restart_app();
+    st = status_of("keep");
+    CHECK(st.rec.state == DL_PAUSED && st.rec.error == DL_ERR_NO_SPACE &&
+          st.rec.est_bytes == 123456);
+
+    begin("how many of a season fit");
+    DlSpaceReport sr;
+    memset(&sr, 0, sizeof(sr));
+    sr.state = DL_SPACE_OK; sr.avail_bytes = 1000; sr.committed_bytes = 100;
+    const uint64_t eps[5] = { 300, 300, 300, 300, 300 };
+    CHECK(dl_space_fit_prefix(&sr, eps, 5) == 3);   // 100 + 900 = 1000: exactly fits
+    sr.committed_bytes = 101;
+    CHECK(dl_space_fit_prefix(&sr, eps, 5) == 2);
+    sr.avail_bytes = 0;
+    CHECK(dl_space_fit_prefix(&sr, eps, 5) == 0);
+    sr.state = DL_SPACE_UNKNOWN; sr.avail_bytes = 1000000;
+    CHECK(dl_space_fit_prefix(&sr, eps, 5) == 0);   // unknown: nothing fits
+}
+
+// =========================================================================
+// HDD floor: estimates and the words
+// =========================================================================
+
+static void test_space_estimates_and_text(void) {
+    s_test = "space: estimates"; printf("- %s\n", s_test);
+    StreamRequest d;
+    memset(&d, 0, sizeof(d));
+    d.vbitrate = 25000000; d.vreq = 24000000; d.abitrate = 640000; d.achans = 6;
+    uint64_t est = 0;
+    // A ceiling: (video + audio) over the runtime, plus 15%.
+    CHECK(dl_estimate_bytes(&d, 3600, 0, &est));
+    const uint64_t base = (24000000ull + 640000) / 8 * 3600;
+    CHECK(est == base + base / 100 * 15);
+    // A ceiling with no runtime: nothing to estimate from.
+    CHECK(!dl_estimate_bytes(&d, 0, 5ull << 30, &est));
+    // An HD audio copy is charged what the budget charged.
+    d.hd_codec = "truehd"; d.audio_cost = 4500000;
+    uint64_t est_hd = 0;
+    CHECK(dl_estimate_bytes(&d, 3600, 0, &est_hd) && est_hd > est);
+    // Direct play: the server's size, else the disc ceiling over the runtime.
+    StreamRequest o;
+    memset(&o, 0, sizeof(o));
+    CHECK(dl_estimate_bytes(&o, 0, 10000000000ull, &est));
+    CHECK(est > 10000000000ull && est < 12000000000ull);
+    CHECK(dl_estimate_bytes(&o, 7200, 0, &est));
+    CHECK(est > 50000000ull / 8 * 7200);
+    CHECK(!dl_estimate_bytes(&o, 0, 0, &est));                // neither: refuse
+
+    s_test = "space: what the screens say"; printf("- %s\n", s_test);
+    char buf[160];
+    DlSpaceReport rep;
+    memset(&rep, 0, sizeof(rep));
+    rep.state = DL_SPACE_LOW;
+    rep.need_bytes = 6ull * GIB + 200ull * 1024 * 1024;     // 6.1 GB
+    rep.avail_bytes = 3ull * GIB + 100ull * 1024 * 1024;    // 3.0 GB
+    rep.reserve_bytes = FLOOR;
+    dl_ui_result_message(DL_E_NO_SPACE, &rep, buf, sizeof(buf));
+    CHECK(!strcmp(buf, "Not enough space: needs 6.1 GB, 3.0 GB available (10 GB is always kept free)"));
+    dl_ui_result_message(DL_E_SPACE_UNKNOWN, &rep, buf, sizeof(buf));
+    CHECK(!strcmp(buf, "Can't check free HDD space: downloads paused"));
+    dl_ui_result_message(DL_E_SIZE_UNKNOWN, NULL, buf, sizeof(buf));
+    CHECK(!strcmp(buf, "Size unknown, can't check space"));
+    dl_ui_result_message(DL_E_NO_SPACE, NULL, buf, sizeof(buf));   // no numbers: the plain text
+    CHECK(!strcmp(buf, dl_ui_result_text(DL_E_NO_SPACE)));
+
+    rep.free_bytes = 42ull * GIB;
+    dl_ui_hdd_header(&rep, buf, sizeof(buf));
+    CHECK(!strcmp(buf, "HDD: 42 GB free \xC2\xB7 downloads keep 10 GB free"));
+    rep.state = DL_SPACE_UNKNOWN;
+    dl_ui_hdd_header(&rep, buf, sizeof(buf));
+    CHECK(strstr(buf, "unknown") != NULL);
+
+    DlUiContext cx = { false, false, true };
+    rep.state = DL_SPACE_LOW;
+    dl_ui_banner(&cx, &rep, true, buf, sizeof(buf));
+    CHECK(!strcmp(buf, "Paused: the HDD is down to 10 GB free"));
+    rep.state = DL_SPACE_UNKNOWN;
+    dl_ui_banner(&cx, &rep, true, buf, sizeof(buf));
+    CHECK(!strcmp(buf, "Can't check free HDD space: downloads paused"));
+    dl_ui_banner(&cx, &rep, false, buf, sizeof(buf));           // not held: no banner
+    CHECK(buf[0] == '\0');
+    cx.auth_held = true;                                        // another hold wins
+    dl_ui_banner(&cx, &rep, true, buf, sizeof(buf));
+    CHECK(!strcmp(buf, "Sign in to continue downloads"));
+
+    // A row paused for space says why, as a warning.
+    DlStatus st;
+    memset(&st, 0, sizeof(st));
+    snprintf(st.rec.id, sizeof(st.rec.id), "x");
+    st.rec.state = DL_PAUSED; st.rec.error = DL_ERR_NO_SPACE;
+    DlUiRow row;
+    DlUiContext cx2 = { false, false, true };
+    dl_ui_row(&st, &cx2, &row);
+    CHECK(row.warning && strstr(row.status, "Paused") != NULL);
+    st.rec.error = DL_ERR_NONE;                                 // a user pause is not a warning
+    dl_ui_row(&st, &cx2, &row);
+    CHECK(!row.warning && !strcmp(row.status, "Paused"));
 }
 
 // =========================================================================
@@ -3087,14 +3295,14 @@ static void test_ui_offline_and_helpers(void) {
     char t[128], sub[160];
     dl_ui_offline_lines(&m, true, 1288490188ull, t, sizeof(t), sub, sizeof(sub));
     CHECK(!strcmp(t, "Pilot"));
-    CHECK(!strcmp(sub, "Some Show  S1 E3  \xB7  47 min  \xB7  1.1 GB"));
+    CHECK(!strcmp(sub, "Some Show  S1 E3  \xC2\xB7  47 min  \xC2\xB7  1.1 GB"));   // UTF-8 middle dot
     DlMeta mv;
     dl_meta_init(&mv);
     snprintf(mv.id, sizeof(mv.id), "mv1");
     snprintf(mv.title, sizeof(mv.title), "A Film");
     mv.year = 1999; mv.runtime_secs = 8100;
     dl_ui_offline_lines(&mv, true, 812 * 1024, t, sizeof(t), sub, sizeof(sub));
-    CHECK(!strcmp(sub, "1999  \xB7  2h 15m  \xB7  812 KB"));
+    CHECK(!strcmp(sub, "1999  \xC2\xB7  2h 15m  \xC2\xB7  812 KB"));
     // Stale metadata: title from the record, only what is certain.
     dl_ui_offline_lines(&m, false, 1024, t, sizeof(t), sub, sizeof(sub));
     CHECK(!strcmp(t, "Pilot") && !strcmp(sub, "1 KB"));
@@ -3103,7 +3311,7 @@ static void test_ui_offline_and_helpers(void) {
     CHECK(!strcmp(t, "ep1"));
     m.season = -1;
     dl_ui_offline_lines(&m, true, 0, t, sizeof(t), sub, sizeof(sub));
-    CHECK(strncmp(sub, "Some Show  \xB7", 12) == 0);             // no S-1 E3
+    CHECK(strncmp(sub, "Some Show  \xC2\xB7", 13) == 0);             // no S-1 E3
 
     s_test = "byte formatting"; printf("- %s\n", s_test);
     char b[24];
@@ -3239,6 +3447,7 @@ int main(int argc, char **argv) {
     test_suspend();
     test_deletion();
     test_storage_limits();
+    test_space_estimates_and_text();
     test_restore_interrupted();
     test_restore_malformed();
     test_offline_startup();

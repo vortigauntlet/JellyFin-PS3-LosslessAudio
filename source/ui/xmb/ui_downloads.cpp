@@ -62,11 +62,19 @@ static void frame_begin(void) {
     rsxSync();
 }
 
-static void draw_title(const char *title, const char *banner, u32 banner_clr) {
+// Title, then one line under it: the free-space header on the left and, when
+// the queue is held, the reason on the right.
+static void draw_title(const char *title, const char *hdd, const char *banner,
+                       u32 banner_clr) {
     const int x = XMB_ITEM_PAD, y = XMB_OY + UIS_H(28);
+    const int right = (int)display_width - XMB_ITEM_PAD;
     drawTTF((u32)x, (u32)y, title, 28, XMB_TEXT, true);
-    if (banner && banner[0])
-        drawTTF((u32)x, (u32)(y + UIS_H(42)), banner, 15, banner_clr);
+    if (hdd && hdd[0])
+        drawTTF((u32)x, (u32)(y + UIS_H(42)), hdd, 15, XMB_TEXT_DIM);
+    if (banner && banner[0]) {
+        const int bw = ttf_text_width(banner, 15);
+        drawTTF((u32)(right - bw), (u32)(y + UIS_H(42)), banner, 15, banner_clr);
+    }
 }
 
 static int list_top(void)    { return XMB_OY + UIS_H(112); }
@@ -228,7 +236,8 @@ void xmb_show_downloads(void) {
                     case DL_UI_REMOVE: r = dl_remove(id); break;
                     default: break;
                     }
-                    snprintf(toast, sizeof(toast), "%s", dl_ui_result_text(r));
+                    { const DlSpaceReport rep = dl_last_space_report();
+                      dl_ui_result_message(r, &rep, toast, sizeof(toast)); }
                     toast_until = timing_get_us() + DL_TOAST_US;
                     armed = false;
                 }
@@ -250,8 +259,18 @@ void xmb_show_downloads(void) {
 
         // ---- draw ----
         const DlUiContext cx = ui_context();
+        char hdd[96], banner[128];
+        {
+            // Free space is a syscall: read it at the list's refresh rate.
+            static DlSpaceReport s_space;
+            static u64 s_space_at = 0;
+            const u64 t = timing_get_us();
+            if (t >= s_space_at) { s_space = dl_space_report(0); s_space_at = t + 1000000ULL; }
+            dl_ui_hdd_header(&s_space, hdd, sizeof(hdd));
+            dl_ui_banner(&cx, &s_space, dl_space_held(), banner, sizeof(banner));
+        }
         frame_begin();
-        draw_title("Downloads", dl_ui_queue_banner(&cx), DL_WARN_CLR);
+        draw_title("Downloads", hdd, banner, DL_WARN_CLR);
         const int x = XMB_ITEM_PAD, w = (int)display_width - 2 * XMB_ITEM_PAD;
         if (n == 0) {
             draw_empty("Nothing is downloading.",
@@ -375,7 +394,7 @@ void xmb_show_offline(void) {
 
         // ---- draw ----
         frame_begin();
-        draw_title("Offline", n > 0 ? "Plays from the HDD -- no server needed" : "", XMB_TEXT_DIM);
+        draw_title("Offline", n > 0 ? "Plays from the HDD -- no server needed" : "", "", XMB_TEXT_DIM);
         const int x = XMB_ITEM_PAD, w = (int)display_width - 2 * XMB_ITEM_PAD;
         if (n == 0)
             draw_empty("Nothing downloaded yet.",
