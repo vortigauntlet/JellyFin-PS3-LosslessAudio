@@ -27,6 +27,7 @@
 #include "rsxutil.h"
 #include "plog.h"
 #include "audio.h"   // audio_get_volume() for the volume slider
+#include "audio_bitstream.h"   // audio_passthrough_active(): the receiver owns the volume
 
 // -------------------------------------------------------
 // Overlay buffers + compose-on-change state
@@ -440,7 +441,14 @@ static void hud_body_v2(u64 elapsed_us, bool paused, bool scrubbing) {
                  (u32)w_cc, 2, HUD_ACCENT);
 
     // ---- Volume slider (vertical, above the speaker) while adjusting ----
-    if (g_hud.vol_active) {
+    if (g_hud.vol_active && audio_passthrough_active()) {
+        // Nothing is mixed here: the receiver decodes and owns the level.
+        const char *msg = "Volume is set on your soundbar or receiver";
+        const int mw = ttf_text_width(msg, ROW_TEXT_PX) + 28;
+        const int mx = spk_x + w_spk / 2 - mw + 24, my = strip_y - 12 - 38;
+        ovl_dim((u32)mx, (u32)my, (u32)mw, 34, 205);
+        drawTTF((u32)(mx + 14), (u32)(my + 8), msg, ROW_TEXT_PX, HUD_FOCUSED);
+    } else if (g_hud.vol_active) {
         int vol       = audio_get_volume();          // 0..100
         int spk_cx    = spk_x + w_spk / 2;
         int track_x   = spk_cx - VOL_TRACK_W / 2;

@@ -43,6 +43,8 @@ typedef struct {
     u32        display_h;
     bool       budget;        // a quality step is the whole stream, audio and
                               // TS framing included (stream_budget.h)
+    bool       passthrough;   // Dolby Digital output: the receiver decodes, so
+                              // the stream carries AC-3 and never an HD copy
 } StreamPrefs;
 
 // Snapshot of the live settings.  Console only (player_session.cpp): the
@@ -75,6 +77,8 @@ typedef struct {
     unsigned    abitrate;
     int         achans;
     const char *hd_codec;          // "dts" / "truehd" when stream-copied, else NULL
+    bool        ac3_copy;          // passthrough on a Dolby Digital track: the
+                                   // track is copied, with no AudioBitrate
     // selection, as Jellyfin indices / ids
     int         audio_idx;         // MediaStream Index, -1 = server default
     int         sub_idx;           // -1 = none; else the track to burn in

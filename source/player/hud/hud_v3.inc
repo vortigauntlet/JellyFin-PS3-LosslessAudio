@@ -178,7 +178,8 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         const char *al = g_hud.audio_label;
         snprintf(a_val, sizeof a_val, "%s",
                  (al[0] && strcmp(al, "AUDIO") != 0) ? al : "Default");
-        snprintf(v_val, sizeof v_val, "%d%%", audio_get_volume());
+        if (audio_passthrough_active()) snprintf(v_val, sizeof v_val, "Receiver");
+        else                            snprintf(v_val, sizeof v_val, "%d%%", audio_get_volume());
         const char *keys[3] = { "AUDIO", "VOLUME", "SUBTITLES" };
         const char *vals[3] = { a_val, v_val, g_hud.cc_active ? "On" : "Off" };
         const int   slot[3] = { FOCUS_AUDIO, FOCUS_VOLUME, FOCUS_CC };
@@ -221,7 +222,15 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
             // (The volume chip's level meter -- a purple line on its floor --
             // is gone: it read as a mystery underline.  The % says it.)
             // The volume slider opens above its chip while adjusting.
-            if (slot[i] == FOCUS_VOLUME && g_hud.vol_active) {
+            if (slot[i] == FOCUS_VOLUME && g_hud.vol_active && audio_passthrough_active()) {
+                // Nothing is mixed here: the receiver decodes and owns the level.
+                const char *msg = "Volume is set on your soundbar or receiver";
+                const float mpx = UIS_TF(12.0f);
+                const int mw = ttf_text_width(msg, mpx) + UIS_W(28), mh = UIS_H(34);
+                const int mx = x + w[i] - mw, my = cy - UIS_H(14) - mh;
+                v3_rrect(mx, my, mw, mh, UIS_H(9), 1, 0x000A0C18, 200, WHITE, 40);
+                drawTTF((u32)(mx + UIS_W(14)), (u32)(my + (mh - (int)mpx) / 2), msg, mpx, WHITE);
+            } else if (slot[i] == FOCUS_VOLUME && g_hud.vol_active) {
                 const float cpx = UIS_TF(11.0f);
                 const int vol = audio_get_volume();
                 const int sx  = x + w[i] / 2, bot = cy - UIS_H(14);

@@ -1,4 +1,5 @@
 #define MINIMP3_IMPLEMENTATION
+#include "audio_bitstream.h"
 #include "minimp3.h"
 #include "adec.h"
 #include "adec_ac3.h"
@@ -544,6 +545,14 @@ void adec_set_codec(adec_codec_t codec) {
     const int  port_ch   = audio_output_channels();
     const bool wide_port = port_ch >= 6;
     int want_ch = 2;
+    // Passthrough carries AC-3 only.  Anything else arriving on a bitstream
+    // wire would be sent as garbage, so hand the output back to LPCM and
+    // decode it (in stereo: the port was opened 2-wide for passthrough).
+    if (audio_passthrough_active() && codec != ADEC_CODEC_AC3) {
+        plog("adec_set_codec: passthrough needs AC-3, reverting output to LPCM");
+        audio_bitstream_end();
+    }
+    adec_ac3_set_passthrough(codec == ADEC_CODEC_AC3 && audio_passthrough_active());
     if (codec == ADEC_CODEC_AC3 || codec == ADEC_CODEC_DTS)
         want_ch = wide_port ? 6 : 2;
     else if (codec == ADEC_CODEC_TRUEHD)

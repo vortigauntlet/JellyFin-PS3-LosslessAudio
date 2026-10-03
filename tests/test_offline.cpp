@@ -1891,6 +1891,7 @@ static StreamPrefs prefs_of(int q, bool hd, int surround_mode, u32 dw = 1920, u3
     p.display_w = dw;
     p.display_h = dh;
     p.budget = true;
+    p.passthrough = false;
     return p;
 }
 
@@ -1993,6 +1994,28 @@ static void test_download_matches_playback(void) {
     CHECK(pq["StartTimeTicks"] == "36000000000" && dq["StartTimeTicks"] == "0");
     pq.erase("StartTimeTicks"); dq.erase("StartTimeTicks");
     CHECK(pq == dq);
+}
+
+static void test_download_dolby_digital(void) {
+    s_test = "download in Dolby Digital mode carries the AC-3 track"; printf("- %s\n", s_test);
+    JFItem it = fixture_item();
+    XMBItemDetail d = fixture_detail();
+    StreamPrefs p = prefs_of(VQ_1080P_25, false, 2);
+    p.passthrough = true;
+    // Default track = "English - AC3 - 5.1": copied, no AudioBitrate.
+    JFMediaSource ac3 = fixture_source(2);
+    DlRequest dr;
+    CHECK(build_request(it, &d, &ac3, p, &dr));
+    auto q = query_of(dr.url, NULL);
+    CHECK(q["AudioCodec"] == "ac3" && q["AllowAudioStreamCopy"] == "true");
+    CHECK(q.count("AudioBitrate") == 0 && q["MaxAudioChannels"] == "6");
+    CHECK(!strcmp(dr.meta.audio_codec, "ac3") && dr.decision.ac3_copy);
+    // Default track = DTS-HD: transcoded to AC-3, never an HD copy.
+    JFMediaSource dts = fixture_source(0);
+    CHECK(build_request(it, &d, &dts, p, &dr));
+    q = query_of(dr.url, NULL);
+    CHECK(q["AudioCodec"] == "ac3" && q["AllowAudioStreamCopy"] == "false");
+    CHECK(q["AudioBitrate"] == "640000" && !dr.decision.ac3_copy && !dr.decision.hd_codec);
 }
 
 static void test_download_url_shape(void) {
@@ -3458,6 +3481,7 @@ int main(int argc, char **argv) {
 
     // Stage 3
     test_download_matches_playback();
+    test_download_dolby_digital();
     test_download_url_shape();
     test_request_gating();
     test_item_identity();

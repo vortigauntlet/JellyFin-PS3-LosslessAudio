@@ -10,6 +10,7 @@
 #include "ui.h"
 #include "timing.h"
 #include "audio.h"
+#include "audio_bitstream.h"   // passthrough: the receiver owns the volume
 #include "ui_visuals.h"   // g_spine_on: the redesigned HUD's buttons
 #include "statsovl.h"
 
@@ -145,9 +146,12 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
 
     // Volume slider modal: while open, up/down change the level and X/O close
     // it (d-pad left/right are swallowed so focus stays on the speaker).
+    // With Dolby Digital output nothing is mixed here (the receiver decodes
+    // and owns the volume), so up/down change nothing; the drawn panel says so.
     if (g_hud.vol_active) {
-        if (BTN_REPEAT(up))        audio_set_volume(audio_get_volume() + VOL_STEP);
-        else if (BTN_REPEAT(down)) audio_set_volume(audio_get_volume() - VOL_STEP);
+        const bool receiver_owns = audio_passthrough_active();
+        if (BTN_REPEAT(up)   && !receiver_owns) audio_set_volume(audio_get_volume() + VOL_STEP);
+        else if (BTN_REPEAT(down) && !receiver_owns) audio_set_volume(audio_get_volume() - VOL_STEP);
         else if (BTN_PRESSED(cross) || BTN_PRESSED(circle)) g_hud.vol_active = false;
         return HUD_ACTION_NONE;
     }

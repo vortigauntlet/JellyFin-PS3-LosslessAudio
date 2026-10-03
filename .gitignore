@@ -54,3 +54,6 @@ tests/test_*
 player_log*.txt
 *.log
 *.pre-*
+tests/tones51.spdif
+tests/test_iec61937
+tests/test_stream_request

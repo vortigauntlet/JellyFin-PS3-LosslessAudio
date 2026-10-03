@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <string>
 
 static int s_checks = 0, s_failed = 0;
 #define CHECK(cond) do { s_checks++; if (!(cond)) { s_failed++; \
@@ -133,6 +134,74 @@ static void subtitles(void) {
     CHECK(rq.sub_idx == -1);
 }
 
+// Dolby Digital output.  Written out by hand from the rules, not generated:
+// a DD track is copied (no AudioBitrate: a ceiling below the track's rate
+// demotes a copy to a transcode); every other track takes the AC-3 640 kbps
+// transcode; never a TrueHD or DTS copy.  The video ceiling is the step less
+// 3% framing less the audio (25 Mbps: 24.25 Mbps - 0.64 Mbps = 23.61 Mbps).
+static std::string dd_url(int quality, int audio, bool surround, bool surround_hd) {
+    GoldenCase c = { "dd", quality, 0, surround, surround_hd, 1920, 1080, audio,
+                     GS_NONE, GV_PLAIN, 1, 0 };
+    Built b; build_case(&c, &b);
+    b.p.passthrough = true;
+    StreamRequest rq;
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    char url[1024];
+    stream_url_build(url, sizeof url, &rq, SERVER, DEVICE, "sess1234", 0);
+    return url;
+}
+
+static void dolby_digital(void) {
+    printf("- dolby digital\n");
+    const std::string head =
+        "http://server:8096/Videos/ITEM0001/stream.ts?VideoCodec=h264&Profile=high"
+        "&Level=42&MaxWidth=1920&MaxHeight=1080&VideoBitrate=23610000"
+        "&AllowVideoStreamCopy=true";
+    const std::string tail =
+        "&MaxFramerate=30";
+    const std::string ids =
+        "&DeviceId=DEVID123&Static=false&MediaSourceId=ITEM0001&StartTimeTicks=0";
+
+    // A Dolby Digital track is copied.
+    CHECK(dd_url(VQ1080_25, GA_AC3, true, true) ==
+          head + "&AudioCodec=ac3&AudioSampleRate=48000&MaxAudioChannels=6" + tail +
+          "&AllowAudioStreamCopy=true" + ids + "&AudioStreamIndex=1&PlaySessionId=sess1234");
+
+    // Any other track is transcoded to AC-3, whatever the 5.1/7.1 prefs say.
+    const std::string transcode =
+        "&AudioCodec=ac3&AudioBitrate=640000&AudioSampleRate=48000&MaxAudioChannels=6" +
+        tail + "&AllowAudioStreamCopy=false" + ids;
+    const int others[] = { GA_TRUEHD, GA_DTS, GA_EAC3, GA_AAC };
+    const int idx[]    = { 2, 3, 4, 5 };
+    for (int i = 0; i < 4; i++) {
+        const std::string want = head + transcode + "&AudioStreamIndex=" +
+                                 std::to_string(idx[i]) + "&PlaySessionId=sess1234";
+        CHECK(dd_url(VQ1080_25, others[i], true, true) == want);    // HD copy preferred, still no copy
+        CHECK(dd_url(VQ1080_25, others[i], false, false) == want);  // and with the surround flags off
+    }
+
+    // Direct play: no video ceiling at all, the DD track still copied.
+    CHECK(dd_url(VQORIG, GA_AC3, true, false) ==
+          "http://server:8096/Videos/ITEM0001/stream.ts?VideoCodec=h264&Profile=high"
+          "&Level=42&MaxWidth=1920&MaxHeight=1080&AllowVideoStreamCopy=true"
+          "&AudioCodec=ac3&AudioSampleRate=48000&MaxAudioChannels=6&MaxFramerate=30"
+          "&AllowAudioStreamCopy=true" + ids + "&AudioStreamIndex=1&PlaySessionId=sess1234");
+
+    // The request flags: only a DD track is a copy, never an HD codec.
+    Built b; GoldenCase c = { "dd", VQ1080_25, 0, 1, 1, 1920, 1080, GA_TRUEHD,
+                              GS_NONE, GV_PLAIN, 1, 0 };
+    build_case(&c, &b); b.p.passthrough = true;
+    StreamRequest rq;
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    CHECK(!rq.ac3_copy && rq.hd_codec == NULL && !strcmp(rq.acodec, "ac3"));
+    c.audio = GA_AC3; build_case(&c, &b); b.p.passthrough = true;
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    CHECK(rq.ac3_copy && rq.hd_codec == NULL);
+    b.p.passthrough = false;                    // output back on 5.1: as it always was
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    CHECK(!rq.ac3_copy);
+}
+
 static void initial_selection(void) {
     printf("- initial selection\n");
     JFTracks t; fill_tracks(&t);
@@ -151,6 +220,7 @@ int main(void) {
     golden();
     budget();
     subtitles();
+    dolby_digital();
     initial_selection();
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;

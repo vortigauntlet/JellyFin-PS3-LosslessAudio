@@ -41,20 +41,27 @@ void stream_request_resolve(const StreamPrefs *prefs,
     // drawn on the console (text, PGS) must not appear in the request.
     rq->sub_idx = (have_sub && !sel->sub_on_console) ? t->subs[sel->cur_sub].index : -1;
 
-    // Stereo asks for MP3.  Any surround mode asks for AC-3 5.1 at the DVD
-    // rate; the request is stable across seeks because every seek rebuilds it
-    // from the same settings.
-    rq->acodec   = prefs->surround ? "ac3"   : "mp3";
-    rq->abitrate = prefs->surround ? 640000u : 192000u;
-    rq->achans   = prefs->surround ? 6       : 2;
+    // Stereo asks for MP3.  Any surround mode, and Dolby Digital output, asks
+    // for AC-3 5.1 at the DVD rate; the request is stable across seeks because
+    // every seek rebuilds it from the same settings.
+    const bool ac3 = prefs->surround || prefs->passthrough;
+    rq->acodec   = ac3 ? "ac3"   : "mp3";
+    rq->abitrate = ac3 ? 640000u : 192000u;
+    rq->achans   = ac3 ? 6       : 2;
 
     // 5.1/7.1 prefers the source's own HD audio track, stream-copied by the
     // server: Jellyfin cannot transcode TO DTS or TrueHD, and a copy leaves
     // the lossless track untouched.  Only when the SELECTED track's label
     // names one of those; any other track, Dolby Digital Plus included, takes
     // the plain AC-3 request.
+    // Dolby Digital output never takes the HD copy: the receiver decodes
+    // AC-3 and nothing else.  A track that already is Dolby Digital is copied,
+    // so the receiver gets the source frames; any other track takes the AC-3
+    // transcode above.  Never a TrueHD or DTS copy in this mode.
     rq->hd_codec = NULL;
-    if (prefs->surround && prefs->surround_hd && have_audio) {
+    rq->ac3_copy = prefs->passthrough && have_audio &&
+                   track_label_is_ac3(t->audio[sel->cur_audio].label);
+    if (prefs->surround && prefs->surround_hd && have_audio && !prefs->passthrough) {
         const char *label = t->audio[sel->cur_audio].label;
         if      (track_label_is_dts(label))    rq->hd_codec = "dts";
         else if (track_label_is_truehd(label)) rq->hd_codec = "truehd";
@@ -72,6 +79,8 @@ void stream_request_resolve(const StreamPrefs *prefs,
                                                        : STREAM_AUDIO_COPY_DTS;
             reported = t->audio[sel->cur_audio].bitrate;
         }
+        if (rq->ac3_copy && t->audio[sel->cur_audio].bitrate)
+            reported = t->audio[sel->cur_audio].bitrate;
         rq->audio_reported = reported;
         rq->audio_cost     = stream_audio_cost(kind, reported);
         rq->vreq           = stream_video_budget(rq->vbitrate, rq->audio_cost);
@@ -103,7 +112,12 @@ int stream_url_build(char *url, int url_sz, const StreamRequest *rq,
     //     codec is in the list, while the order decides what an actual
     //     transcode encodes to, and that must be ac3.
     char aparams[128];
-    if (rq->hd_codec) {
+    if (rq->ac3_copy) {
+        // No AudioBitrate: a ceiling below the track's own rate demotes the
+        // copy to a transcode.
+        snprintf(aparams, sizeof(aparams),
+                 "&AudioCodec=ac3&AudioSampleRate=48000&MaxAudioChannels=6");
+    } else if (rq->hd_codec) {
         snprintf(aparams, sizeof(aparams),
                  "&AudioCodec=ac3,%s,mp3&AudioSampleRate=48000"
                  "&MaxAudioChannels=8", rq->hd_codec);
@@ -112,7 +126,7 @@ int stream_url_build(char *url, int url_sz, const StreamRequest *rq,
                  "&AudioCodec=%s&AudioBitrate=%u&AudioSampleRate=48000"
                  "&MaxAudioChannels=%d", rq->acodec, rq->abitrate, rq->achans);
     }
-    const char *copy_audio = rq->hd_codec ? "true" : "false";
+    const char *copy_audio = (rq->hd_codec || rq->ac3_copy) ? "true" : "false";
     char encoded_source[288];
     url_encode_query(rq->source_id, encoded_source, sizeof(encoded_source));
 

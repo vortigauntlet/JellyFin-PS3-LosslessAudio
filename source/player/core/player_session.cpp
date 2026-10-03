@@ -14,6 +14,7 @@
 #include "hd1080.h"
 #include "vquality.h"
 #include "surround.h"
+#include "audio_bitstream.h"
 #include "track_codec.h"
 #include "ui.h"
 #include "ui_visuals.h"
@@ -110,6 +111,7 @@ void stream_prefs_current(StreamPrefs *out) {
     out->display_w   = display_width;
     out->display_h   = display_height;
     out->budget      = stream_budget_enabled();
+    out->passthrough = audio_passthrough_wanted();
 }
 
 void build_stream_url(char *url, int url_sz, const PlayerState *ps,

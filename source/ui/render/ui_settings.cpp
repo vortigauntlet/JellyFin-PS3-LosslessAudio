@@ -57,7 +57,7 @@ static const char *SETTINGS_HELP[XMB_SETTINGS_COUNT] = {
     "Write a diagnostic log to /dev_hdd0/tmp/player_log.txt.\nUseful when reporting a problem; takes effect on the next launch.",
     "Shrink the picture to fit TVs that crop the edges (overscan).\nLine the corners up with your screen's edges.",
     "Ask the server for full 1920x1080 video instead of 720p.\nSharper, but needs more bandwidth. Still experimental.",
-    "Stereo, 5.1 or 7.1 sound over HDMI.\nPick what your TV, soundbar or receiver can play.",
+    "Stereo, 5.1 or 7.1 over HDMI. Dolby Digital sends the film's Dolby\ntrack untouched: use it if your soundbar drops the centre channel.",
     "Raise the centre channel, where the dialogue is.\nHelps when voices are quiet next to music and effects.",
     "The typeface subtitles are drawn in.",
     "The colour subtitles are drawn in.",

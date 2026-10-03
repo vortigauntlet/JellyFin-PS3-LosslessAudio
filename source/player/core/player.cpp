@@ -4,6 +4,7 @@
 
 #include "segments.h"
 #include "autoskip.h"
+#include "audio_bitstream.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -736,7 +737,11 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // The menu sounds keep a stereo port of their own; a bitstream or an
     // 8-channel program gets the output to itself.  audio_close() resumes them.
     ui_sfx_suspend();
-    audio_open(surround_enabled() ? 8 : 2);
+    // Dolby Digital output sends AC-3 frames to the receiver packed for a
+    // stereo link, so it opens 2 channels.
+    const bool passthrough = audio_passthrough_wanted();
+    audio_passthrough_request(passthrough);
+    audio_open(passthrough ? 2 : (surround_enabled() ? 8 : 2));
     adec_init();
     adec_start();
     plog("show_player: audio_open done");

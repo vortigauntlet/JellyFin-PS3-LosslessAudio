@@ -52,7 +52,7 @@ DCAHD_SRCS = ../source/audio/dcahd_api.c ../source/audio/dcahd_xll.c \
 DTS_HD_DEPS = $(DTS_STREAM_SRC) $(DTS_MAP_SRC) $(DTS_EXSS_SRC) $(DCA_SRCS) \
               ../source/audio/truehd_map.c $(DCAHD_SRCS)
 
-all: test_wave_scope test_ac3_map test_ac3_decode test_media_sources test_subtitles \
+all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sources test_subtitles \
      test_subtitles_pgs test_trickplay_info test_media_segments \
      test_dts_map test_dts_decode test_dts_stream test_dts_exss test_track_codec \
      test_truehd_map test_truehd_decode \
@@ -62,6 +62,13 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_media_sources test_subtit
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
      test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request
+
+test_iec61937: test_iec61937.c ../source/audio/iec61937.c $(A52_SRCS)
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+# ffmpeg's spdif muxer is the reference for the IEC 61937 bursts.
+tones51.spdif: tones51.ac3
+	ffmpeg -y -loglevel error -i $< -c copy -f spdif $@
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -264,8 +271,9 @@ tones51.thd:
 tones51.thd.ref: tones51.thd
 	ffmpeg -y -loglevel error -i tones51.thd -c:a pcm_s32le -f s32le $@
 
-check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
+check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_ac3_map
+	./test_iec61937 tones51.ac3 tones51.spdif
 	./test_ac3_decode tones51.ac3
 	./test_dts_map
 	./test_dts_decode tones51.dts
