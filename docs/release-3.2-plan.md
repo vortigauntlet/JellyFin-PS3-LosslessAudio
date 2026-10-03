@@ -2,8 +2,13 @@
 
 Written 2026-10-03 for a Sonnet session to implement. Scope decided with the
 user: **fixes + pending merges, Dolby Digital passthrough as a real menu option,
-a reorganised Settings screen, and the ui_wave statics refactor.** Offline
-downloads are **not** in 3.2 (that is 3.3's headline).
+a reorganised Settings screen, offline downloads (merged and finished),
+Favourites, whole-season download, Live TV / IPTV, and the ui_wave statics
+refactor.**
+
+3.2 is now a big release. Every item below is independently shippable.
+The order in §1 is chosen so each step lands on a stable base, and so the one
+truly risky merge (offline) happens early, while there is time to TV-test it.
 
 Base: `origin/main` = `32219a5` (3.1 + README). Work branch: `release/3.2` in
 the WSL worktree `~/jf-r32` (created from `origin/main` by the planning
@@ -70,11 +75,30 @@ These come from incidents on this project. Each one has cost a day before.
 | C1 | Settings: table-driven model + host test | new | M | med | — |
 | C2 | Settings: sections, headers, L2/R2 section jump, Left/Right value step | new | M | med | yes |
 | D1 | ui_wave.cpp statics → state structs | new, separate branch | L (mechanical) | **high** | **yes, long** |
+| E1 | Offline downloads: merge `origin/feature/offline-downloads` onto main | merge, 11 conflicts | L | **high** | **yes** |
+| E2 | Offline: spine details-page button, Downloads section in Settings, list posters | new | M | med | yes |
+| F1 | Favourites: star toggle on details, Favourites row on Home | new | S | low | yes |
+| G1 | Download whole season | new (needs E) | S–M | med | yes |
+| H1 | Live TV: API + parsing + host tests | new | M | low | — |
+| H2 | Live TV: tab, channel list (now/next), guide grid | new | L | med | yes |
+| H3 | Live TV: playback (live mode in the player, channel up/down, close stream) | new | M | **high** | **yes** |
 | R  | Release 3.2 (version, changelog, fresh-install test, pkg) | — | S | — | yes |
 
-Order: A → B → C → R-prep. D1 runs on its own branch in parallel and only
-merges if it passes a TV soak before release day. **3.2 ships without D1
-rather than waiting for it** — it has no user-visible value.
+**Order:** A → **E1** → B → C (with E2's Settings rows) → E2 → F1 → G1 →
+H1 → H2 → H3 → R.
+
+- E1 goes **before** B because offline moves the stream-URL decision out of
+  `build_stream_url()` into `player/stream/stream_request.cpp`. Do that move
+  once, on main's current code, then add Dolby Digital to the new home.
+  Doing B first would mean resolving the Dolby Digital URL changes inside the
+  hardest conflict.
+- F1 goes before H because channel favourites reuse the same API helper.
+- **Ask the user for a TV session after E1, after C/E2/F1/G1, and after H3.**
+  Don't stack everything into one untested build.
+
+D1 runs on its own branch in parallel and only merges if it passes a TV soak
+before release day. **3.2 ships without D1 rather than waiting for it**: it
+has no user-visible value.
 
 ---
 
@@ -205,7 +229,14 @@ removed E-AC-3 *packing* path, if any.
 - `bitstream_mode()` maps `SURROUND_BITSTREAM` → `BITSTREAM_PASSTHROUGH_FORCE`
   (the proven semantics: send bursts even though GetState claims LPCM).
   `jellyfin_bitstream.txt` research values still override, as on main.
-- Stream URL (`player_session.cpp` `build_stream_url`): DD tracks →
+- Stream URL: **after E1 this decision lives in
+  `stream_request_resolve()` / `stream_url_build()`** (`player/stream/stream_request.cpp`),
+  not in `build_stream_url()`. Add `bool passthrough` to `StreamPrefs`
+  (set in `stream_prefs_current()` from `audio_passthrough_wanted()`) and an
+  `ac3_copy` flag to `StreamRequest`, so downloads and playback agree. A
+  download made in Dolby Digital mode then carries the AC-3 track, which is
+  what that user's soundbar wants. Add `test_offline`/`test_stream_request`
+  cases for it. The rules themselves: DD tracks →
   `AudioCodec=ac3&AudioSampleRate=48000&MaxAudioChannels=6`, `copy_audio=true`,
   no `AudioBitrate` (a ceiling below the track rate demotes a copy to a
   transcode). Every other track → the existing AC-3 640 kbps transcode request.
@@ -281,11 +312,11 @@ typedef enum {            // stable ids; never reorder-dependent
     SET_LOGOUT, SET_DEBUG_LOG, SET_SCREEN_SIZE, SET_HD1080, SET_AUDIO_OUT,
     SET_DIALOGUE, SET_SUB_FONT, SET_SUB_COLOUR, SET_THEME, SET_PARTICLES,
     SET_DAYNIGHT, SET_WAVE_INT, SET_AUTOSKIP, SET_24HZ, SET_UPDATE,
-    SET_SEND_LOG, SET_STATS, SET__COUNT
+    SET_SEND_LOG, SET_STATS, SET_DOWNLOADS, SET_OFFLINE_LIB, SET__COUNT
 } setting_id;
 
-typedef enum { SEC_PLAYBACK, SEC_AUDIO, SEC_SUBTITLES, SEC_DISPLAY,
-               SEC_SYSTEM, SEC__COUNT } setting_section;
+typedef enum { SEC_PLAYBACK, SEC_AUDIO, SEC_SUBTITLES, SEC_DOWNLOADS,
+               SEC_DISPLAY, SEC_SYSTEM, SEC__COUNT } setting_section;
 
 typedef struct {
     setting_id      id;
@@ -321,6 +352,7 @@ Order and grouping:
 | **Playback** | 1080p Playback (Alpha) · 24Hz Output · Auto Skip |
 | **Audio** | Audio Output · Dialogue Boost |
 | **Subtitles** | Subtitle Font · Subtitle Colour |
+| **Downloads** | Downloads (`2 active` / `1 failed` / `None`) · Offline Library (`3` / `Empty`) (from E1; both `Unavailable` with no writable store) |
 | **Display** | Screen Size · Theme · Day / Night Palette · Wave Intensity · Menu Particles |
 | **System** | Software Update · Send Log to Server · Debug Logging · Player Stats Overlay · Log Out |
 
@@ -376,6 +408,396 @@ Layout math is easiest to test if the scroll function is pure too: put
 `settings_model.c` and assert the selected row is fully visible for every
 `sel` at 720 and 1080 heights, and that the header is visible when `sel` is a
 section's first row.
+
+---
+
+## E. Offline downloads
+
+Branch `origin/feature/offline-downloads` (`c16507b`), written by a cloud
+session: 7 commits, ~10.9k lines, Stages 1–5 complete and host-tested (45k
+checks, ASan/UBSan clean). **It has never run on a console.** It's based on
+`15ec9fe` (09-19), so it predates the spine, 24p, the seek/stream fixes and
+most of the details page. The design doc is `docs/offline-downloads.md` on
+that branch. Read §2, §5a, §7a, §11c, §11d and §12 before starting.
+
+Summary: from an item's page, DOWNLOAD fetches a PS3-playable `.ts` (the
+same stream decision Play uses) to `/dev_hdd0/jellyfin_offline/items/<id>/`.
+It's resumable, survives reboots, and pauses while you stream anything heavier
+than 480p. It plays offline through the existing player (`show_player_offline`),
+from an Offline Library that works with no server, which is also offered
+when sign-in fails.
+
+### E1. Merge
+
+```bash
+git merge --no-ff origin/feature/offline-downloads   # on release/3.2, after A
+```
+A trial merge onto main gave **11 conflicted files**: `Makefile` (2 hunks),
+`tests/Makefile.host` (4), `jellyfin_api.h` (1), `net/http.cpp` (1),
+`player/core/player.cpp` (9), `player_seek.cpp` (2), `player_session.cpp` (2,
+one ~190 lines), `player/stream/stream.h` (1), `ui_settings.cpp` (1),
+`ui_visuals.h` (1), `ui_info.cpp` (1). Everything under `source/offline/`
+and `tests/test_offline.cpp` is new and merges clean.
+
+**General rule for every conflict: main's behaviour wins. Offline's change is
+re-applied on top of it.** Main has three weeks of hardware-verified fixes in
+these files. The offline branch has none.
+
+Per file:
+
+1. **`player_session.cpp` vs `stream_request.cpp` (the hard one).** Offline
+   moved the whole stream decision out of `build_stream_url()` into
+   `player/stream/stream_request.{h,cpp}` (pure: `StreamPrefs` →
+   `StreamSelection` → `StreamRequest` → URL). Since then main changed that
+   decision a lot: quality steps that include their audio, "Original" quality,
+   copy at every quality, console-side text/PGS subtitles (no burn-in cost),
+   MediaSource threading, `LiveStreamId`, stream budget kinds, version
+   summary.
+   **Resolution: redo the extraction from main's current `build_stream_url()`.**
+   Take main's function body, move it statement by statement into
+   `stream_request_resolve()` / `stream_url_build()`, add any `StreamPrefs`
+   fields main's code now reads (anything it took from a global), and leave
+   `build_stream_url()` as the thin wrapper the offline branch made it.
+   Keep offline's API shape (`dl_request.cpp` and `test_offline.cpp` call it).
+   Then **prove equivalence**: add `tests/test_stream_request.c` with ~15
+   golden URLs derived by hand from main's pre-merge `build_stream_url()`.
+   Cover Stereo / 5.1 / 7.1 × {Original, 1080p step, 720p step, 480p step} ×
+   {AC-3 track, TrueHD track, DTS track} × {no subs, text sub, PGS sub}, plus
+   a version with a `LiveStreamId`. Assert byte-for-byte equality, parameter
+   order included. Write the expected strings *before* resolving the
+   conflict, from main's code, so they test main's behaviour, not the merge's.
+2. **`stream.h` / `stream.cpp`.** Offline adds a local-file source (handle
+   tagged `0x40000000`) plus `stream_close()` / `stream_set_timeout()`
+   wrappers. **Bug in the offline branch:** its `stream_set_timeout()` and
+   reopen path call libc `setsockopt(SO_RCVTIMEO)` on a `netSocket` fd, with
+   the old timeout struct. That is exactly the 09-27 root cause (8-byte
+   `{u32,u32}` where lv2 wants a 16-byte `struct timeval`, via libc rather than
+   `netSetSockOpt`): the timeout silently never applied, causing 2–3 s
+   blocking reads, 24p judder and laggy seeks. Main uses
+   `netSetSockOpt(..., SO_RCVTIMEO, &tv /* struct timeval */, sizeof tv)` plus
+   `netPoll` before reads/headers. The wrappers must call main's code. After
+   merging, `git grep -n "setsockopt(" source/player source/offline` must
+   show no `SO_RCVTIMEO`/`SO_SNDTIMEO` through libc.
+3. **`player.cpp` (9 hunks).** Offline split `show_player()` into a shared
+   `show_player_run(..., local)`, where every local difference is an explicit
+   `if (local)` (see the table in its doc §11c). Keep main's body: 24p switch,
+   bounded waitflips, seek-wait spinner, watchdog, 1:1 presentation, report
+   thread, the A1 pause fix and Dolby Digital audio_open. Then re-insert
+   offline's `if (local)` branches. Get the list from
+   `git diff 15ec9fe origin/feature/offline-downloads -- source/player/core/player.cpp`
+   (77 lines). For local playback also confirm:
+   - the 24p switch still works (local files know their fps from the TS);
+   - no `report_*` / stop-transcode / PlaybackInfo call runs with `local`
+     (an unreachable server blocks for its connect timeout);
+   - `dl_playback_begin()`/`dl_playback_end()` wrap **every** exit path, including
+     main's newer exits (seek-wait cancel, watchdog bail, next-episode chain).
+4. **`player_seek.cpp`.** Local seeks go through `stream_local` (interpolation
+   search in the file). Online seeks keep main's seek retry, `player_seek_wait`
+   and async old-transcode stop. `dl_playback_begin(url)` is called for every
+   new seek URL.
+5. **`net/http.cpp`.** Offline adds `http_open_socket()` (connect under the
+   resolver lock). Keep main's file (dechunk fix from A2, `struct timeval`
+   timeouts) and add only the new function.
+6. **`ui_info.cpp`.** Offline put its DOWNLOAD button on the **legacy** info
+   page. Keep it there (the legacy page still exists with the spine off), but
+   the real work is E2's spine page.
+7. **`ui_settings.cpp`, `ui_visuals.h`.** If C is already done, the two rows
+   become `SET_DOWNLOADS` / `SET_OFFLINE_LIB` in the table. If not, resolve
+   minimally and let C absorb them. (In the recommended order E1 comes before
+   C. Resolve minimally.)
+8. **`main.cpp`** merged without conflict, but check it semantically. Offline
+   hooks `do_login()` failure to offer the Offline Library. Main's login is
+   now `ui_osk_login`. Make sure the offer appears on the real failure path
+   (server unreachable **and** auth rejected), and that "Try again" is still
+   the default.
+9. **Makefiles:** union of both. `source/offline` must be in the PS3
+   `SOURCES`. Check `.DEFAULT_GOAL` is still `$(BUILD)` (an earlier target-order
+   change once made `make` build nothing).
+10. Rename the branch's tool images out of `tools/ui_preview/` only if they
+    collide. Otherwise keep them.
+
+**Done when:** a clean `make pkg` and `make -B -f tests/Makefile.host all check`
+pass, including `test_offline` and the new `test_stream_request`. Then
+**a TV session (§T-E)** before building anything on top.
+
+### E2. Offline UI on the spine, and polish
+
+1. **Spine details page** (`xmb_show_item_info_v3` in `ui_info.cpp`, the one
+   users actually see). Its action rows are `row0[]` (Resume/Play, Start,
+   Watched) and `row1[]` (Version, Quality). Add `F3_DOWNLOAD` to **row1**,
+   after Quality, for Movie/Episode/Video. Row 0 stays the "watch now" row.
+   Reuse the legacy page's logic verbatim: `dl_find` polled every 250 ms,
+   `dl_ui_item_label()` for the text, `dl_ui_item_action()` for what X does,
+   a thin progress bar along the button's bottom edge, and a 3 s toast. Draw
+   the button with the same GPU rrect/outline calls as Version/Quality, and
+   the focus ring with `spine_focus_ring_gpu`. Toast text becomes
+   "Added to Downloads (Settings › Downloads)". Check `ax[]`/`aww[]`/`sx_[]`
+   array sizes when adding a slot: row arrays are fixed-size today.
+2. **Settings › Downloads section** (C's table): Downloads and Offline Library
+   open offline's existing screens (`ui_downloads.cpp`).
+3. **The Downloads/Offline screens under the spine.** They're blocking overlay
+   loops drawn with CPU `drawRect`/`drawTTF` over the wave, like the resume
+   prompt, which works under the spine. Verify that they render with
+   `gputext`/`gpucards` on, that they call `spine_frame_begin()`/flip the
+   way the resume prompt does, and that menu SFX play. Restyle their colours
+   to the current theme tokens (`XMB_PANEL`, `XMB_ACCENT` …) and replace any
+   hard-coded `0x00131630UL`-style constants. Wrap sizes in `UIS_W/H/TF`;
+   the branch predates the UI-scale fix and uses raw pixels.
+4. **Posters in the two lists** (doc §10 follow-up): decode `poster.jpg` off
+   the UI thread. Reuse the library grid's background thumb path
+   (`thumb_cache_*`) with a `file://`-style source if it has one. Otherwise
+   add a tiny loader thread that decodes into the same cache. Never decode on
+   the render thread.
+5. **Offline Library from the XMB without a server**: already reachable via
+   the sign-in-failure offer. Also add it as a **Home row "Downloaded"**
+   (first 25 completed items, landscape cards from the posters) when the
+   library isn't empty. Cross plays offline.
+6. Hint bars: Downloads list `X Pause/Resume · □ Cancel/Delete · O Back`. On
+   these screens `□` means the row's secondary action, **not** the visualiser
+   cycle. Make sure `draw_hints_vis` doesn't append the visualiser hint there.
+
+---
+
+## F. Favourites
+
+1. **API** (`source/api/api_userdata.cpp/.h`, new, mirroring
+   `info_mark_played`):
+   `bool jf_set_favourite(const char *item_id, bool fav)` →
+   `POST` (fav) / `DELETE` (unfav) `%s/Users/%s/FavoriteItems/%s`, 2xx = ok.
+   Use `http_request` with `HTTP_DELETE`. If that verb doesn't exist, add it to
+   `http.cpp` (`"DELETE"` method string, no body). Bump `g_play_gen` on success
+   so Home re-fetches. Move `info_mark_played` here too, as
+   `jf_set_played(id, true)`.
+2. **Parse `UserData.IsFavorite`** in the details fetch
+   (`api_detail.cpp`), into `XMBItemDetail.is_favourite`.
+3. **Spine details page:** add `F3_FAVOURITE` to `row0` after Watched. It's a
+   toggle button: `ICON_STAR` (already in the Tabler subset; there's no heart,
+   so don't regenerate the font) plus "Favourite". When set, the icon is
+   filled with the accent and the label reads "Favourited". Optimistic toggle:
+   flip immediately, revert with a toast if the request fails.
+4. **Home row "Favourites"**: `GET /Users/{uid}/Items?Filters=IsFavorite&Recursive=true&IncludeItemTypes=Movie,Series,Episode&SortBy=SortName&Limit=25&Fields=PrimaryImageAspectRatio`.
+   Place it after Next Up. Only show it when non-empty. Same fetch/thumb path
+   as the existing Home rows (`ui_home.cpp`, `HOME_ROW_MAX 25`). `HOME_ROWS_N`
+   grows by one. Check every array sized by it.
+5. Legacy (non-spine) info page: add the same toggle only if it's ≤ 30 lines.
+   Otherwise skip it, since the spine is the default UI.
+6. Live TV (H) reuses `jf_set_favourite` for channels.
+
+Tests: a host test for the URL builder of `jf_set_favourite` (method + path)
+if the API file can be compiled on the host with the existing stubs.
+
+---
+
+## G. Download a whole season
+
+Needs E.
+
+1. **Trigger:** on the TV seasons screen (`g_tv_depth == 1` in `ui_nav.cpp`),
+   **Triangle** on a season opens a small action sheet:
+   `Download Season 2 (10 episodes)` / `Cancel`. Triangle at depth 1 does
+   nothing today (depth 2 = episode info). `□` is taken menu-wide by the
+   visualiser cycle, so don't use it. Reuse an existing modal pattern (the
+   resume choice / confirm dialog style). Add `Triangle Download season` to
+   that screen's hint bar only when downloads are available
+   (`dl_manager_ready()`).
+2. **Queuing runs on a worker thread**, never the render thread. Each episode
+   needs its detail + media sources, and `http_request` holds a global mutex.
+   New `source/offline/dl_season.cpp`:
+   - `dl_season_start(series_id, season_id)` fetches the season's episodes
+     (`/Shows/{series}/Episodes?SeasonId=&UserId=&Fields=MediaSources`). Then, per
+     episode, in order:
+     - skip it if `dl_find()` already has it (any state except failed/cancelled);
+     - fetch the detail and versions the details page loads;
+     - pick version 0 (what Play would stream), or the version matching the
+       series' remembered choice if `match_version` applies (main's next-episode
+       logic);
+     - call `dl_download_item()`.
+   - A joinable thread (like `log_upload`) publishes progress
+     `{done, total, failed}` for a toast: "Queuing 3 of 10…" → "10 episodes added
+     to Downloads". It stops early on `DL_ERR_NO_SPACE`.
+   - `dl_season_cancel()` sets a flag checked between episodes.
+3. **Disk space:** before starting, sum the episodes' `Size` (from
+   MediaSources, when it's a copy) or estimate from runtime × the request's
+   bitrate. If that exceeds free space (`dl:` root free MB), say so in the sheet
+   ("Needs ~14 GB, 9 GB free") and still allow it. The manager already fails
+   individual items cleanly on ENOSPC.
+4. Offline Library groups nothing new: episodes already show
+   "Series  S2 E3".
+
+Tests (host, fake platform from `tests/dl_fake.cpp`): skip-already-queued,
+cancel midway, and the stop on no-space error.
+
+---
+
+## H. Live TV / IPTV
+
+**Test environment already exists.** The user's server (10.11.11, `.194:8096`)
+has an M3U tuner "Test channels" →
+`C:\ProgramData\Jellyfin\Server\iptv\test-channels.m3u`: four public HLS
+streams (NASA TV ×2, Red Bull TV, Apple bipbop test pattern). **No guide
+(EPG) provider is configured**, so `/LiveTv/Programs` is empty. To test the
+guide, generate a local XMLTV file
+`C:\ProgramData\Jellyfin\Server\iptv\test-guide.xml` with 3 days of fake
+programmes for `tvg-id` nasa1/nasa2/redbull/bipbop (a small Python script in
+`tools/`). Then **ask the user** before adding it as a listing provider (Dashboard
+› Live TV › TV Guide Data Providers › XMLTV, or `POST /LiveTv/ListingProviders`
+with an admin token). That's a server config change.
+
+Get the API token as `[[jellyfin-server-layout]]` describes: the console's
+`/dev_hdd0/tmp/jellyfin_config.txt` (host, user, token, user id). **Never call
+`AuthenticateByName`**: it logs the PS3 out.
+
+How Jellyfin exposes it: a user view with `CollectionType = "livetv"`;
+channels at `/LiveTv/Channels`; programmes at `/LiveTv/Programs`; playback
+via `PlaybackInfo` on the **channel id** with `AutoOpenLiveStream=true`,
+returning a MediaSource with a `LiveStreamId`. The stream URL carries
+`LiveStreamId`; on exit, `POST /LiveStreams/Close?LiveStreamId=`. The app
+already threads `live_stream_id` through `JFMediaSource`, `player_seek.cpp`
+(`AutoOpenLiveStream` for plugin sources) and the URL builder, which helps a lot.
+
+### H1. API layer (pure, host-tested)
+
+New `source/api/livetv.cpp/.h`, a hand-rolled parser in the style of
+`media_sources.cpp`:
+
+```c
+typedef struct {
+    char id[40], name[96], number[12];
+    char logo_tag[40];               // ImageTags.Primary, "" if none
+    bool favourite;                  // UserData.IsFavorite
+    // current programme (AddCurrentProgram=true), may be empty
+    char now_title[128];
+    u64  now_start_ticks, now_end_ticks;
+} JFChannel;
+
+typedef struct {
+    char id[40], channel_id[40], name[128], episode_title[96];
+    u64  start_ticks, end_ticks;     // UTC, 100 ns since 0001-01-01
+    bool is_movie, is_series, is_news, is_sports, is_kids, is_live, is_premiere;
+} JFProgram;
+
+int livetv_parse_channels(const char *json, int len, JFChannel *out, int max, int *total);
+int livetv_parse_programs(const char *json, int len, JFProgram *out, int max, int *total);
+u64 jf_ticks_from_iso8601(const char *s);   // "2026-10-03T19:30:00.0000000Z"
+```
+Fetch helpers (console side) in `jellyfin_api.cpp`:
+- `GET /LiveTv/Channels?UserId=&EnableImages=true&ImageTypeLimit=1&AddCurrentProgram=true&EnableUserData=true&SortBy=SortName&Limit=200`
+  (sort by channel number when numbers exist: `SortBy=ChannelNumber` isn't
+  universally supported, so sort client-side by numeric `Number`).
+- `GET /LiveTv/Programs?UserId=&ChannelIds=<csv>&MinEndDate=<now>&MaxStartDate=<now+3h>&SortBy=StartDate&EnableImages=false&Limit=400`.
+  **Mind the 384 KB `RESPONSE_SIZE` cap.** It already truncated big replies
+  (memory: debrid episode details). Fetch the guide in channel pages of ~15
+  and in 3-hour windows. Check for truncation (missing closing `]}`) and log it.
+- The console clock is the "now": `sysGetCurrentTime` / the same clock
+  Day/Night uses. It must be UTC for comparing ticks. Verify the timezone
+  handling in a test.
+
+Host tests `tests/test_livetv.c`: fixtures captured from the user's server
+(`curl` the two endpoints with the token above → `tests/fixtures/livetv_*.json`;
+**strip the token, user id and server address from the fixtures**). Also a
+hand-made programmes fixture with overlapping/gapped/zero-length programmes.
+Test the ISO-8601 parser across the 7-digit fraction, `Z`, and a missing
+fraction.
+
+### H2. The Live TV tab
+
+1. **Tab kind:** in `ui_fetch.cpp` where `CollectionType` maps to a tab kind,
+   map `"livetv"` → new `TABKIND_LIVETV` (icon `ICON_TV`, label "Live TV").
+   Today it falls through to `TABKIND_GENERIC` and would browse the view as a
+   folder. Add the kind to every `switch (xmb_kind(tab))`. The compiler will list
+   them with `-Wswitch` if the switches have no `default`. Otherwise grep.
+   Spine: the tab joins the category row like any other.
+2. **Channel list** (tab root): one row per channel, the same row rhythm as the
+   music list or Settings rows:
+   - Number in tabular figures, channel logo (`/Items/{id}/Images/Primary?tag=&maxHeight=…`
+     through the existing thumb cache, landscape-ish logos letterboxed into a
+     fixed 96×54 slot), channel name;
+   - On the right: the current programme title and a thin progress bar
+     (now − start)/(end − start), plus "Next: 20:30 Title" in faint text when the
+     guide has it. Without EPG data, just the name.
+   - Favourite channels first when any exist (star icon), then the rest.
+     Triangle toggles favourite (`jf_set_favourite`, from F).
+   - X = watch. Re-fetch the list every 60 s while the tab is open, and on
+     return from the player, so now/next stays current.
+3. **Guide grid.** **Right** from the channel list slides into the guide, and
+   Left at the guide's first column comes back. That's spatial, like the PS3's
+   own TV guide. (`□` is taken menu-wide by the visualiser cycle.)
+   - Rows = channels (same order, logos pinned on the left, 8 visible), columns =
+     time, 30-minute grid lines, a 3-hour window starting at the previous half
+     hour, and a vertical "now" line in the accent.
+   - Programme cells are rounded rects (`wave_draw_rrect_outline_gpu`) with the
+     title clipped; the focused cell gets `spine_focus_ring_gpu`. Left/Right
+     moves between programmes on the row (scrolling time), Up/Down moves
+     channels, keeping the time position.
+   - X on a programme airing now = watch the channel. X on a future programme =
+     a details peek (title, time, episode title, overview via
+     `GET /LiveTv/Programs/{id}?UserId=`). No recording in 3.2.
+   - Guide data loads on a worker as the window moves (page of channels ×
+     3 h). Cells not loaded yet draw as empty panels. Never block the render
+     thread on `http_request` (render-thread HTTP behind the global mutex is a
+     known lag source).
+   - Hidden entirely when the server has no programmes for any channel. Then
+     Right does nothing, and the list shows names only.
+4. Search: no change in 3.2 (channels don't come back from item search
+   reliably).
+
+### H3. Live playback
+
+Entry: `xmb_play_channel(const JFChannel *ch)` → `show_player()` with a
+`JFItem` whose type is `"TvChannel"`. The player gets a `ps.live` flag set
+from the item type.
+
+1. **Open:** PlaybackInfo on the channel id with `AutoOpenLiveStream=true` (the
+   same POST + device profile the player already sends, plus `UserId`). Use
+   the returned MediaSource's `Id` and `LiveStreamId` and build the URL through
+   the shared stream decision (it already appends `LiveStreamId`). Live
+   sources from HLS take several seconds before the first byte (the server
+   starts ffmpeg on the HLS input). Show the existing buffering screen with
+   the channel logo and name, and give the header wait a **20 s** budget (not
+   the VOD one). Circle cancels.
+2. **`ps.live` behaviour** (every place the player assumes a duration):
+   - The HUD shows a `LIVE` badge in the accent where the time/duration
+     would be, plus the current programme title and its progress if known.
+     There's no seek bar.
+   - Seeking is disabled: L2/R2, the scrub bar, chapter/skip-segment logic, auto
+     skip, the next-episode countdown, trickplay. Guard each, and grep
+     `total_secs` uses; anything dividing by it must handle 0.
+   - Pause: allowed. On resume after more than 10 s paused, reopen at the
+     live edge (close + PlaybackInfo again) rather than playing a stale
+     server buffer. Simplest correct behaviour: show a "Returning to live"
+     spinner.
+   - No resume position: don't report progress ticks as a resume point. Do
+     report Playing/Stopped with `LiveStreamId` so the dashboard shows it.
+   - **Channel up/down:** with the HUD hidden, **Up/Down** (and the remote's
+     CH+/CH− if `ui_input` exposes them; check the BD remote keymap) switch
+     to the previous/next channel in list order. Show a channel banner
+     (number, logo, name, now title) for 3 s. Implement it as stop + open
+     next channel inside the player loop (close the old LiveStream first), and
+     debounce 600 ms so rapid presses only open the final channel.
+   - EOF on a live stream isn't the end: the server's ffmpeg restarted or the
+     source hiccuped. Reopen up to 3 times with backoff 1/2/4 s, then show the
+     error screen. The stream-read watchdog must treat a live stall the same
+     way.
+   - The 24p auto switch must stay off for live (frame rate is 25/50/59.94).
+     It already only engages for 23.976, but make the guard explicit (`!ps.live`).
+   - Audio: HLS IPTV is usually AAC. The server transcodes per the Audio
+     Output setting exactly as for VOD. Dolby Digital mode → AC-3 transcode.
+     Nothing special.
+   - Interlaced sources (DVB/ATSC tuners, not these HLS tests): the request
+     must not allow direct copy of interlaced H.264. Have the decision force a
+     video transcode for `TvChannel` items, so the server deinterlaces.
+     Bitrate per the quality setting. Keep it simple: live = always transcode
+     video.
+3. **Close:** on every exit path, `POST /LiveStreams/Close?LiveStreamId=…`,
+   on the existing report thread, never blocking exit. Also stop the
+   transcode (`DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=`) as VOD does.
+4. **Downloads:** never offered for channels (`dl_capable` is already
+   Movie/Episode/Video only). A live stream counts as **heavy** for the download
+   gate (`dl_playback_begin`), so downloads pause while watching TV.
+
+Tests: host tests for the HUD/state helpers you make pure (e.g. a
+`live_progress(now, start, end)` clamp, channel-order next/prev with
+wrap-around, debounce). The rest is TV.
 
 ---
 
@@ -458,6 +880,36 @@ exit to menu → menu sounds normal (no encoder 255 leak).
 non-zero overscan; L2/R2 jump sections; Left/Right step values; Triangle help
 on a few rows; Up from the first row returns to the tab spine; values persist
 after a restart.
+**T-E Offline (after E1, again after E2):**
+- the log line `dl: root ... free=...MB` names `/dev_hdd0/jellyfin_offline`;
+- download a film (DOWNLOAD on its details page) and watch the progress in
+  Settings › Downloads;
+- start streaming a 1080p film mid-download: the download shows
+  "Paused while streaming", then resumes when you stop;
+- power-cycle the PS3 mid-download: it resumes and doesn't restart from 0;
+- unplug the network (or stop the Jellyfin service): launch, then sign-in fails
+  and offers "Open Offline", and the film plays offline with seeking and audio;
+- the stream URL log lines for an online film match the golden URLs from
+  `test_stream_request` (proves the extraction kept 3.1's requests);
+- delete the download; the space comes back.
+
+**T-F Favourites:** star a film and a series on their details pages; a
+Favourites row appears on Home; un-star it and the row updates. Check the
+Jellyfin web UI agrees.
+**T-G Season:** Triangle on a season → Download Season (N episodes) →
+"N episodes added", all queued in Downloads; repeating it skips the ones
+already queued.
+**T-H Live TV:**
+- the Live TV tab appears; the four test channels show logos and names;
+- watch NASA TV: the buffering screen shows the channel, the picture starts
+  within ~20 s, and the HUD shows LIVE with no seek bar;
+- Up/Down switches channels with a banner, and rapid presses only open the last one;
+- pause 30 s, then resume: it returns to live;
+- exit: the Jellyfin dashboard shows no lingering live stream or transcode;
+- with the test XMLTV guide added: now/next on the list, the guide grid via
+  Right, the now line, a future programme's details;
+- Live TV with Dolby Digital output: DOLBY AUDIO on the soundbar.
+
 **T-D (D1 build only):** JellyWave in menus 10 min; JellyDrop + snow with
 music 10 min; Square cycles visualisers incl. Canyon; Off → JellyWave reveal;
 a 24p film start/stop; watch for strobing, black frames, or a stuck wave.
@@ -491,6 +943,18 @@ a 24p film start/stop; watch for strobing, black frames, or a stuck wave.
 ## 3.2
 
 ### New
+- **Live TV.** If your Jellyfin server has Live TV set up (a tuner, or an IPTV
+  M3U playlist), a Live TV tab lists your channels with what's on now. Press
+  `→` for the TV guide. While watching, `↑`/`↓` change channel. Favourite
+  channels (`△`) come first.
+- **Downloads.** *Download* on a film or episode's page saves a copy to the
+  PS3's hard drive. It pauses while you stream and picks up where it left off,
+  even after a restart. Watch downloads from Settings › Downloads › Offline
+  Library, or from the Downloaded row on Home. When the server can't be
+  reached at startup, the app offers your downloads instead.
+- **Download a whole season**: `△` on a season.
+- **Favourites.** Star films and shows on their page; they get their own row
+  on Home.
 - **Dolby Digital output.** Settings → Audio → Audio Output has a new
   *Dolby Digital* choice. It sends the film's Dolby Digital track to your
   soundbar or receiver untouched (other tracks are converted to Dolby Digital
@@ -515,11 +979,27 @@ a 24p film start/stop; watch for strobing, black frames, or a stuck wave.
 
 ## Things deliberately left out of 3.2
 
-- Offline downloads (`origin/feature/offline-downloads`, 403 commits behind
-  main) — 3.3.
+- Live TV recording/DVR, timers, catch-up, and channel search.
 - E-AC-3 / TrueHD / DTS bitstream — not reachable or not decodable on the
   test chain.
 - Changing how the 5.1/7.1 AC-3 routing request behaves.
 - The `jellyfin_bitstream.txt` research modes on main stay as they are
   (file-only, undocumented).
 - psl1ght-extras upstream patches, Moonlight work, Android TV port.
+
+## Backlog for 3.3+ (discussed 10-03, not scheduled)
+
+Rough sizes; none designed yet.
+- **Quick Connect sign-in + profile picker.** Approve a 6-character code on a
+  phone instead of typing on the OSK (`/QuickConnect/Initiate`,
+  `/QuickConnect/Connect`, `/Users/AuthenticateWithQuickConnect`), plus a
+  "who's watching" picker from `/Users/Public`. S–M. Highest value per line
+  of anything here.
+- **Chapters**: a chapter list with images in the player, and next/previous chapter. M.
+- **Theme music on details pages** (`/Items/{id}/ThemeSongs`), with JellyWave
+  reacting to it. S–M; shares the audio port with the UI sounds.
+- **Synced lyrics** in the music player (`/Audio/{id}/Lyrics`, LRC timing). M.
+- **Sleep timer** (30/60/90 min, end of episode). S.
+- **Live TV recordings/DVR** (needs server-side recording set up). M–L.
+- **Local media playback** (own remuxes/FLACs from USB, no server). Scoped in
+  `docs/local-media.md` on the offline branch. L.
