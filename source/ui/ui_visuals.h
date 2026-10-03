@@ -47,6 +47,7 @@ typedef enum {
     TABKIND_PLAYLISTS,  // Jellyfin's "playlists" view — its own library
     TABKIND_GENERIC,    // homevideos / musicvideos / mixed / untyped
     TABKIND_SETTINGS,
+    TABKIND_LIVETV,     // Jellyfin's "livetv" view: its own channel list and guide
 } XMBTabKind;
 
 typedef struct {

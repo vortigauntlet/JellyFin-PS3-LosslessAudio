@@ -214,6 +214,8 @@ static void xmb_draw_gpu_phase(int tab) {
         depth_lib_gpu(tab);          // the L1 column, or its swing into the grid
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_gpu_phase();
+    } else if (xmb_kind(tab) == TABKIND_LIVETV) {
+        xmb_livetv_gpu();
     } else if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS) {
         GridGeom gg; const XMBItem *items;
         int count, sel, scroll, y0, a_start, a_total; bool more;
@@ -249,6 +251,8 @@ static void xmb_draw_cpu_phase(int tab) {
         xmb_cpu_draw_search_results();
     } else if (tab == XMB_TAB_SETTINGS) {
         xmb_cpu_draw_settings();
+    } else if (xmb_kind(tab) == TABKIND_LIVETV) {
+        xmb_cpu_draw_livetv();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_cpu_phase();
     } else {
@@ -276,6 +280,8 @@ static void xmb_draw_text_phase(int tab) {
         xmb_rsx_draw_osk();
     } else if (tab == XMB_TAB_SETTINGS) {
         xmb_draw_settings();
+    } else if (xmb_kind(tab) == TABKIND_LIVETV) {
+        xmb_draw_livetv();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_text_phase();
     } else {
@@ -442,7 +448,9 @@ static void xmb_draw_hints(int tab) {
     }
     const bool spine_back = g_spine_on;
 
-    if (tab == XMB_TAB_SETTINGS) {
+    if (xmb_kind(tab) == TABKIND_LIVETV) {
+        xmb_livetv_hints();
+    } else if (tab == XMB_TAB_SETTINGS) {
         if (g_settings_confirm) {
             static const Hint h[] = {{'X',"Confirm"},{'C',"Cancel"}};
             draw_hints_vis(h, 2);
@@ -600,7 +608,7 @@ void ui_run_xmb(void) {
 
         int tab = g_active_tab;
         if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS
-            && tab != XMB_TAB_HOME)
+            && tab != XMB_TAB_HOME && xmb_kind(tab) != TABKIND_LIVETV)
             if (!g_items_loaded[tab]) {
                 if (first_iter) crash_log("13.7 fetch_tab_items");
                 xmb_fetch_tab_items(tab);

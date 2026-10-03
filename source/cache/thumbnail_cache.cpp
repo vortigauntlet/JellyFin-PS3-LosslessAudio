@@ -291,10 +291,19 @@ static void fetch_thread_fn(void *arg) {
         char url[512];
         char lpath[160];
         const bool local = s_local_resolver && s_local_resolver(item_id, lpath, sizeof lpath);
-        snprintf(url, sizeof(url),
-            "%s/Items/%s/Images/%s?fillWidth=%d&fillHeight=%d"
-            "&quality=75&format=Jpeg",
-            g_server, item_id, img_name(img), tw, th);
+        // "logo:<id>" is a channel logo: fitted inside the slot and never
+        // cropped, since cropping a wordmark cuts the name off.
+        const bool logo = strncmp(item_id, "logo:", 5) == 0;
+        if (logo)
+            snprintf(url, sizeof(url),
+                "%s/Items/%s/Images/Primary?maxWidth=%d&maxHeight=%d"
+                "&quality=85&format=Jpeg",
+                g_server, item_id + 5, tw, th);
+        else
+            snprintf(url, sizeof(url),
+                "%s/Items/%s/Images/%s?fillWidth=%d&fillHeight=%d"
+                "&quality=75&format=Jpeg",
+                g_server, item_id, img_name(img), tw, th);
 
         glogf("fetch START %s %dx%d%s", item_id, tw, th, local ? " (local)" : "");
         int bytes = local ? read_local_file(lpath, s_fetch_buf, FETCH_BUF_SIZE)
@@ -385,6 +394,24 @@ static void fetch_thread_fn(void *arg) {
             if (sw < 1) sw = 1;
             if (sh < 1) sh = 1;
         }
+        if (logo) {
+            // Fit inside the slot, centred, on the panel colour.
+            const u32 bg = XMB_THUMB_DIM;
+            for (u32 i = 0; i < bmp->width * bmp->height; i++) bmp->pixels[i] = bg;
+            u32 dw = bmp->width, dh = (u32)((u64)h * bmp->width / (w ? w : 1));
+            if (dh > bmp->height) { dh = bmp->height; dw = (u32)((u64)w * bmp->height / (h ? h : 1)); }
+            if (dw < 1) dw = 1;
+            if (dh < 1) dh = 1;
+            const u32 ox = (bmp->width - dw) / 2, oy = (bmp->height - dh) / 2;
+            for (u32 y = 0; y < dh; y++) {
+                u32 *dst = bmp->pixels + (oy + y) * bmp->width + ox;
+                const unsigned char *src = px + (size_t)((u64)y * h / dh) * w * 4;
+                for (u32 x = 0; x < dw; x++) {
+                    const unsigned char *sp = src + (size_t)((u64)x * w / dw) * 4;
+                    dst[x] = ((u32)sp[0] << 16) | ((u32)sp[1] << 8) | sp[2];
+                }
+            }
+        } else
         for (u32 y = 0; y < bmp->height; y++) {
             u32 *dst = bmp->pixels + y * bmp->width;
             const unsigned char *src =

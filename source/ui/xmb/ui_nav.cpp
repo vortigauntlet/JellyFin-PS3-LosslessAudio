@@ -67,6 +67,7 @@ void xmb_switch_tab(int new_tab) {
     if (new_tab == XMB_TAB_SETTINGS) {
         g_settings_sel = 0; g_settings_confirm = false;
     }
+    if (xmb_kind(new_tab) == TABKIND_LIVETV) xmb_livetv_on_enter();
     spine_focus_enter(new_tab);     // no-op with the gate off, or first visit
     // Home: reset focus and refetch the dynamic rows (Continue Watching /
     // Next Up change after every playback).
@@ -569,6 +570,7 @@ bool xmb_handle_input_browse(void) {
     int tab = g_active_tab;
 
     if (tab == XMB_TAB_SETTINGS) return xmb_input_settings();
+    if (xmb_kind(tab) == TABKIND_LIVETV) return xmb_input_livetv();
 
     // A quick-peek owns the input while it is up (spine gate only).
     if (peek_input()) return false;

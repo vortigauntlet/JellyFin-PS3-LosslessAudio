@@ -207,6 +207,9 @@ void xmb_dl_notice(const char *title, const char *line);
 void xmb_season_download_sheet(const XMBItem *season);
 void xmb_season_toast_draw(void);
 void xmb_season_stop(void);
+// The Live TV list refreshes on a worker thread (xmb/ui_livetv.cpp); at exit it
+// is told to stop and joined.
+void xmb_livetv_stop(void);
 // If there are downloads to play, ask whether to open them.  True when the
 // Offline library was opened (the caller then retries sign-in as before).
 bool xmb_offer_offline_after_login_failure(void);

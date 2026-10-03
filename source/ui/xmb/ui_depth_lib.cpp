@@ -44,7 +44,8 @@
 
 static bool lib_grid_kind(int tab) {
     const int k = xmb_kind(tab);
-    return tab != XMB_TAB_HOME && k != TABKIND_SEARCH && k != TABKIND_SETTINGS;
+    return tab != XMB_TAB_HOME && k != TABKIND_SEARCH && k != TABKIND_SETTINGS &&
+           k != TABKIND_LIVETV;
 }
 
 bool depth_stage_tab(int tab) {
@@ -232,6 +233,7 @@ void depth_lib_text(int tab) {
     switch (xmb_kind(tab)) {
     case TABKIND_SEARCH:   title = "Search";   break;
     case TABKIND_SETTINGS: title = "Settings"; break;
+    case TABKIND_LIVETV:   title = "Live TV";  break;
     default:
         title = it ? it->name
               : !g_items_loaded[tab] ? "Loading..." : "Nothing here yet";

@@ -5,6 +5,7 @@
 
 #include "ui.h"
 #include "ui_visuals.h"
+#include "livetv.h"       // JFChannel: the Live TV tab
 
 // -------------------------------------------------------
 // JSON helpers (xmb/ui_json.cpp)
@@ -173,6 +174,19 @@ void depth_lib_prefetch(int tab, int n);
 void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
 // Settings: open the highlighted row's description as a peek (ui_settings.cpp).
 void settings_open_help_peek(void);
+// Live TV tab (xmb/ui_livetv.cpp): the channel list and guide.
+void xmb_livetv_on_enter(void);
+bool xmb_input_livetv(void);          // the tab's input (it never exits the XMB)
+void xmb_livetv_gpu(void);            // GPU phase: guide cells and the focus ring
+void xmb_cpu_draw_livetv(void);       // CPU phase: logos and the progress bars
+void xmb_draw_livetv(void);           // text phase
+bool xmb_livetv_at_top(void);         // the list's first row (Up there leaves the tab)
+bool xmb_livetv_modal(void);          // the guide or a details panel has O and Up
+void xmb_livetv_hints(void);          // the tab's hint bar
+// The channel list in display order, for the player's channel up/down.
+int  xmb_livetv_count(void);
+bool xmb_livetv_get(int index, JFChannel *out);
+int  xmb_livetv_index_of(const char *channel_id);
 // X and Left/Right on a Settings row, by its position in the displayed order
 // (ui_settings.cpp owns what each row does).  Left/Right are ignored on
 // action rows; toggles flip on either direction.

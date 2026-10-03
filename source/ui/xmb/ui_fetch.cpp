@@ -111,6 +111,9 @@ static bool detect_tabs_once(void) {
         // playlists but X fell through to xmb_play_item(), which tries to
         // hand a Playlist to the video player, so nothing opened.
         else if (strcmp(ct, "playlists") == 0) kind = TABKIND_PLAYLISTS;
+        // Live TV is not a folder to browse: it has its own channel list and
+        // guide (xmb/ui_livetv.cpp), drawn from /LiveTv, not from this view.
+        else if (strcmp(ct, "livetv")    == 0) kind = TABKIND_LIVETV;
         else                                   kind = TABKIND_GENERIC;
 
         // The Music tab already reaches these through its Playlists sub-tab,
@@ -129,7 +132,10 @@ static bool detect_tabs_once(void) {
         memset(tb, 0, sizeof(*tb));
         snprintf(tb->label, sizeof(tb->label), "%s",
                  name[0] ? name : "Library");
-        strncpy(tb->library_id, id, sizeof(tb->library_id) - 1);
+        // No library to list for Live TV: leaving the id empty keeps the
+        // frame loop from fetching "items" for a tab that has none.
+        if (kind != TABKIND_LIVETV)
+            strncpy(tb->library_id, id, sizeof(tb->library_id) - 1);
         tb->kind    = kind;
         tb->icon    = "#";
         tb->enabled = true;
