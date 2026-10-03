@@ -48,6 +48,8 @@
 #include "music_player.h"   // music_join_stale
 #include "experience.h"      // vpick_audio_words: the audio chip's words
 #include "lclog.h"     // 24p lifecycle trace
+#include "stream_request.h"
+#include "dl_manager.h"   // offline downloads yield to playback
 
 extern void crash_log(const char *msg);
 
@@ -452,6 +454,15 @@ static int chain_find_audio(const JFTracks *t) {
 
 void show_player(const JFItem *item, u32 resume_secs,
                  const char *media_source_id) {
+    show_player_run(item, resume_secs, media_source_id, NULL);
+}
+
+// The player body, online or local.  `local` NULL is the online path, and
+// every statement it runs is the one show_player always ran; a local file
+// (offline playback, player_local.cpp) takes the explicit `if (local)`
+// branches instead -- no server call is made for it at all.
+void show_player_run(const JFItem *item, u32 resume_secs,
+                     const char *media_source_id, const PlayerLocal *local) {
     crash_log("p1 enter");
     exit_reports_join();
     music_join_stale();
@@ -508,6 +519,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     subs_clear();                    // a previous title's cues are not this one's
     trickplay_reset();                // ditto for a previous title's scrub sheet
     ps.menu_kind = PLAYER_MENU_NONE;
+    ps.local     = local;
 
     // Baseline H.264 level 3.1 caps at 1280×720 @ 30fps.  1080p (Alpha) asks
     // the server for a full 1920×1080 High-profile transcode instead — flat,
@@ -520,6 +532,21 @@ void show_player(const JFItem *item, u32 resume_secs,
                     display_width, display_height,
                     &ps.req_w, &ps.req_h, NULL, NULL, NULL);
 
+    if (local) {
+        // The file decides: its frame ceiling (downloaded at some quality,
+        // whatever the setting is now), its runtime (measured from the file
+        // itself when the index could), and one audio track -- the one that
+        // was downloaded -- so the AUDIO/CC menus have nothing to switch.
+        ps.req_w = local->plan.req_w;
+        ps.req_h = local->plan.req_h;
+        ps.session_id[0] = '\0';
+        ps.total_secs = local->idx.duration_secs ? local->idx.duration_secs
+                                                 : local->plan.runtime_secs;
+        snprintf(ps.source.id, sizeof(ps.source.id), "%s", item->id);
+        snprintf(ps.source.label, sizeof(ps.source.label), "%s", local->label);
+        ps.source.runtime_secs = ps.total_secs;
+        ps.have_tracks = false;
+    } else {
     // The buffering presentation starts BEFORE PlaybackInfo now (2026-09-26).
     // On this server PlaybackInfo is where Gelato syncs a title's streams --
     // 6-8 s the first time a title is opened -- and it used to run with
@@ -591,7 +618,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         ps.source.runtime_secs = ps.total_secs;
     }
     if (ps.have_tracks && ps.tracks.n_audio > 0) {
-        ps.cur_audio = ps.tracks.default_audio;
+        stream_select_initial(&ps.tracks, ps.have_tracks, &ps.cur_audio, &ps.cur_sub);
         // A track the user picked earlier this session (see player_menu.cpp)
         // wins over the server's own default -- that is the whole point of
         // remembering it, otherwise every episode reopens on commentary or
@@ -633,6 +660,7 @@ void show_player(const JFItem *item, u32 resume_secs,
             }
         }
     }
+    }   // online
 
     // Continue Watching: open the transcode at the saved position.  The new
     // stream's PTS starts at 0, so play_base_us anchors the absolute clock —
@@ -647,8 +675,24 @@ void show_player(const JFItem *item, u32 resume_secs,
     }
 
     char url[768];
+    if (local) {
+        snprintf(url, sizeof(url), "%s", local->path);   // for the error screen
+        plog_url("local", url);
+        // No network, but the PPU and the HDD are shared: the file's own
+        // weight decides, by the same thresholds as a stream (Stage 2).
+        dl_playback_begin_local(local->plan.light);
+    } else {
     build_stream_url(url, sizeof(url), &ps, (u64)resume_secs * 10000000ULL);
     plog_url("url", url);
+
+    // Offline downloads give this stream the network: they stop outright,
+    // or -- for a 480p-or-lighter stream -- continue at a paced share.  The
+    // decision is made from this exact URL (dl_stream_is_light).  The guard
+    // ends it on every one of show_player's many return paths.
+    dl_playback_begin(url);
+    }   // online
+    struct DlPlaybackEnd { ~DlPlaybackEnd() { dl_playback_end(); } } dl_playback_guard;
+    (void)dl_playback_guard;
 
     // The buffering presentation starts here and runs until the first frame
     // (spine gate on; the gate off keeps the status lines below).  It reuses
@@ -704,7 +748,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     plog("show_player: stream_open");
     s_wait_title = item->name;
     stream_set_wait_cb(player_stream_wait);
-    ps.sock = stream_open(url);
+    ps.sock = local ? (player_local_open(&ps, (u64)resume_secs * 1000000ULL) ? ps.sock : -1)
+                    : stream_open(url);
     stream_set_wait_cb(NULL);
     if (ps.sock < 0) {
         plog("show_player: stream_open FAILED");
@@ -734,7 +779,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     if (!jbuf_alloc(ps.req_w, ps.req_h)) {
         plog("show_player: jbuf_alloc FAILED");
         player_startup_abort();
-        netClose(ps.sock);
+        stream_close(ps.sock);
         adec_stop();
         audio_close();
         vdec_close();
@@ -777,8 +822,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     vid_gpu_init(jbuf_fw(), jbuf_fh());
 
     // 5 ms socket receive timeout keeps the network thread responsive
-    { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;   // the lv2 layout (16 bytes)
-      netSetSockOpt(ps.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+    // A local file never waits, so there is nothing to set for one.
+    stream_set_timeout(ps.sock, 5000);
 
     // The button always reads "AUDIO" — track names are too long for the HUD
     // row; the selected track is plogged when cycled.
@@ -805,7 +850,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         vid_gpu_free();
         decode_ring_free();
         jbuf_free();
-        netClose(ps.sock);
+        stream_close(ps.sock);
         adec_stop();
         audio_close();
         vdec_close();
@@ -965,7 +1010,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     __sync_synchronize();
     g_prog.playing   = ps.playing;
     sys_ppu_thread_t prog_tid = 0;
-    if (ps.playing) {
+    if (ps.playing && !local) {
         int trc = sysThreadCreate(&prog_tid, progress_thread_fn,
                                   (void *)(uintptr_t)g_prog.gen,
                                   1100, 16 * 1024,
@@ -1120,7 +1165,9 @@ void show_player(const JFItem *item, u32 resume_secs,
         // the current position — the same 0-delta reopen a track change uses
         // — which re-negotiates the stream as an AC-3 5.1 transcode.  Silence
         // is not an acceptable resting state.
-        if (act == HUD_ACTION_NONE && surround_hd_preferred() &&
+        // (Not for a local file: its audio is what was downloaded, and a
+        // reopen would read the same track again.)
+        if (act == HUD_ACTION_NONE && !local && surround_hd_preferred() &&
             (adec_dts_no_core() || adec_truehd_no_audio())) {
             const bool dts = adec_dts_no_core();
             plog(dts ? "dts: no core substream in this track, falling back to AC-3"
@@ -1312,7 +1359,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // The stream first: nothing reads it any more, and while it is open the
     // server keeps filling its receive buffer -- the two requests below then
     // starve on the network pool (see exit_reports_start).
-    netClose(ps.sock);
+    stream_close(ps.sock);
 
     // Back to the mode the session started in (24p output), before any UI --
     // the Returning screen below included -- draws again.
@@ -1346,7 +1393,8 @@ void show_player(const JFItem *item, u32 resume_secs,
 
     // Tell the server where we stopped (also finalizes Continue Watching) and
     // stop its transcode -- on a thread, so a slow server never freezes this.
-    exit_reports_start(item->id, ps.session_id, final_pos_ticks);
+    // A local file has no server session to close.
+    if (!local) exit_reports_start(item->id, ps.session_id, final_pos_ticks);
 
     // Free video GPU blit resources before releasing the jitter buffer
     vid_gpu_free();

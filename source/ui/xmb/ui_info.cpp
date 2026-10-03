@@ -18,6 +18,10 @@
 #include "slog.h"
 #include "detail_media.h"
 #include "thumbnail_cache.h"
+#include "player.h"       // show_player_offline
+#include "dl_manager.h"   // DOWNLOAD FOR OFFLINE (Stage 5)
+#include "dl_service.h"
+#include "dl_ui.h"
 
 // The title band behind the header — a deep stripe over the backdrop (the
 // official page's grey bar, re-tinted to fit the theme).  Now the `detail_band`
@@ -983,8 +987,17 @@ void xmb_show_item_info(const XMBItem *root) {
     // Focus moves between the Play button and the More Like This row, which is
     // what Cross acts on.  (Gating this on "is the row visible" made Cross mean
     // Open even at the top of the page, so Play could never be pressed.)
-    enum { FOCUS_PLAY = 0, FOCUS_VERSION = 1, FOCUS_QUALITY = 2, FOCUS_SIM = 3 };
+    // FOCUS_DOWNLOAD sits beside Play on the same row (Left/Right).
+    enum { FOCUS_PLAY = 0, FOCUS_VERSION = 1, FOCUS_QUALITY = 2, FOCUS_SIM = 3,
+           FOCUS_DOWNLOAD = 4 };
     int focus = FOCUS_PLAY;
+
+    // Offline download state for this title, re-read ~4x a second (a lock and
+    // one ~2 KB copy) -- the button's label follows the transfer live.
+    DlStatus dl_st;
+    bool dl_have = false;
+    u64  dl_next = 0, dl_toast_until = 0;
+    char dl_toast[96] = "";
     int sim_sel = 0, sim_row_scroll = 0;
 
     int info_frames = 0;
@@ -1025,11 +1038,26 @@ void xmb_show_item_info(const XMBItem *root) {
             sim_sel  = 0; sim_row_scroll = 0;
             focus    = FOCUS_PLAY;
             exit_armed = false;
+            dl_have = false; dl_next = 0; dl_toast[0] = '\0';
             init_btns();
             slog_state("INFO_OPEN depth=%d item_id=%s name=%.40s",
                        nav_hops, cur->id, cur->name);
         }
         const XMBItem *it = &cur_item;
+        // A downloadable title: something the player plays, with its
+        // versions loaded (the download uses the selected one).
+        const bool dl_capable = strcmp(it->type, "Movie") == 0 ||
+                                strcmp(it->type, "Episode") == 0 ||
+                                strcmp(it->type, "Video") == 0;
+        const bool can_download = dl_capable && versions.n_sources > 0;
+        if (dl_capable && timing_get_us() >= dl_next) {
+            dl_next = timing_get_us() + 250000;
+            dl_have = dl_find(it->id, &dl_st);
+        }
+        DlUiContext dl_cx;
+        dl_cx.playback_block = dl_playback_blocking();
+        dl_cx.auth_held      = dl_auth_held();
+        dl_cx.ready          = dl_manager_ready();
 
         waitflip();
         sysUtilCheckCallback();
@@ -1050,6 +1078,7 @@ void xmb_show_item_info(const XMBItem *root) {
             // Row order down the page: Play, Version (only when there is a
             // real choice), Quality (always), then the recommendations.
             if (BTN_PRESSED(down)) {
+                if (focus == FOCUS_DOWNLOAD) focus = FOCUS_PLAY;   // same row
                 if (focus == FOCUS_PLAY && versions.n_sources > 1) {
                     focus = FOCUS_VERSION;
                     scroll_y = 0;
@@ -1070,7 +1099,11 @@ void xmb_show_item_info(const XMBItem *root) {
                     focus = FOCUS_PLAY;
                 scroll_y = 0;
             }
-            if (focus == FOCUS_SIM) {
+            if (focus == FOCUS_PLAY && dl_capable && BTN_PRESSED(right)) {
+                focus = FOCUS_DOWNLOAD;
+            } else if (focus == FOCUS_DOWNLOAD && BTN_PRESSED(left)) {
+                focus = FOCUS_PLAY;
+            } else if (focus == FOCUS_SIM) {
                 if (BTN_REPEAT(left)  && sim_sel > 0)             sim_sel--;
                 if (BTN_REPEAT(right) && sim_sel < n_similar - 1) sim_sel++;
             } else if (focus == FOCUS_VERSION && versions.n_sources > 1) {
@@ -1090,7 +1123,42 @@ void xmb_show_item_info(const XMBItem *root) {
                     vquality_remember_item(cur_item.id, vquality_get());
                 }
             }
-            if (BTN_PRESSED(cross)) {
+            if (BTN_PRESSED(cross) && focus == FOCUS_DOWNLOAD) {
+                // DOWNLOAD FOR OFFLINE and its follow-ups; the decision of what
+                // X means here is dl_ui_item_action's (host-tested).
+                const DlUiAction a = dl_ui_item_action(dl_have ? &dl_st : NULL,
+                                                       can_download, &dl_cx);
+                int r = DL_OK;
+                if (a == DL_UI_START || a == DL_UI_RETRY) {
+                    // The version on screen, the same one Play would stream,
+                    // through the same stream decision (dl_request).
+                    JFItem jf;
+                    memset(&jf, 0, sizeof(jf));
+                    snprintf(jf.id,   sizeof(jf.id),   "%s", it->id);
+                    snprintf(jf.name, sizeof(jf.name), "%s", it->name);
+                    snprintf(jf.type, sizeof(jf.type), "%s", it->type);
+                    r = dl_download_item(&jf, &detail, &versions.source[version_sel]);
+                    snprintf(dl_toast, sizeof(dl_toast), "%s",
+                             r == DL_OK ? "Added to Downloads (Settings > Downloads)"
+                                        : dl_ui_result_text(r));
+                } else if (a == DL_UI_PAUSE) {
+                    r = dl_pause(it->id);
+                    snprintf(dl_toast, sizeof(dl_toast), "%s", dl_ui_result_text(r));
+                } else if (a == DL_UI_RESUME) {
+                    r = dl_resume(it->id);
+                    snprintf(dl_toast, sizeof(dl_toast), "%s", dl_ui_result_text(r));
+                } else if (a == DL_UI_PLAY_OFFLINE) {
+                    int resume = xmb_resume_choice(it);
+                    if (resume >= 0 && !show_player_offline(it->id, (u32)resume))
+                        snprintf(dl_toast, sizeof(dl_toast),
+                                 "The offline copy is missing or damaged");
+                    exit_armed = false;
+                    init_btns();
+                }
+                dl_toast_until = timing_get_us() + 3000000ULL;
+                dl_next = 0;
+                if (a == DL_UI_PLAY_OFFLINE) { info_skip_frame(); continue; }
+            } else if (BTN_PRESSED(cross)) {
                 if (focus == FOCUS_SIM) {
                     // Swap the page over to the highlighted recommendation.
                     // Copied by value first — the reload overwrites similar[].
@@ -1251,7 +1319,38 @@ void xmb_show_item_info(const XMBItem *root) {
                          UIS_TF(22.0f), fg);
                 drawTTF((u32)(tx + UIS_W(46)), (u32)(Y + (bh - UIS_H(20)) / 2 + 1), "Play",
                         UIS_TF(20), fg, true);
+
+                // DOWNLOAD FOR OFFLINE, beside Play.  Its label is the live
+                // state (dl_ui_item_label); a thin bar shows the progress.
+                if (dl_capable) {
+                    char lbl[48];
+                    dl_ui_item_label(dl_have ? &dl_st : NULL, can_download, &dl_cx,
+                                     lbl, sizeof(lbl));
+                    const int dx = tx + bw + UIS_W(16), dw = UIS_W(250);
+                    const bool df = (focus == FOCUS_DOWNLOAD);
+                    drawRect((u32)dx, (u32)Y, (u32)dw, (u32)bh,
+                             df ? XMB_PANEL_HI : XMB_PANEL);
+                    if (df) {
+                        drawRect((u32)(dx - UIS_W(2)), (u32)(Y - UIS_H(2)), (u32)(dw + UIS_W(4)), UIS_H(2), XMB_FOCUS_RING);
+                        drawRect((u32)(dx - UIS_W(2)), (u32)(Y + bh), (u32)(dw + UIS_W(4)), UIS_H(2), XMB_FOCUS_RING);
+                        drawRect((u32)(dx - UIS_W(2)), (u32)(Y - UIS_H(2)), UIS_W(2), (u32)(bh + UIS_H(4)), XMB_FOCUS_RING);
+                        drawRect((u32)(dx + dw), (u32)(Y - UIS_H(2)), UIS_W(2), (u32)(bh + UIS_H(4)), XMB_FOCUS_RING);
+                    }
+                    const int pm = dl_have && dl_st.rec.state != DL_COMPLETED
+                                       ? dl_progress_permille(&dl_st.rec) : -1;
+                    if (pm >= 0) {
+                        drawRect((u32)dx, (u32)(Y + bh - UIS_H(4)), (u32)dw, UIS_H(4), XMB_HAIRLINE);
+                        drawRect((u32)dx, (u32)(Y + bh - UIS_H(4)), (u32)(dw * pm / 1000), UIS_H(4),
+                                 XMB_ACCENT);
+                    }
+                    info_clip_text(dx + UIS_W(16), Y + (bh - UIS_H(18)) / 2, lbl, UIS_TF(18),
+                                   df ? XMB_WHITE : XMB_TEXT_DIM, dw - UIS_W(32), df);
+                }
                 Y += bh + 18;
+                if (dl_toast[0] && timing_get_us() < dl_toast_until) {
+                    drawTTF((u32)tx, (u32)(Y - 14), dl_toast, 14, 0x00E8B64CUL);
+                    Y += 12;
+                }
             }
 
             // Version selector is shown only when it has a real choice.  X
@@ -1485,7 +1584,10 @@ void xmb_show_item_info(const XMBItem *root) {
             h[nh].label = (focus == FOCUS_SIM)     ? "Open" :
                           (focus == FOCUS_VERSION) ? "Choose version" :
                           (focus == FOCUS_QUALITY) ? "Change quality" : "Play";
-            nh++;
+            if (focus == FOCUS_DOWNLOAD)
+                h[nh].label = dl_ui_action_label(
+                    dl_ui_item_action(dl_have ? &dl_st : NULL, can_download, &dl_cx));
+            if (h[nh].label[0]) nh++;
             draw_hints_bar(h, nh);
         }
         flip();

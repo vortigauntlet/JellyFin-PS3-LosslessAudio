@@ -10,6 +10,15 @@
 void show_player(const JFItem *item, u32 resume_secs = 0,
                  const char *media_source_id = NULL);
 
+// Offline playback (Stage 4): play a completed download from the HDD
+// through this same player, with no server call of any kind.  The item is
+// re-verified here (COMPLETED, media.ts present at its verified size, whole
+// TS packets); anything else returns false without touching the player.
+// resume_secs starts part way (the file is entered at the nearest keyframe).
+// Blocks like show_player().  Nothing calls this yet: the Offline section
+// that launches it is Stage 5.
+bool show_player_offline(const char *item_id, u32 resume_secs = 0);
+
 // End-of-item auto-advance.  Arm before show_player() when the item has a
 // follower: during the last 90 s of playback the player shows a popup badge
 // reading `label` (with the instruction line `hint` drawn separately below

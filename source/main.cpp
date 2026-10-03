@@ -19,6 +19,7 @@
 #include "ui_wave.h"   // wave_init() -- called here, not from ui_init()
 #include "http.h"
 #include "update_check.h"
+#include "dl_service.h"
 #include <unistd.h>   // usleep
 #include "jellyfin_api.h"
 #include "thumbnail_cache.h"
@@ -290,6 +291,13 @@ int main(int argc, const char *argv[]) {
 
     crash_log("10 load_config");
     load_config();
+
+    // Offline downloads: the worker restores every item from the HDD (no
+    // network, off this thread), so what is already downloaded is usable
+    // whatever state the server is in.  It transfers nothing until there is
+    // a session -- a saved login counts; otherwise login releases it below.
+    crash_log("10b dl_service_start");
+    dl_service_start();
     {
         char buf[128];
         snprintf(buf, sizeof(buf), "10 server=%s token_len=%d userid=%s",
@@ -315,9 +323,20 @@ int main(int argc, const char *argv[]) {
         if (!g_token[0]) {
             boot_anim_leave();
             crash_log("12 do_login");
-            if (!do_login()) { g_server[0] = '\0'; continue; }
+            if (!do_login()) {
+                // Signed out and the server will not have us (unreachable,
+                // or a bad password): what is already downloaded still plays.
+                // Opening it keeps the server URL, so sign-in can be retried
+                // straight after; declining keeps the old flow exactly.
+                if (xmb_offer_offline_after_login_failure()) continue;
+                g_server[0] = '\0';
+                continue;
+            }
             slog_state("LOGIN_OK userid=%s", g_userid);
         }
+
+        // A fresh (or restored) session: queued downloads may run again.
+        dl_service_refresh_auth();
 
         crash_log("13 show_main_menu");
         // Cold boot only: the library list and Home rows load on a worker
@@ -343,9 +362,14 @@ int main(int argc, const char *argv[]) {
             slog_state("SESSION_EXPIRED");
             jellyfin_session_expired();
         }
+        // Logged out or revoked: g_token is empty now, which holds the queue.
+        dl_service_refresh_auth();
     }
 
     crash_log("14 done");
+    // First, while the network is still up: the active download parks itself
+    // back in the queue with its data (resumes next launch).
+    dl_service_stop();
     update_check_shutdown();
     thumb_cache_shutdown();
     http_end();

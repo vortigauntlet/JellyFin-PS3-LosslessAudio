@@ -34,6 +34,7 @@
 #include "jellyfin_api.h"
 #include "slog.h"
 #include "trickplay.h"
+#include "dl_manager.h"   // offline downloads yield to playback
 
 extern void crash_log(const char *msg);
 
@@ -249,7 +250,20 @@ bool player_execute_seek(PlayerState *ps) {
     crash_log("sk3 flushed");
 
     // 3) Re-request the stream at the new offset.
-    netClose(ps->sock);
+    stream_close(ps->sock);
+    if (ps->local) {
+        // Offline: no server to ask.  Find the entry point nearest the target
+        // in the file itself; player_local_open sets play_base_us to where it
+        // actually landed, which keeps the clock exact.
+        if (!player_local_open(ps, (u64)target_us)) {
+            plog("seek: local reopen FAILED");
+            crash_log("sk_fail local");
+            ps->playing = false;
+            return false;
+        }
+        crash_log("sk4 reopened");
+        player_prefill(ps, false, 20000);
+    } else {
     // Kill the existing transcode first, otherwise Jellyfin keeps
     // serving the in-progress job (which started at offset 0) and
     // the seek appears to reset to 0:00 instead of honouring the
@@ -318,6 +332,9 @@ bool player_execute_seek(PlayerState *ps) {
     char surl[768];
     build_stream_url(surl, sizeof(surl), ps, start_ticks);
     plog_url("surl", surl);
+    // A track change can turn a light stream heavy (an HD audio copy):
+    // re-decide for offline downloads from the URL actually being opened.
+    dl_playback_begin(surl);
     // 3b/4) Open and re-prime, retrying with a growing wait.
     //
     // A debrid host rate-limits opens of the same file: the server's ffmpeg
@@ -340,8 +357,7 @@ bool player_execute_seek(PlayerState *ps) {
             // The new stream's PTS restarts at ~0, so its clock now maps to
             // absolute media time target_us.
             ps->play_base_us = (u64)target_us;
-            { struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 5000;   // the lv2 layout (16 bytes)
-              netSetSockOpt(ps->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); }
+            stream_set_timeout(ps->sock, 5000);
             crash_log("sk4 reopened");
             if (attempt > 0) video_reset_demux();
             // Re-prime: decode a few frames before resuming display so the
@@ -349,7 +365,7 @@ bool player_execute_seek(PlayerState *ps) {
             player_prefill(ps, false, 20000);
             if (jbuf_count() > 0 || !ps->playing || !running) break;
             plog("seek: reopen gave no picture (the server found nothing to send)");
-            netClose(ps->sock);
+            stream_close(ps->sock);
             ps->sock = -1;
         } else {
             char b[160];
@@ -386,6 +402,7 @@ bool player_execute_seek(PlayerState *ps) {
             return false;
         }
     }
+    }   // online
     subs_after_seek();      // the cue cursor must not walk on from the old spot
     crash_log("sk5 prefilled");
     {

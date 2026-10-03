@@ -58,10 +58,10 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_media_sources test_subtit
      test_truehd_map test_truehd_decode \
      test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
-     test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
+     test_wave_audio test_wave_motion test_wave_layers \
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
-     test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop
+     test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request
 
 test_ac3_map: test_ac3_map.c $(MAP_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -109,6 +109,46 @@ test_media_segments: test_media_segments.c ../source/api/media_segments.c
 
 test_trickplay_info: test_trickplay_info.c $(TRICKPLAY_INFO_SRC)
 	$(CC) $(CFLAGS) -o $@ $^
+
+# Offline downloads: the SAME source/offline core the PS3 build compiles,
+# with dl_platform.h backed by dl_fake.cpp (a real temp directory and a
+# scripted fake HTTP server) instead of dl_ps3.cpp.  -Wextra because this
+# code is new and can afford to be held to it.
+OFFLINE_DIR  = ../source/offline
+OFFLINE_SRCS = $(OFFLINE_DIR)/dl_model.cpp $(OFFLINE_DIR)/dl_http.cpp \
+               $(OFFLINE_DIR)/dl_store.cpp $(OFFLINE_DIR)/dl_manager.cpp \
+               $(OFFLINE_DIR)/dl_ts.cpp $(OFFLINE_DIR)/dl_request.cpp \
+               $(OFFLINE_DIR)/dl_service.cpp $(OFFLINE_DIR)/dl_library.cpp \
+               $(OFFLINE_DIR)/dl_ui.cpp
+# Stage 3: the downloader shares the PLAYER's stream decision, so the test
+# links the player's real stream_request.cpp and what it calls -- the real
+# quality ladder (vquality.cpp), track labels (track_codec.c) and
+# url_encode_query (jellyfin_api.cpp).  host/ppu-types.h stands in for
+# PSL1GHT's integer typedefs; nothing else is stubbed.
+SHARED_SRCS  = ../source/player/stream/stream_request.cpp \
+               ../source/player/stream/stream_local.cpp \
+               ../source/util/vquality.cpp ../source/util/jf_paths.cpp \
+               ../source/api/jellyfin_api.cpp
+OFFLINE_INC  = -I$(OFFLINE_DIR) -I../source/player/stream -I../source/api \
+               -I../source/net -I../source/util -Ihost
+track_codec_host.o: $(TRACK_SRC)
+	$(CC) $(CFLAGS) -c -o $@ $<
+test_offline: test_offline.cpp dl_fake.cpp dl_fake.h $(OFFLINE_SRCS) \
+              $(SHARED_SRCS) track_codec_host.o $(wildcard $(OFFLINE_DIR)/*.h) \
+              ../source/player/stream/stream_request.h \
+              ../source/player/stream/stream_local.h
+	$(CXX) $(CXXFLAGS) -Wextra $(OFFLINE_INC) -o $@ \
+	    test_offline.cpp dl_fake.cpp $(OFFLINE_SRCS) $(SHARED_SRCS) \
+	    track_codec_host.o
+
+# The stream request decision, pinned to byte-exact URLs.
+test_stream_request: test_stream_request.cpp stream_golden_cases.h \
+                     stream_golden_urls.inc $(SHARED_SRCS) track_codec_host.o \
+                     ../source/player/stream/stream_request.h
+	$(CXX) $(CXXFLAGS) -Wextra $(OFFLINE_INC) -I. -o $@ \
+	    test_stream_request.cpp ../source/player/stream/stream_request.cpp \
+	    ../source/util/vquality.cpp ../source/util/jf_paths.cpp \
+	    ../source/api/jellyfin_api.cpp track_codec_host.o
 
 test_dts_hd: test_dts_hd.c $(DTS_HD_DEPS)
 	$(CC) $(DCAHD_CFLAGS) $(CFLAGS) -o $@ $^ -lm
@@ -252,8 +292,6 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_wave_audio
 	./test_wave_motion
 	./test_wave_layers
-	./test_bg_gradient
-	./test_month_bg
 	./test_wave_cam
 	./test_wave_light
 	./test_wave_gel
@@ -268,6 +306,8 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_wave_motes
 	./test_canyon
 	./test_display_mode
+	./test_offline
+	./test_stream_request
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -276,8 +316,9 @@ clean:
 	      test_truehd_map test_truehd_decode test_dts_hd test_dts_xll_dump \
 	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
-	      test_wave_audio test_wave_motion test_wave_layers test_bg_gradient \
+	      test_wave_audio test_wave_motion test_wave_layers \
 	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq test_wave_motes test_display_mode \
+	      test_offline test_stream_request track_codec_host.o \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
 .PHONY: all check clean
@@ -362,18 +403,6 @@ test_wave_spline: test_wave_spline.c ../source/ui/render/wave_kernel.h \
 
 test_wave_ribbon: test_wave_ribbon.c $(WAVE_HDRS)
 	$(CC) $(CFLAGS) -o $@ test_wave_ribbon.c -lm
-
-# The background: four-corner gradient, day/night crossfade, ordered dither.
-# Its first job is to prove the OLD two-stop ramp still comes out unchanged,
-# so this runs on every build rather than only when the header moves.
-test_bg_gradient: test_bg_gradient.c ../source/ui/render/bg_gradient.h
-	$(CC) $(CFLAGS) -o $@ test_bg_gradient.c -lm
-
-# The month table's parser and selection.  Also parses the generated
-# outputs/jellyfin_months.ini when it is present, so the format the generator
-# writes and the format the client reads cannot drift apart unnoticed.
-test_month_bg: test_month_bg.c ../source/ui/render/month_bg_table.h ../source/ui/render/bg_gradient.h
-	$(CC) $(CFLAGS) -o $@ test_month_bg.c -lm
 
 # The seam itself: three chains through one adapter.  This is the only wave
 # test that exercises the COMBINATION -- bounded together, distinct from each

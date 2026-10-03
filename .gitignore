@@ -18,11 +18,19 @@ build/
 *.map
 obj/
 tools/ui_preview/preview
+tools/ui_preview/preview_offline
+# offline-screen frames: the PNGs are committed, the raw PPMs are not
+tools/ui_preview/[89]_*.ppm
+tools/ui_preview/1[0-9]_*.ppm
 
 # Host-side test artifacts (tests/Makefile.host)
 tests/test_ac3_map
 tests/test_ac3_decode
 tests/test_media_sources
+tests/test_offline
+tests/track_codec_host.o
+tests/test_dts_hd
+tests/test_dts_xll_dump
 tests/tones51.ac3
 tests/decoded.f32
 tests/test_dts_map

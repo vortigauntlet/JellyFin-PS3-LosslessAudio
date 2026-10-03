@@ -23,6 +23,7 @@
 
 // xmb/ui_peek.cpp (declared in ui_internal.h, not included here).
 void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
+#include "dl_manager.h"   // Downloads / Offline Library rows
 
 static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
     { "Log Out", "Debug Logging", "Screen Size", "1080p Playback (Alpha)",
@@ -32,6 +33,7 @@ static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
 #if ENABLE_PLAYER_STATS
     , "Player Stats Overlay"
 #endif
+    , "Downloads", "Offline Library"
     };
 // ICON_BUG is reused for the stats row: it is the same diagnostics family as
 // Debug Logging, and the Tabler font here is a 20-glyph subset (see
@@ -44,6 +46,9 @@ static const int   SETTINGS_ICONS[XMB_SETTINGS_COUNT]  =
 #if ENABLE_PLAYER_STATS
     , ICON_BUG
 #endif
+    // Downloads: the stacked-cards glyph (a queue); Offline: play.  Both are
+    // already in the 20-glyph icon subset.
+    , ICON_COLLECTIONS, ICON_PLAY
     };
 
 // Triangle's descriptions, one per row, two short lines each ('\n' splits).
@@ -66,6 +71,8 @@ static const char *SETTINGS_HELP[XMB_SETTINGS_COUNT] = {
 #if ENABLE_PLAYER_STATS
     "Show playback statistics over the video:\nframe rate, bitrate, buffer and decoder figures.",
 #endif
+    "Downloads in progress, with pause and cancel.\nThey wait while you stream and carry on by themselves.",
+    "Films and episodes saved on this PS3, ready to play.\nThey play without a connection to your server.",
 };
 
 static void help_rect(int *x, int *y, int *w, int *h) {
@@ -373,6 +380,29 @@ void xmb_draw_settings(void) {
                     val, UIS_TF(18), statsovl_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
 #endif
+        if (i == XMB_SET_ROW_DOWNLOADS || i == XMB_SET_ROW_OFFLINE) {
+            // Right-aligned tally.  dl_counts is a lock and a walk of the
+            // slot table -- no copies, no disk -- so it is fine per frame.
+            int active = 0, completed = 0, failed = 0;
+            dl_counts(&active, &completed, &failed);
+            char val[32];
+            bool lit;
+            if (!dl_manager_ready()) { snprintf(val, sizeof(val), "Unavailable"); lit = false; }
+            else if (i == XMB_SET_ROW_DOWNLOADS) {
+                if (active)      snprintf(val, sizeof(val), "%d active", active);
+                else if (failed) snprintf(val, sizeof(val), "%d failed", failed);
+                else             snprintf(val, sizeof(val), "None");
+                lit = active > 0;
+            } else {
+                if (completed) snprintf(val, sizeof(val), "%d", completed);
+                else           snprintf(val, sizeof(val), "Empty");
+                lit = completed > 0;
+            }
+            int vw = ttf_text_width(val, UIS_TF(18), sel);
+            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
+                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
+                    val, UIS_TF(18), lit ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
+        }
     }
 
     // Triangle's description panel, over the list.
