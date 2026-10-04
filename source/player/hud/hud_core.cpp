@@ -2,6 +2,7 @@
 // control row, popup menu cursor, and the public setter API.
 
 #include <stdio.h>
+#include <string.h>
 
 #include <ppu-types.h>
 
@@ -43,6 +44,12 @@ void hud_init(u32 total_secs, const char *audio_label) {
     g_hud.menu_choice  = -1;
     g_hud.menu_epoch   = 0;
     g_hud.title[0]     = '\0';
+    g_hud.live          = false;
+    g_hud.live_title[0] = g_hud.live_times[0] = '\0';
+    g_hud.live_permille = -1;
+    g_hud.live_epoch    = 0;
+    g_hud.banner[0] = g_hud.banner_sub[0] = '\0';
+    g_hud.banner_until_us = 0;
     hud_gpu_init();
 }
 
@@ -63,6 +70,31 @@ void hud_set_cc_active(bool active) { g_hud.cc_active = active; }
 
 void hud_set_title(const char *title) {
     snprintf(g_hud.title, sizeof(g_hud.title), "%s", title ? title : "");
+}
+
+void hud_set_live(bool live) {
+    g_hud.live = live;
+    g_hud.live_epoch++;
+}
+
+void hud_set_live_programme(const char *title, const char *times, int permille) {
+    char t[sizeof g_hud.live_title], tm[sizeof g_hud.live_times];
+    snprintf(t,  sizeof t,  "%s", title ? title : "");
+    snprintf(tm, sizeof tm, "%s", times ? times : "");
+    if (strcmp(t, g_hud.live_title) == 0 && strcmp(tm, g_hud.live_times) == 0 &&
+        permille == g_hud.live_permille) return;
+    memcpy(g_hud.live_title, t, sizeof t);
+    memcpy(g_hud.live_times, tm, sizeof tm);
+    g_hud.live_permille = permille;
+    g_hud.live_epoch++;
+}
+
+void hud_set_banner(const char *line1, const char *line2, u64 until_us) {
+    snprintf(g_hud.banner,     sizeof g_hud.banner,     "%s", line1 ? line1 : "");
+    snprintf(g_hud.banner_sub, sizeof g_hud.banner_sub, "%s", line2 ? line2 : "");
+    g_hud.banner_until_us = until_us;
+    g_hud.live_epoch++;
+    hud_show();
 }
 
 void hud_open_menu(const char *title, const char *const *items,
@@ -104,7 +136,17 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
     if (BTN_PRESSED(stop))     return HUD_ACTION_STOP;
     if (BTN_PRESSED(audio))    return HUD_ACTION_AUDIO_TRACK;
     if (BTN_PRESSED(subtitle)) return HUD_ACTION_SUBTITLE;
-    {
+    // A live channel has nothing to seek in.  Up/Down change channel with
+    // the bar hidden or shown (nothing else uses them unless the volume
+    // slider or a menu is open); the remote's NEXT/PREV change it too.
+    if (g_hud.live) {
+        if (BTN_PRESSED(next)) return HUD_ACTION_CHANNEL_NEXT;
+        if (BTN_PRESSED(prev)) return HUD_ACTION_CHANNEL_PREV;
+        if (!g_hud.vol_active && !g_hud.menu_visible) {
+            if (BTN_PRESSED(up))   return HUD_ACTION_CHANNEL_NEXT;
+            if (BTN_PRESSED(down)) return HUD_ACTION_CHANNEL_PREV;
+        }
+    } else {
         const bool scan = btn_nav_repeat(btn_cur.ffwd || btn_cur.rew, NAV_media);
         const bool skip = BTN_PRESSED(next) || BTN_PRESSED(prev);
         if (scan || skip) {
@@ -221,8 +263,10 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
     // X (cross) activates the focused control.
     if (BTN_PRESSED(cross)) {
         switch (g_hud.focus) {
-        case FOCUS_REW:    g_hud.seek_delta = -s_incr_vals[g_hud.incr_idx]; return HUD_ACTION_SEEK;
-        case FOCUS_FF:     g_hud.seek_delta = +s_incr_vals[g_hud.incr_idx]; return HUD_ACTION_SEEK;
+        case FOCUS_REW:    if (g_hud.live) return HUD_ACTION_NONE;
+                           g_hud.seek_delta = -s_incr_vals[g_hud.incr_idx]; return HUD_ACTION_SEEK;
+        case FOCUS_FF:     if (g_hud.live) return HUD_ACTION_NONE;
+                           g_hud.seek_delta = +s_incr_vals[g_hud.incr_idx]; return HUD_ACTION_SEEK;
         case FOCUS_AUDIO:  return HUD_ACTION_AUDIO_TRACK;
         case FOCUS_VOLUME: g_hud.vol_active = true; return HUD_ACTION_NONE;
         case FOCUS_CC:     return HUD_ACTION_SUBTITLE;

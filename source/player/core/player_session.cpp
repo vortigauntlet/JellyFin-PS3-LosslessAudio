@@ -120,7 +120,7 @@ void build_stream_url(char *url, int url_sz, const PlayerState *ps,
     stream_prefs_current(&prefs);
     StreamSelection sel = { ps->item->id, player_current_source(ps),
                             &ps->tracks, ps->cur_audio, ps->cur_sub,
-                            ps->sub_is_text || ps->sub_is_pgs };
+                            ps->sub_is_text || ps->sub_is_pgs, ps->live };
     StreamRequest rq;
     stream_request_resolve(&prefs, &sel, &rq);
     // The frame ceiling the jitter buffer was allocated for at open.  A seek

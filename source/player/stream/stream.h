@@ -18,6 +18,11 @@ extern volatile bool g_stream_cancel;
 typedef bool (*stream_wait_fn)(unsigned elapsed_ms);
 void stream_set_wait_cb(stream_wait_fn cb);
 
+// How long the NEXT stream_open() waits for response headers, in seconds; 0
+// (the default) is STREAM_HDR_DEADLINE_US.  Applies to one open only.  A live
+// channel that has not answered in 20 s is not going to.
+void stream_set_header_deadline(unsigned secs);
+
 // Open an HTTP connection to url and read the response headers.
 // Returns a connected socket fd on success, -1 on failure.
 int stream_open(const char *url);

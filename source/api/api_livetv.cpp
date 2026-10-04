@@ -6,6 +6,7 @@
 
 #include <ppu-types.h>
 #include <sys/systime.h>
+#include <sysutil/sysutil.h>
 
 #include "api_livetv.h"
 #include "jellyfin_api.h"
@@ -24,6 +25,13 @@ uint64_t jf_now_ticks(void) {
     u64 sec = 0, nsec = 0;
     sysGetCurrentTime(&sec, &nsec);
     return jf_ticks_from_unix((uint64_t)sec);
+}
+
+int jf_utc_offset_secs(void) {
+    s32 tz = 0, summer = 0;
+    if (sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_TIMEZONE, &tz) != 0) tz = 0;
+    if (sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_SUMMERTIME, &summer) != 0) summer = 0;
+    return (int)tz * 60 + (summer ? 3600 : 0);
 }
 
 int jf_fetch_channels(JFChannel *out, int max) {

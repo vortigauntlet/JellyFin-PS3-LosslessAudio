@@ -44,7 +44,7 @@ bool dl_request_build(const DlRequestInput *in, DlRequest *out) {
 
     // ---- the stream: the player's selection rule and the player's decision
     const JFTracks *tracks = &in->source->tracks;
-    StreamSelection sel;
+    StreamSelection sel = {};     // every field set or zero: nothing here is live
     sel.item_id = in->item->id;
     sel.source  = in->source;
     sel.tracks  = tracks;

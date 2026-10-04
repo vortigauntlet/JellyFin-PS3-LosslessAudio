@@ -218,7 +218,13 @@ static int sb_read(int sock, u8 *dst, int want) {
 // 400 because the MediaSourceId was wrong, and those need different fixes.
 static char s_last_error[64] = "";
 
+static unsigned s_hdr_deadline_secs = 0;
+void stream_set_header_deadline(unsigned secs) { s_hdr_deadline_secs = secs; }
+
 int stream_open(const char *url) {
+    const u64 hdr_deadline_us = s_hdr_deadline_secs
+        ? (u64)s_hdr_deadline_secs * 1000000ULL : STREAM_HDR_DEADLINE_US;
+    s_hdr_deadline_secs = 0;
     if (s_file_fd >= 0) { sysLv2FsClose(s_file_fd); s_file_fd = -1; }
     const char *p = url;
     if (strncmp(p, "http://", 7) == 0) p += 7;
@@ -355,13 +361,14 @@ int stream_open(const char *url) {
                      "Cancelled while waiting for the server");
             netClose(sock); return -1;
         }
-        if (now - hdr_t0 >= STREAM_HDR_DEADLINE_US) {
+        if (now - hdr_t0 >= hdr_deadline_us) {
             plog("stream_open: header timeout");
             // Two minutes with no headers usually means the server is still
             // grinding on the transcode — a 4K HEVC source re-encoded to
             // H.264 is the classic case.
             snprintf(s_last_error, sizeof(s_last_error),
-                     "Server did not respond in 120s (still transcoding?)");
+                     "Server did not respond in %us (still transcoding?)",
+                     (unsigned)(hdr_deadline_us / 1000000ULL));
             netClose(sock); return -1;
         }
         if (now - hdr_log_us >= 5000000ULL) {

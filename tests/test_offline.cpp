@@ -2037,7 +2037,7 @@ static StreamPrefs prefs_of(int q, bool hd, int surround_mode, u32 dw = 1920, u3
 static std::string playback_url(const JFItem &it, const JFMediaSource &src,
                                 const StreamPrefs &p, const char *session,
                                 unsigned long long ticks, StreamRequest *out_rq = NULL) {
-    StreamSelection sel;
+    StreamSelection sel = {};
     sel.item_id = it.id;
     sel.source = &src;
     sel.tracks = &src.tracks;

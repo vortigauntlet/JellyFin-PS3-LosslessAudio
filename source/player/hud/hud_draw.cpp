@@ -26,6 +26,7 @@
 #include "trickplay.h"
 #include "rsxutil.h"
 #include "plog.h"
+#include "timing.h"   // timing_get_us(): the channel banner expires
 #include "audio.h"   // audio_get_volume() for the volume slider
 #include "audio_bitstream.h"   // audio_passthrough_active(): the receiver owns the volume
 
@@ -50,7 +51,9 @@ struct OvlKey {
     s32  focus, incr_idx;
     s32  menu_sel, menu_cur, menu_n;
     s32  vol_pct;
-    u8   paused, cc, menu_vis, title_on, vol_active, scrubbing;
+    s32  live_permille;
+    u32  live_epoch;
+    u8   paused, cc, menu_vis, title_on, vol_active, scrubbing, live, banner_on;
     char audio[64];
 };
 static OvlKey s_ovl_key;
@@ -543,6 +546,10 @@ void hud_draw(u64 elapsed_us, bool paused, bool scrubbing) {
     key.vol_active   = g_hud.vol_active ? 1 : 0;
     key.vol_pct      = audio_get_volume();
     key.scrubbing    = scrubbing ? 1 : 0;
+    key.live         = g_hud.live ? 1 : 0;
+    key.live_permille = g_hud.live_permille;
+    key.live_epoch   = g_hud.live_epoch;
+    key.banner_on    = (g_hud.banner[0] && timing_get_us() < g_hud.banner_until_us) ? 1 : 0;
     snprintf(key.audio, sizeof(key.audio), "%s", g_hud.audio_label);
 
     if (!s_ovl_key_valid || memcmp(&key, &s_ovl_key, sizeof(key)) != 0) {

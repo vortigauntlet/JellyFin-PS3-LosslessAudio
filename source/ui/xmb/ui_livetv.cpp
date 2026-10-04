@@ -49,7 +49,6 @@ namespace {
 const uint64_t T_MIN  = 600000000ULL;               // ticks per minute
 const uint64_t T_30M  = 30 * T_MIN;
 const uint64_t T_3H   = 180 * T_MIN;
-const uint64_t UNIX_EPOCH_SECS = 62135596800ULL;
 
 const int      MAX_CH      = LIVETV_MAX_CHANNELS;
 const int      MAX_PG      = 400;                   // programmes kept: ~130 KB
@@ -160,19 +159,9 @@ bool ensure_worker(void) {
 uint64_t floor_half_hour(uint64_t t) { return t - (t % T_30M); }
 
 // HH:MM on the console's local clock.
-void fmt_hm(uint64_t ticks, char *out, int cap) {
-    const int64_t unix_secs = (int64_t)(ticks / 10000000ULL) - (int64_t)UNIX_EPOCH_SECS + s_utc_offset;
-    int64_t day_secs = unix_secs % 86400;
-    if (day_secs < 0) day_secs += 86400;
-    snprintf(out, (size_t)cap, "%02d:%02d", (int)(day_secs / 3600), (int)((day_secs / 60) % 60));
-}
+void fmt_hm(uint64_t ticks, char *out, int cap) { livetv_format_hm(ticks, s_utc_offset, out, cap); }
 
-void read_utc_offset(void) {
-    s32 tz = 0, summer = 0;
-    if (sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_TIMEZONE, &tz) != 0) tz = 0;
-    if (sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_SUMMERTIME, &summer) != 0) summer = 0;
-    s_utc_offset = (int)tz * 60 + (summer ? 3600 : 0);
-}
+void read_utc_offset(void) { s_utc_offset = jf_utc_offset_secs(); }
 
 // ---------------------------------------------------------------------------
 //  Geometry
@@ -383,6 +372,9 @@ void play_channel(int idx) {
     show_player(&jf, 0, NULL);
     s_last_refresh_us = 0;                  // what is on has moved on
     init_btns();
+    // Channel up/down inside the player: the list follows to where it ended.
+    const int at = xmb_livetv_index_of(player_live_last_channel());
+    if (at >= 0) { s_sel = at; s_pg_rows = 0; keep_visible(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -465,7 +457,7 @@ void show_details(const JFChannel *c, const JFProgram *p) {
         while (tl > 1 && ttf_text_width(title, UIS_TF(24), true) > mw) title[--tl] = '\0';
         drawTTF((u32)cx, (u32)y, title, UIS_TF(24), XMB_WHITE, true);
         y += UIS_H(40);
-        char a[16], b[16], when[96];
+        char a[16], b[16], when[160];
         fmt_hm(p->start_ticks, a, sizeof a);
         fmt_hm(p->end_ticks, b, sizeof b);
         snprintf(when, sizeof when, "%s - %s  \xC2\xB7  %s", a, b, c->name);

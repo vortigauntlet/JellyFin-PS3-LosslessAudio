@@ -202,6 +202,55 @@ static void dolby_digital(void) {
     CHECK(!rq.ac3_copy);
 }
 
+// A live channel, written out by hand from the rules: the path is the
+// channel (the opened source goes in MediaSourceId only), the video is never
+// copied, and "Original" quality is a 10 Mbps ceiling instead of none.
+// 10 Mbps: 9.7 Mbps after framing, less the 192 kbps MP3 = 9.508 Mbps.
+// 25 Mbps: 24.25 Mbps less 192 kbps = 24.058 Mbps.
+static std::string live_url(int quality, bool surround, bool passthrough) {
+    GoldenCase c = { "live", quality, 0, surround, 0, 1920, 1080, -1,
+                     GS_NONE, GV_LIVE, 1, 0 };
+    Built b; build_case(&c, &b);
+    b.p.passthrough = passthrough;
+    snprintf(b.src.id, sizeof b.src.id, "LIVESRC1");
+    b.sel.item_id = "CHAN0001";
+    b.sel.live    = true;
+    StreamRequest rq;
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    char url[1024];
+    stream_url_build(url, sizeof url, &rq, SERVER, DEVICE, "sess1234", 0);
+    return url;
+}
+
+static void live_tv(void) {
+    printf("- live tv\n");
+    const std::string head = "http://server:8096/Videos/CHAN0001/stream.ts?VideoCodec=h264"
+                             "&Profile=high&Level=42&MaxWidth=1920&MaxHeight=1080";
+    const std::string ids  = "&DeviceId=DEVID123&Static=false&MediaSourceId=LIVESRC1"
+                             "&StartTimeTicks=0&LiveStreamId=live%20stream%2F1"
+                             "&PlaySessionId=sess1234";
+    const std::string mp3  = "&AudioCodec=mp3&AudioBitrate=192000&AudioSampleRate=48000"
+                             "&MaxAudioChannels=2&MaxFramerate=30&AllowAudioStreamCopy=false";
+    CHECK(live_url(VQORIG, false, false) ==
+          head + "&VideoBitrate=9508000&AllowVideoStreamCopy=false" + mp3 + ids);
+    CHECK(live_url(VQ1080_25, false, false) ==
+          head + "&VideoBitrate=24058000&AllowVideoStreamCopy=false" + mp3 + ids);
+    // 5.1 output and Dolby Digital output both ask for AC-3, never a copy.
+    const std::string ac3 = "&AudioCodec=ac3&AudioBitrate=640000&AudioSampleRate=48000"
+                            "&MaxAudioChannels=6&MaxFramerate=30&AllowAudioStreamCopy=false";
+    CHECK(live_url(VQORIG, true, false) ==
+          head + "&VideoBitrate=9060000&AllowVideoStreamCopy=false" + ac3 + ids);
+    CHECK(live_url(VQORIG, false, true) ==
+          head + "&VideoBitrate=9060000&AllowVideoStreamCopy=false" + ac3 + ids);
+
+    // Not live: the same selection copies the video and puts the version in the path.
+    GoldenCase c = { "plain", VQORIG, 0, 0, 0, 1920, 1080, -1, GS_NONE, GV_PLAIN, 1, 0 };
+    Built b; build_case(&c, &b);
+    StreamRequest rq;
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    CHECK(!rq.live && rq.vbitrate == 0 && rq.vreq == 0);
+}
+
 static void initial_selection(void) {
     printf("- initial selection\n");
     JFTracks t; fill_tracks(&t);
@@ -221,6 +270,7 @@ int main(void) {
     budget();
     subtitles();
     dolby_digital();
+    live_tv();
     initial_selection();
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;

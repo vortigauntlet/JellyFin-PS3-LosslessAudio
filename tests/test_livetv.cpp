@@ -215,8 +215,20 @@ static void list_rules(void) {
     CHECK(!livetv_debounce_ready(2000000, 1000000, 600000));     // a clock that stepped back
 }
 
+static void clock_format(void) {
+    printf("- clock\n");
+    char b[16];
+    const uint64_t t = jf_ticks_from_iso8601("2026-10-03T19:30:00Z");
+    livetv_format_hm(t, 0, b, sizeof b);            CHECK(!strcmp(b, "19:30"));
+    livetv_format_hm(t, 3600, b, sizeof b);         CHECK(!strcmp(b, "20:30"));      // summer time
+    livetv_format_hm(t, -5 * 3600, b, sizeof b);    CHECK(!strcmp(b, "14:30"));
+    livetv_format_hm(t, 5 * 3600 + 1800, b, sizeof b); CHECK(!strcmp(b, "01:00"));   // past midnight
+    livetv_format_hm(t, -20 * 3600, b, sizeof b);   CHECK(!strcmp(b, "23:30"));      // before it
+}
+
 int main(void) {
     time_parsing();
+    clock_format();
     channels();
     programmes();
     list_rules();

@@ -51,6 +51,8 @@ uint64_t jf_ticks_from_iso8601(const char *s);
 int jf_iso8601_from_ticks(uint64_t ticks, char *out, int cap);
 // Ticks for a Unix time in seconds (what sysGetCurrentTime returns).
 uint64_t jf_ticks_from_unix(uint64_t unix_secs);
+// "HH:MM" (24 h) of a tick time on a clock `utc_offset_secs` from UTC.
+void livetv_format_hm(uint64_t ticks, int utc_offset_secs, char *out, int cap);
 
 // ---- the list's rules -------------------------------------------------------
 

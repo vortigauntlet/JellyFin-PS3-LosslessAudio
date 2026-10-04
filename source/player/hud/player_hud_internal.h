@@ -84,6 +84,16 @@ struct HudState {
     bool cc_active;    // subtitles on -> underline the CC button
     bool vol_active;   // volume slider open (speaker control clicked)
 
+    // Live TV (hud_set_live*)
+    bool live;
+    char live_title[96];
+    char live_times[24];
+    int  live_permille;     // -1 = unknown
+    u32  live_epoch;        // bumped when any live text changes (the compose key)
+    char banner[96];
+    char banner_sub[96];
+    u64  banner_until_us;
+
     // Popup menu state.  Items are caller-owned pointers (track labels live
     // in the player's static JFTracks, so they outlive the menu).
     bool        menu_visible;

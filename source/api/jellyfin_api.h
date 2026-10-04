@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>   // NULL, for the default arguments below
 #include "http.h"
 
 #define JF_MAX   100
@@ -199,12 +200,17 @@ void jellyfin_stop_transcode(const char *session_id);
 // Playback-state reporting (POST /Sessions/Playing{,/Progress,/Stopped}).
 // pos_ticks is the absolute position in Jellyfin 100-ns ticks.  These keep
 // the server's Continue Watching / resume positions up to date.
+// live_stream_id non-empty = a Live TV channel: the report carries the
+// LiveStreamId, no position and CanSeek=false.
 void jellyfin_report_playing(const char *item_id, const char *session_id,
-                             unsigned long long pos_ticks);
+                             unsigned long long pos_ticks,
+                             const char *live_stream_id = NULL);
 void jellyfin_report_progress(const char *item_id, const char *session_id,
-                              unsigned long long pos_ticks, bool paused);
+                              unsigned long long pos_ticks, bool paused,
+                              const char *live_stream_id = NULL);
 void jellyfin_report_stopped(const char *item_id, const char *session_id,
-                             unsigned long long pos_ticks);
+                             unsigned long long pos_ticks,
+                             const char *live_stream_id = NULL);
 
 // The same progress report, handed to a worker thread instead of being waited
 // on.  For callers that must not block: the music pump thread (it is the only

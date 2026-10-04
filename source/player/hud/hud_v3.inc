@@ -113,7 +113,9 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
     const u32 el = (u32)(elapsed_us / 1000000ULL);
     char el_s[16], rem_s[20] = "";
     fmt_time(el_s, sizeof el_s, el);
-    if (g_hud.total_secs > 0) {
+    if (g_hud.live) {
+        el_s[0] = '\0';                       // no position in a live stream
+    } else if (g_hud.total_secs > 0) {
         const u32 rem = g_hud.total_secs > el ? g_hud.total_secs - el : 0;
         char t[16]; fmt_time(t, sizeof t, rem);
         snprintf(rem_s, sizeof rem_s, "-%s", t);
@@ -252,18 +254,20 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
     const int bx = v3x(57), by = v3y(628), bw = v3x(1223) - v3x(57), bh = UIS_H(6);
     v3_rrect(bx, by, bw, bh, bh / 2, 0, WHITE, 41, 0, 0);
     int fill = 0;
-    if (g_hud.total_secs > 0) {
+    if (g_hud.live) {
+        if (g_hud.live_permille > 0) fill = (int)((long long)bw * g_hud.live_permille / 1000);
+    } else if (g_hud.total_secs > 0) {
         float p = (float)el / (float)g_hud.total_secs;
         if (p > 1.0f) p = 1.0f;
         fill = (int)(p * (float)bw);
     }
     if (fill > 0) v3_rrect(bx, by, fill, bh, bh / 2, 0, XMB_ACCENT, 255, 0, 0);
-    if (scrubbing || g_hud.focus == FOCUS_REW || g_hud.focus == FOCUS_FF)
+    if (!g_hud.live && (scrubbing || g_hud.focus == FOCUS_REW || g_hud.focus == FOCUS_FF))
         v3_rrect(bx + fill - UIS_H(7), by + bh / 2 - UIS_H(7), UIS_H(14), UIS_H(14),
                  UIS_H(7), 0, WHITE, 255, 0, 0);
 
     // REW / FF focus: the step they will jump, above the bar at its ends.
-    if (g_hud.focus == FOCUS_REW || g_hud.focus == FOCUS_FF) {
+    if (!g_hud.live && (g_hud.focus == FOCUS_REW || g_hud.focus == FOCUS_FF)) {
         char st[24];
         const int n = V3_INCR[g_hud.incr_idx < 0 ? 0 : g_hud.incr_idx % 3];
         const float spx = UIS_TF(12.5f);
@@ -297,10 +301,29 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
     // ---- times: 12.5px at y=644, white@76% ----
     {
         const float tpx = UIS_TF(12.5f);
-        drawTTF((u32)bx, (u32)v3y(644), el_s, tpx, 0x00C2C2C2);
-        if (rem_s[0]) {
-            const int rw = ttf_text_width(rem_s, tpx);
-            drawTTF((u32)(bx + bw - rw), (u32)v3y(644), rem_s, tpx, 0x00C2C2C2);
+        if (g_hud.live) {
+            // The LIVE badge, then the programme; its times at the right.
+            const int bh2 = UIS_H(18), bw2 = ttf_text_width_face("LIVE", UIS_TF(9.5f), UI_FACE_EYEBROW) + UIS_W(16);
+            v3_rrect(bx, v3y(644), bw2, bh2, bh2 / 2, 0, 0x00D8344A, 235, 0, 0);
+            drawTTF_face((u32)(bx + UIS_W(8)), (u32)(v3y(644) + UIS_H(4)), "LIVE", UIS_TF(9.5f),
+                         WHITE, UI_FACE_EYEBROW);
+            int tw_max = bw - bw2 - UIS_W(12);
+            if (g_hud.live_times[0]) {
+                const int rw = ttf_text_width(g_hud.live_times, tpx);
+                drawTTF((u32)(bx + bw - rw), (u32)v3y(644), g_hud.live_times, tpx, 0x00C2C2C2);
+                tw_max -= rw + UIS_W(20);
+            }
+            char pt[96];
+            snprintf(pt, sizeof pt, "%s", g_hud.live_title);
+            int len = (int)strlen(pt);
+            while (len > 1 && ttf_text_width(pt, tpx) > tw_max) pt[--len] = 0;
+            drawTTF((u32)(bx + bw2 + UIS_W(12)), (u32)v3y(644), pt, tpx, 0x00C2C2C2);
+        } else {
+            drawTTF((u32)bx, (u32)v3y(644), el_s, tpx, 0x00C2C2C2);
+            if (rem_s[0]) {
+                const int rw = ttf_text_width(rem_s, tpx);
+                drawTTF((u32)(bx + bw - rw), (u32)v3y(644), rem_s, tpx, 0x00C2C2C2);
+            }
         }
     }
 
@@ -318,13 +341,38 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
                    : g_hud.focus == FOCUS_CC     ? "Subtitles"
                    : paused                      ? "Play" : "Pause";
         n++;
-        h[n].glyph = 'L'; h[n].label = "";       n++;   // L2 R2: one cluster
-        h[n].glyph = 'R'; h[n].label = "Rewind / Fast Forward"; n++;
+        if (g_hud.live) {
+            h[n].glyph = 'D'; h[n].label = "Channel"; n++;
+        } else {
+            h[n].glyph = 'L'; h[n].label = "";       n++;   // L2 R2: one cluster
+            h[n].glyph = 'R'; h[n].label = "Rewind / Fast Forward"; n++;
+        }
         h[n].glyph = 'T'; h[n].label = "Tracks"; n++;
         h[n].glyph = 'C'; h[n].label = "Stop";   n++;
         h[n].glyph = 'S'; h[n].label = "Hide";   n++;
         draw_hints_bar(h, n);
         ovl_span(v3y(660), (int)s_ovl_h);
+    }
+
+    // The channel banner: what a channel change lands on, top left.
+    if (g_hud.banner[0] && timing_get_us() < g_hud.banner_until_us) {
+        const float p1 = UIS_TF(26.0f), p2 = UIS_TF(14.0f);
+        char l1[96], l2[96];
+        snprintf(l1, sizeof l1, "%s", g_hud.banner);
+        snprintf(l2, sizeof l2, "%s", g_hud.banner_sub);
+        const int maxw = v3x(900) - v3x(57);
+        int n1 = (int)strlen(l1), n2 = (int)strlen(l2);
+        while (n1 > 1 && ttf_text_width(l1, p1, true) > maxw) l1[--n1] = 0;
+        while (n2 > 1 && ttf_text_width(l2, p2) > maxw) l2[--n2] = 0;
+        int w1 = ttf_text_width(l1, p1, true), w2 = l2[0] ? ttf_text_width(l2, p2) : 0;
+        const int bw3 = (w1 > w2 ? w1 : w2) + UIS_W(40);
+        const int bh3 = UIS_H(l2[0] ? 84 : 56);
+        const int bx3 = v3x(57), by3 = v3y(48);
+        v3_rrect(bx3, by3, bw3, bh3, UIS_H(12), 1, 0x000A0C18, 205, WHITE, 40);
+        drawTTF((u32)(bx3 + UIS_W(20)), (u32)(by3 + UIS_H(12)), l1, p1, WHITE, true);
+        if (l2[0])
+            drawTTF((u32)(bx3 + UIS_W(20)), (u32)(by3 + UIS_H(50)), l2, p2, 0x00C2C2C2);
+        ovl_span(by3, by3 + bh3);
     }
 
     // The track menu, lifted above the chips instead of sitting on the strip.

@@ -59,7 +59,12 @@ typedef struct {
     int                  cur_sub;     // position in tracks->subs,  -1 = off
     bool                 sub_on_console;   // cur_sub is drawn by this app (text
                                            // or PGS): no server burn-in
+    bool                 live;        // a Live TV channel: item_id is the channel
 } StreamSelection;
+
+// A live channel has no source to copy from and no length: the video is
+// always transcoded, and "Original" quality means this ceiling.
+#define STREAM_LIVE_VIDEO_BPS 10000000u
 
 typedef struct {
     // video
@@ -79,6 +84,7 @@ typedef struct {
     const char *hd_codec;          // "dts" / "truehd" when stream-copied, else NULL
     bool        ac3_copy;          // passthrough on a Dolby Digital track: the
                                    // track is copied, with no AudioBitrate
+    bool        live;              // a Live TV channel (see StreamSelection)
     // selection, as Jellyfin indices / ids
     int         audio_idx;         // MediaStream Index, -1 = server default
     int         sub_idx;           // -1 = none; else the track to burn in

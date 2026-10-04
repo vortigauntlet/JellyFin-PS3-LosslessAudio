@@ -51,6 +51,9 @@
 #include "lclog.h"     // 24p lifecycle trace
 #include "stream_request.h"
 #include "dl_manager.h"   // offline downloads yield to playback
+#include "api_livetv.h"   // Live TV: the clock, closing a stream
+#include "livetv_list.h"  // Live TV: the channel list, for channel up/down
+#include "live_watch.h"   // Live TV: when to ask for a fresh stream
 
 extern void crash_log(const char *msg);
 
@@ -283,6 +286,8 @@ void player_spinner_gpu(float t)
 // and no way out -- force-quit).  The last picture stays up with the spinner
 // and a count; Circle gives up (playback ends, back to the menu).
 static bool s_seekwait_flip = false;
+// What the reopen's wait screen says it is doing; NULL = waiting for the server.
+static const char *s_seekwait_label = NULL;
 
 // Settle the flip bookkeeping after drawing outside the main loop: every
 // queued flip has landed once the GPU reaches a label behind it, so the flip
@@ -306,7 +311,8 @@ bool player_seek_wait(unsigned elapsed_ms)
     player_spinner_gpu((float)elapsed_ms * 0.001f);
     rsxSync();
     char msg[64];
-    snprintf(msg, sizeof msg, "Waiting for the server \xC2\xB7 %us", elapsed_ms / 1000u);
+    snprintf(msg, sizeof msg, "%s \xC2\xB7 %us",
+             s_seekwait_label ? s_seekwait_label : "Waiting for the server", elapsed_ms / 1000u);
     const float px = UIS_TF(16.0f);
     const int w = ttf_text_width(msg, px);
     const int y = (int)display_height / 2 + UIS_H(58);
@@ -361,19 +367,23 @@ static bool player_stream_wait(unsigned elapsed_ms)
 // libnet pool, and both requests timed out at 5 s (`http=-1`).  Now the socket
 // is closed first, the two requests run on a thread of their own, and the
 // Returning screen is up while they and the teardown run.
-static struct { char item[64]; char sess[128]; u64 ticks; } s_exit_rep;
+static struct { char item[64]; char sess[128]; char live[96]; u64 ticks; } s_exit_rep;
 static volatile bool    s_exit_rep_done = true;
 static bool             s_exit_rep_live = false;    // a thread still to join
 static sys_ppu_thread_t s_exit_rep_tid;
 
 static void exit_reports_run(void) {
-    jellyfin_report_stopped(s_exit_rep.item, s_exit_rep.sess, s_exit_rep.ticks);
+    jellyfin_report_stopped(s_exit_rep.item, s_exit_rep.sess, s_exit_rep.ticks,
+                            s_exit_rep.live);
     // Kill the server-side transcode for this session.  Without this the job
     // is left running when playback ends, and starting the SAME item and
     // version again collides with the orphan -- the new stream request comes
     // back HTTP 500.  Seeks already do this (player_seek.cpp) for the same
     // reason.
     if (s_exit_rep.sess[0]) jellyfin_stop_transcode(s_exit_rep.sess);
+    // A live channel's source is the server's to stop: a tuner stays busy
+    // until the stream it serves is closed.
+    if (s_exit_rep.live[0]) jf_livestream_close(s_exit_rep.live);
 }
 
 static void exit_reports_fn(void *arg) {
@@ -394,10 +404,12 @@ static void exit_reports_join(void) {
     s_exit_rep_live = false;
 }
 
-static void exit_reports_start(const char *item_id, const char *sess, u64 ticks) {
+static void exit_reports_start(const char *item_id, const char *sess, u64 ticks,
+                               const char *live_stream_id) {
     exit_reports_join();
     snprintf(s_exit_rep.item, sizeof s_exit_rep.item, "%s", item_id ? item_id : "");
     snprintf(s_exit_rep.sess, sizeof s_exit_rep.sess, "%s", sess ? sess : "");
+    snprintf(s_exit_rep.live, sizeof s_exit_rep.live, "%s", live_stream_id ? live_stream_id : "");
     s_exit_rep.ticks = ticks;
     s_exit_rep_done = false;
     __sync_synchronize();
@@ -453,6 +465,88 @@ static int chain_find_audio(const JFTracks *t) {
     return -1;
 }
 
+// ---- Live TV -----------------------------------------------------------------
+static const u64 LIVE_CHANNEL_QUIET_US = 600000ULL;    // presses closer than this collapse
+static const u64 LIVE_BANNER_US        = 3000000ULL;
+static const int LIVE_REOPEN_TRIES     = 3;            // after the first failure, 1 / 2 / 4 s apart
+// About five seconds of a 10 Mbps stream: a live stream arrives at the rate it
+// plays, so the read-ahead ring cannot be filled the way a film's is.
+static const int LIVE_PREROLL_PACKETS  = 33000;
+static const u64 LIVE_PREROLL_MAX_US   = 20000000ULL;
+
+static char s_live_last_id[40] = "";
+const char *player_live_last_channel(void) { return s_live_last_id; }
+
+// "5  BBC One": the number when the channel has one.
+static void live_channel_label(const JFChannel *ch, char *out, size_t cap) {
+    if (ch->number[0]) snprintf(out, cap, "%s  %s", ch->number, ch->name);
+    else               snprintf(out, cap, "%s", ch->name);
+}
+
+// "Title \xC2\xB7 19:30 - 20:30" for the banner's second line; the programme
+// fields are the list's snapshot, so a programme that has ended shows nothing.
+static void live_programme(const JFChannel *ch, int utc, char *title, size_t tcap,
+                           char *times, size_t mcap, int *permille) {
+    title[0] = times[0] = '\0';
+    *permille = -1;
+    const uint64_t now = jf_now_ticks();
+    if (!ch->now_title[0] || ch->now_end_ticks <= now) return;
+    char a[16], b[16];
+    livetv_format_hm(ch->now_start_ticks, utc, a, sizeof a);
+    livetv_format_hm(ch->now_end_ticks, utc, b, sizeof b);
+    snprintf(title, tcap, "%s", ch->now_title);
+    snprintf(times, mcap, "%s - %s", a, b);
+    *permille = livetv_progress_permille(now, ch->now_start_ticks, ch->now_end_ticks);
+}
+
+static void live_hud_channel(const JFChannel *ch, int utc) {
+    char label[128], title[96], times[24];
+    int pm;
+    live_channel_label(ch, label, sizeof label);
+    live_programme(ch, utc, title, sizeof title, times, sizeof times, &pm);
+    hud_set_title(label);
+    hud_set_live_programme(title, times, pm);
+}
+
+static void live_banner(const JFChannel *ch, int utc) {
+    char label[128], title[96], times[24], sub[128];
+    int pm;
+    live_channel_label(ch, label, sizeof label);
+    live_programme(ch, utc, title, sizeof title, times, sizeof times, &pm);
+    if (title[0]) snprintf(sub, sizeof sub, "%s  \xC2\xB7  %s", title, times);
+    else          sub[0] = '\0';
+    hud_set_banner(label, sub, timing_get_us() + LIVE_BANNER_US);
+}
+
+// Reopen the live stream, labelled for the wait screen.  After a failure it
+// asks again up to LIVE_REOPEN_TRIES more times, 1 / 2 / 4 s apart, with the
+// spinner up and O to give up.  False ends playback.
+static bool live_reopen(PlayerState *ps, const char *label) {
+    static const unsigned BACKOFF_MS[LIVE_REOPEN_TRIES] = { 1000, 2000, 4000 };
+    s_seekwait_label = label;
+    bool ok = false;
+    for (int attempt = 0; attempt <= LIVE_REOPEN_TRIES; attempt++) {
+        if (attempt > 0) {
+            char b[96];
+            snprintf(b, sizeof b, "live: reopen failed, asking again in %u s (try %d of %d)",
+                     BACKOFF_MS[attempt - 1] / 1000u, attempt + 1, LIVE_REOPEN_TRIES + 1);
+            plog(b);
+            const u64 w0 = timing_get_us();
+            bool gave_up = false;
+            while (timing_get_us() - w0 < (u64)BACKOFF_MS[attempt - 1] * 1000ULL) {
+                if (!player_seek_wait((unsigned)((timing_get_us() - w0) / 1000ULL))) { gave_up = true; break; }
+                usleep(30000);
+            }
+            if (gave_up || !running) break;
+        }
+        ok = player_execute_seek(ps);
+        if (ok || ps->open_cancelled || !running) break;
+    }
+    s_seekwait_label = NULL;
+    if (!ok) ps->playing = false;
+    return ok;
+}
+
 void show_player(const JFItem *item, u32 resume_secs,
                  const char *media_source_id) {
     show_player_run(item, resume_secs, media_source_id, NULL);
@@ -496,9 +590,19 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         }
     }
 
+    // A Live TV channel.  The player owns a copy of its item: channel up and
+    // down change it in place.
+    static JFItem s_live_item;
+    const bool live = !local && strcmp(item->type, "TvChannel") == 0;
+    if (live) {
+        s_live_item = *item;
+        item = &s_live_item;
+        snprintf(s_live_last_id, sizeof s_live_last_id, "%s", item->id);
+    }
+
     // Consume the auto-advance arming one-shot so a later, unrelated
     // playback can never inherit a stale NEXT popup.
-    bool have_next = s_next_armed;
+    bool have_next = s_next_armed && !live;
     s_next_armed = false;
 
     // Auto-advance countdown applies only to episodes; movies keep the
@@ -521,6 +625,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     trickplay_reset();                // ditto for a previous title's scrub sheet
     ps.menu_kind = PLAYER_MENU_NONE;
     ps.local     = local;
+    ps.live      = live;
 
     // Baseline H.264 level 3.1 caps at 1280×720 @ 30fps.  1080p (Alpha) asks
     // the server for a full 1920×1080 High-profile transcode instead — flat,
@@ -602,6 +707,15 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     lc_logf("play-session CREATED psid=%s item=%s resume=%us",
             ps.session_id[0] ? ps.session_id : "(none)", item->id, resume_secs);
 
+    if (live && !ps.source.id[0]) {
+        plog("live: the server opened no stream for this channel");
+        player_startup_abort();
+        show_error("This channel could not be opened.",
+                   "The server has no stream for it right now.");
+        ui_restore_rsx_state();
+        return;
+    }
+
     // Only the version chosen on the info screen enters the player.  Its own
     // tracks come from the same source-aware PlaybackInfo response.
     if (ps.source.id[0]) {
@@ -609,6 +723,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         ps.have_tracks = true;
         if (ps.source.runtime_secs > 0)
             ps.total_secs = ps.source.runtime_secs;
+        if (live) ps.total_secs = ps.source.runtime_secs = 0;   // a channel has no length
     } else {
         snprintf(ps.source.id, sizeof(ps.source.id), "%s",
                  (media_source_id && media_source_id[0])
@@ -648,9 +763,9 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // find_sub requires jf_sub_is_text), so it can never trigger an
     // unexpected transcode.
     // Intro / credits markers, fetched off this thread (segments.h).
-    segments_start(item->id, ps.source.id);
+    if (!live) segments_start(item->id, ps.source.id);
 
-    if (ps.have_tracks && ps.tracks.n_subs > 0) {
+    if (!live && ps.have_tracks && ps.tracks.n_subs > 0) {
         int pref_sub = track_pref_find_sub(&ps.tracks);
         if (pref_sub >= 0) {
             const JFStream *st = &ps.tracks.subs[pref_sub];
@@ -690,10 +805,17 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // or -- for a 480p-or-lighter stream -- continue at a paced share.  The
     // decision is made from this exact URL (dl_stream_is_light).  The guard
     // ends it on every one of show_player's many return paths.
-    dl_playback_begin(url);
+    if (live) dl_playback_begin_local(false);   // it transcodes for as long as it plays
+    else      dl_playback_begin(url);
     }   // online
     struct DlPlaybackEnd { ~DlPlaybackEnd() { dl_playback_end(); } } dl_playback_guard;
     (void)dl_playback_guard;
+    // An exit before playback starts still has to release a live channel's
+    // stream: a tuner stays busy until the server is told.
+    auto live_abort = [&]() {
+        if (live && (ps.session_id[0] || ps.source.live_stream_id[0]))
+            exit_reports_start(item->id, ps.session_id, 0, ps.source.live_stream_id);
+    };
 
     // The buffering presentation starts here and runs until the first frame
     // (spine gate on; the gate off keeps the status lines below).  It reuses
@@ -719,6 +841,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     plog("show_player: vdec_open");
     if (!vdec_open()) {
         plog("show_player: vdec_open FAILED");
+        live_abort();
         player_startup_abort();
         vdec_close();
         thumb_cache_init();
@@ -753,6 +876,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     plog("show_player: stream_open");
     s_wait_title = item->name;
     stream_set_wait_cb(player_stream_wait);
+    if (live) stream_set_header_deadline(20);
     ps.sock = local ? (player_local_open(&ps, (u64)resume_secs * 1000000ULL) ? ps.sock : -1)
                     : stream_open(url);
     stream_set_wait_cb(NULL);
@@ -763,7 +887,14 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         audio_close();
         vdec_close();
         thumb_cache_init();
-        show_error(stream_last_error(), url);
+        if (live) {
+            // Circle during the wait is an answer, not a fault.
+            if (!strstr(stream_last_error(), "Cancelled"))
+                show_error(stream_last_error(), "Live TV");
+            live_abort();
+        } else {
+            show_error(stream_last_error(), url);
+        }
         ui_restore_rsx_state();
         return;
     }
@@ -783,6 +914,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
 
     if (!jbuf_alloc(ps.req_w, ps.req_h)) {
         plog("show_player: jbuf_alloc FAILED");
+        live_abort();
         player_startup_abort();
         stream_close(ps.sock);
         adec_stop();
@@ -841,6 +973,16 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         hud_init(ps.total_secs, (g_spine_on && w[0]) ? w : NULL);   // the old HUD keeps AUDIO
     }
     hud_set_title(item->name);
+    JFChannel live_ch;
+    memset(&live_ch, 0, sizeof live_ch);
+    const int live_utc = live ? jf_utc_offset_secs() : 0;
+    if (live) {
+        hud_set_live(true);
+        const int at = xmb_livetv_index_of(item->id);
+        if (at < 0 || !xmb_livetv_get(at, &live_ch))
+            snprintf(live_ch.name, sizeof live_ch.name, "%s", item->name);
+        live_hud_channel(&live_ch, live_utc);
+    }
     plog("hud: prewarm start");
     ttf_prewarm_hud();
     plog("hud: prewarm done");
@@ -851,6 +993,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
 
     if (!ps.playing) {
         lc_logf("show_player: RETURN to UI -- prefill ended playback (before 24p)");
+        live_abort();
         player_startup_abort();
         vid_gpu_free();
         decode_ring_free();
@@ -887,7 +1030,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // display mode, so it is safe alongside the switch.  Off unless
     // jellyfin_24p.txt says 1; every gate and the measurement that verifies
     // the switch are in display_24p.cpp.
-    if (dec_ok && ps.playing) {
+    if (dec_ok && ps.playing && !live) {
         s_d24_title = item->name;
         lc_session_snapshot("before_24p", false);
         const d24_ui ui = { d24_draw_prompt, d24_poll_answer, d24_lifecycle };
@@ -914,8 +1057,13 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         // 90%, was 75%.  The ring is the only thing standing between a slow
         // patch and a stall, so fill it as far as it will go before starting.
         // The wait stays bounded by the deadline below and by Circle-to-skip.
-        const int target   = (decode_ring_cap() * 9) / 10;  // 90% full
-        const u64 deadline = timing_get_us() + 90000000ULL; // 90 s ceiling
+        int target         = (decode_ring_cap() * 9) / 10;  // 90% full
+        u64 deadline       = timing_get_us() + 90000000ULL; // 90 s ceiling
+        if (live) {
+            if (target > LIVE_PREROLL_PACKETS) target = LIVE_PREROLL_PACKETS;
+            if (target < 1) target = 1;
+            deadline = timing_get_us() + LIVE_PREROLL_MAX_US;
+        }
         u64 last_draw_us   = 0;
         int last_pct       = -1;
         plog("preroll: filling read-ahead ring");
@@ -941,7 +1089,8 @@ void show_player_run(const JFItem *item, u32 resume_secs,
             if (buffering_active()) {
                 // The presentation animates for the whole wait: ~30 fps,
                 // paced by its own flips, with the fill as its progress.
-                buffering_progress((float)pct / 90.0f);
+                buffering_progress(live ? (float)decode_ring_fill() / (float)target
+                                        : (float)pct / 90.0f);
                 buffering_frame_paced(33000ULL);
             } else if (pct != last_pct && now - last_draw_us > 250000ULL) {
                 last_draw_us = now;
@@ -1009,6 +1158,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     g_prog.gen       = g_prog.gen + 1;
     snprintf(g_prog.item, sizeof g_prog.item, "%s", item->id);
     snprintf(g_prog.sess, sizeof g_prog.sess, "%s", ps.session_id);
+    snprintf(g_prog.live_id, sizeof g_prog.live_id, "%s", live ? ps.source.live_stream_id : "");
     g_prog.base_us   = ps.play_base_us;
     g_prog.paused    = ps.paused;
     g_prog.pos_valid = true;
@@ -1026,7 +1176,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         }
     }
     if (!prog_tid)
-        jellyfin_report_playing(item->id, ps.session_id, ps.play_base_us * 10ULL);
+        jellyfin_report_playing(item->id, ps.session_id, ps.play_base_us * 10ULL, g_prog.live_id);
 
     crash_log("p9 threads started");
     lc_logf("playback: START aud=%d upl=%d prog=%d playing=%d",
@@ -1047,6 +1197,14 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     bool was_paused   = false;
     int  pause_settle = 0;   // frames still to draw after a pause-state change
     bool lc_first_frame = false;
+
+    // Live TV: a channel change waits for a quiet 600 ms (the banner follows
+    // each press); live_watch.h decides when the stream must be asked for again.
+    int       live_target   = -1;       // the channel a pending change is heading for
+    u64       live_press_us = 0;
+    u64       live_hud_us   = 0;
+    LiveWatch live_w;
+    live_watch_init(&live_w, timing_get_us());
 
     // ---- Main (display) loop ----
     while (running && ps.playing && !s_vdec_error) {
@@ -1116,7 +1274,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         // focused control: play/pause, REW/FF, AUDIO, or CC), returning the
         // action to perform.
         const double seg_pos = (double)(ps.play_base_us + audio_get_clock_us()) / 1e6;
-        const MediaSegment *skip_seg = ps.paused ? NULL : segments_at(seg_pos);
+        const MediaSegment *skip_seg = (ps.paused || live) ? NULL : segments_at(seg_pos);
         hud_set_skip_offered(skip_seg != NULL);
         HudAction act = hud_handle_input(l2_pressed, r2_pressed, ps.paused);
         // Settings > Auto Skip: intros and recaps go by themselves.  Credits
@@ -1183,8 +1341,53 @@ void show_player_run(const JFItem *item, u32 resume_secs,
             act = HUD_ACTION_SEEK;      // 0-delta reopen applies the fallback
         }
 
-        // R2/L2 tap/hold machine + commit gate.
-        act = player_seek_input_update(&ps, act);
+        // R2/L2 tap/hold machine + commit gate (a channel has nothing to seek in).
+        if (!live) act = player_seek_input_update(&ps, act);
+
+        // ---- Live TV ----
+        const char *live_label = NULL;     // set: reopen the stream under this name
+        bool        live_changed = false;
+        if (live) {
+            const u64 now_lv = timing_get_us();
+            if (act == HUD_ACTION_CHANNEL_NEXT || act == HUD_ACTION_CHANNEL_PREV) {
+                const int n = xmb_livetv_count();
+                JFChannel ch;
+                if (n > 1) {
+                    const int cur = live_target >= 0 ? live_target : xmb_livetv_index_of(item->id);
+                    const int to  = livetv_step_channel(cur, n, act == HUD_ACTION_CHANNEL_NEXT ? +1 : -1);
+                    if (to >= 0 && xmb_livetv_get(to, &ch)) {
+                        live_target   = to;
+                        live_press_us = now_lv;
+                        live_banner(&ch, live_utc);
+                    }
+                }
+                act = HUD_ACTION_NONE;
+            }
+            if (live_target >= 0 &&
+                livetv_debounce_ready(live_press_us, now_lv, LIVE_CHANNEL_QUIET_US)) {
+                JFChannel ch;
+                const int to = live_target;
+                live_target = -1;
+                if (to != xmb_livetv_index_of(item->id) && xmb_livetv_get(to, &ch)) {
+                    // The next channel replaces this one's identity and tracks.
+                    snprintf(s_live_item.id,   sizeof s_live_item.id,   "%s", ch.id);
+                    snprintf(s_live_item.name, sizeof s_live_item.name, "%s", ch.name);
+                    snprintf(s_live_last_id, sizeof s_live_last_id, "%s", ch.id);
+                    memset(&ps.tracks, 0, sizeof ps.tracks);
+                    ps.have_tracks = false;
+                    ps.cur_audio   = -1;
+                    ps.cur_sub     = -1;
+                    ps.sub_is_text = ps.sub_is_pgs = false;
+                    hud_set_cc_active(false);
+                    live_ch = ch;
+                    live_label   = "Changing channel";
+                    live_changed = true;
+                    char b[96];
+                    snprintf(b, sizeof b, "live: channel -> %.40s", ch.name);
+                    plog(b);
+                }
+            }
+        }
 
         if (act == HUD_ACTION_TOGGLE_PAUSE) {
             ps.paused = !ps.paused;
@@ -1202,10 +1405,38 @@ void show_player_run(const JFItem *item, u32 resume_secs,
                        ps.paused ? "PAUSED" : "RESUMED",
                        (unsigned long long)((ps.play_base_us +
                            audio_get_clock_us()) / 1000000ULL));
-        } else if (act == HUD_ACTION_SEEK) {
+        }
+
+        if (live && !live_label) {
+            const u64 now_lv = timing_get_us();
+            const LiveEvent ev = live_watch_step(&live_w, now_lv, ps.paused, ps.frame_count,
+                                                 ps.stream_ended);
+            if (ev == LIVE_EV_RESUME_STALE) live_label = "Returning to live";
+            else if (ev != LIVE_EV_NONE) {
+                plog(ev == LIVE_EV_STALLED ? "live: no new picture for 15 s" : "live: stream ended");
+                live_label = "Reconnecting";
+            }
+            // The same channel asked for again and again is a stream that will
+            // not stay up: stop rather than hammer the server.
+            if (live_label && !live_changed && live_watch_looping(&live_w, now_lv)) {
+                plog("playing=0 reason=live_reopen_loop");
+                ps.playing = false;
+                break;
+            }
+        }
+        if (live_label) act = HUD_ACTION_SEEK;
+
+        if (act == HUD_ACTION_SEEK) {
             g_prog.pos_valid = false;
-            const bool seek_ok = player_execute_seek(&ps);
+            const bool seek_ok = live ? live_reopen(&ps, live_label ? live_label : "Waiting for the server")
+                                      : player_execute_seek(&ps);
             snprintf(g_prog.sess, sizeof g_prog.sess, "%s", ps.session_id);
+            if (live) {
+                snprintf(g_prog.item, sizeof g_prog.item, "%s", item->id);
+                snprintf(g_prog.live_id, sizeof g_prog.live_id, "%s", ps.source.live_stream_id);
+                live_watch_opened(&live_w, timing_get_us());
+                if (seek_ok && live_changed) { live_hud_channel(&live_ch, live_utc); live_banner(&live_ch, live_utc); }
+            }
             g_prog.base_us   = ps.play_base_us;
             __sync_synchronize();
             g_prog.pos_valid = seek_ok;
@@ -1262,6 +1493,13 @@ void show_player_run(const JFItem *item, u32 resume_secs,
 #endif
 
         g_prog.paused = ps.paused;
+        if (live) {
+            const u64 now_lv = timing_get_us();
+            if (now_lv - live_hud_us >= 1000000ULL) {
+                live_hud_us = now_lv;
+                live_hud_channel(&live_ch, live_utc);
+            }
+        }
         player_display_frame(&ps);
         {
             // No new picture for 0.4 s while playing -- a stall, a seek, the
@@ -1337,7 +1575,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
 
     // Final position for the server's resume bookmark — read before the
     // audio clock is torn down.
-    u64 final_pos_ticks = (ps.play_base_us + audio_get_clock_us()) * 10ULL;
+    u64 final_pos_ticks = live ? 0ULL : (ps.play_base_us + audio_get_clock_us()) * 10ULL;
 
     // Signal all threads to stop, join in order: decode → audio → upload
     ps.playing = false;
@@ -1399,7 +1637,8 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // Tell the server where we stopped (also finalizes Continue Watching) and
     // stop its transcode -- on a thread, so a slow server never freezes this.
     // A local file has no server session to close.
-    if (!local) exit_reports_start(item->id, ps.session_id, final_pos_ticks);
+    if (!local) exit_reports_start(item->id, ps.session_id, final_pos_ticks,
+                                   live ? ps.source.live_stream_id : "");
 
     // Free video GPU blit resources before releasing the jitter buffer
     vid_gpu_free();

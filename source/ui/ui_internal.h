@@ -184,9 +184,7 @@ bool xmb_livetv_at_top(void);         // the list's first row (Up there leaves t
 bool xmb_livetv_modal(void);          // the guide or a details panel has O and Up
 void xmb_livetv_hints(void);          // the tab's hint bar
 // The channel list in display order, for the player's channel up/down.
-int  xmb_livetv_count(void);
-bool xmb_livetv_get(int index, JFChannel *out);
-int  xmb_livetv_index_of(const char *channel_id);
+#include "livetv_list.h"
 // X and Left/Right on a Settings row, by its position in the displayed order
 // (ui_settings.cpp owns what each row does).  Left/Right are ignored on
 // action rows; toggles flip on either direction.

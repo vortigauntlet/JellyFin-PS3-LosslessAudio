@@ -37,3 +37,7 @@ void        player_chain_begin(void);
 void        player_chain_end(void);
 const char *player_chain_source_label(void);   // "" when none
 bool player_take_next_request(void);
+
+// Live TV: the channel playing when the last live playback ended (channel up
+// and down move it), "" before the first.  The Live TV list selects it on return.
+const char *player_live_last_channel(void);

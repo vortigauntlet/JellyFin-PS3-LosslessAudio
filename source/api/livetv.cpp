@@ -19,6 +19,14 @@ uint64_t jf_ticks_from_unix(uint64_t unix_secs) {
     return (unix_secs + UNIX_EPOCH_SECS) * TICKS_PER_SEC;
 }
 
+void livetv_format_hm(uint64_t ticks, int utc_offset_secs, char *out, int cap) {
+    const int64_t unix_secs = (int64_t)(ticks / TICKS_PER_SEC) - (int64_t)UNIX_EPOCH_SECS
+                              + utc_offset_secs;
+    int64_t day_secs = unix_secs % 86400;
+    if (day_secs < 0) day_secs += 86400;
+    snprintf(out, (size_t)cap, "%02d:%02d", (int)(day_secs / 3600), (int)((day_secs / 60) % 60));
+}
+
 // Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
 static int64_t days_from_civil(int y, unsigned m, unsigned d) {
     y -= m <= 2;

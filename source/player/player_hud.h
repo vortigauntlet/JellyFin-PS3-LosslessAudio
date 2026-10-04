@@ -10,6 +10,8 @@ typedef enum {
     HUD_ACTION_MENU_SELECT,   // hud_menu_choice() gives the chosen entry
     HUD_ACTION_STOP,          // O on the redesigned HUD (spine gate on)
     HUD_ACTION_SKIP_SEGMENT,  // X on the "Skip Intro" badge (segments.h)
+    HUD_ACTION_CHANNEL_NEXT,  // Live TV: Up / NEXT -- never seen outside live mode
+    HUD_ACTION_CHANNEL_PREV,  //         Down / PREV
 } HudAction;
 
 // A skippable segment is on screen.  While it is and the bar is hidden, X
@@ -55,6 +57,15 @@ void      hud_set_cc_active(bool active);
 
 // Item title — shown top-left while playback is paused.
 void      hud_set_title(const char *title);
+
+// Live TV.  A live HUD has no seek bar and no seek keys: the bar shows how far
+// through the current programme it is, Up/Down and NEXT/PREV change channel.
+// `times` is "19:30 - 20:30"; permille < 0 = no programme data (no bar fill).
+void      hud_set_live(bool live);
+void      hud_set_live_programme(const char *title, const char *times, int permille);
+// The channel banner: two lines top-left, until `until_us` (timing_get_us()).
+// Shows the HUD.
+void      hud_set_banner(const char *line1, const char *line2, u64 until_us);
 
 // Open a popup menu above the control bar (e.g. track selection).  The HUD
 // copies the item POINTERS only — the strings must outlive the menu.

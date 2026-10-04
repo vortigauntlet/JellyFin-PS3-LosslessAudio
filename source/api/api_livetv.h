@@ -30,3 +30,5 @@ bool jf_livestream_close(const char *live_stream_id);
 
 // The console clock as ticks (UTC).
 uint64_t jf_now_ticks(void);
+// Seconds the console's local clock is ahead of UTC: time zone plus summer time.
+int jf_utc_offset_secs(void);

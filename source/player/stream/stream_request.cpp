@@ -30,6 +30,12 @@ void stream_request_resolve(const StreamPrefs *prefs,
                     &rq->max_w, &rq->max_h,
                     &rq->profile, &rq->level, &rq->vbitrate);
 
+    // A live channel is transcoded whatever the quality step: its source is a
+    // tuner or an IPTV stream the console cannot be sent as it is.  With no
+    // step chosen it gets a fixed ceiling rather than none.
+    rq->live = sel->live;
+    if (rq->live && rq->vbitrate == 0) rq->vbitrate = STREAM_LIVE_VIDEO_BPS;
+
     const JFTracks *t = sel->tracks;
     const bool have_audio = t && sel->cur_audio >= 0 && sel->cur_audio < t->n_audio;
     const bool have_sub   = t && sel->cur_sub   >= 0 && sel->cur_sub   < t->n_subs;
@@ -138,7 +144,10 @@ int stream_url_build(char *url, int url_sz, const StreamRequest *rq,
     // stay in both cases as the gate that keeps a 4K or 60 fps source from
     // being copied to a console that cannot decode it.
     char vparams[96];
-    if (rq->vreq == 0)
+    if (rq->live)
+        snprintf(vparams, sizeof(vparams),
+                 "&VideoBitrate=%u&AllowVideoStreamCopy=false", rq->vreq);
+    else if (rq->vreq == 0)
         snprintf(vparams, sizeof(vparams), "&AllowVideoStreamCopy=true");
     else
         snprintf(vparams, sizeof(vparams),
@@ -147,7 +156,11 @@ int stream_url_build(char *url, int url_sz, const StreamRequest *rq,
     // The version's own id goes in the path: a source plugin keeps every
     // version as an item of its own, and asking for another item's path with
     // MediaSourceId=<version> answers 404.  For an ordinary item the two ids
-    // are the same.
+    // are the same.  A live channel's path is the channel; its source id (the
+    // opened stream) goes in MediaSourceId only.
+    char encoded_path[288];
+    if (rq->live) url_encode_query(rq->item_id, encoded_path, sizeof(encoded_path));
+    else          snprintf(encoded_path, sizeof(encoded_path), "%s", encoded_source);
     int n = snprintf(url, url_sz,
         "%s/Videos/%s/stream.ts"
         "?VideoCodec=h264"
@@ -161,7 +174,7 @@ int stream_url_build(char *url, int url_sz, const StreamRequest *rq,
         "&DeviceId=%s&Static=false"
         "&MediaSourceId=%s"
         "&StartTimeTicks=%llu",
-        server, encoded_source, rq->profile, rq->level, rq->max_w, rq->max_h,
+        server, encoded_path, rq->profile, rq->level, rq->max_w, rq->max_h,
         vparams, aparams, copy_audio,
         device_id, encoded_source, start_ticks);
     if (rq->live_stream_id[0] && n > 0 && n < url_sz) {

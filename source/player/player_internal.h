@@ -17,6 +17,8 @@ struct DecodeCtx {
     int           *frame_count;  // read-only for heartbeat (benign race)
     int            sock;
     volatile bool *dec_run;      // seek-only stop flag; cleared to pause just this thread
+    volatile bool *ended;        // live: set when the stream ends, and playback
+                                 // goes on; NULL = the end stops playback
 };
 
 struct AudioCtx {
@@ -49,6 +51,7 @@ struct ProgressShared {
     volatile u64  base_us;      // PlayerState.play_base_us
     char          item[64];
     char          sess[64];
+    char          live_id[96];  // Live TV: the opened stream, "" otherwise
 };
 extern ProgressShared g_prog;
 void progress_thread_fn(void *arg);
@@ -89,6 +92,11 @@ struct PlayerLocal {
 
 struct PlayerState {
     const PlayerLocal *local;    // NULL = online
+    // A Live TV channel: no length, no seeking, a fresh stream on every
+    // reopen.  `item` is the channel and changes when the channel does.
+    bool     live;
+    volatile bool stream_ended;  // live: the decode thread reached the end
+    bool     open_cancelled;     // the last reopen ended because the user pressed O
     const JFItem *item;
     u32      req_w, req_h;       // transcode size (H.264 level 3.1 cap)
     char     session_id[64];     // Jellyfin PlaySessionId (re-minted per seek)
