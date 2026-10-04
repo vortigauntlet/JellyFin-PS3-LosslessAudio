@@ -10,6 +10,7 @@
 #include "mkv_ts.h"
 #include "mkv_builder.h"
 #include "ts_demux.h"
+#include "aac_adts.h"
 
 #include <codec/vdec.h>   // VDEC_TS_INVALID (hoststub)
 #include <math.h>
@@ -147,6 +148,9 @@ static Want expect(MkvFile *f, int vt, int at, uint64_t from_cluster_time_hint, 
     MkvReader r;
     mkv_reader_init(&r, f, buf.data(), (uint32_t)buf.size());
     if (seek) { uint64_t ct; mkv_seek(f, &r, seek_ns, &ct); }
+    const MkvTrack *atrack = at ? mkv_track(f, at) : nullptr;
+    AacConfig acfg;
+    const bool aac = atrack && mkv_audio_codec(atrack) == MKV_AC_AAC && aac_parse_asc(atrack->codec_private, atrack->cp_len, &acfg);
     MkvFrame fr;
     bool started = false;
     int64_t origin = 0;
@@ -158,7 +162,8 @@ static Want expect(MkvFile *f, int vt, int at, uint64_t from_cluster_time_hint, 
         } else if (at && fr.track == at) {
             if (!started || fr.pts_ns < origin) continue;
             Vec d;
-            if (fr.prefix_len) d.assign(fr.prefix, fr.prefix + fr.prefix_len);
+            if (aac) { uint8_t h[7]; aac_make_adts(&acfg, (int)fr.size, h); d.assign(h, h + 7); }
+            else if (fr.prefix_len) d.assign(fr.prefix, fr.prefix + fr.prefix_len);
             d.insert(d.end(), fr.data, fr.data + fr.size);
             w.audio.push_back(d);
             w.audio_pts.push_back(pts90(fr.pts_ns, origin));
@@ -228,8 +233,9 @@ static void real_file() {
     CHECK(!mkv_ts_video_supported(&f, 2, reason, sizeof reason));           // an audio track
     CHECK(mkv_ts_audio_supported(MKV_AC_AC3) && mkv_ts_audio_supported(MKV_AC_DTS) &&
           mkv_ts_audio_supported(MKV_AC_TRUEHD) && mkv_ts_audio_supported(MKV_AC_MP3) &&
-          !mkv_ts_audio_supported(MKV_AC_EAC3) && !mkv_ts_audio_supported(MKV_AC_AAC) &&
-          !mkv_ts_audio_supported(MKV_AC_FLAC) && !mkv_ts_audio_supported(MKV_AC_OTHER));
+          mkv_ts_audio_supported(MKV_AC_AAC) && mkv_ts_audio_supported(MKV_AC_MP2) &&
+          !mkv_ts_audio_supported(MKV_AC_EAC3) && !mkv_ts_audio_supported(MKV_AC_FLAC) &&
+          !mkv_ts_audio_supported(MKV_AC_PCM) && !mkv_ts_audio_supported(MKV_AC_VORBIS) && !mkv_ts_audio_supported(MKV_AC_OTHER));
 
     for (int audio : { 2, 3, 0 }) {
         char err[64] = "";
@@ -345,6 +351,48 @@ static void other_real_files() {
     mkv_ts_release();
 }
 
+// AAC: a stereo 44.1 kHz and a 5.1 track of ffmpeg's encoder.  Matroska keeps raw frames and the config in
+// CodecPrivate; the stream carries ADTS frames (aac_adts.h), which ffmpeg must read without complaint.
+static void aac_file() {
+    printf("- aac.mkv (H.264 + AAC stereo 44.1 kHz + AAC 5.1)\n");
+    FILE *fp = fopen("fixtures/aac/aac.mkv", "rb");
+    CHECK(fp != nullptr);
+    if (!fp) return;
+    fseeko(fp, 0, SEEK_END);
+    MkvFile f;
+    CHECK(mkv_open(&f, file_read, fp, (uint64_t)ftello(fp)) == 0);
+    for (int audio : { 2, 3 }) {
+        char err[64] = "";
+        MkvTs *t = mkv_ts_open(&f, 1, audio, 0, nullptr, err, sizeof err);
+        CHECK(t != nullptr);
+        if (!t) { printf("  %s\n", err); continue; }
+        Vec ts = drain(t);
+        mkv_ts_close(t);
+        Parsed p = parse_ts(ts);
+        CHECK(!p.bad_sync && !p.bad_cc && !p.bad_size);
+        CHECK(p.audio_pid == 0x101 && p.audio_codec == TS_AUDIO_AAC);
+        char tag[32]; snprintf(tag, sizeof tag, "aac track %d", audio);
+        CHECK(same(p, expect(&f, 1, audio, 0, false, 0), tag));
+        // every audio PES is one ADTS frame whose length is its own
+        bool whole = !p.audio.empty();
+        const MkvTrack *tr = mkv_track(&f, audio);
+        AacConfig want;
+        CHECK(aac_parse_asc(tr->codec_private, tr->cp_len, &want));
+        for (const Pes &a : p.audio) {
+            AacConfig got;
+            if (a.payload.size() < 8 || aac_adts_frame_len(a.payload.data(), (int)a.payload.size()) != (int)a.payload.size() ||
+                !aac_parse_adts(a.payload.data(), (int)a.payload.size(), &got) || got.sample_rate != want.sample_rate ||
+                got.channels != want.channels || got.object_type != want.object_type) whole = false;
+        }
+        CHECK(whole);
+        CHECK(want.channels == (audio == 2 ? 2 : 6) && want.sample_rate == (audio == 2 ? 44100 : 48000));
+        ffmpeg_decodes(ts, 48, audio == 2 ? "aac2" : "aac3");
+    }
+    mkv_ts_release();
+    mkv_close(&f);
+    fclose(fp);
+}
+
 // A hand-built file: NAL length sizes 1 to 4, several NALs per unit, a zero-length NAL, a damaged length,
 // and audio frames of every size around the packet boundaries.
 static void hand_built() {
@@ -382,6 +430,21 @@ static void hand_built() {
         CHECK(!p.bad_sync && !p.bad_cc && !p.bad_size);
         char tag[32]; snprintf(tag, sizeof tag, "nal length %d", nal_len);
         CHECK(same(p, expect(&f, 1, 2, 0, false, 0), tag));
+        mkv_close(&f);
+    }
+
+    // AAC with no AudioSpecificConfig cannot be given ADTS headers: refused, not played wrongly
+    {
+        Bytes tracks = track_video(1, avcc()) + track_audio(2, "A_AAC", "eng", 2);
+        std::vector<Bytes> c(1);
+        c[0] += simple_block(1, 0, true, { Bytes("\0\0\0\5\x65" "abcd", 9) });
+        c[0] += simple_block(2, 0, true, { frame_of(1, 100) });
+        Built b = build(tracks, c, { 0 }, Opts());
+        Mem m = { &b.file, -1, 0 };
+        MkvFile f;
+        CHECK(mkv_open(&f, mem_read, &m, b.file.size()) == 0);
+        char err[64] = "";
+        CHECK(mkv_ts_open(&f, 1, 2, 0, nullptr, err, sizeof err) == nullptr && strstr(err, "AAC"));
         mkv_close(&f);
     }
 
@@ -510,6 +573,7 @@ static void hand_built() {
 int main() {
     real_file();
     other_real_files();
+    aac_file();
     hand_built();
     printf("mkv ts: %d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;

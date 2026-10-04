@@ -5,6 +5,7 @@
 #include "adec_ac3.h"
 #include "adec_dts.h"
 #include "adec_truehd.h"
+#include "adec_aac.h"
 #include "audio.h"           // audio_output_channels() — port width drives ring width
 #include "plog.h"
 #include "timing.h"      // timing_get_us() — decode-cost telemetry
@@ -258,6 +259,7 @@ void adec_push_frames(const float *frames, int n) {
 static void adec_decode_es(const u8 *es, int len) {
     if (len <= 0) return;
     if (s_codec == ADEC_CODEC_AC3) { adec_ac3_decode_payload(es, len); return; }
+    if (s_codec == ADEC_CODEC_AAC) { adec_aac_decode_payload(es, len); return; }
     if (s_codec == ADEC_CODEC_DTS) { adec_dts_decode_payload(es, len); return; }
     if (s_codec == ADEC_CODEC_TRUEHD) {
         adec_truehd_decode_payload(es, len);
@@ -478,6 +480,7 @@ void adec_flush(void) {
     adec_ac3_reset();   // drop the partial-frame carry; codec choice survives
     adec_dts_reset();   // ditto for DTS (also clears a pending ext-substream skip)
     adec_truehd_reset();// ditto for TrueHD (also drops the major-sync lock)
+    adec_aac_reset();   // ditto for AAC (the decoder's overlap and the resampler's history)
     s_wr = s_rd = s_n = 0;
     s_next_pcm_pts_us = s_read_pts_us = 0;
     s_pts_valid = false;
@@ -504,6 +507,7 @@ void adec_stop(void) {
     adec_ac3_close();
     adec_dts_close();
     adec_truehd_close();
+    adec_aac_close();
     s_codec   = ADEC_CODEC_MP3;
     s_ring_ch = 2;
     crash_log("adx5 adec_stop done");
@@ -540,6 +544,7 @@ static const char *adec_codec_name(adec_codec_t c) {
     case ADEC_CODEC_AC3: return "ac3";
     case ADEC_CODEC_DTS:    return "dts";
     case ADEC_CODEC_TRUEHD: return "truehd";
+    case ADEC_CODEC_AAC:    return "aac";
     default:                return "mp3";
     }
 }
@@ -563,7 +568,7 @@ void adec_set_codec(adec_codec_t codec) {
         audio_bitstream_end();
     }
     adec_ac3_set_passthrough(codec == ADEC_CODEC_AC3 && audio_passthrough_active());
-    if (codec == ADEC_CODEC_AC3 || codec == ADEC_CODEC_DTS)
+    if (codec == ADEC_CODEC_AC3 || codec == ADEC_CODEC_DTS || codec == ADEC_CODEC_AAC)
         want_ch = wide_port ? 6 : 2;
     else if (codec == ADEC_CODEC_TRUEHD)
         // Never decode WIDER than the port actually is.  The port is now
@@ -582,6 +587,7 @@ void adec_set_codec(adec_codec_t codec) {
     if (codec != ADEC_CODEC_AC3)    adec_ac3_close();
     if (codec != ADEC_CODEC_DTS)    adec_dts_close();
     if (codec != ADEC_CODEC_TRUEHD) adec_truehd_close();
+    if (codec != ADEC_CODEC_AAC)    adec_aac_close();
 
     if (codec == ADEC_CODEC_AC3) {
         if (!adec_ac3_open(want_ch)) {
@@ -600,6 +606,12 @@ void adec_set_codec(adec_codec_t codec) {
     } else if (codec == ADEC_CODEC_TRUEHD) {
         if (!adec_truehd_open(want_ch)) {
             plog("adec_set_codec: TrueHD open failed, staying on MP3");
+            codec   = ADEC_CODEC_MP3;
+            want_ch = 2;
+        }
+    } else if (codec == ADEC_CODEC_AAC) {
+        if (!adec_aac_open(want_ch)) {
+            plog("adec_set_codec: AAC open failed, staying on MP3");
             codec   = ADEC_CODEC_MP3;
             want_ch = 2;
         }

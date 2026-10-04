@@ -89,11 +89,13 @@ dcahd_compat.o:CFLAGS += -O3
 adec.o:        CFLAGS += -O3
 adec_truehd.o: CFLAGS += -O3
 adec_dts.o:    CFLAGS += -O3
+adec_aac.o:    CFLAGS += -I$(PORTLIBS)/include
 
 # -lsysfs: sysFsGetFreeSize, so offline downloads can check HDD space before
 # and during a transfer (source/offline/dl_ps3.cpp).  Nothing else in the
 # app calls into libsysfs; its file I/O is lv2 syscalls.
-LIBS        := -lvdec -laudio -lrsx -lgcm_sys -lio -lsysutil -lrt -llv2 -lm \
+# -lfaad: AAC in files from a drive (source/audio/adec_aac.cpp), from the portlibs.
+LIBS        := -L$(PORTLIBS)/lib -lfaad -lvdec -laudio -lrsx -lgcm_sys -lio -lsysutil -lrt -llv2 -lm \
                -lnet -lsysmodule -lssl -lhttp -lhttputil -lsysfs
 
 LIBDIRS     :=

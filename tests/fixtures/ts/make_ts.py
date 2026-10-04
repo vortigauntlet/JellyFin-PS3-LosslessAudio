@@ -5,6 +5,7 @@
 
   av.ts       H.264 + AC-3 (eng) + MP2 (fra), 1 s
   av.m2ts     192-byte packets (the 4-byte header of a Blu-ray source packet), Blu-ray PIDs, AC-3 eng + AC-3 fra
+  aac.ts      H.264 + AAC (ADTS, stream type 0x0F), 1 s
   hevc.ts     HEVC + AC-3          (cannot be played: no decoder)
   high10.ts   10-bit H.264 + AC-3  (cannot be played)
   hd.ts       H.264 + TrueHD + DTS, 1 s
@@ -33,6 +34,7 @@ def main():
     # which a player cannot name, so the second track is Dolby Digital too
     m2 = base.replace("-c:a:1 mp2", "-c:a:1 ac3")
     run(m2 + "-f mpegts -mpegts_m2ts_mode 1 av.m2ts")
+    run("ffmpeg -nostdin -v error -y %s %s -map 0:v -map 1:a %s -c:a aac -b:a 128k -metadata:s:a:0 language=eng -f mpegts aac.ts" % (V, A, H264))
     run("ffmpeg -nostdin -v error -y %s %s -map 0:v -map 1:a -c:v libx265 -pix_fmt yuv420p -c:a ac3 -f mpegts hevc.ts" % (V, A))
     run("ffmpeg -nostdin -v error -y %s %s -map 0:v -map 1:a -c:v libx264 -pix_fmt yuv420p10le -profile:v high10 -c:a ac3 -f mpegts high10.ts" % (V, A))
     run("ffmpeg -nostdin -v error -y %s %s -map 0:v -map 1:a -map 1:a %s -c:a:0 truehd -strict -2 -ac:a:0 6 "

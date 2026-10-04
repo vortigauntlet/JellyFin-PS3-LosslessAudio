@@ -39,6 +39,7 @@
 #define TS_AUDIO_AC3  2
 #define TS_AUDIO_DTS  3
 #define TS_AUDIO_TRUEHD 4
+#define TS_AUDIO_AAC  5
 
 typedef struct {
     u16  pmt_pid;

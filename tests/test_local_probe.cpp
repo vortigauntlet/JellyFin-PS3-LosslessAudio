@@ -69,6 +69,15 @@ static void mkv_files() {
     CHECK(i.audio[1].codec == LA_FLAC && !i.audio[1].decodable);
     LocalAudioPrefs p = { true, false };
     CHECK(local_pick_audio(&i, &p) == 0);                                   // the one it can decode
+
+    // AAC is decodable now (libfaad): a stereo 44.1 kHz track and a 5.1 one
+    CHECK(probe_file("fixtures/aac/aac.mkv", &i));
+    CHECK(i.container == LM_MKV && i.video_ok && i.n_audio == 2);
+    CHECK(i.audio[0].codec == LA_AAC && i.audio[0].decodable && i.audio[0].channels == 2 && !strncmp(i.audio[0].label, "English - AAC - Stereo", 22));
+    CHECK(i.audio[1].codec == LA_AAC && i.audio[1].decodable && i.audio[1].channels == 6 && !strncmp(i.audio[1].label, "English - AAC - 5.1", 19));
+    CHECK(local_pick_audio(&i, &p) == 0);
+    char why[160];
+    CHECK(local_can_play(&i, &p, why, sizeof why));
 }
 
 static void ts_files() {
@@ -137,6 +146,8 @@ static void ts_files() {
 
     // what the console cannot play, with the reason the file row shows
     LocalInfo h;
+    CHECK(probe_file("fixtures/ts/aac.ts", &h) && h.video_ok && h.n_audio == 1 && h.audio[0].codec == LA_AAC && h.audio[0].decodable);
+    CHECK(!strcmp(h.audio[0].label, "English - AAC - Default") && h.audio[0].id == 0x101);
     CHECK(probe_file("fixtures/ts/hevc.ts", &h) && !h.video_ok && !strcmp(h.video_reason, "HEVC") && !strncmp(h.video_desc, "HEVC", 4));
     CHECK(probe_file("fixtures/ts/high10.ts", &h) && !h.video_ok && !strcmp(h.video_reason, "10-bit"));
 

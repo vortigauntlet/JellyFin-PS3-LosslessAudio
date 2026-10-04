@@ -97,6 +97,11 @@ static void audio_choice() {
     d = demux(bd, 0x1101);
     CHECK(d.audio_pid == 0x1101 && d.audio_codec == TS_AUDIO_AC3 && d.audio_pes > 0);
 
+    // AAC in a transport stream (type 0x0F) is picked, and chosen by PID like the rest
+    d = demux(load("fixtures/ts/aac.ts"), 0);
+    CHECK(d.audio_pid == 0x101 && d.audio_codec == TS_AUDIO_AAC && d.audio_pes > 0);
+    CHECK(d.first_audio_byte0 == 0xFF && (d.first_audio_byte1 & 0xF6) == 0xF0);                  // an ADTS sync word
+
     // two lossless / surround tracks: the choice is by PID, whatever the codec
     const Vec hd = load("fixtures/ts/hd.ts");
     CHECK(!hd.empty());

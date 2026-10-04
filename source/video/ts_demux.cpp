@@ -32,6 +32,7 @@
 // paths (mpegtsenc.c get_dvb_stream_type()/get_m2ts_stream_type(),
 // STREAM_TYPE_BLURAY_AUDIO_TRUEHD in mpegts.h).
 #define TS_STREAM_TRUEHD  0x83
+#define TS_STREAM_AAC     0x0F  // AAC in ADTS (local files; a server stream never carries it)
 #define TS_DESC_REG       0x05  // registration descriptor ('AC-3'/'DTS1' format id)
 #define TS_DESC_DVB_AC3   0x6A  // DVB AC-3 descriptor (ETSI EN 300 468 D.3)
 #define TS_DESC_DVB_DTS   0x7B  // DVB DTS descriptor (ETSI EN 300 468 D.5);
@@ -117,7 +118,8 @@ static void ts_parse_pmt(TSState *ts, const u8 *data, int len) {
                 stype == TS_STREAM_AC3 || stype == TS_STREAM_PRIV ||
                 stype == TS_STREAM_EAC3 || stype == TS_STREAM_DTS ||
                 stype == TS_STREAM_DTS_HRA || stype == TS_STREAM_DTS_MA ||
-                stype == TS_STREAM_DTS_HD || stype == TS_STREAM_TRUEHD) {
+                stype == TS_STREAM_DTS_HD || stype == TS_STREAM_TRUEHD ||
+                stype == TS_STREAM_AAC) {
                 char b[64];
                 snprintf(b, sizeof(b), "pmt_audio: stype=0x%02x pid=0x%x",
                          stype, epid);
@@ -138,6 +140,9 @@ static void ts_parse_pmt(TSState *ts, const u8 *data, int len) {
             } else if (stype == TS_STREAM_TRUEHD) {
                 ts->audio_pid   = epid;
                 ts->audio_codec = TS_AUDIO_TRUEHD;
+            } else if (stype == TS_STREAM_AAC) {
+                ts->audio_pid   = epid;
+                ts->audio_codec = TS_AUDIO_AAC;
             } else if (stype == TS_STREAM_PRIV && pos + 5 + esinfo <= end &&
                        es_info_has_ac3(data + pos + 5, esinfo)) {
                 ts->audio_pid   = epid;

@@ -427,7 +427,8 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
         case 0x83: codec = LA_TRUEHD; dec = true; break;
         case 0x84: case 0x87: case 0xA1: codec = LA_EAC3; break;
         case 0xA2: codec = LA_DTS_HD; break;             // the secondary stream of a Blu-ray: not played
-        case 0x0F: case 0x11: codec = LA_AAC; break;
+        case 0x0F: codec = LA_AAC; dec = true; break;     // AAC in ADTS
+        case 0x11: codec = LA_AAC; break;                  // in LATM: not read
         case 0x80: codec = LA_PCM; break;
         case 0x06:
             if (s->ac3_desc) { codec = LA_AC3; dec = true; }
@@ -495,10 +496,11 @@ bool local_probe(LocalReadAt rd, void *ctx, uint64_t size, const char *name, Loc
 
 static int codec_rank(const LocalAudio *a, bool passthrough) {
     switch (a->codec) {
-    case LA_TRUEHD: return passthrough ? 4 : 7;
-    case LA_DTS_HD: return passthrough ? 3 : 6;
-    case LA_DTS:    return passthrough ? 2 : 5;
+    case LA_TRUEHD: return passthrough ? 6 : 7;
+    case LA_DTS_HD: return passthrough ? 5 : 6;
+    case LA_DTS:    return passthrough ? 4 : 5;
     case LA_AC3:    return passthrough ? 9 : 4;
+    case LA_AAC:    return 3;
     case LA_MP3:    return 2;
     case LA_MP2:    return 1;
     default:        return 0;

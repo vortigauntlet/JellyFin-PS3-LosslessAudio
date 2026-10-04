@@ -17,6 +17,8 @@ typedef enum {
     ADEC_CODEC_TRUEHD = 3,// vendored FFmpeg MLP decoder, up to 7.1, LOSSLESS —
                           // TrueHD, including the bed of a Dolby Atmos track
                           // (see adec_truehd.h)
+    ADEC_CODEC_AAC = 4,   // libfaad, up to 5.1, ADTS frames, any rate converted to 48 kHz
+                          // (local files only; see adec_aac.h)
 } adec_codec_t;
 
 // Switch decoder.  Call from the demux when the PMT selects the audio

@@ -1,6 +1,7 @@
 // Matroska as MPEG-TS: see mkv_ts.h.
 
 #include "mkv_ts.h"
+#include "aac_adts.h"
 
 #include <algorithm>
 #include <stdio.h>
@@ -15,7 +16,7 @@
 #define FRAME_BUF_SIZE   (1536 * 1024 + 4096)      // H.264 level 4.1's largest access unit (ts_demux.h) and headroom
 
 // stream types the player's demuxer (ts_demux.cpp) selects an audio decoder by
-enum { ST_H264 = 0x1B, ST_MP3 = 0x03, ST_MP2 = 0x04, ST_AC3 = 0x81, ST_DTS = 0x82, ST_TRUEHD = 0x83 };
+enum { ST_H264 = 0x1B, ST_MP3 = 0x03, ST_MP2 = 0x04, ST_AAC = 0x0F, ST_AC3 = 0x81, ST_DTS = 0x82, ST_TRUEHD = 0x83 };
 
 static uint8_t *s_frame_buf = NULL;
 
@@ -24,7 +25,7 @@ static void set_err(char *err, int cap, const char *msg) {
 }
 
 bool mkv_ts_audio_supported(MkvAudioCodec c) {
-    return c == MKV_AC_AC3 || c == MKV_AC_DTS || c == MKV_AC_TRUEHD || c == MKV_AC_MP3 || c == MKV_AC_MP2;
+    return c == MKV_AC_AC3 || c == MKV_AC_DTS || c == MKV_AC_TRUEHD || c == MKV_AC_MP3 || c == MKV_AC_MP2 || c == MKV_AC_AAC;
 }
 
 bool mkv_ts_video_supported(const MkvFile *f, int video_track, char *reason, int cap) {
@@ -69,6 +70,9 @@ struct MkvTs {
     MkvReader r;
     int       vtrack, atrack;
     uint8_t   a_stream_type, a_stream_id;
+    bool      aac;                                  // the audio is AAC: each frame gets an ADTS header
+    AacConfig aac_cfg;
+    uint8_t   adts[8];
     int       nal_len_size;
     uint8_t   pre_key[1024];  int pre_key_len;      // AUD + SPS + PPS: before key frames
     uint8_t   pre_aud[8];     int pre_aud_len;      // AUD only
@@ -272,10 +276,15 @@ static bool prepare_frame(MkvTs *t, const MkvFrame *fr) {
         t->st.video_frames++;
     } else {
         start_pes(t, PID_AUDIO, 3, t->a_stream_id, pts90, false);
-        const uint32_t plen = 3 + 5 + (uint32_t)fr->prefix_len + fr->size;
+        const uint8_t *pre = fr->prefix; int pre_len = fr->prefix_len;
+        if (t->aac) {
+            if (!aac_make_adts(&t->aac_cfg, (int)fr->size, t->adts)) return false;     // too big for ADTS: skipped
+            pre = t->adts; pre_len = 7;
+        }
+        const uint32_t plen = 3 + 5 + (uint32_t)pre_len + fr->size;
         t->hdr[4] = plen < 65536 ? (uint8_t)(plen >> 8) : 0;
         t->hdr[5] = plen < 65536 ? (uint8_t)plen : 0;
-        t->pre = fr->prefix; t->pre_len = fr->prefix_len;
+        t->pre = pre; t->pre_len = pre_len;
         t->body = fr->data; t->body_raw = fr->size; t->annexb = false; t->body_out = fr->size;
         t->total = (uint32_t)t->hdr_len + (uint32_t)t->pre_len + fr->size;
         t->st.audio_frames++;
@@ -320,6 +329,9 @@ MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_
     mkv_parse_avcc(vt->codec_private, vt->cp_len, &avc);
 
     uint8_t stype = 0, sid = 0xBD;
+    bool is_aac = false;
+    AacConfig aac_cfg;
+    memset(&aac_cfg, 0, sizeof aac_cfg);
     if (audio_track) {
         const MkvTrack *at = mkv_track(f, audio_track);
         if (!at || at->type != MKV_TRACK_AUDIO) { set_err(err, err_cap, "no such audio track"); return NULL; }
@@ -330,6 +342,10 @@ MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_
         case MKV_AC_TRUEHD: stype = ST_TRUEHD; break;
         case MKV_AC_MP3:    stype = ST_MP3; sid = 0xC0; break;
         case MKV_AC_MP2:    stype = ST_MP2; sid = 0xC0; break;
+        case MKV_AC_AAC:
+            // the config in CodecPrivate becomes each frame's ADTS header
+            if (at->strip_len || !aac_parse_asc(at->codec_private, at->cp_len, &aac_cfg)) { set_err(err, err_cap, "unsupported AAC setup"); return NULL; }
+            stype = ST_AAC; sid = 0xC0; is_aac = true; break;
         default: set_err(err, err_cap, "no decoder for this audio"); return NULL;
         }
     }
@@ -340,6 +356,7 @@ MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_
     if (!t) { set_err(err, err_cap, "out of memory"); return NULL; }
     t->f = f; t->vtrack = video_track; t->atrack = audio_track;
     t->a_stream_type = stype; t->a_stream_id = sid;
+    t->aac = is_aac; t->aac_cfg = aac_cfg;
     t->nal_len_size = avc.nal_length_size;
     // AUD (primary_pic_type 7: any slice types), and for key frames the parameter sets after it
     static const uint8_t aud[] = { 0, 0, 0, 1, 0x09, 0xF0 };
