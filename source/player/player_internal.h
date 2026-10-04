@@ -95,8 +95,11 @@ struct PlayerLocal {
     LocalContainer   container;     // LM_NONE and LM_TS read alike
     int              video_id;      // Matroska: the video track number
     bool             have_tracks;
-    JFTracks         tracks;        // the audio the player can decode; index = track number / PID
+    JFTracks         tracks;        // the audio the player can decode, and a Matroska file's subtitles it can draw;
+                                    //   index = track number / PID
     int              start_audio;   // position in tracks.audio the session starts on
+    LocalSubKind     sub_kind[JF_MAX_STREAMS];   // LS_SRT / LS_ASS / LS_PGS of each of tracks.subs
+    int              start_sub;     // position in tracks.subs the session starts on (a forced one in the audio's language), -1 = off
 };
 
 struct PlayerState {

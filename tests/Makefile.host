@@ -62,7 +62,7 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sourc
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
      test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request \
-     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless
+     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless test_sub_conv test_local_subs
 
 test_iec61937: test_iec61937.c ../source/audio/iec61937.c $(A52_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -242,6 +242,21 @@ test_flac: test_flac.cpp ../source/audio/flac_dec.c ../source/audio/flac_dec.h $
 test_resample: test_resample.cpp ../source/audio/resample.c ../source/audio/resample.h
 	$(CC) $(CFLAGS) -O2 -Wextra -c -o resample_host.o ../source/audio/resample.c
 	$(CXX) $(CXXFLAGS) -Wextra -I../source/audio -o $@ test_resample.cpp resample_host.o -lm
+
+# The subtitles of a Matroska file end to end: mkv_ts, the sink, the conversions, the player's subtitles.cpp.
+test_local_subs: test_local_subs.cpp mkv_builder.h ../source/player/subtitles.cpp ../source/local/local_subs.cpp ../source/local/sub_conv.c ../source/video/mkv_ts.cpp
+	$(CC) $(CFLAGS) -c -o sub_conv_s.o ../source/local/sub_conv.c
+	$(CC) $(CFLAGS) -c -o subs_pgs_s.o ../source/player/subtitles_pgs.c
+	$(CC) $(CFLAGS) -c -o aac_adts_s.o ../source/audio/aac_adts.c
+	$(CC) $(CFLAGS) -c -o flac_dec_s.o ../source/audio/flac_dec.c
+	$(CC) $(CFLAGS) -O2 -c -o resample_s.o ../source/audio/resample.c
+	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/local -I../source/video -I../source/util -I../source/audio -I../source/player -o $@ test_local_subs.cpp ../source/local/local_subs.cpp \
+	    ../source/video/mkv_ts.cpp ../source/video/mkv_demux.cpp sub_conv_s.o subs_pgs_s.o aac_adts_s.o flac_dec_s.o resample_s.o -lm
+
+# Matroska subtitle blocks as text and as .sup segments.
+test_sub_conv: test_sub_conv.cpp ../source/local/sub_conv.c ../source/local/sub_conv.h
+	$(CC) $(CFLAGS) -Wextra -I../source/local -c -o sub_conv_host.o ../source/local/sub_conv.c
+	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -o $@ test_sub_conv.cpp sub_conv_host.o
 
 # The Media browser's names for files, and its resume table.
 test_local_names: test_local_names.cpp ../source/local/local_names.c ../source/local/local_names.h
@@ -475,6 +490,8 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_aac
 	./test_flac
 	./test_lossless
+	./test_sub_conv
+	./test_local_subs
 	$(MAKE) -f Makefile.host check-mohasi-readonly
 	./test_mohasi_fs
 	$(MAKE) -f Makefile.host test_mohasi_fs_be

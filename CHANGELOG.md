@@ -19,13 +19,14 @@
 - **Play from USB drives, no server needed.** The new Media tab plays your own
   MKV, .m2ts and .ts films from USB drives formatted **NTFS, exFAT or FAT32**,
   or from the PS3's hard drive. Blu-ray remuxes play at full bitrate with
-  their lossless TrueHD / DTS-HD MA audio (Dolby Digital, DTS and MP3 work
-  too), you can switch audio tracks while watching, and the drive's files show
-  their length and where you stopped. Drives are only ever read, never written
-  to. Limits, which the file's page tells you about: H.264 video only (HEVC,
-  4K, 10-bit and VC-1 files can't play on a PS3), and files whose only audio
-  is AAC, FLAC or Dolby Digital Plus can't play yet. Subtitles in these files
-  and music files aren't supported yet.
+  their lossless TrueHD / DTS-HD MA audio (Dolby Digital, DTS, MP3, AAC,
+  FLAC and PCM work too), you can switch audio tracks and subtitles while
+  watching, and the drive's files show their length and where you stopped.
+  Drives are only ever read, never written to. Limits, which the file's page
+  tells you about: H.264 video only (HEVC, 4K, 10-bit and VC-1 files can't
+  play on a PS3), files whose only audio is Dolby Digital Plus or Vorbis can't
+  play yet, subtitles come from MKV files only (text and PGS), and music files
+  aren't supported yet.
 - **Favourites.** Star films and shows on their page; they get their own row
   on Home.
 - **Dolby Digital output.** Settings → Audio → Audio Output has a new

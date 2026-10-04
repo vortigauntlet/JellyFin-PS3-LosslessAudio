@@ -102,6 +102,26 @@ HudAction player_handle_menu_action(PlayerState *ps, HudAction act) {
             ps->cur_sub = sel - 1;     // entry 0 = "Off" -> -1
             hud_set_cc_active(ps->cur_sub >= 0);
 
+            // A file on a drive: the cues come out of the file as it is read, so a track change is the 0-delta
+            // reopen (player_local_open starts collecting the new track); Off needs none, the cues just stop being kept.
+            if (ps->local) {
+                ps->sub_is_text = ps->sub_is_pgs = false;
+                if (ps->cur_sub >= 0) {
+                    const JFStream *st = &ps->tracks.subs[ps->cur_sub];
+                    ps->sub_is_text = jf_sub_is_text(st->codec);
+                    ps->sub_is_pgs  = jf_sub_is_pgs(st->codec);
+                    act = HUD_ACTION_SEEK;
+                    char b[96];
+                    snprintf(b, sizeof(b), "hud: subs (local) -> [%d] %.40s", st->index, st->label);
+                    plog(b);
+                } else {
+                    subs_clear();
+                    plog("hud: subs (local) -> off");
+                }
+                ps->menu_kind = PLAYER_MENU_NONE;
+                return act;
+            }
+
             // A TEXT or PGS track is fetched and drawn here, so it needs no
             // reopen at all -- the video stream is untouched and carries on.
             // Only a track this app cannot decode itself (VOBSUB, or a

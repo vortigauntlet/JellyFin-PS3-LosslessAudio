@@ -136,6 +136,9 @@ struct MkvTs {
     bool      flac;                                 // FLAC: the stream header goes before the first frame
     uint8_t   flac_hdr[FLAC_HDR_BYTES];
     bool      flac_hdr_pending;
+    int       sub_track;                            // a subtitle track whose blocks go to sub_sink as the file is read (0 = none)
+    MkvSubSink sub_sink;
+    void     *sub_ctx;
     bool      pcm;                                  // uncompressed: every frame carries a header (adec_pcm.h)
     uint8_t   pcm_hdr[PCM_HEADER_BYTES];
     int       nal_len_size;
@@ -377,6 +380,9 @@ static bool next_pes(MkvTs *t) {
             if (fr.key) t->psi_due = true;
         } else if (t->atrack && fr.track == t->atrack) {
             if (!t->started || fr.pts_ns < t->origin_ns) continue;      // sound from before the picture starts
+        } else if (t->sub_track && fr.track == t->sub_track) {
+            if (t->sub_sink) t->sub_sink(t->sub_ctx, &fr);              // every block, even before the picture starts: a cue can span it
+            continue;
         } else {
             continue;
         }
@@ -391,6 +397,11 @@ static bool next_pes(MkvTs *t) {
 
 MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_ns,
                    uint64_t *actual_start_ns, char *err, int err_cap) {
+    return mkv_ts_open_subs(f, video_track, audio_track, 0, NULL, NULL, start_ns, actual_start_ns, err, err_cap);
+}
+
+MkvTs *mkv_ts_open_subs(MkvFile *f, int video_track, int audio_track, int sub_track, MkvSubSink sink, void *sink_ctx,
+                        uint64_t start_ns, uint64_t *actual_start_ns, char *err, int err_cap) {
     char why[48];
     if (!mkv_ts_video_supported(f, video_track, why, sizeof why)) { set_err(err, err_cap, why); return NULL; }
     const MkvTrack *vt = mkv_track(f, video_track);
@@ -435,6 +446,7 @@ MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_
     MkvTs *t = (MkvTs *)calloc(1, sizeof *t);
     if (!t) { set_err(err, err_cap, "out of memory"); return NULL; }
     t->f = f; t->vtrack = video_track; t->atrack = audio_track;
+    t->sub_track = sub_track; t->sub_sink = sink; t->sub_ctx = sink_ctx;
     t->a_stream_type = stype; t->a_stream_id = sid;
     t->aac = is_aac; t->aac_cfg = aac_cfg;
     t->flac = is_flac; t->flac_hdr_pending = is_flac; memcpy(t->flac_hdr, flac_hdr, sizeof flac_hdr);

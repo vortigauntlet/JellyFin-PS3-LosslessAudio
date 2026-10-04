@@ -455,8 +455,15 @@ void show_details(const char *path, const lfs_entry &e) {
             if (info.n_audio == 0) wrap_lines(x + UIS_W(14), y, "None", UIS_TF(14), XMB_TEXT_FAINT, w, UIS_H(24));
             y += UIS_H(8);
             if (info.n_subs > 0) {
+                int shown = 0;
+                for (int i = 0; i < info.n_subs; i++) shown += info.subs[i].usable ? 1 : 0;
                 char s[96];
-                snprintf(s, sizeof s, "Subtitles: %d track%s in the file (not shown by the player yet)", info.n_subs, info.n_subs == 1 ? "" : "s");
+                if (shown == info.n_subs)
+                    snprintf(s, sizeof s, "Subtitles: %d track%s", shown, shown == 1 ? "" : "s");
+                else if (shown == 0)
+                    snprintf(s, sizeof s, "Subtitles: %d track%s in the file, none the player can show", info.n_subs, info.n_subs == 1 ? "" : "s");
+                else
+                    snprintf(s, sizeof s, "Subtitles: %d of %d tracks can be shown", shown, info.n_subs);
                 wrap_lines(x, y, s, UIS_TF(14), XMB_TEXT_FAINT, w, UIS_H(30));
             }
             if (!can) {

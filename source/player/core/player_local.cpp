@@ -21,6 +21,8 @@
 #include "dl_library.h"
 #include "lfs.h"
 #include "local_probe.h"
+#include "local_subs.h"
+#include "subtitles.h"
 #include "mkv_ts.h"
 #include "adec.h"
 #include "video.h"
@@ -53,10 +55,25 @@ static int audio_id(const PlayerState *ps) {
     return ps->tracks.audio[ps->cur_audio].index;
 }
 
+// The subtitle track the session is on, as the stream layer wants it: its track number (0 = off) and kind.
+static bool sub_choice(const PlayerState *ps, int *track, LocalSubKind *kind) {
+    *track = 0; *kind = LS_OTHER;
+    if (!ps->have_tracks || ps->cur_sub < 0 || ps->cur_sub >= ps->tracks.n_subs) return false;
+    *track = ps->tracks.subs[ps->cur_sub].index;
+    *kind = ps->local->sub_kind[ps->cur_sub];
+    return true;
+}
+
 static bool open_mkv(PlayerState *ps, u64 target_us) {
     const PlayerLocal *lp = ps->local;
     uint64_t actual_ns = 0;
-    ps->sock = stream_open_mkv(lp->path, lp->video_id, audio_id(ps), target_us * 1000ULL, &actual_ns);
+    // The cues of the track in use start again from where the file is entered: each (re)open collects them afresh.
+    int sub = 0;
+    LocalSubKind sub_kind = LS_OTHER;
+    if (sub_choice(ps, &sub, &sub_kind)) subs_local_begin(sub_kind == LS_PGS);
+    else subs_clear();
+    ps->sock = stream_open_mkv(lp->path, lp->video_id, audio_id(ps), sub, sub ? local_sub_sink : NULL,
+                               (void *)(intptr_t)sub_kind, target_us * 1000ULL, &actual_ns);
     if (ps->sock < 0) return false;
     // mkv_ts starts the stream's clock at the key frame it entered on, with one audio track
     video_set_audio_pid(0);
@@ -210,6 +227,23 @@ bool show_player_file(const char *path, const char *title, u32 resume_secs, char
     }
     local.tracks.default_audio = local.start_audio;
     local.have_tracks = local.tracks.n_audio > 0;
+    // The subtitles of a Matroska file that the player can draw (text and PGS).  They are read as the file plays, so the
+    // list is only what the probe found; a forced track in the audio's language starts on.
+    local.start_sub = -1;
+    if (info.container == LM_MKV) {
+        const int want = local_pick_sub(&info, pick);
+        for (int i = 0; i < info.n_subs && local.tracks.n_subs < JF_MAX_STREAMS; i++) {
+            if (!info.subs[i].usable || !local_sub_kind_playable(info.subs[i].kind)) continue;
+            JFStream *s = &local.tracks.subs[local.tracks.n_subs];
+            s->index = info.subs[i].id;
+            snprintf(s->label, sizeof(s->label), "%.*s", local_clip_utf8(info.subs[i].label, (int)sizeof(s->label) - 1),
+                     info.subs[i].label);
+            snprintf(s->codec, sizeof(s->codec), "%s", info.subs[i].kind == LS_PGS ? "pgssub" : info.subs[i].kind == LS_ASS ? "ass" : "subrip");
+            local.sub_kind[local.tracks.n_subs] = info.subs[i].kind;
+            if (i == want) local.start_sub = local.tracks.n_subs;
+            local.tracks.n_subs++;
+        }
+    }
 
     // The frame ceiling the decoder and the jitter buffer are sized for: the picture itself.  A drive's
     // files are not "light" (the downloads wait for them).

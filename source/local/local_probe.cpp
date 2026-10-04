@@ -440,7 +440,7 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
             if (o->n_subs < LOCAL_MAX_TRACKS) {
                 LocalSub *sb = &o->subs[o->n_subs++];
                 memset(sb, 0, sizeof *sb);
-                sb->id = s->pid; sb->kind = LS_PGS; sb->usable = true;
+                sb->id = s->pid; sb->kind = LS_PGS; sb->usable = false;          // (only a Matroska file's subtitles are read)
                 snprintf(sb->lang, sizeof sb->lang, "%s", s->lang[0] ? s->lang : "und");
                 char lang[32]; lang_name(sb->lang, lang, sizeof lang);
                 snprintf(sb->label, sizeof sb->label, "%s", lang);

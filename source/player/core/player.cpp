@@ -661,6 +661,12 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         if (ps.have_tracks) {
             ps.tracks    = local->tracks;
             ps.cur_audio = local->start_audio;
+            if (local->start_sub >= 0 && local->start_sub < ps.tracks.n_subs) {
+                ps.cur_sub     = local->start_sub;
+                ps.sub_is_text = local->sub_kind[local->start_sub] != LS_PGS;
+                ps.sub_is_pgs  = local->sub_kind[local->start_sub] == LS_PGS;
+                hud_set_cc_active(true);
+            }
         }
     } else {
     // The buffering presentation starts BEFORE PlaybackInfo now (2026-09-26).

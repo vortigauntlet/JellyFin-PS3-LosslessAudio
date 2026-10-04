@@ -53,6 +53,12 @@ typedef struct MkvTs MkvTs;
 // `err` (may be NULL).  The one frame buffer is allocated on first use and kept for the session.
 MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_ns,
                    uint64_t *actual_start_ns, char *err, int err_cap);
+// The same, and the blocks of one subtitle track (`sub_track`, 0 = none) go to `sink` as the stream is read: every block
+// the reader passes, in file order, from the cluster the entry's key frame is in (blocks before the key frame included, since
+// a cue can span it).  The frame's data is valid only during the call.  The sink runs on the thread that reads the stream.
+typedef void (*MkvSubSink)(void *ctx, const MkvFrame *frame);
+MkvTs *mkv_ts_open_subs(MkvFile *f, int video_track, int audio_track, int sub_track, MkvSubSink sink, void *sink_ctx,
+                        uint64_t start_ns, uint64_t *actual_start_ns, char *err, int err_cap);
 // Writes up to n bytes of whole 188-byte packets.  Returns the byte count, 0 at the end of the file,
 // -1 on a read error.
 int  mkv_ts_read(MkvTs *t, uint8_t *out, int n);

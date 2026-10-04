@@ -523,8 +523,8 @@ static int file_open_at(const char *path, u64 offset, int kind) {
 int stream_open_file(const char *path, u64 offset) { return file_open_at(path, offset, FILE_TS); }
 int stream_open_m2ts(const char *path, u64 ts_offset) { return file_open_at(path, ts_offset, FILE_M2TS); }
 
-int stream_open_mkv(const char *path, int video_track, int audio_track, u64 start_ns,
-                    u64 *actual_start_ns) {
+int stream_open_mkv(const char *path, int video_track, int audio_track, int sub_track, MkvSubSink sub_sink,
+                    void *sub_ctx, u64 start_ns, u64 *actual_start_ns) {
     file_close_stream();
     if (s_mkv_open && strcmp(path, s_mkv_path) != 0) stream_local_release();
     if (!s_mkv_open) {
@@ -549,7 +549,8 @@ int stream_open_mkv(const char *path, int video_track, int audio_track, u64 star
     }
     file_stream_reset(FILE_MKV);
     char why[64] = "";
-    s_mkv_ts = mkv_ts_open(&s_mkv, video_track, audio_track, start_ns, actual_start_ns, why, sizeof why);
+    s_mkv_ts = mkv_ts_open_subs(&s_mkv, video_track, audio_track, sub_track, sub_sink, sub_ctx, start_ns, actual_start_ns,
+                                why, sizeof why);
     if (!s_mkv_ts) {
         snprintf(s_last_error, sizeof(s_last_error), "%s",
                  s_file_err == LFS_E_REMOVED ? "The drive was removed"

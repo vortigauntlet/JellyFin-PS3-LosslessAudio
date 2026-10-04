@@ -1,5 +1,6 @@
 #pragma once
 #include <ppu-types.h>
+#include "mkv_ts.h"        // MkvSubSink
 
 // Cooperative abort for stream_open()'s header wait (which can legitimately
 // block for a long time while a transcode spins up).  The music player sets
@@ -69,8 +70,9 @@ int  stream_open_m2ts(const char *path, u64 ts_offset);
 // at or before start_ns (0 = the beginning).  *actual_start_ns is where that frame is in the
 // file.  audio_track is an MKV track number (0 = no audio).  The parsed file stays open across
 // opens of the same path until stream_local_release().
-int  stream_open_mkv(const char *path, int video_track, int audio_track, u64 start_ns,
-                     u64 *actual_start_ns);
+// sub_track (0 = none) and sink: the blocks of that subtitle track go to the sink as the file is read (mkv_ts.h).
+int  stream_open_mkv(const char *path, int video_track, int audio_track, int sub_track, MkvSubSink sub_sink,
+                     void *sub_ctx, u64 start_ns, u64 *actual_start_ns);
 // End of a playback session: closes the Matroska file and frees its frame buffer.  Safe to call
 // whenever, and twice.
 void stream_local_release(void);

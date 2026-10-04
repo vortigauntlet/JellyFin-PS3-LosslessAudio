@@ -81,3 +81,5 @@ tests/test_resample
 tests/test_aac
 tests/test_flac
 tests/test_lossless
+tests/test_sub_conv
+tests/test_local_subs

@@ -155,9 +155,10 @@ All taken on a real PS3 at 1920×1080. More in the
 - **A Media tab that plays from USB drives and the hard drive, with no server**:
   MKV, .m2ts and .ts files from **NTFS, exFAT or FAT32** drives (read only; the
   drive is never written to), with audio-track switching and a resume point
-  kept on the console. H.264 only, with Dolby Digital, DTS, TrueHD or MP3 audio;
-  the file's page says what a file lacks. Subtitles in these files and music files
-  are not supported yet.
+  kept on the console. H.264 only, with Dolby Digital, DTS, TrueHD, MP3, AAC,
+  FLAC or PCM audio; the file's page says what a file lacks. MKV files show their
+  text and PGS subtitles; subtitles in .ts / .m2ts files and music files are not
+  supported yet.
 
 **Playback**
 - **Hardware H.264 through the PS3's VDEC**, up to **1080p at 25 Mbps**.
