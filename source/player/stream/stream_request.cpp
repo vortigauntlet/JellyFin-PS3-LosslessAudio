@@ -34,6 +34,7 @@ void stream_request_resolve(const StreamPrefs *prefs,
     // tuner or an IPTV stream the console cannot be sent as it is.  With no
     // step chosen it gets a fixed ceiling rather than none.
     rq->live = sel->live;
+    rq->no_video_copy = prefs->no_video_copy;
     if (rq->live && rq->vbitrate == 0) rq->vbitrate = STREAM_LIVE_VIDEO_BPS;
 
     const JFTracks *t = sel->tracks;
@@ -143,15 +144,19 @@ int stream_url_build(char *url, int url_sz, const StreamRequest *rq,
     // over it is transcoded down to it.  MaxWidth/MaxHeight and MaxFramerate
     // stay in both cases as the gate that keeps a 4K or 60 fps source from
     // being copied to a console that cannot decode it.
+    // Direct Stream = Off forbids the copy: a copied source keeps its own
+    // quirks (interlacing, bitrate spikes, odd timestamps) all the way to the
+    // PS3's decoder.
+    const char *copy_video = rq->no_video_copy ? "false" : "true";
     char vparams[96];
     if (rq->live)
         snprintf(vparams, sizeof(vparams),
                  "&VideoBitrate=%u&AllowVideoStreamCopy=false", rq->vreq);
     else if (rq->vreq == 0)
-        snprintf(vparams, sizeof(vparams), "&AllowVideoStreamCopy=true");
+        snprintf(vparams, sizeof(vparams), "&AllowVideoStreamCopy=%s", copy_video);
     else
         snprintf(vparams, sizeof(vparams),
-                 "&VideoBitrate=%u&AllowVideoStreamCopy=true", rq->vreq);
+                 "&VideoBitrate=%u&AllowVideoStreamCopy=%s", rq->vreq, copy_video);
 
     // The version's own id goes in the path: a source plugin keeps every
     // version as an item of its own, and asking for another item's path with

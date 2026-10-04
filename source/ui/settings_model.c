@@ -19,6 +19,9 @@ static const setting_row k_rows[] = {
     { SET_24HZ,      SEC_PLAYBACK, TRN("24Hz Output"),
       TRN("Auto: 24fps films switch the TV to 24Hz for smooth motion.\n"
       "Each TV is checked once first. Off keeps everything at 60Hz.")},
+    { SET_DIRECT_STREAM, SEC_PLAYBACK, TRN("Direct Stream"),
+      TRN("Auto: the server may pass a compatible video through untouched.\n"
+      "Off: always re-encode. Try Off if playback stutters at every quality.")},
     { SET_AUTOSKIP,  SEC_PLAYBACK, TRN("Auto Skip"),
       TRN("Skip intros and recaps automatically, without pressing X.\n"
       "Credits start the next episode's 25 second countdown instead.")},

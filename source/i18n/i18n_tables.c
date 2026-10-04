@@ -9,9 +9,9 @@ extern const int i18n_n;
 extern const char *const i18n_keys[];
 extern const char *const *const i18n_text[LANG__COUNT];
 
-const int i18n_n = 439;
+const int i18n_n = 441;
 
-const char *const i18n_keys[439] = {
+const char *const i18n_keys[441] = {
     "  %s  %s free",
     "  (can't be decoded yet)",
     "%.40s video (can't play on PS3)",
@@ -59,6 +59,7 @@ const char *const i18n_keys[439] = {
     "Auto  (%ux%u, %u Mbps)",
     "Auto Skip",
     "Auto: 24fps films switch the TV to 24Hz for smooth motion.\nEach TV is checked once first. Off keeps everything at 60Hz.",
+    "Auto: the server may pass a compatible video through untouched.\nOff: always re-encode. Try Off if playback stutters at every quality.",
     "BUFFERING",
     "Back",
     "Bad request - check your credentials.",
@@ -123,6 +124,7 @@ const char *const i18n_keys[439] = {
     "Deleted",
     "Details",
     "Dialogue Boost",
+    "Direct Stream",
     "Director \302\267 %s",
     "Display",
     "Done",
@@ -453,7 +455,7 @@ const char *const i18n_keys[439] = {
     "\342\200\271 back %ds",
 };
 
-static const char *const i18n_text_ja[439] = {
+static const char *const i18n_text_ja[441] = {
     "  %s  %s \347\251\272\343\201\215",
     "  \357\274\210\343\201\276\343\201\240\343\203\207\343\202\263\343\203\274\343\203\211\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
     "%.40s \343\201\256\346\230\240\345\203\217\357\274\210PS3\343\201\247\343\201\257\345\206\215\347\224\237\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
@@ -501,6 +503,7 @@ static const char *const i18n_text_ja[439] = {
     "\350\207\252\345\213\225\357\274\210%ux%u\343\200\201%u Mbps\357\274\211",
     "\350\207\252\345\213\225\343\202\271\343\202\255\343\203\203\343\203\227",
     "\350\207\252\345\213\225\357\274\23224fps\343\201\256\346\230\240\347\224\273\343\201\247\343\201\257\343\203\206\343\203\254\343\203\223\343\202\22224Hz\343\201\253\345\210\207\343\202\212\346\233\277\343\201\210\343\200\201\346\273\221\343\202\211\343\201\213\343\201\253\350\241\250\347\244\272\343\201\227\343\201\276\343\201\231\343\200\202\n\345\220\204\343\203\206\343\203\254\343\203\223\343\201\257\346\234\200\345\210\235\343\201\253\344\270\200\345\272\246\347\242\272\350\252\215\343\201\225\343\202\214\343\201\276\343\201\231\343\200\202\343\202\252\343\203\225\343\201\247\343\201\257\345\270\270\343\201\25360Hz\343\201\247\343\201\231\343\200\202",
+    "\350\207\252\345\213\225\357\274\232\344\272\222\346\217\233\346\200\247\343\201\256\343\201\202\343\202\213\346\230\240\345\203\217\343\201\257\343\200\201\343\202\265\343\203\274\343\203\220\343\203\274\343\201\214\343\201\235\343\201\256\343\201\276\343\201\276\351\200\201\343\202\212\343\201\276\343\201\231\343\200\202\n\343\202\252\343\203\225\357\274\232\345\270\270\343\201\253\345\206\215\343\202\250\343\203\263\343\202\263\343\203\274\343\203\211\343\201\227\343\201\276\343\201\231\343\200\202\343\201\251\343\201\256\347\224\273\350\263\252\343\201\247\343\202\202\343\202\253\343\202\257\343\201\244\343\201\217\343\201\250\343\201\215\343\201\257\343\202\252\343\203\225\343\201\253\343\200\202",
     "\343\203\220\343\203\203\343\203\225\343\202\241\343\203\252\343\203\263\343\202\260\344\270\255",
     "\346\210\273\343\202\213",
     "\344\270\215\346\255\243\343\201\252\343\203\252\343\202\257\343\202\250\343\202\271\343\203\210\343\201\247\343\201\231 - \350\252\215\350\250\274\346\203\205\345\240\261\343\202\222\347\242\272\350\252\215\343\201\227\343\201\246\343\201\217\343\201\240\343\201\225\343\201\204\343\200\202",
@@ -565,6 +568,7 @@ static const char *const i18n_text_ja[439] = {
     "\345\211\212\351\231\244\343\201\227\343\201\276\343\201\227\343\201\237",
     "\350\251\263\347\264\260",
     "\343\202\273\343\203\252\343\203\225\345\274\267\350\252\277",
+    "\343\203\200\343\202\244\343\203\254\343\202\257\343\203\210\343\202\271\343\203\210\343\203\252\343\203\274\343\203\240",
     "\347\233\243\347\235\243 \302\267 %s",
     "\350\241\250\347\244\272",
     "\345\256\214\344\272\206",
@@ -895,7 +899,7 @@ static const char *const i18n_text_ja[439] = {
     "\342\200\271 %d\347\247\222\346\210\273\343\202\213",
 };
 
-static const char *const i18n_text_pt_BR[439] = {
+static const char *const i18n_text_pt_BR[441] = {
     "  %s  %s livres",
     "  (ainda n\303\243o pode ser decodificado)",
     "V\303\255deo %.40s (n\303\243o reproduz no PS3)",
@@ -943,6 +947,7 @@ static const char *const i18n_text_pt_BR[439] = {
     "Autom\303\241tico  (%ux%u, %u Mbps)",
     "Pular automaticamente",
     "Auto: filmes de 24 fps mudam a TV para 24 Hz e ficam mais fluidos.\nCada TV \303\251 verificada uma vez antes. Desligado mant\303\251m tudo em 60 Hz.",
+    "Autom\303\241tico: o servidor pode enviar um v\303\255deo compat\303\255vel sem altera\303\247\303\265es.\nDesligado: sempre recodifica. Tente Desligado se travar em qualquer qualidade.",
     "CARREGANDO",
     "Voltar",
     "Solicita\303\247\303\243o inv\303\241lida - verifique suas credenciais.",
@@ -1007,6 +1012,7 @@ static const char *const i18n_text_pt_BR[439] = {
     "Exclu\303\255do",
     "Detalhes",
     "Realce de di\303\241logo",
+    "Transmiss\303\243o direta",
     "Dire\303\247\303\243o \302\267 %s",
     "Tela",
     "Conclu\303\255do",
@@ -1337,7 +1343,7 @@ static const char *const i18n_text_pt_BR[439] = {
     "\342\200\271 voltar %ds",
 };
 
-static const char *const i18n_text_de[439] = {
+static const char *const i18n_text_de[441] = {
     "  %s  %s frei",
     "  (kann noch nicht decodiert werden)",
     "%.40s-Video (auf der PS3 nicht abspielbar)",
@@ -1385,6 +1391,7 @@ static const char *const i18n_text_de[439] = {
     "Automatisch  (%ux%u, %u Mbit/s)",
     "Automatisch \303\274berspringen",
     "Auto: 24-fps-Filme schalten den Fernseher f\303\274r ruhige Bewegung auf 24 Hz.\nJeder Fernseher wird zuerst einmal gepr\303\274ft. Aus bleibt bei 60 Hz.",
+    "Automatisch: Der Server darf ein passendes Video unver\303\244ndert durchreichen.\nAus: immer neu kodieren. Aus probieren, wenn es bei jeder Qualit\303\244t ruckelt.",
     "PUFFERN",
     "Zur\303\274ck",
     "Ung\303\274ltige Anfrage - pr\303\274fen Sie Ihre Zugangsdaten.",
@@ -1449,6 +1456,7 @@ static const char *const i18n_text_de[439] = {
     "Gel\303\266scht",
     "Details",
     "Dialogverst\303\244rkung",
+    "Direktes Streaming",
     "Regie \302\267 %s",
     "Anzeige",
     "Fertig",
@@ -1779,7 +1787,7 @@ static const char *const i18n_text_de[439] = {
     "\342\200\271 %ds zur\303\274ck",
 };
 
-static const char *const i18n_text_fr[439] = {
+static const char *const i18n_text_fr[441] = {
     "  %s  %s libres",
     "  (ne peut pas encore \303\252tre d\303\251cod\303\251)",
     "Vid\303\251o %.40s (non lisible sur PS3)",
@@ -1827,6 +1835,7 @@ static const char *const i18n_text_fr[439] = {
     "Auto  (%ux%u, %u Mbit/s)",
     "Passage auto",
     "Auto : les films en 24 i/s passent la TV en 24 Hz pour un mouvement fluide.\nChaque TV est d'abord test\303\251e une fois. D\303\251sactiv\303\251 reste en 60 Hz.",
+    "Auto : le serveur peut transmettre tel quel une vid\303\251o compatible.\nD\303\251sactiv\303\251 : toujours r\303\251encoder. Essayez si la lecture saccade \303\240 toute qualit\303\251.",
     "MISE EN M\303\211MOIRE",
     "Retour",
     "Requ\303\252te invalide - v\303\251rifiez vos identifiants.",
@@ -1891,6 +1900,7 @@ static const char *const i18n_text_fr[439] = {
     "Supprim\303\251",
     "D\303\251tails",
     "Renfort des dialogues",
+    "Streaming direct",
     "R\303\251alisation \302\267 %s",
     "Affichage",
     "Termin\303\251",
@@ -2221,7 +2231,7 @@ static const char *const i18n_text_fr[439] = {
     "\342\200\271 reculer de %ds",
 };
 
-static const char *const i18n_text_es[439] = {
+static const char *const i18n_text_es[441] = {
     "  %s  %s libres",
     "  (a\303\272n no se puede decodificar)",
     "V\303\255deo %.40s (no se puede reproducir en la PS3)",
@@ -2269,6 +2279,7 @@ static const char *const i18n_text_es[439] = {
     "Autom\303\241tico  (%ux%u, %u Mbps)",
     "Salto autom\303\241tico",
     "Auto: las pel\303\255culas de 24 fps cambian la TV a 24 Hz para un movimiento fluido.\nCada TV se comprueba una vez antes. Desactivado mantiene 60 Hz.",
+    "Autom\303\241tico: el servidor puede enviar sin cambios un v\303\255deo compatible.\nDesactivado: siempre recodifica. Pru\303\251balo si se entrecorta en cualquier calidad.",
     "CARGANDO",
     "Atr\303\241s",
     "Solicitud no v\303\241lida - revisa tus credenciales.",
@@ -2333,6 +2344,7 @@ static const char *const i18n_text_es[439] = {
     "Eliminado",
     "Detalles",
     "Realce de di\303\241logos",
+    "Transmisi\303\263n directa",
     "Direcci\303\263n \302\267 %s",
     "Pantalla",
     "Hecho",

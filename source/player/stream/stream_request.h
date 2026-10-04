@@ -45,6 +45,8 @@ typedef struct {
                               // TS framing included (stream_budget.h)
     bool       passthrough;   // Dolby Digital output: the receiver decodes, so
                               // the stream carries AC-3 and never an HD copy
+    bool       no_video_copy; // Settings > Direct Stream = Off: always re-encode
+                              // the video (directstream.h)
 } StreamPrefs;
 
 // Snapshot of the live settings.  Console only (player_session.cpp): the
@@ -85,6 +87,7 @@ typedef struct {
     bool        ac3_copy;          // passthrough on a Dolby Digital track: the
                                    // track is copied, with no AudioBitrate
     bool        live;              // a Live TV channel (see StreamSelection)
+    bool        no_video_copy;     // StreamPrefs.no_video_copy
     // selection, as Jellyfin indices / ids
     int         audio_idx;         // MediaStream Index, -1 = server default
     int         sub_idx;           // -1 = none; else the track to burn in

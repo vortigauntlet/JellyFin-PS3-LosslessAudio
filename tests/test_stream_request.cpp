@@ -251,6 +251,31 @@ static void live_tv(void) {
     CHECK(!rq.live && rq.vbitrate == 0 && rq.vreq == 0);
 }
 
+// Settings > Direct Stream = Off: the same requests, with the copy forbidden.
+// Only AllowVideoStreamCopy changes; a live channel never copied anyway.
+static std::string url_for(const GoldenCase *c, bool no_copy) {
+    Built b; build_case(c, &b);
+    b.p.no_video_copy = no_copy;
+    StreamRequest rq;
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    char url[1024];
+    stream_url_build(url, sizeof url, &rq, SERVER, DEVICE, "sess1234", 0);
+    return url;
+}
+
+static void direct_stream_off(void) {
+    printf("- direct stream off\n");
+    for (int i = 0; i < GOLDEN_N; i++) {
+        std::string on  = url_for(&GOLDEN[i], false);
+        std::string off = url_for(&GOLDEN[i], true);
+        size_t at = on.find("AllowVideoStreamCopy=true");
+        if (at == std::string::npos) { CHECK(on == off); continue; }
+        on.replace(at, strlen("AllowVideoStreamCopy=true"), "AllowVideoStreamCopy=false");
+        CHECK(on == off);
+        CHECK(off.find("AllowVideoStreamCopy=true") == std::string::npos);
+    }
+}
+
 static void initial_selection(void) {
     printf("- initial selection\n");
     JFTracks t; fill_tracks(&t);
@@ -271,6 +296,7 @@ int main(void) {
     subtitles();
     dolby_digital();
     live_tv();
+    direct_stream_off();
     initial_selection();
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;

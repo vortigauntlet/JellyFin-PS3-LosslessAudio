@@ -21,6 +21,7 @@
 #include "statsovl.h"
 #include "menusnow.h"
 #include "autoskip.h"
+#include "directstream.h"
 #include "display_24p.h"    // 24Hz Output
 #include "month_bg.h"       // Day / Night Palette
 #include "ui_wave_audio.h"  // Wave Intensity
@@ -66,6 +67,7 @@ static void v_autoskip(char *b, int c, bool *l) { val_onoff(b, c, l, autoskip_en
 #if ENABLE_PLAYER_STATS
 static void v_stats(char *b, int c, bool *l)    { val_onoff(b, c, l, statsovl_enabled()); }
 #endif
+static void v_direct(char *b, int c, bool *l)   { val_text(b, c, l, directstream_enabled() ? TR("Auto") : TR("Off"), directstream_enabled()); }
 static void v_24hz(char *b, int c, bool *l)     { val_text(b, c, l, d24_enabled() ? TR("Auto") : TR("Off"), d24_enabled()); }
 static void v_audio(char *b, int c, bool *l)    { val_text(b, c, l, tr(surround_mode_label()), surround_enabled()); }
 static void v_dialogue(char *b, int c, bool *l) {
@@ -147,6 +149,7 @@ static void t_autoskip(int)    { autoskip_set_enabled(!autoskip_enabled()); }
 #if ENABLE_PLAYER_STATS
 static void t_stats(int)       { statsovl_set_enabled(!statsovl_enabled()); }
 #endif
+static void t_direct(int)      { directstream_set_enabled(!directstream_enabled()); }
 static void t_24hz(int)        { d24_set_enabled(!d24_enabled()); }
 static void s_audio(int d)     { surround_step(d); }
 static void s_dialogue(int d)  { if (!audio_passthrough_wanted()) centermix_step(d); }
@@ -181,6 +184,7 @@ static const UiRow k_ui[] = {
     VALUE (SET_WAVE_INT,    ICON_MUSIC,       v_wave,      s_wave),
     TOGGLE(SET_AUTOSKIP,    ICON_MOVIE,       v_autoskip,  t_autoskip),
     TOGGLE(SET_24HZ,        ICON_TV,          v_24hz,      t_24hz),
+    TOGGLE(SET_DIRECT_STREAM, ICON_MOVIE,     v_direct,    t_direct),
     ACTION(SET_UPDATE,      ICON_TV,          v_update,    a_update),
     ACTION(SET_SEND_LOG,    ICON_BUG,         v_sendlog,   a_sendlog),
 #if ENABLE_PLAYER_STATS

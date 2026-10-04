@@ -22,6 +22,7 @@
 #include "jellyfin_api.h"
 #include "jf_paths.h"
 #include "stream_request.h"
+#include "directstream.h"
 
 // jellyfin_abudget.txt: 0 asks for the quality step as the VIDEO bitrate;
 // missing or anything else budgets the audio inside the step.  Read per
@@ -112,6 +113,7 @@ void stream_prefs_current(StreamPrefs *out) {
     out->display_h   = display_height;
     out->budget      = stream_budget_enabled();
     out->passthrough = audio_passthrough_wanted();
+    out->no_video_copy = !directstream_enabled();
 }
 
 void build_stream_url(char *url, int url_sz, const PlayerState *ps,

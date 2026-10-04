@@ -34,6 +34,14 @@
     "fr": "Auto : les films en 24 i/s passent la TV en 24 Hz pour un mouvement fluide.\nChaque TV est d'abord testée une fois. Désactivé reste en 60 Hz.",
     "es": "Auto: las películas de 24 fps cambian la TV a 24 Hz para un movimiento fluido.\nCada TV se comprueba una vez antes. Desactivado mantiene 60 Hz."},
 
+  "Direct Stream": {"ja": "ダイレクトストリーム", "pt-BR": "Transmissão direta", "de": "Direktes Streaming", "fr": "Streaming direct", "es": "Transmisión directa"},
+  "Auto: the server may pass a compatible video through untouched.\nOff: always re-encode. Try Off if playback stutters at every quality.": {
+    "ja": "自動：互換性のある映像は、サーバーがそのまま送ります。\nオフ：常に再エンコードします。どの画質でもカクつくときはオフに。",
+    "pt-BR": "Automático: o servidor pode enviar um vídeo compatível sem alterações.\nDesligado: sempre recodifica. Tente Desligado se travar em qualquer qualidade.",
+    "de": "Automatisch: Der Server darf ein passendes Video unverändert durchreichen.\nAus: immer neu kodieren. Aus probieren, wenn es bei jeder Qualität ruckelt.",
+    "fr": "Auto : le serveur peut transmettre tel quel une vidéo compatible.\nDésactivé : toujours réencoder. Essayez si la lecture saccade à toute qualité.",
+    "es": "Automático: el servidor puede enviar sin cambios un vídeo compatible.\nDesactivado: siempre recodifica. Pruébalo si se entrecorta en cualquier calidad."},
+
   "Auto Skip": {"ja": "自動スキップ", "pt-BR": "Pular automaticamente", "de": "Automatisch überspringen", "fr": "Passage auto", "es": "Salto automático"},
   "Skip intros and recaps automatically, without pressing X.\nCredits start the next episode's 25 second countdown instead.": {
     "ja": "Xを押さなくても、オープニングやあらすじを自動でスキップします。\nエンドロールでは、代わりに次のエピソードの25秒カウントダウンが始まります。",
