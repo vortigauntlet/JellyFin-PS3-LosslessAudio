@@ -20,6 +20,7 @@
 #include "http.h"
 #include "update_check.h"
 #include "dl_service.h"
+#include "lfs.h"
 #include <unistd.h>   // usleep
 #include "jellyfin_api.h"
 #include "thumbnail_cache.h"
@@ -298,6 +299,7 @@ int main(int argc, const char *argv[]) {
     // a session -- a saved login counts; otherwise login releases it below.
     crash_log("10b dl_service_start");
     dl_service_start();
+    lfs_start();             // local media: the internal disk, and USB drives as they are plugged in
     {
         char buf[128];
         snprintf(buf, sizeof(buf), "10 server=%s token_len=%d userid=%s",
@@ -372,6 +374,7 @@ int main(int argc, const char *argv[]) {
     xmb_season_stop();       // a season being queued reads the server: let it finish
     xmb_livetv_stop();       // so does the Live TV list's refresh
     dl_service_stop();
+    lfs_stop();
     update_check_shutdown();
     thumb_cache_shutdown();
     http_end();

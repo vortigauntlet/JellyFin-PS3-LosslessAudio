@@ -44,6 +44,10 @@ int readStorageRaw(int storageHandle, uint64_t sector, uint32_t count, void *buf
 void jf_port_usleep(unsigned usec);
 #define sys_timer_usleep jf_port_usleep
 
+// jf-port: the helpers below are upstream's, unchanged; its formatting trips GCC's indentation warning.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmisleading-indentation"
+
 // Returns length of a string.
 static inline int getStrLen(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 
@@ -165,3 +169,5 @@ static inline void utf16ToUtf8(const uint16_t *in, char *out, int cap)
    }
    out[o] = 0;
 }
+
+#pragma GCC diagnostic pop

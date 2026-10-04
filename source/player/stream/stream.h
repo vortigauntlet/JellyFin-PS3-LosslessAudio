@@ -62,6 +62,8 @@ void stream_probe(int sock, char *out, int outsz);
 // boundary (stream_local.h picks it).
 int  stream_open_file(const char *path, u64 offset);
 bool stream_is_file(int h);
+// The open file's last read failed because its drive was unplugged (not a clean end).
+bool stream_file_removed(void);
 // Close either kind: netClose for a socket, exactly as before.
 void stream_close(int h);
 // SO_RCVTIMEO for a socket, exactly as before; nothing for a file.

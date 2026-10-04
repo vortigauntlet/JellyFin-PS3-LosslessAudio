@@ -64,3 +64,5 @@ tests/test_livetv
 tests/test_live_watch
 tests/test_mohasi_fs
 tests/test_mohasi_fs_be
+tests/test_lfs_path
+tests/test_lfs_path

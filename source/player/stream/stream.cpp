@@ -16,7 +16,7 @@
 #include <sys/time.h>
 #include <net/poll.h>
 #include <sysutil/sysutil.h>
-#include <sys/file.h>   // lv2 fs: local files for offline playback
+#include "lfs.h"        // local files: the internal disk and USB drives
 
 extern u32 running;
 
@@ -80,7 +80,7 @@ static int  s_carry_n = 0;
 // project has had to be A/B'd on hardware, and doing that over FTP costs
 // seconds where a rebuild and reinstall costs twenty minutes.
 #define SB_SIZE (256 * 1024)
-static u8   s_sb[SB_SIZE];
+static u8   s_sb[SB_SIZE] __attribute__((aligned(128)));   // 32-byte aligned: raw drive reads land in it directly
 static int  s_sb_n = 0;      // valid bytes in s_sb
 static int  s_sb_p = 0;      // read cursor
 static int  s_sb_req = 0;    // bytes to ask netRecv for; 0 until resolved
@@ -143,21 +143,25 @@ static int netcfg_kb(const char *name, int def_kb, int max_kb) {
 // Refill when empty.  Returns bytes available (>0), 0 if the peer closed, or
 // -1 on receive timeout -- the same three outcomes netRecv gave the old code,
 // so the carry/resume logic above is unchanged.
-// The open local file (offline playback), or -1 when streaming a socket.
+// The open local file (offline playback, a USB drive), or -1 when streaming a socket.
 // One stream at a time is all this module has ever supported (every piece
 // of its state is static); a file is simply the other kind of source.
-static s32 s_file_fd = -1;
+static int      s_file_h   = -1;       // an lfs handle
+static uint64_t s_file_pos = 0;        // where the next read of it starts
+static int      s_file_err = 0;        // the lfs error that ended the last read, 0 = a clean end
 
 static int sb_fill(int sock) {
     if (s_sb_p < s_sb_n) return s_sb_n - s_sb_p;
     s_sb_p = s_sb_n = 0;
-    if (s_file_fd >= 0) {
-        // Local file: the same buffer, filled from the HDD.  A file never
-        // times out; its end is the stream's end (0 = "closed").
-        u64 got = 0;
-        if (sysLv2FsRead(s_file_fd, s_sb, SB_SIZE, &got) != 0 || got == 0) return 0;
-        s_rx_bytes += got;
-        s_sb_n = (int)got;
+    if (s_file_h >= 0) {
+        // Local file: the same buffer, filled from the disk.  A file never
+        // times out; its end is the stream's end (0 = "closed"), and so is a
+        // read error, which stream_file_error() then tells apart.
+        const int got = lfs_read(s_file_h, s_file_pos, s_sb, SB_SIZE);
+        if (got <= 0) { s_file_err = got < 0 ? got : 0; return 0; }
+        s_file_pos += (uint64_t)got;
+        s_rx_bytes += (u64)got;
+        s_sb_n = got;
         return s_sb_n;
     }
     u64 t0 = timing_get_us();
@@ -225,7 +229,7 @@ int stream_open(const char *url) {
     const u64 hdr_deadline_us = s_hdr_deadline_secs
         ? (u64)s_hdr_deadline_secs * 1000000ULL : STREAM_HDR_DEADLINE_US;
     s_hdr_deadline_secs = 0;
-    if (s_file_fd >= 0) { sysLv2FsClose(s_file_fd); s_file_fd = -1; }
+    if (s_file_h >= 0) { lfs_close(s_file_h); s_file_h = -1; }
     const char *p = url;
     if (strncmp(p, "http://", 7) == 0) p += 7;
 
@@ -432,21 +436,24 @@ int stream_open(const char *url) {
 #define STREAM_FILE_TAG 0x40000000   // lv2 socket ids are small; never this
 
 bool stream_is_file(int h) { return h >= 0 && (h & STREAM_FILE_TAG) != 0; }
+bool stream_file_removed(void) { return s_file_err == LFS_E_REMOVED; }
 
 int stream_open_file(const char *path, u64 offset) {
-    if (s_file_fd >= 0) { sysLv2FsClose(s_file_fd); s_file_fd = -1; }
-    s32 fd = -1;
-    if (sysLv2FsOpen(path, SYS_O_RDONLY, &fd, 0, NULL, 0) != 0 || fd < 0) {
-        snprintf(s_last_error, sizeof(s_last_error), "Could not open the offline copy");
+    if (s_file_h >= 0) { lfs_close(s_file_h); s_file_h = -1; }
+    const int fd = lfs_open(path);
+    if (fd < 0) {
+        snprintf(s_last_error, sizeof(s_last_error), "%s",
+                 fd == LFS_E_REMOVED ? "The drive was removed" : "Could not open the file");
         return -1;
     }
-    u64 pos = 0;
-    if (offset && sysLv2FsLSeek64(fd, offset, 0 /* SEEK_SET */, &pos) != 0) {
-        sysLv2FsClose(fd);
-        snprintf(s_last_error, sizeof(s_last_error), "Could not seek the offline copy");
+    if (offset > lfs_size(fd)) {
+        lfs_close(fd);
+        snprintf(s_last_error, sizeof(s_last_error), "Could not seek the file");
         return -1;
     }
-    s_file_fd      = fd;
+    s_file_h       = fd;
+    s_file_pos     = offset;
+    s_file_err     = 0;
     s_chunked      = false;
     s_chunk_remain = -1;
     s_chdr_n       = 0;
@@ -463,8 +470,8 @@ int stream_open_file(const char *path, u64 offset) {
 
 void stream_close(int h) {
     if (stream_is_file(h)) {
-        if (s_file_fd >= 0) sysLv2FsClose(s_file_fd);
-        s_file_fd = -1;
+        if (s_file_h >= 0) lfs_close(s_file_h);
+        s_file_h = -1;
         sb_reset();
         return;
     }

@@ -20,8 +20,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-extern int g_dev_fd, g_dev_fail;
-extern unsigned long g_dev_reads;
+extern int g_port_fd[8], g_port_fail[8];
+#define g_dev_fd   g_port_fd[0]
+#define g_dev_fail g_port_fail[0]
 
 static int s_checks = 0, s_failed = 0;
 #define CHECK(cond) do { s_checks++; if (!(cond)) { s_failed++; \

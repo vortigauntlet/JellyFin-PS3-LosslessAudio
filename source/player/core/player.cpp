@@ -1688,6 +1688,11 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         buffering_finish(false);     // quick fade; leaves its last flip pending
         flip_queued = true;
     }
+    // A drive pulled mid-film ends the stream like a clean end would: say why.
+    if (local && stream_file_removed()) {
+        show_error("The drive was removed.", "Plug it back in to play this again.");
+        ui_restore_rsx_state();
+    }
     crash_log("p19 done");
     plog("show_player: done");
     lc_logf("show_player: RETURN to UI (caller's screen, e.g. Home) frames=%d", ps.frame_count);
