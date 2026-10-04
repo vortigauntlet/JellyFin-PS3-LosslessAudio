@@ -207,6 +207,16 @@ static void test_flac_exact() {
     CHECK(open_file(&q, b, LAF_FLAC, 61));
     Floats f61;
     CHECK(decode_all(q.dec, &f61, 4096) == 0 && f61 == all && !q.mem.overread);
+    // a STREAMINFO that does not give its block sizes (0): every frame still decodes
+    {
+        Bytes nb = b;
+        CHECK(nb.size() > 12 && !memcmp(nb.data(), "fLaC", 4));
+        nb[8] = nb[9] = nb[10] = nb[11] = 0;                    // min and max block size of the first block, STREAMINFO
+        Opened z;
+        CHECK(open_file(&z, nb, LAF_FLAC) && z.meta.flac_max_block == 0);
+        Floats fz;
+        CHECK(decode_all(z.dec, &fz, 4096) == 0 && fz == all);
+    }
     // after the end, the end
     float x[8];
     CHECK(la_decode(o.dec, x, 4) == 0 && la_decode(o.dec, x, 4) == 0);

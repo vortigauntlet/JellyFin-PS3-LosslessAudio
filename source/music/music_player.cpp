@@ -505,7 +505,10 @@ static int play_local_track(const MusicTrack *t, u32 start_secs, bool gapless) {
         if (!local_open(t->path, &src)) {
             plog("music: a file could not be opened, skipping it");
             s_natural_end = true;
-            return (++s_local_fails >= 3) ? MCMD_STOP : MCMD_NEXT;
+            const bool end_of_queue = ++s_local_fails >= 3 || s_pos + 1 >= s_count;
+            // The track before it is still in the ring: let it play out before the queue ends.
+            while (end_of_queue && s_n >= 256 && running && s_run && s_cmd == MCMD_NONE) usleep(10000);
+            return s_local_fails >= 3 ? MCMD_STOP : MCMD_NEXT;
         }
         track_begin(t, start_secs, true, !la_gapless_trimmed(src.dec));
     } else {

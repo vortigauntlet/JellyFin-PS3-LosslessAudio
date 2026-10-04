@@ -407,7 +407,8 @@ LaDecoder *la_open(LaRead rd, void *ctx, uint64_t size, const LaMeta *m) {
         d->fi.channels = m->channels;
         d->fi.bps = m->bits;
         d->fi.total_samples = m->total_frames;
-        d->plane_cap = m->flac_max_block > 0 ? m->flac_max_block : 8192;
+        // STREAMINFO says the largest block; a file that does not say (0, or under the format's 16) gets room for the largest there is
+        d->plane_cap = m->flac_max_block >= 16 ? m->flac_max_block : FLAC_MAX_BLOCK;
         if (d->plane_cap < 1152) d->plane_cap = 1152;
         for (int c = 0; c <= m->channels; c++) {                       // one more: the scratch plane for a frame with extra channels
             d->mem[c] = (int32_t *)malloc(sizeof(int32_t) * (size_t)d->plane_cap);

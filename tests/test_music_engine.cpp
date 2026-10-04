@@ -449,6 +449,15 @@ static void test_failures() {
     // three in a row end the queue
     heard = play_through(queue_of({ "chirp48.flac", "missing1.flac", "missing2.flac", "missing3.flac", "chirp44.flac" }));
     CHECK(is_whole_prefix(heard, a));
+    // a last file that is missing, with the ring full: the track before it plays out, it is not cut off by the end of the queue
+    s_pace_us = 1500;
+    heard = play_through(queue_of({ "chirp48.flac", "missing.flac" }));
+    s_pace_us = 0;
+    CHECK(is_whole_prefix(heard, a));
+    s_pace_us = 1500;
+    heard = play_through(queue_of({ "chirp48.flac", "missing1.flac", "missing2.flac", "missing3.flac", "chirp44.flac" }));
+    s_pace_us = 0;
+    CHECK(is_whole_prefix(heard, a));
     // a first file that is missing, the rest played
     heard = play_through(queue_of({ "missing.flac", "chirp44.flac" }));
     CHECK(is_whole_prefix(heard, b));

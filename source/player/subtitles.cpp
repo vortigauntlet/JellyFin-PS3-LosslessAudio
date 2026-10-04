@@ -405,7 +405,14 @@ void subs_local_add_text(u32 start_ms, u32 end_ms, const char *text)
 {
     if (!text || !text[0]) return;
     SUB_LOCK();
-    if (s_mode == SUB_TEXT && s_n < SUB_MAX_CUES) {
+    if (s_mode == SUB_TEXT) {
+        if (s_n >= SUB_MAX_CUES) {
+            // More cues than the table holds (a long film, an anime): playback goes forward, so the older half goes.
+            const int drop = SUB_MAX_CUES / 2;
+            memmove(s_cues, s_cues + drop, sizeof(SubCue) * (size_t)(s_n - drop));
+            s_n -= drop;
+            s_cursor = 0;
+        }
         SubCue *c = &s_cues[s_n];
         c->start_ms = start_ms;
         c->end_ms   = end_ms > start_ms ? end_ms : start_ms + 2500;
@@ -415,10 +422,28 @@ void subs_local_add_text(u32 start_ms, u32 end_ms, const char *text)
     SUB_UNLOCK();
 }
 
+// Display sets arrive in time order and only the present matters: when the buffer or the index would overflow, the
+// older display sets go, all but the last two (the one on screen and the one before it).
+static void pgs_make_room_locked(int len)
+{
+    if (s_pgs_raw_len + len <= PGS_SUP_MAX && s_pgs_index.n + 4 < PGS_MAX_EPOCHS) return;
+    uint32_t from = (uint32_t)s_pgs_raw_len;                    // nothing indexed: nothing to keep
+    if (s_pgs_index.n >= 2) from = s_pgs_index.epoch[s_pgs_index.n - 2].pcs_offset;
+    else if (s_pgs_index.n == 1) from = s_pgs_index.epoch[0].pcs_offset;
+    if (from > (uint32_t)s_pgs_raw_len) from = (uint32_t)s_pgs_raw_len;
+    memmove(s_pgs_raw, s_pgs_raw + from, (size_t)s_pgs_raw_len - from);
+    s_pgs_raw_len -= (int)from;
+    s_pgs_index.n   = 0;
+    s_pgs_scanned   = pgs_index_extend(s_pgs_raw, s_pgs_raw_len, 0, &s_pgs_index);
+    s_pgs_cur_epoch = -1;
+    s_pgs_cur_ok    = false;
+}
+
 void subs_local_add_pgs(const uint8_t *sup, int len)
 {
     if (!sup || len <= 0) return;
     SUB_LOCK();
+    if (s_mode == SUB_PGS && s_pgs_raw) pgs_make_room_locked(len);
     if (s_mode == SUB_PGS && s_pgs_raw && s_pgs_raw_len + len <= PGS_SUP_MAX) {
         memcpy(s_pgs_raw + s_pgs_raw_len, sup, (size_t)len);
         s_pgs_raw_len += len;

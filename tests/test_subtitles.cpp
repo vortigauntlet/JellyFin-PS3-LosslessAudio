@@ -228,10 +228,14 @@ int main(void)
         check(subs_active() && !subs_is_pgs() && subs_text_at(1500) == NULL, "local: a restart drops the cues, keeps the kind");
         subs_local_add_text(500, 900, "After the seek");
         check(subs_text_at(600) && strcmp(subs_text_at(600), "After the seek") == 0, "local: cues added after a restart show");
-        // the table is bounded: more than it holds are dropped, the ones before stay
+        // the table is bounded: when it is full the older half goes, so the newest cues are always there
         subs_local_begin(false);
         for (u32 i = 0; i < 5000; i++) subs_local_add_text(i * 1000, i * 1000 + 500, "x");
-        check(subs_text_at(4095 * 1000 + 100) != NULL && subs_text_at(4500 * 1000 + 100) == NULL, "local: a full table drops new cues, keeps the old");
+        check(subs_text_at(4999 * 1000 + 100) != NULL && subs_text_at(2048 * 1000 + 100) != NULL && subs_text_at(100) == NULL,
+              "local: a full table drops its older half, keeps the newest cues");
+        for (u32 i = 5000; i < 20000; i++) subs_local_add_text(i * 1000, i * 1000 + 500, "y");
+        check(subs_text_at(19999 * 1000 + 100) != NULL && strcmp(subs_text_at(19999 * 1000 + 100), "y") == 0 && subs_text_at(4999 * 1000 + 100) == NULL,
+              "local: and goes on doing so");
         // add after clear / of the wrong kind: ignored
         subs_clear();
         subs_local_add_text(0, 1000, "late");
@@ -278,10 +282,12 @@ int main(void)
         check(subs_is_pgs() && subs_pgs_at(500) == NULL, "local pgs: a restart empties the track, keeps the kind");
         subs_local_add_pgs(two, n2);
         check(subs_pgs_at(2100) != NULL && subs_pgs_at(1000) == NULL, "local pgs: display sets added after a restart are indexed from the start");
-        // the buffer is bounded: a flood of display sets stops being accepted, what is held keeps working
+        // the buffer and the index are bounded: when they fill, the older display sets go and the newest still show
         subs_local_begin(true);
         for (int i = 0; i < 100000; i++) { unsigned char d[200]; int dn; display_set((unsigned)(i * 9000 + 9000), d, &dn); subs_local_add_pgs(d, dn); }
-        check(subs_pgs_at(9500) != NULL, "local pgs: with the buffer full, the early display sets still show");
+        check(subs_pgs_at(100000 * 100 + 50) != NULL, "local pgs: after a flood the newest display set shows");
+        check(subs_pgs_at(99990 * 100 + 50) != NULL, "local pgs: so do the ones just before it");
+        check(subs_pgs_at(9500) == NULL, "local pgs: the early ones have gone");
         subs_clear();
         subs_local_add_pgs(one, n1);
         check(!subs_active() && subs_pgs_at(500) == NULL, "local pgs: display sets after subs_clear() are dropped");
