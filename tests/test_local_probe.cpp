@@ -8,6 +8,7 @@
 #include "lang_names.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -267,7 +268,32 @@ static void clipping() {
     CHECK(local_clip_utf8("", 5) == 0);
 }
 
+// The Media browser probes on a worker thread, and loading_run's threads have a 128 KB stack: the
+// probe must stay far below that (the big buffers live on the heap).
+static void *probe_all_fixtures(void *ok) {
+    static LocalInfo i;
+    bool all = true;
+    for (const char *p : { "fixtures/mkv/av.mkv", "fixtures/mkv/live.mkv", "fixtures/mkv/dts.mkv", "fixtures/ts/av.ts",
+                           "fixtures/ts/av.m2ts", "fixtures/ts/hd.ts", "fixtures/ts/hevc.ts", "fixtures/ts/high10.ts" })
+        if (!probe_file(p, &i)) all = false;
+    *(bool *)ok = all;
+    return nullptr;
+}
+
+static void small_stack() {
+    printf("- on a small stack\n");
+    pthread_attr_t a;
+    pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, 48 * 1024);                      // well under a 128 KB worker's
+    bool ok = false;
+    pthread_t t;
+    CHECK(pthread_create(&t, &a, probe_all_fixtures, &ok) == 0);
+    pthread_join(t, nullptr);
+    CHECK(ok);
+}
+
 int main() {
+    small_stack();
     mkv_files();
     ts_files();
     refusals();

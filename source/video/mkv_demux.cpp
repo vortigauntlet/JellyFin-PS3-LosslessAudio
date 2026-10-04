@@ -327,13 +327,17 @@ static bool cues_child(MkvFile *f, uint32_t id, uint64_t off, uint64_t size, voi
 // The first Cluster element at or after file offset `from` (bounded).  *tc = its Timecode, in ticks.
 static bool find_cluster(MkvFile *f, uint64_t from, uint64_t limit, uint64_t *pos, int64_t *tc) {
     static const uint8_t magic[4] = { 0x1F, 0x43, 0xB6, 0x75 };
-    uint8_t buf[64 * 1024];
+    // the scan buffer is 64 KB: on the heap, since this runs on worker threads whose stack is 128 KB
+    const int BUF = 64 * 1024;
+    uint8_t *buf = (uint8_t *)malloc((size_t)BUF);
+    if (!buf) return false;
+    bool found = false;
     uint64_t at = from;
     const uint64_t stop = limit < f->seg_end ? limit : f->seg_end;
-    while (at < stop && at - from < SCAN_MAX) {
-        const int n = fread_at(f, at, buf, (int)sizeof buf);
-        if (n < 4) return false;
-        for (int i = 0; i + 4 <= n; i++) {
+    while (!found && at < stop && at - from < SCAN_MAX) {
+        const int n = fread_at(f, at, buf, BUF);
+        if (n < 4) break;
+        for (int i = 0; i + 4 <= n && !found; i++) {
             if (buf[i] != magic[0] || memcmp(buf + i, magic, 4) != 0) continue;
             const uint64_t p = at + (uint64_t)i;
             uint32_t id; uint64_t size; int hdr;
@@ -345,14 +349,16 @@ static bool find_cluster(MkvFile *f, uint64_t from, uint64_t limit, uint64_t *po
                 if (!elem_header(f, q, &cid, &csz, &ch) || csz == UNKNOWN_SIZE) break;
                 if (cid == ID_TIMECODE) {
                     *pos = p; *tc = (int64_t)uint_at(f, q + (uint64_t)ch, csz);
-                    return true;
+                    found = true;
+                    break;
                 }
                 q += (uint64_t)ch + csz;
             }
         }
         at += (uint64_t)(n - 3);
     }
-    return false;
+    free(buf);
+    return found;
 }
 
 // ---- open ------------------------------------------------------------------------------------

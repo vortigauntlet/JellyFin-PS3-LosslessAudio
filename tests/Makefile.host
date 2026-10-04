@@ -206,7 +206,7 @@ PROBE_SRC = ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../sou
 test_local_probe: test_local_probe.cpp $(PROBE_SRC) ../source/local/local_probe.h $(wildcard fixtures/mkv/* fixtures/ts/*)
 	$(CC) $(CFLAGS) -c -o h264_sps_p.o ../source/video/h264_sps.c
 	$(CC) $(CFLAGS) -c -o lang_names_p.o ../source/util/lang_names.c
-	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -I../source/video -I../source/util -I../source/player/stream -I../source/offline 	    -o $@ test_local_probe.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp 	    ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o
+	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -I../source/video -I../source/util -I../source/player/stream -I../source/offline 	    -o $@ test_local_probe.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp 	    ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o -pthread
 
 # The Media browser's names for files, and its resume table.
 test_local_names: test_local_names.cpp ../source/local/local_names.c ../source/local/local_names.h

@@ -148,8 +148,11 @@ static LocalAudioCodec from_mkv_audio(MkvAudioCodec c) {
 }
 
 static bool probe_mkv(LocalReadAt rd, void *ctx, uint64_t size, LocalInfo *o, char *err, int cap) {
-    MkvFile f;
-    if (mkv_open(&f, rd, ctx, size) != 0) { set_err(err, cap, f.err[0] ? f.err : "not a Matroska file"); return false; }
+    // the parsed file is ~60 KB: kept off the stack, since a worker thread's is 128 KB
+    MkvFile *fp = (MkvFile *)malloc(sizeof *fp);
+    if (!fp) { set_err(err, cap, "out of memory"); return false; }
+    MkvFile &f = *fp;
+    if (mkv_open(&f, rd, ctx, size) != 0) { set_err(err, cap, f.err[0] ? f.err : "not a Matroska file"); free(fp); return false; }
     o->container = LM_MKV;
     o->duration_secs = (uint32_t)(f.duration_ns / 1e9 + 0.5);
 
@@ -228,6 +231,7 @@ static bool probe_mkv(LocalReadAt rd, void *ctx, uint64_t size, LocalInfo *o, ch
         }
     }
     mkv_close(&f);
+    free(fp);
     return true;
 }
 
@@ -286,14 +290,17 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
     const uint64_t ts_size = m2ts ? local_m2ts_ts_size(size) : size;
     o->container = m2ts ? LM_M2TS : LM_TS;
 
-    uint8_t *chunk = (uint8_t *)malloc(TS_PKT * 348);
-    if (!chunk) { set_err(err, cap, "out of memory"); return false; }
-    Psi pat, pmt;
-    memset(&pat, 0, sizeof pat); memset(&pmt, 0, sizeof pmt);
+    // the read window and the tables are ~100 KB: off the stack, since a worker thread's is 128 KB
+    struct Bufs { uint8_t chunk[TS_PKT * 348]; Psi pat, pmt; uint8_t vbuf[24 * 1024]; };
+    Bufs *bufs = (Bufs *)calloc(1, sizeof *bufs);
+    if (!bufs) { set_err(err, cap, "out of memory"); return false; }
+    uint8_t *chunk = bufs->chunk;
+    Psi &pat = bufs->pat, &pmt = bufs->pmt;
+    uint8_t (&vbuf)[24 * 1024] = bufs->vbuf;
     int pmt_pid = -1;
     TsStream st[24]; int nst = 0;
     bool have_pmt = false;
-    uint8_t vbuf[24 * 1024]; int vlen = 0; int video_pid = -1; bool vstarted = false;
+    int vlen = 0; int video_pid = -1; bool vstarted = false;
     uint64_t pos = 0;
     // find the first sync byte (a file may begin mid-packet)
     {
@@ -302,7 +309,7 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
         int s = -1;
         for (int i = 0; i < TS_PKT && i + 2 * TS_PKT < n; i++)
             if (head[i] == 0x47 && head[i + TS_PKT] == 0x47 && head[i + 2 * TS_PKT] == 0x47) { s = i; break; }
-        if (s < 0) { free(chunk); set_err(err, cap, "not a transport stream"); return false; }
+        if (s < 0) { free(bufs); set_err(err, cap, "not a transport stream"); return false; }
         pos = (uint64_t)s;
     }
     while (pos < ts_size && pos < SCAN_BYTES && !(have_pmt && vlen >= (int)sizeof vbuf)) {
@@ -357,8 +364,7 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
         }
         pos += (uint64_t)n - (uint64_t)n % TS_PKT;
     }
-    free(chunk);
-    if (!have_pmt) { set_err(err, cap, "no program in the first megabytes"); return false; }
+    if (!have_pmt) { free(bufs); set_err(err, cap, "no program in the first megabytes"); return false; }
 
     // the picture
     const TsStream *vs = NULL;
@@ -404,6 +410,8 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
         }
         make_video_desc(o, codec, have ? &sps : NULL);
     }
+
+    free(bufs);                                       // (the first access units were only needed for the picture)
 
     // audio and subtitle streams
     for (int i = 0; i < nst; i++) {
