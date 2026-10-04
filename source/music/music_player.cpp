@@ -104,7 +104,7 @@ static char s_session_id[80] = "";
 // of waiting for the ring to drain.  The handover is a boundary in the ring:
 // once playback consumes past s_bnd_at, the heard track becomes s_bnd_pos
 // (elapsed, duration and source line switch with it, sample-exact).
-static bool s_bnd_pending = false;
+static volatile bool s_bnd_pending = false;   // read without the lock by a track waiting for it (play_local_track)
 static u64  s_bnd_at      = 0;
 static int  s_bnd_pos     = 0;
 static u32  s_bnd_dur     = 0;
