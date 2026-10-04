@@ -89,7 +89,7 @@ dcahd_compat.o:CFLAGS += -O3
 adec.o:        CFLAGS += -O3
 adec_truehd.o: CFLAGS += -O3
 adec_dts.o:    CFLAGS += -O3
-adec_aac.o:    CFLAGS += -I$(PORTLIBS)/include
+adec_aac.o:    CXXFLAGS += -I$(PORTLIBS)/include
 
 # -lsysfs: sysFsGetFreeSize, so offline downloads can check HDD space before
 # and during a transfer (source/offline/dl_ps3.cpp).  Nothing else in the
