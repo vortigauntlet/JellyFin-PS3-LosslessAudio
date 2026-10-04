@@ -17,6 +17,8 @@
 #include <net/poll.h>
 #include <sysutil/sysutil.h>
 #include "lfs.h"        // local files: the internal disk and USB drives
+#include "local_probe.h" // local_m2ts_compact
+#include "mkv_ts.h"      // a Matroska file as MPEG-TS
 
 extern u32 running;
 
@@ -146,19 +148,61 @@ static int netcfg_kb(const char *name, int def_kb, int max_kb) {
 // The open local file (offline playback, a USB drive), or -1 when streaming a socket.
 // One stream at a time is all this module has ever supported (every piece
 // of its state is static); a file is simply the other kind of source.
-static int      s_file_h   = -1;       // an lfs handle
-static uint64_t s_file_pos = 0;        // where the next read of it starts
+enum { FILE_TS, FILE_M2TS, FILE_MKV };
+static int      s_file_h   = -1;       // an lfs handle (a TS or an m2ts); -1 for a Matroska source and for a socket
+static int      s_file_kind = FILE_TS;
+static uint64_t s_file_pos = 0;        // where the next read of it starts (TS offsets, also for an m2ts)
 static int      s_file_err = 0;        // the lfs error that ended the last read, 0 = a clean end
+
+// A Matroska source: the parsed file is kept for the session (a seek or an audio change reopens
+// the TS view at another key frame, it does not parse the file again), the TS view per open.
+static MkvFile s_mkv;
+static bool    s_mkv_open = false;
+static int     s_mkv_h    = -1;
+static char    s_mkv_path[256];
+static MkvTs  *s_mkv_ts   = NULL;
+
+static bool file_active(void) { return s_file_h >= 0 || s_mkv_ts != NULL; }
+
+// Takes the lfs read of the Matroska parser; remembers why a read failed so a pulled drive is told apart.
+static int mkv_lfs_read(void *ctx, uint64_t off, uint8_t *buf, int len) {
+    const int got = lfs_read(*(const int *)ctx, off, buf, (uint32_t)len);
+    if (got < 0) { s_file_err = got; return -1; }
+    return got;
+}
+
+// What the open source holds, closed: the stream of a file, not the parsed Matroska file.
+static void file_close_stream(void) {
+    if (s_mkv_ts) { mkv_ts_close(s_mkv_ts); s_mkv_ts = NULL; }
+    if (s_file_h >= 0) { lfs_close(s_file_h); s_file_h = -1; }
+}
 
 static int sb_fill(int sock) {
     if (s_sb_p < s_sb_n) return s_sb_n - s_sb_p;
     s_sb_p = s_sb_n = 0;
-    if (s_file_h >= 0) {
+    if (file_active()) {
         // Local file: the same buffer, filled from the disk.  A file never
         // times out; its end is the stream's end (0 = "closed"), and so is a
-        // read error, which stream_file_error() then tells apart.
-        const int got = lfs_read(s_file_h, s_file_pos, s_sb, SB_SIZE);
-        if (got <= 0) { s_file_err = got < 0 ? got : 0; return 0; }
+        // read error, which stream_file_removed() then tells apart.
+        int got;
+        if (s_file_kind == FILE_MKV) {
+            got = mkv_ts_read(s_mkv_ts, s_sb, SB_SIZE);
+            if (got < 0 && !s_file_err) s_file_err = LFS_E_IO;
+            if (got <= 0) return 0;
+            s_rx_bytes += (u64)got;
+            s_sb_n = got;
+            return s_sb_n;
+        }
+        if (s_file_kind == FILE_M2TS) {
+            // whole 192-byte packets, stripped in place to 188; positions count in the stripped stream
+            got = lfs_read(s_file_h, s_file_pos / 188u * 192u, s_sb, SB_SIZE / 192 * 192);
+            if (got <= 0) { s_file_err = got < 0 ? got : 0; return 0; }
+            got = local_m2ts_compact(s_sb, got);
+        } else {
+            got = lfs_read(s_file_h, s_file_pos, s_sb, SB_SIZE);
+            if (got <= 0) { s_file_err = got < 0 ? got : 0; return 0; }
+        }
+        if (got == 0) return 0;                      // a partial packet at the end of the file
         s_file_pos += (uint64_t)got;
         s_rx_bytes += (u64)got;
         s_sb_n = got;
@@ -229,7 +273,7 @@ int stream_open(const char *url) {
     const u64 hdr_deadline_us = s_hdr_deadline_secs
         ? (u64)s_hdr_deadline_secs * 1000000ULL : STREAM_HDR_DEADLINE_US;
     s_hdr_deadline_secs = 0;
-    if (s_file_h >= 0) { lfs_close(s_file_h); s_file_h = -1; }
+    file_close_stream();
     const char *p = url;
     if (strncmp(p, "http://", 7) == 0) p += 7;
 
@@ -438,21 +482,9 @@ int stream_open(const char *url) {
 bool stream_is_file(int h) { return h >= 0 && (h & STREAM_FILE_TAG) != 0; }
 bool stream_file_removed(void) { return s_file_err == LFS_E_REMOVED; }
 
-int stream_open_file(const char *path, u64 offset) {
-    if (s_file_h >= 0) { lfs_close(s_file_h); s_file_h = -1; }
-    const int fd = lfs_open(path);
-    if (fd < 0) {
-        snprintf(s_last_error, sizeof(s_last_error), "%s",
-                 fd == LFS_E_REMOVED ? "The drive was removed" : "Could not open the file");
-        return -1;
-    }
-    if (offset > lfs_size(fd)) {
-        lfs_close(fd);
-        snprintf(s_last_error, sizeof(s_last_error), "Could not seek the file");
-        return -1;
-    }
-    s_file_h       = fd;
-    s_file_pos     = offset;
+// The state every file source starts from: no chunking, no carried packet, an empty buffer.
+static void file_stream_reset(int kind) {
+    s_file_kind    = kind;
     s_file_err     = 0;
     s_chunked      = false;
     s_chunk_remain = -1;
@@ -461,17 +493,90 @@ int stream_open_file(const char *path, u64 offset) {
     s_carry_n      = 0;
     sb_reset();
     s_last_error[0] = '\0';
+}
+
+static int file_open_at(const char *path, u64 offset, int kind) {
+    file_close_stream();
+    const int fd = lfs_open(path);
+    if (fd < 0) {
+        snprintf(s_last_error, sizeof(s_last_error), "%s",
+                 fd == LFS_E_REMOVED ? "The drive was removed" : "Could not open the file");
+        return -1;
+    }
+    // an m2ts offset counts in the stripped stream: 188 of every 192 bytes
+    const uint64_t at = kind == FILE_M2TS ? offset / 188u * 192u : offset;
+    if (at > lfs_size(fd)) {
+        lfs_close(fd);
+        snprintf(s_last_error, sizeof(s_last_error), "Could not seek the file");
+        return -1;
+    }
+    s_file_h   = fd;
+    s_file_pos = offset;
+    file_stream_reset(kind);
     char b[96];
-    snprintf(b, sizeof(b), "stream_open_file: fd=%d offset=%llu", (int)fd,
-             (unsigned long long)offset);
+    snprintf(b, sizeof(b), "stream_open_file: fd=%d offset=%llu%s", (int)fd,
+             (unsigned long long)offset, kind == FILE_M2TS ? " (m2ts)" : "");
     plog(b);
     return (int)(STREAM_FILE_TAG | (u32)fd);
 }
 
+int stream_open_file(const char *path, u64 offset) { return file_open_at(path, offset, FILE_TS); }
+int stream_open_m2ts(const char *path, u64 ts_offset) { return file_open_at(path, ts_offset, FILE_M2TS); }
+
+int stream_open_mkv(const char *path, int video_track, int audio_track, u64 start_ns,
+                    u64 *actual_start_ns) {
+    file_close_stream();
+    if (s_mkv_open && strcmp(path, s_mkv_path) != 0) stream_local_release();
+    if (!s_mkv_open) {
+        const int fd = lfs_open(path);
+        if (fd < 0) {
+            snprintf(s_last_error, sizeof(s_last_error), "%s",
+                     fd == LFS_E_REMOVED ? "The drive was removed" : "Could not open the file");
+            return -1;
+        }
+        s_file_err = 0;
+        s_mkv_h = fd;
+        if (mkv_open(&s_mkv, mkv_lfs_read, &s_mkv_h, lfs_size(fd)) != 0) {
+            snprintf(s_last_error, sizeof(s_last_error), "%s",
+                     s_file_err == LFS_E_REMOVED ? "The drive was removed"
+                   : s_mkv.err[0] ? s_mkv.err : "Could not read the Matroska file");
+            lfs_close(fd);
+            s_mkv_h = -1;
+            return -1;
+        }
+        s_mkv_open = true;
+        snprintf(s_mkv_path, sizeof(s_mkv_path), "%s", path);
+    }
+    file_stream_reset(FILE_MKV);
+    char why[64] = "";
+    s_mkv_ts = mkv_ts_open(&s_mkv, video_track, audio_track, start_ns, actual_start_ns, why, sizeof why);
+    if (!s_mkv_ts) {
+        snprintf(s_last_error, sizeof(s_last_error), "%s",
+                 s_file_err == LFS_E_REMOVED ? "The drive was removed"
+               : why[0] ? why : "Could not start the Matroska file");
+        return -1;
+    }
+    char b[96];
+    snprintf(b, sizeof(b), "stream_open_mkv: v=%d a=%d start=%llums", video_track, audio_track,
+             (unsigned long long)(actual_start_ns ? *actual_start_ns / 1000000ULL : 0));
+    plog(b);
+    return (int)(STREAM_FILE_TAG | (u32)s_mkv_h);
+}
+
+void stream_local_release(void) {
+    file_close_stream();
+    if (s_mkv_open) {
+        mkv_close(&s_mkv);
+        s_mkv_open = false;
+    }
+    if (s_mkv_h >= 0) { lfs_close(s_mkv_h); s_mkv_h = -1; }
+    s_mkv_path[0] = '\0';
+    mkv_ts_release();
+}
+
 void stream_close(int h) {
     if (stream_is_file(h)) {
-        if (s_file_h >= 0) lfs_close(s_file_h);
-        s_file_h = -1;
+        file_close_stream();         // a Matroska file stays parsed until stream_local_release
         sb_reset();
         return;
     }

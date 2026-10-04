@@ -61,6 +61,19 @@ void stream_probe(int sock, char *out, int outsz);
 // so it can never be mistaken for a socket.  offset must be a TS packet
 // boundary (stream_local.h picks it).
 int  stream_open_file(const char *path, u64 offset);
+// A Blu-ray .m2ts (192-byte source packets), served as the 188-byte transport stream inside
+// it.  ts_offset counts in that stripped stream (a multiple of 188), as stream_local.h's
+// functions do over local_m2ts_read_at.
+int  stream_open_m2ts(const char *path, u64 ts_offset);
+// A Matroska file, served as the MPEG-TS video/mkv_ts.h makes of it, starting at the key frame
+// at or before start_ns (0 = the beginning).  *actual_start_ns is where that frame is in the
+// file.  audio_track is an MKV track number (0 = no audio).  The parsed file stays open across
+// opens of the same path until stream_local_release().
+int  stream_open_mkv(const char *path, int video_track, int audio_track, u64 start_ns,
+                     u64 *actual_start_ns);
+// End of a playback session: closes the Matroska file and frees its frame buffer.  Safe to call
+// whenever, and twice.
+void stream_local_release(void);
 bool stream_is_file(int h);
 // The open file's last read failed because its drive was unplugged (not a clean end).
 bool stream_file_removed(void);

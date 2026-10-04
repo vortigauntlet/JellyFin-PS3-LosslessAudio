@@ -7,6 +7,7 @@
 #include "player_hud.h"
 #include "stream_local.h"
 #include "dl_library.h"
+#include "local_probe.h"
 
 // -------------------------------------------------------
 // Thread context structs (core/player.cpp spawns, threads/player_threads.cpp runs)
@@ -80,14 +81,22 @@ struct PlayerSeekInput {
     bool resume_after_seek; // unpause once the seek lands
 };
 
-// Offline playback (Stage 4): a downloaded media.ts instead of a server
-// stream.  Filled by show_player_offline (core/player_local.cpp); NULL on
-// the online path, which then runs exactly as it always did.
+// A local file instead of a server stream: a downloaded media.ts (Stage 4), or
+// a video file from a drive or the Media browser.  Filled by
+// show_player_offline / show_player_file (core/player_local.cpp); NULL on the
+// online path, which then runs exactly as it always did.
 struct PlayerLocal {
     char             path[256];
     char             label[64];     // HUD/version label ("Offline")
-    StreamLocalIndex idx;           // measured from the file at open
+    StreamLocalIndex idx;           // transport streams: measured from the file at open
     DlLocalPlan      plan;          // frame ceiling, runtime, download gate
+    // A file probed by show_player_file.  A download leaves these zero: a transport stream
+    // by construction, whose one audio track is the one that was downloaded.
+    LocalContainer   container;     // LM_NONE and LM_TS read alike
+    int              video_id;      // Matroska: the video track number
+    bool             have_tracks;
+    JFTracks         tracks;        // the audio the player can decode; index = track number / PID
+    int              start_audio;   // position in tracks.audio the session starts on
 };
 
 struct PlayerState {

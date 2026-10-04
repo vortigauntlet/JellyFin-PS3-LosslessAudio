@@ -19,6 +19,19 @@ void show_player(const JFItem *item, u32 resume_secs = 0,
 // that launches it is Stage 5.
 bool show_player_offline(const char *item_id, u32 resume_secs = 0);
 
+// A video file from the internal disk or a USB drive (an lfs path: "usb0:/Films/x.mkv"):
+// Matroska, MPEG-TS or Blu-ray .m2ts, H.264 with AC-3, DTS, TrueHD or MPEG audio.  Plays
+// through the same player with no server call of any kind; `title` is what the HUD shows.
+// Returns false without having started anything when the file cannot be played, with the
+// reason in `why` (may be NULL) in words fit for the screen.  Problems after playback has
+// begun show their own error screen and still return true.  Blocks like show_player().
+bool show_player_file(const char *path, const char *title, u32 resume_secs,
+                      char *why, int why_cap);
+
+// Where the last playback ended, in whole seconds (0 for none).  The Media browser stores it
+// as the resume point.
+u32 player_last_position_secs(void);
+
 // End-of-item auto-advance.  Arm before show_player() when the item has a
 // follower: during the last 90 s of playback the player shows a popup badge
 // reading `label` (with the instruction line `hint` drawn separately below

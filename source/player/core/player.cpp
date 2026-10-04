@@ -477,6 +477,9 @@ static const u64 LIVE_PREROLL_MAX_US   = 20000000ULL;
 static char s_live_last_id[40] = "";
 const char *player_live_last_channel(void) { return s_live_last_id; }
 
+static u32 s_last_pos_secs = 0;
+u32 player_last_position_secs(void) { return s_last_pos_secs; }
+
 // "5  BBC One": the number when the channel has one.
 static void live_channel_label(const JFChannel *ch, char *out, size_t cap) {
     if (ch->number[0]) snprintf(out, cap, "%s  %s", ch->number, ch->name);
@@ -641,8 +644,10 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     if (local) {
         // The file decides: its frame ceiling (downloaded at some quality,
         // whatever the setting is now), its runtime (measured from the file
-        // itself when the index could), and one audio track -- the one that
-        // was downloaded -- so the AUDIO/CC menus have nothing to switch.
+        // itself when the index could), and its audio tracks.  A download has
+        // the one that was downloaded, so the AUDIO menu has nothing to
+        // switch; a file from a drive offers the ones it carries (the probe
+        // chose which to start with).  Subtitles are not offered yet.
         ps.req_w = local->plan.req_w;
         ps.req_h = local->plan.req_h;
         ps.session_id[0] = '\0';
@@ -651,7 +656,11 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         snprintf(ps.source.id, sizeof(ps.source.id), "%s", item->id);
         snprintf(ps.source.label, sizeof(ps.source.label), "%s", local->label);
         ps.source.runtime_secs = ps.total_secs;
-        ps.have_tracks = false;
+        ps.have_tracks = local->have_tracks;
+        if (ps.have_tracks) {
+            ps.tracks    = local->tracks;
+            ps.cur_audio = local->start_audio;
+        }
     } else {
     // The buffering presentation starts BEFORE PlaybackInfo now (2026-09-26).
     // On this server PlaybackInfo is where Gelato syncs a title's streams --
@@ -810,6 +819,10 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     }   // online
     struct DlPlaybackEnd { ~DlPlaybackEnd() { dl_playback_end(); } } dl_playback_guard;
     (void)dl_playback_guard;
+    // A Matroska file stays parsed, with a frame buffer, for the whole session.
+    struct LocalSourceEnd { bool on; ~LocalSourceEnd() { if (on) stream_local_release(); } }
+        local_source_guard = { local != NULL };
+    (void)local_source_guard;
     // An exit before playback starts still has to release a live channel's
     // stream: a tuner stays busy until the server is told.
     auto live_abort = [&]() {
@@ -877,6 +890,11 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     s_wait_title = item->name;
     stream_set_wait_cb(player_stream_wait);
     if (live) stream_set_header_deadline(20);
+    // The audio track and the time origin of a local file belong to its session,
+    // whatever the last one left; player_local_open sets them for a file.
+    video_set_audio_pid(0);
+    video_set_pts_origin_us(0);
+    adec_set_pts_origin_us(0);
     ps.sock = local ? (player_local_open(&ps, (u64)resume_secs * 1000000ULL) ? ps.sock : -1)
                     : stream_open(url);
     stream_set_wait_cb(NULL);
@@ -1175,7 +1193,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
             prog_tid = 0;
         }
     }
-    if (!prog_tid)
+    if (!prog_tid && !local)
         jellyfin_report_playing(item->id, ps.session_id, ps.play_base_us * 10ULL, g_prog.live_id);
 
     crash_log("p9 threads started");
@@ -1576,6 +1594,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // Final position for the server's resume bookmark — read before the
     // audio clock is torn down.
     u64 final_pos_ticks = live ? 0ULL : (ps.play_base_us + audio_get_clock_us()) * 10ULL;
+    s_last_pos_secs = (u32)(final_pos_ticks / 10000000ULL);
 
     // Signal all threads to stop, join in order: decode → audio → upload
     ps.playing = false;
