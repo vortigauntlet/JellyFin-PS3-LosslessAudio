@@ -6,6 +6,7 @@
 #include "adec_dts.h"
 #include "adec_truehd.h"
 #include "adec_aac.h"
+#include "resample.h"
 #include "audio.h"           // audio_output_channels() — port width drives ring width
 #include "plog.h"
 #include "timing.h"      // timing_get_us() — decode-cost telemetry
@@ -218,6 +219,36 @@ static void push_samples(const short *pcm, int n, int channels) {
     sysMutexUnlock(s_pcm_mtx);
 }
 
+// An MP3 frame at its own rate (a file on a drive; the server is asked for 48 kHz): converted to the
+// port's before it is pushed.  The ring is two wide on this path.
+static Resampler *s_mp3_rs   = NULL;
+static int        s_mp3_rate = 0;
+
+static void mp3_drop_resampler(void) {
+    if (s_mp3_rs) { resample_close(s_mp3_rs); s_mp3_rs = NULL; }
+    s_mp3_rate = 0;
+}
+
+static void push_mp3(const short *pcm, int n, int channels, int hz) {
+    if (hz == 48000 || hz <= 0 || !resample_rate_supported(hz)) { push_samples(pcm, n, channels); return; }
+    if (!s_mp3_rs || s_mp3_rate != hz) {
+        mp3_drop_resampler();
+        s_mp3_rs = resample_open(hz, 2);
+        s_mp3_rate = hz;
+        if (!s_mp3_rs) { push_samples(pcm, n, channels); return; }
+    }
+    static float in[1152 * 2];
+    static float out[8192 * 2];                  // 1152 frames from 8 kHz make 6912, and the filter's tail
+    if (n > 1152) n = 1152;
+    for (int i = 0; i < n; i++) {
+        const float l = pcm[i * channels] * (1.0f / 32768.0f);
+        in[i * 2]     = l;
+        in[i * 2 + 1] = channels >= 2 ? pcm[i * channels + 1] * (1.0f / 32768.0f) : l;
+    }
+    const int made = resample_process(s_mp3_rs, in, n, out, 8192);
+    if (made > 0) adec_push_frames(out, made);
+}
+
 // Surround path (AC-3, DTS) — s_ring_ch-wide float frames, already in PS3
 // channel order (adec_ac3.cpp/ac3_map.c, adec_dts.cpp/dts_map.c).  Same
 // overflow policy and PTS advance as push_samples(); the two differ only in
@@ -279,7 +310,7 @@ static void adec_decode_es(const u8 *es, int len) {
                          info.hz, info.channels, samples);
                 plog(fbuf);
             }
-            push_samples(pcm, samples, info.channels);
+            push_mp3(pcm, samples, info.channels, info.hz);
         }
         es  += info.frame_bytes;
         len -= info.frame_bytes;
@@ -477,6 +508,7 @@ void adec_flush(void) {
     sysMutexUnlock(s_pes_mtx);
     sysMutexLock(s_pcm_mtx, 0);
     mp3dec_init(&s_dec);
+    if (s_mp3_rs) resample_reset(s_mp3_rs);
     adec_ac3_reset();   // drop the partial-frame carry; codec choice survives
     adec_dts_reset();   // ditto for DTS (also clears a pending ext-substream skip)
     adec_truehd_reset();// ditto for TrueHD (also drops the major-sync lock)
@@ -508,6 +540,7 @@ void adec_stop(void) {
     adec_dts_close();
     adec_truehd_close();
     adec_aac_close();
+    mp3_drop_resampler();
     s_codec   = ADEC_CODEC_MP3;
     s_ring_ch = 2;
     crash_log("adx5 adec_stop done");
