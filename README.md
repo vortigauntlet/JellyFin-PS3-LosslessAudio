@@ -55,12 +55,14 @@ Defaults are safe but conservative. For a Blu-ray remux on a wired console:
 | **Audio Output** | Settings → Audio Output | **5.1** |
 | **24Hz Output** | Settings → 24Hz Output | **Auto** (the default) |
 
-**Audio Output** is Stereo / 5.1 / 7.1, and 7.1 appears only where the chain
-reports that it takes eight channels of LPCM — the app queries the connected
-display rather than assuming. A surround mode asks the server to stream-copy
-the source's own HD audio track and decodes it here; when a source has no HD
-track it falls back to an AC-3 5.1 transcode automatically, which is why there
-is no separate AC-3 option to pick.
+**Audio Output** is Stereo / 5.1 / 7.1 / Dolby Digital, and 7.1 appears only
+where the chain reports that it takes eight channels of LPCM — the app queries
+the connected display rather than assuming. A surround mode asks the server to
+stream-copy the source's own HD audio track and decodes it here; when a source
+has no HD track it falls back to an AC-3 5.1 transcode automatically.
+**Dolby Digital** is for a soundbar on an ARC link (see
+[Surround sound](#surround-sound)): it sends Dolby Digital to the soundbar
+instead of decoding here.
 
 On 5.1 the app also applies a **routing fix**, because the cellAudio port is 8
 channels wide while the HDMI output is 6, so the console folds 8→6 on the way
@@ -142,6 +144,21 @@ All taken on a real PS3 at 1920×1080. More in the
 - **Themes** (including your own `.ini`), menu particles, and overscan that
   scales the interface to fit your screen.
 
+**More than the library**
+- **Live TV and the guide**, from a Jellyfin server with a tuner or an IPTV
+  playlist: a channel list with what's on now, a guide grid, channel up/down
+  while watching.
+- **Downloads**: a film, an episode or a whole season saved to the PS3's hard
+  drive, played offline. They pause while you stream, resume after a restart,
+  and always leave 10 GB free.
+- **Favourites** on their own Home row.
+- **A Media tab that plays from USB drives and the hard drive, with no server**:
+  MKV, .m2ts and .ts files from **NTFS, exFAT or FAT32** drives (read only; the
+  drive is never written to), with audio-track switching and a resume point
+  kept on the console. H.264 only, with Dolby Digital, DTS, TrueHD or MP3 audio;
+  the file's page says what a file lacks. Subtitles in these files and music files
+  are not supported yet.
+
 **Playback**
 - **Hardware H.264 through the PS3's VDEC**, up to **1080p at 25 Mbps**.
 - **True 24 Hz output.** 23.976 and 24 fps films switch the HDMI output to
@@ -189,6 +206,7 @@ Audio Output** cycles through:
 | **Stereo** | Stereo MP3 — the shipped path, untouched. The default. |
 | **5.1** | Sends the source's own HD audio track untouched (no audio transcode) and decodes it here. **TrueHD / Dolby Atmos** plays **losslessly**. **DTS-HD MA** also plays **losslessly** — its XLL extension is decoded, verified bit-exact against ffmpeg on x86 *and* on the PPU's own big-endian PowerPC. **DTS, DTS-HD HRA, DTS-ES and DTS:X** play from their 5.1 core at up to 1509 kbps. Anything else, including Dolby Digital Plus, falls back to an AC-3 5.1 transcode — so this never plays worse than asking for AC-3 directly, which is why there is no separate AC-3 option. |
 | **7.1** | The same, at eight channels. **Only offered when your receiver reports that it accepts 8-channel LPCM** — the app asks the connected display rather than guessing, so most soundbars correctly see only Stereo and 5.1. |
+| **Dolby Digital** | Sends **Dolby Digital (AC-3)** to the soundbar or receiver untouched, and lets *it* decode. A film's own Dolby Digital track goes through as it is; any other track is converted to Dolby Digital by the server first. For a soundbar connected through the TV's **ARC** port, which takes only 2-channel PCM or Dolby Digital: LPCM 5.1 never reaches it there, and the centre channel (the dialogue) goes missing. Volume is then set on the soundbar. |
 
 **No dialogue, or a silent centre speaker?** On 5.1 the app also corrects a
 fault that silences dialogue on some receivers. The PS3's audio port is 8
@@ -317,6 +335,18 @@ Canyon preset), and `O` or `Start` stops.
 
 **Search.** Type on the on-screen keyboard; `□` deletes and `O` clears. Press
 `Down` to reach the results, then `X` to open one or `△` for its details.
+
+**Settings.** The rows are in sections (Playback, Audio, Subtitles, Downloads,
+Display, System). `L2`/`R2` jump between sections, `Left`/`Right` change a value
+in either direction (`X` still steps forward), `△` explains the row, and `Up` from
+the first row returns to the tabs.
+
+**Live TV.** `X` watches the channel, `△` makes it a favourite, `Right` opens the
+guide (`O` or `Left` at its first column comes back). While watching, `Up`/`Down`
+change channel.
+
+**Media.** `X` opens a drive or folder and then a file's page, where `X` plays or
+resumes it; `O` goes up a folder, `L2`/`R2` page through a long one.
 
 <details>
 <summary>Full button reference</summary>
@@ -525,7 +555,10 @@ source/
 |-- cache/    Thumbnail caching
 |-- gfx/      RSX helpers, shaders, embedded fonts, stb_image/truetype
 |-- music/    Audio-only engine, FFT visualizer, Now Playing screen
+|-- local/    Drives and files with no server: one read-only file layer over the
+|             hard drive and USB (FAT32, NTFS, exFAT), file probing, names, resume points
 |-- net/      HTTP client, GitHub update check
+|-- offline/  Downloads: queue, store, library, free-space rules
 |-- player/   Core loop, HUD, GPU draw, decode/upload/audio threads, TS stream
 |-- ui/       XMB UI: input, OSK, home shelf, browse, search, settings, rendering
 |-- util/     Frame pacing / AV sync, async logging
@@ -538,9 +571,12 @@ source/
 
 ## Logging
 
-Debug logging is **off by default** and you toggle it from the Settings tab. That
-choice sticks across restarts in `/dev_hdd0/tmp/jellyfin_settings.txt`. When it's on,
-output goes to `/dev_hdd0/tmp/player_log.txt`. A crash log always gets written
+Debug logging is **on by default** and you toggle it from the Settings tab
+(**Debug Logging**). That choice sticks across restarts in
+`/dev_hdd0/tmp/jellyfin_settings.txt`. When it's on, output goes to
+`/dev_hdd0/tmp/player_log.txt`, and **Settings → System → Send Log to Server**
+uploads it to your Jellyfin server (Dashboard → Logs) so you can attach it to a
+bug report without FTP. A crash log always gets written
 synchronously to `/dev_hdd0/tmp/crash_log.txt`, and the launch update check leaves
 its own trace in `/dev_hdd0/tmp/update_detection.txt`.
 

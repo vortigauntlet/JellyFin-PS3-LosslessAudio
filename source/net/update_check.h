@@ -3,7 +3,7 @@
 // Version built into this binary.  Keep in step with the GitHub release tag
 // (leading 'v'/'V' is ignored when comparing, so "2.0-beta" matches
 // "V2.0-beta").  Bump this when cutting a release.
-#define APP_VERSION "3.1"
+#define APP_VERSION "3.2"
 
 // Where a newer release is, as the popup and Settings show it.
 #include "update_page.h"
