@@ -106,6 +106,15 @@ static bool detect_rai(StreamReadAtFn rd, void *ctx, uint64_t size, uint8_t *buf
     return false;
 }
 
+void stream_local_clock(const StreamLocalIndex *idx, uint64_t entry_us, uint64_t lead_us,
+                        uint64_t *origin_us, uint64_t *play_base_us) {
+    const uint64_t abs_us = idx->first_pts * 100 / 9 + entry_us;      // the entry's PTS, in microseconds
+    const uint64_t origin = abs_us > lead_us ? abs_us - lead_us : 0;
+    const uint64_t lead = abs_us - origin;                            // lead_us, or less near the start of time
+    *origin_us = origin;
+    *play_base_us = entry_us > lead ? entry_us - lead : 0;
+}
+
 bool stream_local_index(StreamReadAtFn rd, void *ctx, uint64_t size,
                         uint8_t *buf, int cap, StreamLocalIndex *out) {
     memset(out, 0, sizeof(*out));

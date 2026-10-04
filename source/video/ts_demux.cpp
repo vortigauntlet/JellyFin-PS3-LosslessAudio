@@ -110,6 +110,7 @@ static void ts_parse_pmt(TSState *ts, const u8 *data, int len) {
         if (stype == TS_STREAM_H264 && !ts->video_pid)
             ts->video_pid = epid;
         if (!ts->audio_pid) {
+            const bool wanted = !ts->want_audio_pid || epid == ts->want_audio_pid;
             // Log every candidate audio stream type so a server/profile
             // mismatch shows up in player_log.txt instead of as silence.
             if (stype == TS_STREAM_MP3 || stype == TS_STREAM_MP3_2 ||
@@ -122,7 +123,9 @@ static void ts_parse_pmt(TSState *ts, const u8 *data, int len) {
                          stype, epid);
                 plog(b);
             }
-            if (stype == TS_STREAM_MP3 || stype == TS_STREAM_MP3_2) {
+            if (!wanted) {
+                // another track: left alone
+            } else if (stype == TS_STREAM_MP3 || stype == TS_STREAM_MP3_2) {
                 ts->audio_pid   = epid;
                 ts->audio_codec = TS_AUDIO_MP3;
             } else if (stype == TS_STREAM_AC3) {

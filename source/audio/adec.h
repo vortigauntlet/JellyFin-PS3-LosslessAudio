@@ -26,6 +26,10 @@ typedef enum {
 void adec_set_codec(adec_codec_t codec);
 adec_codec_t adec_get_codec(void);
 
+// Local files: microseconds taken off every audio PES PTS (see video_set_pts_origin_us).  Survives
+// adec_flush(); the player sets it per session.
+void adec_set_pts_origin_us(u64 us);
+
 // Spawn the dedicated audio decode thread.  Call after adec_init().
 void adec_start(void);
 

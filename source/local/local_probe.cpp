@@ -51,6 +51,12 @@ int local_m2ts_read_at(void *view, uint64_t off, uint8_t *buf, int len) {
     return done;
 }
 
+int local_m2ts_compact(uint8_t *buf, int len) {
+    const int whole = len / M2TS_PKT;
+    for (int i = 0; i < whole; i++) memmove(buf + (size_t)i * TS_PKT, buf + (size_t)i * M2TS_PKT + 4, TS_PKT);
+    return whole * TS_PKT;
+}
+
 // ---- names ---------------------------------------------------------------------------------
 
 static const char *audio_codec_name(LocalAudioCodec c, bool hd_ma) {
@@ -82,6 +88,15 @@ static const char *channel_name(int ch, char *buf, size_t cap) {
     }
 }
 
+int local_clip_utf8(const char *s, int max) {
+    int n = 0;
+    while (n < max && s[n]) n++;
+    if (n == max && s[n]) {                               // cut short: not in the middle of a sequence
+        while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) n--;
+    }
+    return n;
+}
+
 static void make_audio_label(LocalAudio *a, bool hd_ma, const char *name) {
     char lang[32], chb[16];
     lang_name(a->lang, lang, sizeof lang);
@@ -89,8 +104,12 @@ static void make_audio_label(LocalAudio *a, bool hd_ma, const char *name) {
     int n = snprintf(a->label, sizeof a->label, "%s - %s", lang, audio_codec_name(a->codec, hd_ma));
     if (ch[0] && n < (int)sizeof a->label) n += snprintf(a->label + n, sizeof a->label - (size_t)n, " - %s", ch);
     if (a->is_default && n < (int)sizeof a->label) n += snprintf(a->label + n, sizeof a->label - (size_t)n, " - Default");
-    if (name && name[0] && strcasecmp(name, lang) != 0 && n < (int)sizeof a->label)
-        snprintf(a->label + n, sizeof a->label - (size_t)n, " - %.24s", name);
+    if (name && name[0] && strcasecmp(name, lang) != 0 && n < (int)sizeof a->label) {
+        // the name last, cut to what is left of the label without splitting a character
+        const int room = (int)sizeof a->label - n - 4;                  // " - " and the terminator
+        const int take = room > 0 ? local_clip_utf8(name, room < 24 ? room : 24) : 0;
+        if (take > 0) snprintf(a->label + n, sizeof a->label - (size_t)n, " - %.*s", take, name);
+    }
 }
 
 static bool has_word(const char *s, const char *w) {
@@ -204,8 +223,8 @@ static bool probe_mkv(LocalReadAt rd, void *ctx, uint64_t size, LocalInfo *o, ch
             s->forced = t->is_forced; s->is_default = t->is_default;
             char lang[32];
             lang_name(t->language, lang, sizeof lang);
-            snprintf(s->label, sizeof s->label, "%.30s%s%s%.24s", lang, s->forced ? " - Forced" : "",
-                     t->name[0] ? " - " : "", t->name);
+            snprintf(s->label, sizeof s->label, "%.*s%s%s%.*s", local_clip_utf8(lang, 30), lang,
+                     s->forced ? " - Forced" : "", t->name[0] ? " - " : "", local_clip_utf8(t->name, 24), t->name);
         }
     }
     mkv_close(&f);

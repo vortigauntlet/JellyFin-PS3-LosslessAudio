@@ -73,6 +73,9 @@ typedef struct {
 // success with video_ok false.
 bool local_probe(LocalReadAt rd, void *ctx, uint64_t size, const char *name, LocalInfo *out, char *err, int err_cap);
 
+// How many bytes of s (at most max) a "%.*s" may copy without cutting a UTF-8 sequence in half.
+int local_clip_utf8(const char *s, int max);
+
 // ---- track choice -----------------------------------------------------------------------------
 
 typedef struct {
@@ -95,6 +98,9 @@ int local_pick_sub(const LocalInfo *info, int audio_index);
 typedef struct { LocalReadAt rd; void *ctx; } LocalM2tsView;
 int  local_m2ts_read_at(void *view, uint64_t off, uint8_t *buf, int len);
 uint64_t local_m2ts_ts_size(uint64_t file_size);          // the stripped stream's length
+// Strips the 4-byte header of every whole 192-byte packet of buf[0..len) in place, so the 188-byte
+// packets follow each other.  Returns the byte count of the stripped stream (a trailing partial packet is dropped).
+int  local_m2ts_compact(uint8_t *buf, int len);
 
 #ifdef __cplusplus
 }

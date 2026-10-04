@@ -121,6 +121,14 @@ static void ts_files() {
             }
         }
         CHECK(ok);
+        // in-place compaction of whole reads, as the player's stream buffer does it (a short tail is dropped)
+        for (int pkts : { 1, 2, 100, 351 }) {
+            if ((size_t)pkts * 192 > raw.size()) continue;
+            std::vector<uint8_t> blk(raw.begin(), raw.begin() + (size_t)pkts * 192 + 77);     // 77 stray bytes after the last packet
+            const int n = local_m2ts_compact(blk.data(), (int)blk.size());
+            CHECK(n == pkts * 188 && memcmp(blk.data(), want.data(), (size_t)n) == 0);
+        }
+        CHECK(local_m2ts_compact(raw.data(), 191) == 0);
         std::vector<uint8_t> past(100);
         CHECK(local_m2ts_read_at(&v, want.size(), past.data(), 100) == 0);                  // at the end
         CHECK(local_m2ts_read_at(&v, want.size() - 50, past.data(), 100) == 50);            // short at the end
@@ -247,12 +255,25 @@ static void languages() {
     lang_name("eng", tiny, 0);                                               // no room: nothing written, no crash
 }
 
+static void clipping() {
+    printf("- clipping labels\n");
+    const char *s = "ab\xC3\xA9" "cd";                                       // a b e-acute c d: the acute is 2 bytes
+    CHECK(local_clip_utf8(s, 10) == 6);                                      // all of it
+    CHECK(local_clip_utf8(s, 3) == 2);                                       // would cut the e-acute in half: stops before it
+    CHECK(local_clip_utf8(s, 4) == 4);                                       // right after it
+    CHECK(local_clip_utf8(s, 2) == 2 && local_clip_utf8(s, 0) == 0);
+    const char *cjk = "\xE6\x97\xA5\xE6\x9C\xAC";                            // two 3-byte characters
+    CHECK(local_clip_utf8(cjk, 5) == 3 && local_clip_utf8(cjk, 4) == 3 && local_clip_utf8(cjk, 6) == 6 && local_clip_utf8(cjk, 2) == 0);
+    CHECK(local_clip_utf8("", 5) == 0);
+}
+
 int main() {
     mkv_files();
     ts_files();
     refusals();
     policy();
     languages();
+    clipping();
     printf("local probe: %d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;
 }

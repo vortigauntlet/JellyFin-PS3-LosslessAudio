@@ -47,6 +47,17 @@ typedef struct {
 // the stream's 256 KB buffer.
 #define STREAM_LOCAL_MIN_SCRATCH (64u * 188u)
 
+// The clock of a transport stream entered at entry_us (what stream_local_entry / stream_local_seek
+// return).  The audio clock is the PES PTS as the file wrote it, and the HUD's position is
+// play_base_us plus that clock, so a stream entered part way would count the entry time twice.
+// *origin_us is the PTS to take off every picture and sound so the stream's time starts at the
+// entry -- lead_us before it, because a picture whose PTS is 0 reads as "no PTS"; *play_base_us is
+// the absolute position of stream time 0.  Stream time t then reads as position play_base + t, and
+// the entry's key frame is at t = lead_us (less where the entry is nearer the start than that).
+// A PTS that wraps (33 bits, 26.5 hours) in the middle of the file is not followed.
+void stream_local_clock(const StreamLocalIndex *idx, uint64_t entry_us, uint64_t lead_us,
+                        uint64_t *origin_us, uint64_t *play_base_us);
+
 // Measures the file: first keyframe PTS and the last video PTS.  scratch is
 // the caller's buffer (the stream's own socket buffer: nothing is allocated).
 bool stream_local_index(StreamReadAtFn rd, void *ctx, uint64_t size,

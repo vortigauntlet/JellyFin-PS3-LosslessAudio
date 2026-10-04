@@ -58,6 +58,15 @@ void video_reset(void);
 // Reset only the TS demux state (leaves VDEC and jbuf intact).
 void video_reset_demux(void);
 
+// Local files only (a stream from the server has one audio track and PTS that start at 0).
+// Both survive video_reset() and video_reset_demux() (a seek) and are cleared by the player
+// at the start of every session.
+//   audio PID: decode only that audio stream of the PMT; 0 = the first decodable one.
+//   PTS origin: microseconds taken off every video PTS (adec_set_pts_origin_us does the audio),
+//   so a file entered at a key frame reads as a stream whose time starts there.
+void video_set_audio_pid(u16 pid);
+void video_set_pts_origin_us(u64 us);
+
 // Feed one raw 188-byte TS packet: demux → submit H.264 AU to VDEC →
 // try to pull a decoded frame into the jitter buffer.
 // Returns true if a frame was added to the jitter buffer.

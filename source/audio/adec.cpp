@@ -106,6 +106,7 @@ static sys_mutex_t      s_pcm_mtx;
 //   then advanced by N*1000000/48000 per decoded frame batch.
 // s_read_pts_us: stream PTS (us) of the read cursor — initialised to the first
 //   valid PES PTS, then advanced inside adec_read_pcm() as samples are consumed.
+static u64  s_pts_origin_us   = 0;      // local files: taken off every PES PTS (adec_set_pts_origin_us)
 static u64  s_next_pcm_pts_us = 0;
 static u64  s_read_pts_us     = 0;
 static bool s_pts_valid       = false;
@@ -286,14 +287,21 @@ static void adec_decode_es(const u8 *es, int len) {
 // cont = this buffer is a continuation chunk of the previous PES: raw ES
 // bytes, no header to strip and no PTS to read (adec_push_pes).
 static void adec_decode_pes(const u8 *pes, int pes_len, bool cont) {
+    // A local file entered part way: sound that comes before the entry point (the muxer runs
+    // audio ahead of the picture) is dropped, with the rest of its PES.  Clamped to 0 instead it
+    // would read as "no PTS" (audio_get_clock_us) and its time would run ahead of the picture's.
+    static bool s_skip_cont = false;
     if (cont) {
-        adec_decode_es(pes, pes_len);
+        if (!s_skip_cont) adec_decode_es(pes, pes_len);
         return;
     }
+    s_skip_cont = false;
     // Seed the write PTS from this packet's header.  On the very first valid PTS,
     // also initialise the read cursor so both cursors start from a coherent origin.
     u64 pes_pts_us;
     if (parse_pes_pts(pes, pes_len, &pes_pts_us)) {
+        if (pes_pts_us < s_pts_origin_us) { s_skip_cont = true; return; }
+        pes_pts_us -= s_pts_origin_us;
         sysMutexLock(s_pcm_mtx, 0);
         s_next_pcm_pts_us = pes_pts_us;
         if (!s_pts_valid) {
@@ -535,6 +543,8 @@ static const char *adec_codec_name(adec_codec_t c) {
     default:                return "mp3";
     }
 }
+
+void adec_set_pts_origin_us(u64 us) { s_pts_origin_us = us; }
 
 void adec_set_codec(adec_codec_t codec) {
     // Ring width for the surround codecs follows the port that is actually

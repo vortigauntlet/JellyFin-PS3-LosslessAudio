@@ -45,6 +45,8 @@ typedef struct {
     u16  video_pid;
     u16  audio_pid;
     u8   audio_codec;   // TS_AUDIO_* — valid once audio_pid != 0
+    u16  want_audio_pid; // 0 = the first audio stream the PMT lists that can be decoded;
+                         // else only that PID (a local file with several tracks)
     // Video PES reassembly
     u8   pes_buf[TS_VPES_BUF_SIZE];
     int  pes_len;
