@@ -18,7 +18,7 @@ static LmTrack track(const char *path, const char *title = "", const char *artis
                      int no = 0, int disc = 0, uint32_t secs = 0) {
     LaMeta m;
     memset(&m, 0, sizeof m);
-    m.kind = LA_FLAC;
+    m.kind = LAF_FLAC;
     snprintf(m.title, sizeof m.title, "%s", title);
     snprintf(m.artist, sizeof m.artist, "%s", artist);
     snprintf(m.album, sizeof m.album, "%s", album);
@@ -32,12 +32,12 @@ static void test_fill() {
     printf("- records\n");
     LaMeta m;
     memset(&m, 0, sizeof m);
-    m.kind = LA_MP3; m.track_no = 4; m.disc_no = 2; m.duration_secs = 187; m.pic_off = 1234; m.pic_len = 5678;
+    m.kind = LAF_MP3; m.track_no = 4; m.disc_no = 2; m.duration_secs = 187; m.pic_off = 1234; m.pic_len = 5678;
     snprintf(m.title, sizeof m.title, "T"); snprintf(m.artist, sizeof m.artist, "A"); snprintf(m.album, sizeof m.album, "B");
     LmTrack t;
     lm_track_fill(&t, "usb0:/Music/a.mp3", &m);
     CHECK(!strcmp(t.path, "usb0:/Music/a.mp3") && !strcmp(t.title, "T") && !strcmp(t.artist, "A") && !strcmp(t.album, "B"));
-    CHECK(t.track_no == 4 && t.disc_no == 2 && t.duration_secs == 187 && t.kind == LA_MP3 && t.pic_off == 1234 && t.pic_len == 5678);
+    CHECK(t.track_no == 4 && t.disc_no == 2 && t.duration_secs == 187 && t.kind == LAF_MP3 && t.pic_off == 1234 && t.pic_len == 5678);
     // a path longer than the field is cut, not overrun
     char longp[400];
     memset(longp, 'a', sizeof longp - 1);
@@ -103,6 +103,22 @@ static void test_titles() {
     lm_display_title(&t, small, sizeof small);
     CHECK(!strcmp(small, "A long"));                                       // cut to 7, the space it ends on dropped
     lm_display_title(&t, small, 0);
+}
+
+static void test_stem_and_albums() {
+    printf("- stems and one-album folders\n");
+    char o[96];
+    lm_stem_title("usb0:/m/02 - Name_Here.mp3", o, sizeof o);
+    CHECK(!strcmp(o, "Name Here"));
+    lm_stem_title("plain.flac", o, sizeof o);
+    CHECK(!strcmp(o, "plain"));
+    lm_stem_title("x", o, 0);
+    LmTrack a[3] = { track("a/1.flac", "", "", "One Album"), track("a/2.flac", "", "", ""), track("a/3.flac", "", "", "One Album") };
+    CHECK(lm_is_one_album(a, 3) && lm_is_one_album(a, 0));
+    a[1] = track("a/2.flac", "", "", "Another");
+    CHECK(!lm_is_one_album(a, 3));
+    LmTrack u[2] = { track("a/1.flac"), track("a/2.flac") };
+    CHECK(lm_is_one_album(u, 2));                                          // untagged: as good as one
 }
 
 static void test_album() {
@@ -208,6 +224,7 @@ int main() {
     test_fill();
     test_order();
     test_titles();
+    test_stem_and_albums();
     test_album();
     test_art_registry();
     test_threads();

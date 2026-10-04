@@ -157,8 +157,11 @@ All taken on a real PS3 at 1920×1080. More in the
   drive is never written to), with audio-track switching and a resume point
   kept on the console. H.264 only, with Dolby Digital, DTS, TrueHD, MP3, AAC,
   FLAC or PCM audio; the file's page says what a file lacks. MKV files show their
-  text and PGS subtitles; subtitles in .ts / .m2ts files and music files are not
-  supported yet.
+  text and PGS subtitles; subtitles in .ts / .m2ts files are not supported yet.
+- **Music from the same drives**: FLAC (up to 24-bit, 192 kHz), MP3 and WAV files.
+  A folder is an album, played in track order from the tags, with its cover art
+  and no gap between tracks; the music screen and its visualisers work as for
+  server music.
 
 **Playback**
 - **Hardware H.264 through the PS3's VDEC**, up to **1080p at 25 Mbps**.

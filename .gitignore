@@ -86,3 +86,11 @@ tests/test_local_subs
 tests/test_local_tags
 tests/test_local_audio
 tests/test_local_music
+tests/test_music_engine
+tests/em_le
+tests/em_be
+tests/cmp_floats
+tests/em_le.txt
+tests/em_be.txt
+tests/em_le.bin
+tests/em_be.bin

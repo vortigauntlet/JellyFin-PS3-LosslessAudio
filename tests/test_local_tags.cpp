@@ -206,8 +206,8 @@ static void test_flac_fixtures() {
     Bytes b;
     LaMeta m;
     if (!load("chirp44.flac", &b)) { CHECK(false); return; }
-    CHECK(meta_of(b, LA_FLAC, &m));
-    CHECK(m.kind == LA_FLAC && m.sample_rate == 44100 && m.channels == 2 && m.bits == 16);
+    CHECK(meta_of(b, LAF_FLAC, &m));
+    CHECK(m.kind == LAF_FLAC && m.sample_rate == 44100 && m.channels == 2 && m.bits == 16);
     CHECK(m.total_frames == 88200 && m.duration_secs == 2);
     CHECK(!strcmp(m.title, "Chirp \xE2\x98\x83 Test"));                    // a snowman: UTF-8 through
     CHECK(!strcmp(m.artist, "A. Tester") && !strcmp(m.album, "Fixtures"));
@@ -219,14 +219,14 @@ static void test_flac_fixtures() {
     CHECK(m.flac_max_block > 0);
     // reads that come back in small pieces change nothing
     LaMeta m2;
-    CHECK(meta_of(b, LA_FLAC, &m2, 7));
+    CHECK(meta_of(b, LAF_FLAC, &m2, 7));
     CHECK(!memcmp(&m, &m2, sizeof m));
 
-    CHECK(load("chirp96_24.flac", &b) && meta_of(b, LA_FLAC, &m));
+    CHECK(load("chirp96_24.flac", &b) && meta_of(b, LAF_FLAC, &m));
     CHECK(m.sample_rate == 96000 && m.bits == 24 && m.channels == 2 && m.duration_secs == 1 && m.title[0] == '\0' && m.pic_len == 0);
-    CHECK(load("surround6.flac", &b) && meta_of(b, LA_FLAC, &m));
+    CHECK(load("surround6.flac", &b) && meta_of(b, LAF_FLAC, &m));
     CHECK(m.channels == 6 && m.sample_rate == 48000 && m.total_frames == 24000);
-    CHECK(load("chirp48.flac", &b) && meta_of(b, LA_FLAC, &m));
+    CHECK(load("chirp48.flac", &b) && meta_of(b, LAF_FLAC, &m));
     CHECK(m.sample_rate == 48000 && m.bits == 16 && m.total_frames == 96000);
 }
 
@@ -248,14 +248,14 @@ static void test_flac_synthetic() {
         Bytes b = bytes_of("fLaC");
         put(b, block(4, true, vorbis({ "TITLE=x" })));
         put(b, tail);
-        CHECK(!meta_of(b, LA_FLAC, &m));
+        CHECK(!meta_of(b, LAF_FLAC, &m));
     }
     {   // ARTIST wins over ALBUMARTIST whatever the order; ALBUMARTIST stands in alone; keys in any case; TRACKNUMBER "05/12"
         Bytes b = bytes_of("fLaC");
         put(b, with(0, streaminfo(48000, 2, 16, 48000 * 3)));
         put(b, block(4, true, vorbis({ "albumartist=Group", "Title=Song", "ARTIST=Solo", "TrackNumber=05/12", "DISCNUMBER=2", "ALBUM=LP" })));
         put(b, tail);
-        CHECK(meta_of(b, LA_FLAC, &m));
+        CHECK(meta_of(b, LAF_FLAC, &m));
         CHECK(!strcmp(m.artist, "Solo") && !strcmp(m.title, "Song") && !strcmp(m.album, "LP") && m.track_no == 5 && m.disc_no == 2);
         CHECK(m.duration_secs == 3 && m.data_off == b.size() - tail.size());
     }
@@ -263,7 +263,7 @@ static void test_flac_synthetic() {
         Bytes b = bytes_of("fLaC");
         put(b, with(0, streaminfo(48000, 2, 16, 0)));
         put(b, block(4, true, vorbis({ "ALBUMARTIST=Group" })));
-        CHECK(meta_of(b, LA_FLAC, &m) && !strcmp(m.artist, "Group") && m.duration_secs == 0 && m.total_frames == 0);
+        CHECK(meta_of(b, LAF_FLAC, &m) && !strcmp(m.artist, "Group") && m.duration_secs == 0 && m.total_frames == 0);
     }
     {   // control characters and bad UTF-8 are cleaned: a lone 0xC3 and a newline
         Bytes b = bytes_of("fLaC");
@@ -273,11 +273,11 @@ static void test_flac_synthetic() {
         bad[bad.size() - 1] = 0xC3;
         put(b, with(4, v));
         put(b, block(4, true, bad));
-        CHECK(meta_of(b, LA_FLAC, &m) && !strcmp(m.title, "x\xEF\xBF\xBD"));
+        CHECK(meta_of(b, LAF_FLAC, &m) && !strcmp(m.title, "x\xEF\xBF\xBD"));
         Bytes b2 = bytes_of("fLaC");
         put(b2, with(0, streaminfo(48000, 2, 16, 48000)));
         put(b2, block(4, true, v));
-        CHECK(meta_of(b2, LA_FLAC, &m) && !strcmp(m.title, "a b"));
+        CHECK(meta_of(b2, LAF_FLAC, &m) && !strcmp(m.title, "a b"));
     }
     {   // the front cover wins over an earlier picture of another kind; a second front cover does not replace the first
         Bytes other = filler(40, 0x11), front = filler(50, 0x22), front2 = filler(60, 0x33);
@@ -287,25 +287,25 @@ static void test_flac_synthetic() {
         put(b, with(6, picture(3, "image/jpeg", "the cover", front)));
         put(b, block(6, true, picture(3, "image/jpeg", "", front2)));
         put(b, tail);
-        CHECK(meta_of(b, LA_FLAC, &m));
+        CHECK(meta_of(b, LAF_FLAC, &m));
         CHECK(m.pic_len == 50 && !strcmp(m.pic_mime, "image/jpeg") && b[m.pic_off] == 0x22 && b[m.pic_off + 49] == 0x22);
         // alone, any picture will do
         Bytes c = bytes_of("fLaC");
         put(c, with(0, streaminfo(48000, 2, 16, 1000)));
         put(c, block(6, true, picture(4, "image/png", "back", other)));
-        CHECK(meta_of(c, LA_FLAC, &m) && m.pic_len == 40 && !strcmp(m.pic_mime, "image/png") && c[m.pic_off] == 0x11);
+        CHECK(meta_of(c, LAF_FLAC, &m) && m.pic_len == 40 && !strcmp(m.pic_mime, "image/png") && c[m.pic_off] == 0x11);
         // a picture that is a link ("-->") is not bytes
         Bytes d = bytes_of("fLaC");
         put(d, with(0, streaminfo(48000, 2, 16, 1000)));
         put(d, block(6, true, picture(3, "-->", "", bytes_of("http://x"))));
-        CHECK(meta_of(d, LA_FLAC, &m) && m.pic_len == 0);
+        CHECK(meta_of(d, LAF_FLAC, &m) && m.pic_len == 0);
         // a picture whose length runs past its block is dropped
         Bytes e = bytes_of("fLaC");
         put(e, with(0, streaminfo(48000, 2, 16, 1000)));
         Bytes p = picture(3, "image/png", "", other);
         p[p.size() - 40 - 1] = 0x7F;                                  // the data length's low byte
         put(e, block(6, true, p));
-        CHECK(meta_of(e, LA_FLAC, &m) && m.pic_len == 0);
+        CHECK(meta_of(e, LAF_FLAC, &m) && m.pic_len == 0);
     }
     {   // a big block is skipped without being read: a megabyte of padding between the blocks
         Bytes b = bytes_of("fLaC");
@@ -313,14 +313,14 @@ static void test_flac_synthetic() {
         put(b, with(1, filler(1 << 20, 0)));
         put(b, block(4, true, vorbis({ "TITLE=After padding" })));
         put(b, tail);
-        CHECK(meta_of(b, LA_FLAC, &m) && !strcmp(m.title, "After padding") && m.data_off == b.size() - tail.size());
+        CHECK(meta_of(b, LAF_FLAC, &m) && !strcmp(m.title, "After padding") && m.data_off == b.size() - tail.size());
     }
     {   // an ID3v2 tag in front of the stream
         Bytes inner = file({});
         Bytes b = id3_tag(3, 0, filler(100, 0));
         const size_t pre = b.size();
         put(b, inner);
-        CHECK(meta_of(b, LA_FLAC, &m) && m.stream_off == pre && m.data_off == pre + inner.size() - tail.size() && m.sample_rate == 48000);
+        CHECK(meta_of(b, LAF_FLAC, &m) && m.stream_off == pre && m.data_off == pre + inner.size() - tail.size() && m.sample_rate == 48000);
     }
     {   // a block that claims more than the file holds
         Bytes b = bytes_of("fLaC");
@@ -328,17 +328,17 @@ static void test_flac_synthetic() {
         Bytes big = block(4, true, vorbis({ "TITLE=x" }));
         big[1] = 0x7F;
         put(b, big);
-        CHECK(!meta_of(b, LA_FLAC, &m));
+        CHECK(!meta_of(b, LAF_FLAC, &m));
     }
-    CHECK(!meta_of(bytes_of("not a flac file at all, no"), LA_FLAC, &m));
+    CHECK(!meta_of(bytes_of("not a flac file at all, no"), LAF_FLAC, &m));
 }
 
 static void test_mp3_fixtures() {
     printf("- MP3 fixtures\n");
     Bytes b;
     LaMeta m;
-    CHECK(load("chirp44_v24.mp3", &b) && meta_of(b, LA_MP3, &m));
-    CHECK(m.kind == LA_MP3 && m.sample_rate == 44100 && m.channels == 2 && m.mp3_spf == 1152);
+    CHECK(load("chirp44_v24.mp3", &b) && meta_of(b, LAF_MP3, &m));
+    CHECK(m.kind == LAF_MP3 && m.sample_rate == 44100 && m.channels == 2 && m.mp3_spf == 1152);
     CHECK(!strcmp(m.title, "Chirp \xE2\x98\x83 Test") && !strcmp(m.artist, "A. Tester") && !strcmp(m.album, "Fixtures"));
     CHECK(m.track_no == 3 && m.disc_no == 1);
     CHECK(m.pic_len > 0 && !strcmp(m.pic_mime, "image/jpeg") && m.pic_off + m.pic_len <= b.size());
@@ -348,20 +348,20 @@ static void test_mp3_fixtures() {
     CHECK(b[m.data_off] == 0xFF && (b[m.data_off + 1] & 0xE0) == 0xE0 && m.data_off > m.pic_off + m.pic_len);
     CHECK(m.data_off + m.data_len == b.size());
     LaMeta m2;
-    CHECK(meta_of(b, LA_MP3, &m2, 11) && !memcmp(&m, &m2, sizeof m));
+    CHECK(meta_of(b, LAF_MP3, &m2, 11) && !memcmp(&m, &m2, sizeof m));
 
-    CHECK(load("chirp44_v23.mp3", &b) && meta_of(b, LA_MP3, &m));
+    CHECK(load("chirp44_v23.mp3", &b) && meta_of(b, LAF_MP3, &m));
     CHECK(!strcmp(m.title, "Chirp v2.3") && !strcmp(m.artist, "B. Tester") && !strcmp(m.album, "Old Tags") && m.track_no == 7);
     CHECK(m.pic_len > 0 && b[m.pic_off] == 0xFF && b[m.pic_off + 1] == 0xD8);
 
-    CHECK(load("plain_v1.mp3", &b) && meta_of(b, LA_MP3, &m));
+    CHECK(load("plain_v1.mp3", &b) && meta_of(b, LAF_MP3, &m));
     CHECK(!strcmp(m.title, "Plain") && !strcmp(m.artist, "C. Tester") && !strcmp(m.album, "Tiny") && m.track_no == 5);
     CHECK(!m.mp3_gapless && m.mp3_skip == 0 && !m.mp3_has_toc && m.pic_len == 0);
     CHECK(m.data_off == 0 || m.data_off < 200);                                  // no ID3v2: the stream starts at once (after the Info frame ffmpeg may leave out)
     CHECK(m.data_off + m.data_len == b.size() - 128);                           // the ID3v1 tag is not audio
     CHECK(m.bitrate_kbps == 128 && m.duration_secs >= 1 && m.duration_secs <= 2);
 
-    CHECK(load("mono22.mp3", &b) && meta_of(b, LA_MP3, &m));
+    CHECK(load("mono22.mp3", &b) && meta_of(b, LAF_MP3, &m));
     CHECK(m.sample_rate == 22050 && m.channels == 1 && m.mp3_spf == 576 && m.duration_secs == 1);
 }
 
@@ -384,7 +384,7 @@ static void test_mp3_synthetic() {
         put(body, filler(30, 0));
         const Bytes tag = id3_tag(2, 0, body);
         const Bytes b = assemble(tag, mp3_frames(3));
-        CHECK(meta_of(b, LA_MP3, &m));
+        CHECK(meta_of(b, LAF_MP3, &m));
         CHECK(!strcmp(m.title, "Old Title") && !strcmp(m.artist, "Old Artist") && !strcmp(m.album, "Old Album") && m.track_no == 12);
         CHECK(m.pic_len == 80 && !strcmp(m.pic_mime, "image/png") && b[m.pic_off] == 0x5A && b[m.pic_off - 1] == 0);
         CHECK(m.data_off == tag.size());
@@ -402,7 +402,7 @@ static void test_mp3_synthetic() {
         put(body, frame23("APIC", apic_front));
         put(body, frame23("COMM", text_body(0, latin1("ignored"))));
         const Bytes b = assemble(id3_tag(3, 0, body), mp3_frames(3));
-        CHECK(meta_of(b, LA_MP3, &m));
+        CHECK(meta_of(b, LAF_MP3, &m));
         CHECK(!strcmp(m.title, "Wide") && !strcmp(m.artist, "Big End") && !strcmp(m.album, "Caf\xC3\xA9") && m.track_no == 4 && m.disc_no == 2);
         CHECK(m.pic_len == 30 && !strcmp(m.pic_mime, "image/jpeg") && b[m.pic_off] == 0x20);
     }
@@ -414,7 +414,7 @@ static void test_mp3_synthetic() {
         Bytes on_disk;
         for (size_t i = 0; i < body.size(); i++) { on_disk.push_back(body[i]); if (body[i] == 0xFF) on_disk.push_back(0x00); }
         const Bytes b = assemble(id3_tag(3, 0x80, on_disk), mp3_frames(3));
-        CHECK(meta_of(b, LA_MP3, &m));
+        CHECK(meta_of(b, LAF_MP3, &m));
         CHECK(!strcmp(m.title, "\xC3\xBF" "x") && m.pic_len == 0);
     }
     {   // v2.4: syncsafe sizes, UTF-8, several values (the first is used), an extended header, padding, grouping and data length bytes
@@ -430,7 +430,7 @@ static void test_mp3_synthetic() {
         put(body, frame24("TRCK", text_body(3, bytes_of("6"))));
         put(body, filler(50, 0));
         const Bytes b = assemble(id3_tag(4, 0x40, body), mp3_frames(3));
-        CHECK(meta_of(b, LA_MP3, &m));
+        CHECK(meta_of(b, LAF_MP3, &m));
         CHECK(!strcmp(m.title, "First") && !strcmp(m.artist, "Grouped Artist") && !strcmp(m.album, "With Length") && m.track_no == 6);
     }
     {   // v2.4: a frame that is compressed or encrypted is left alone, the next is read; a per-frame unsynchronised text
@@ -440,22 +440,22 @@ static void test_mp3_synthetic() {
         fz.push_back(0x00); put(fz, "b");                                            // a, FF 00, b -> "a" FF "b"
         put(body, frame24("TALB", fz, 0x02));
         const Bytes b = assemble(id3_tag(4, 0, body), mp3_frames(3));
-        CHECK(meta_of(b, LA_MP3, &m));
+        CHECK(meta_of(b, LAF_MP3, &m));
         CHECK(m.title[0] == '\0' && !strcmp(m.album, "a\xC3\xBF" "b"));
     }
     {   // TPE2 stands in for the artist, whichever comes first
         Bytes body;
         put(body, frame23("TPE2", text_body(0, latin1("Album Artist"))));
         const Bytes only = assemble(id3_tag(3, 0, body), mp3_frames(3));
-        CHECK(meta_of(only, LA_MP3, &m) && !strcmp(m.artist, "Album Artist"));
+        CHECK(meta_of(only, LAF_MP3, &m) && !strcmp(m.artist, "Album Artist"));
         put(body, frame23("TPE1", text_body(0, latin1("Track Artist"))));
         const Bytes both = assemble(id3_tag(3, 0, body), mp3_frames(3));
-        CHECK(meta_of(both, LA_MP3, &m) && !strcmp(m.artist, "Track Artist"));
+        CHECK(meta_of(both, LAF_MP3, &m) && !strcmp(m.artist, "Track Artist"));
         Bytes rev;
         put(rev, frame23("TPE1", text_body(0, latin1("Track Artist"))));
         put(rev, frame23("TPE2", text_body(0, latin1("Album Artist"))));
         const Bytes rb = assemble(id3_tag(3, 0, rev), mp3_frames(3));
-        CHECK(meta_of(rb, LA_MP3, &m) && !strcmp(m.artist, "Track Artist"));
+        CHECK(meta_of(rb, LAF_MP3, &m) && !strcmp(m.artist, "Track Artist"));
     }
     {   // a tag whose size runs past the file; frames that run past the tag
         Bytes body;
@@ -464,11 +464,11 @@ static void test_mp3_synthetic() {
         Bytes lie = tag;
         lie[9] = 0x7F; lie[8] = 0x7F;
         put(lie, mp3_frames(3));
-        CHECK(!meta_of(lie, LA_MP3, &m));                                        // the audio is inside the "tag": no frame to find
+        CHECK(!meta_of(lie, LAF_MP3, &m));                                        // the audio is inside the "tag": no frame to find
         Bytes frame_lie = frame23("TIT2", text_body(0, latin1("Fine")));
         frame_lie[7] = 0x7F;
         const Bytes b2 = assemble(id3_tag(3, 0, frame_lie), mp3_frames(3));
-        CHECK(meta_of(b2, LA_MP3, &m) && m.title[0] == '\0');
+        CHECK(meta_of(b2, LAF_MP3, &m) && m.title[0] == '\0');
     }
     {   // junk before the first frame, and a sync pattern in it that is not a frame
         Bytes audio = filler(200, 0x00);
@@ -476,9 +476,9 @@ static void test_mp3_synthetic() {
         put(audio, filler(100, 0));
         const size_t junk = audio.size();
         put(audio, mp3_frames(200));
-        CHECK(meta_of(audio, LA_MP3, &m) && m.data_off == junk && m.sample_rate == 44100);
+        CHECK(meta_of(audio, LAF_MP3, &m) && m.data_off == junk && m.sample_rate == 44100);
         CHECK(m.bitrate_kbps == 128 && m.duration_secs == 5 && !m.mp3_gapless);   // 200 frames of 417 bytes at 128 kbit/s
-        CHECK(!meta_of(filler(5000, 0), LA_MP3, &m));
+        CHECK(!meta_of(filler(5000, 0), LAF_MP3, &m));
     }
     {   // a Xing header without a LAME block: the frame count gives the length, nothing is trimmed; the Info frame is skipped
         Bytes frame = mp3_frames(1);
@@ -488,7 +488,7 @@ static void test_mp3_synthetic() {
         frame[xo + 8] = 0; frame[xo + 9] = 0; frame[xo + 10] = 0x03; frame[xo + 11] = 0xE8;  // 1000 frames
         Bytes b = frame;
         put(b, mp3_frames(5));
-        CHECK(meta_of(b, LA_MP3, &m));
+        CHECK(meta_of(b, LAF_MP3, &m));
         CHECK(m.total_frames == 1152000 && m.duration_secs == 26 && !m.mp3_gapless && m.mp3_skip == 0 && m.data_off == 417);
         // with LAME's delay and padding
         Bytes lame = frame;
@@ -496,7 +496,7 @@ static void test_mp3_synthetic() {
         const int d = 576, p = 1000;
         lame[xo + 12 + 21] = (uint8_t)(d >> 4); lame[xo + 12 + 22] = (uint8_t)(((d & 15) << 4) | (p >> 8)); lame[xo + 12 + 23] = (uint8_t)(p & 255);
         put(lame, mp3_frames(5));
-        CHECK(meta_of(lame, LA_MP3, &m));
+        CHECK(meta_of(lame, LAF_MP3, &m));
         CHECK(m.mp3_gapless && m.mp3_skip == 576 + 529 && m.total_frames == 1152000 - 576 - 1000);
         // a delay and padding that are more than the file holds are not believed
         Bytes bad = frame;
@@ -504,7 +504,7 @@ static void test_mp3_synthetic() {
         memcpy(&bad[xo + 12], "LAME3.99r", 9);
         bad[xo + 12 + 21] = 0x7D; bad[xo + 12 + 22] = 0x07; bad[xo + 12 + 23] = 0xD0;   // 2000 and 2000
         put(bad, mp3_frames(5));
-        CHECK(meta_of(bad, LA_MP3, &m) && !m.mp3_gapless && m.mp3_skip == 0 && m.total_frames == 3 * 1152);
+        CHECK(meta_of(bad, LAF_MP3, &m) && !m.mp3_gapless && m.mp3_skip == 0 && m.total_frames == 3 * 1152);
     }
     {   // a VBRI header: bytes and frames after "VBRI" at 36
         Bytes frame = mp3_frames(1);
@@ -513,7 +513,7 @@ static void test_mp3_synthetic() {
         frame[36 + 14] = 0; frame[36 + 15] = 0; frame[36 + 16] = 0x00; frame[36 + 17] = 0x64;     // 100 frames
         Bytes b = frame;
         put(b, mp3_frames(4));
-        CHECK(meta_of(b, LA_MP3, &m) && m.total_frames == 115200 && m.duration_secs == 3 && m.data_off == 417);
+        CHECK(meta_of(b, LAF_MP3, &m) && m.total_frames == 115200 && m.duration_secs == 3 && m.data_off == 417);
     }
 }
 
@@ -522,18 +522,18 @@ static void test_wav() {
     LaMeta m;
     {
         const Bytes b = wav_file(1, 2, 44100, 16, 44100);
-        CHECK(meta_of(b, LA_WAV, &m));
+        CHECK(meta_of(b, LAF_WAV, &m));
         CHECK(m.sample_rate == 44100 && m.channels == 2 && m.bits == 16 && m.wav_format == 1 && m.block_align == 4);
         CHECK(m.total_frames == 44100 && m.duration_secs == 1 && m.data_off == 12 + 8 + 16 + 8 && m.data_len == 44100 * 4);
     }
     {   // every sample format the decoder knows
         const struct { int fmt, bits; } ok[] = { {1, 8}, {1, 16}, {1, 24}, {1, 32}, {3, 32}, {3, 64} };
-        for (const auto &f : ok) CHECK(meta_of(wav_file(f.fmt, 2, 48000, f.bits, 100), LA_WAV, &m) && m.wav_format == f.fmt && m.bits == f.bits);
+        for (const auto &f : ok) CHECK(meta_of(wav_file(f.fmt, 2, 48000, f.bits, 100), LAF_WAV, &m) && m.wav_format == f.fmt && m.bits == f.bits);
         const struct { int fmt, bits; } bad[] = { {2, 16}, {1, 12}, {3, 16}, {0x55, 16} };
-        for (const auto &f : bad) CHECK(!meta_of(wav_file(f.fmt, 2, 48000, f.bits, 100), LA_WAV, &m));
-        CHECK(!meta_of(wav_file(1, 9, 48000, 16, 100), LA_WAV, &m));            // too many channels
-        CHECK(!meta_of(wav_file(1, 0, 48000, 16, 100), LA_WAV, &m));
-        CHECK(!meta_of(wav_file(1, 2, 100, 16, 100), LA_WAV, &m));              // a rate nobody uses
+        for (const auto &f : bad) CHECK(!meta_of(wav_file(f.fmt, 2, 48000, f.bits, 100), LAF_WAV, &m));
+        CHECK(!meta_of(wav_file(1, 9, 48000, 16, 100), LAF_WAV, &m));            // too many channels
+        CHECK(!meta_of(wav_file(1, 0, 48000, 16, 100), LAF_WAV, &m));
+        CHECK(!meta_of(wav_file(1, 2, 100, 16, 100), LAF_WAV, &m));              // a rate nobody uses
     }
     {   // WAVE_FORMAT_EXTENSIBLE: the sub-format's first two bytes say PCM or float
         Bytes f = wav_fmt(0xFFFE, 6, 48000, 24);
@@ -542,14 +542,14 @@ static void test_wav() {
         Bytes c;
         put(c, chunk("fmt ", f));
         put(c, chunk("data", filler(6 * 3 * 100, 0)));
-        CHECK(meta_of(riff(c), LA_WAV, &m) && m.wav_format == 1 && m.channels == 6 && m.bits == 24 && m.total_frames == 100);
+        CHECK(meta_of(riff(c), LAF_WAV, &m) && m.wav_format == 1 && m.channels == 6 && m.bits == 24 && m.total_frames == 100);
         Bytes g = wav_fmt(0xFFFE, 2, 48000, 32);
         le16(g, 22); le16(g, 32); le32(g, 3);
         le16(g, 3); for (int i = 0; i < 14; i++) g.push_back(0);
         Bytes c2;
         put(c2, chunk("fmt ", g));
         put(c2, chunk("data", filler(8 * 50, 0)));
-        CHECK(meta_of(riff(c2), LA_WAV, &m) && m.wav_format == 3);
+        CHECK(meta_of(riff(c2), LAF_WAV, &m) && m.wav_format == 3);
     }
     {   // LIST INFO tags; a chunk of odd length (padded); the data chunk after them
         Bytes info = bytes_of("INFO");
@@ -560,7 +560,7 @@ static void test_wav() {
         Bytes extra = chunk("LIST", info);
         put(extra, chunk("junk", filler(5, 1)));
         const Bytes b = wav_file(1, 2, 48000, 16, 480, extra);
-        CHECK(meta_of(b, LA_WAV, &m));
+        CHECK(meta_of(b, LAF_WAV, &m));
         CHECK(!strcmp(m.title, "Wave Title") && !strcmp(m.artist, "Odd") && !strcmp(m.album, "Wave Album") && m.track_no == 9);
         CHECK(m.total_frames == 480 && m.data_off == b.size() - 480 * 4);
     }
@@ -568,26 +568,51 @@ static void test_wav() {
         Bytes b = wav_file(1, 2, 48000, 16, 100);
         const size_t at = 12 + 8 + 16 + 4;
         b[at] = b[at + 1] = b[at + 2] = b[at + 3] = 0xFF;
-        CHECK(meta_of(b, LA_WAV, &m) && m.total_frames == 100);
+        CHECK(meta_of(b, LAF_WAV, &m) && m.total_frames == 100);
         b[at] = b[at + 1] = b[at + 2] = b[at + 3] = 0;
-        CHECK(meta_of(b, LA_WAV, &m) && m.total_frames == 100);
+        CHECK(meta_of(b, LAF_WAV, &m) && m.total_frames == 100);
     }
     {   // the data chunk before the format is not understood; a missing data chunk is not a file
         Bytes c;
         put(c, chunk("data", filler(100, 0)));
         put(c, chunk("fmt ", wav_fmt(1, 2, 48000, 16)));
-        CHECK(!meta_of(riff(c), LA_WAV, &m));
-        CHECK(!meta_of(riff(chunk("fmt ", wav_fmt(1, 2, 48000, 16))), LA_WAV, &m));
-        CHECK(!meta_of(bytes_of("RIFF....AVI LIST0123456789"), LA_WAV, &m));
+        CHECK(!meta_of(riff(c), LAF_WAV, &m));
+        CHECK(!meta_of(riff(chunk("fmt ", wav_fmt(1, 2, 48000, 16))), LAF_WAV, &m));
+        CHECK(!meta_of(bytes_of("RIFF....AVI LIST0123456789"), LAF_WAV, &m));
     }
+}
+
+static void test_format_line() {
+    printf("- the format line\n");
+    LaMeta m;
+    memset(&m, 0, sizeof m);
+    char o[48];
+    m.kind = LAF_FLAC; m.sample_rate = 44100; m.bits = 16;
+    la_format_line(&m, o, sizeof o); CHECK(!strcmp(o, "FLAC 44.1 kHz / 16-bit"));
+    m.sample_rate = 48000; m.bits = 24;
+    la_format_line(&m, o, sizeof o); CHECK(!strcmp(o, "FLAC 48 kHz / 24-bit"));
+    m.sample_rate = 192000;
+    la_format_line(&m, o, sizeof o); CHECK(!strcmp(o, "FLAC 192 kHz / 24-bit"));
+    m.kind = LAF_WAV; m.sample_rate = 22050; m.bits = 8;
+    la_format_line(&m, o, sizeof o); CHECK(!strcmp(o, "WAV 22.05 kHz / 8-bit"));
+    m.sample_rate = 11025;
+    la_format_line(&m, o, sizeof o); CHECK(!strcmp(o, "WAV 11.025 kHz / 8-bit"));
+    m.kind = LAF_MP3; m.bitrate_kbps = 192;
+    la_format_line(&m, o, sizeof o); CHECK(!strcmp(o, "192 kbps MP3"));
+    m.bitrate_kbps = 0;
+    la_format_line(&m, o, sizeof o); CHECK(!strcmp(o, "MP3"));
+    char small[6];
+    m.kind = LAF_FLAC; m.sample_rate = 44100; m.bits = 16;
+    la_format_line(&m, small, sizeof small); CHECK(strlen(small) == 5);
+    la_format_line(&m, small, 0);
 }
 
 static void test_kinds() {
     printf("- names\n");
-    CHECK(la_kind_of("a.flac") == LA_FLAC && la_kind_of("A.FLAC") == LA_FLAC && la_kind_of("x.Mp3") == LA_MP3);
-    CHECK(la_kind_of("x.WAV") == LA_WAV && la_kind_of("noext") == LA_NONE && la_kind_of("a.flacx") == LA_NONE);
-    CHECK(la_kind_of("a.mp3.txt") == LA_NONE && la_kind_of("") == LA_NONE && la_kind_of(NULL) == LA_NONE && la_kind_of(".mp3") == LA_MP3);
-    CHECK(la_kind_of("dir.flac/file") == LA_NONE);
+    CHECK(la_kind_of("a.flac") == LAF_FLAC && la_kind_of("A.FLAC") == LAF_FLAC && la_kind_of("x.Mp3") == LAF_MP3);
+    CHECK(la_kind_of("x.WAV") == LAF_WAV && la_kind_of("noext") == LAF_NONE && la_kind_of("a.flacx") == LAF_NONE);
+    CHECK(la_kind_of("a.mp3.txt") == LAF_NONE && la_kind_of("") == LAF_NONE && la_kind_of(NULL) == LAF_NONE && la_kind_of(".mp3") == LAF_MP3);
+    CHECK(la_kind_of("dir.flac/file") == LAF_NONE);
 }
 
 // Every field of what comes back stays inside its bounds, whatever the file was.
@@ -602,8 +627,8 @@ static void check_invariants(const LaMeta &m, size_t size) {
 static void test_damage() {
     printf("- damaged files\n");
     const struct { const char *name; LaKind kind; } files[] = {
-        { "chirp44.flac", LA_FLAC }, { "chirp44_v24.mp3", LA_MP3 }, { "chirp44_v23.mp3", LA_MP3 },
-        { "plain_v1.mp3", LA_MP3 }, { "mono22.mp3", LA_MP3 }, { "surround6.flac", LA_FLAC },
+        { "chirp44.flac", LAF_FLAC }, { "chirp44_v24.mp3", LAF_MP3 }, { "chirp44_v23.mp3", LAF_MP3 },
+        { "plain_v1.mp3", LAF_MP3 }, { "mono22.mp3", LAF_MP3 }, { "surround6.flac", LAF_FLAC },
     };
     uint32_t rng = 12345;
     auto next = [&]() { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
@@ -641,15 +666,15 @@ static void test_damage() {
     Bytes flac;
     LaMeta m;
     CHECK(load("chirp44.flac", &flac));
-    CHECK(!meta_of(flac, LA_WAV, &m));
+    CHECK(!meta_of(flac, LAF_WAV, &m));
     Bytes mp3;
     CHECK(load("chirp44_v24.mp3", &mp3));
-    CHECK(!meta_of(mp3, LA_FLAC, &m) && !meta_of(mp3, LA_WAV, &m));
-    CHECK(!meta_of(Bytes(), LA_MP3, &m) && !meta_of(Bytes(10, 0), LA_FLAC, &m));
-    CHECK(!la_read_meta(NULL, NULL, 100, LA_FLAC, &m) && !meta_of(mp3, LA_NONE, &m));
+    CHECK(!meta_of(mp3, LAF_FLAC, &m) && !meta_of(mp3, LAF_WAV, &m));
+    CHECK(!meta_of(Bytes(), LAF_MP3, &m) && !meta_of(Bytes(10, 0), LAF_FLAC, &m));
+    CHECK(!la_read_meta(NULL, NULL, 100, LAF_FLAC, &m) && !meta_of(mp3, LAF_NONE, &m));
     // a reader that fails: the answer is a refusal, not a hang
     struct Fail { static int rd(void *, uint64_t, uint8_t *, int) { return -1; } };
-    CHECK(!la_read_meta(Fail::rd, NULL, 100000, LA_FLAC, &m) && !la_read_meta(Fail::rd, NULL, 100000, LA_MP3, &m) && !la_read_meta(Fail::rd, NULL, 100000, LA_WAV, &m));
+    CHECK(!la_read_meta(Fail::rd, NULL, 100000, LAF_FLAC, &m) && !la_read_meta(Fail::rd, NULL, 100000, LAF_MP3, &m) && !la_read_meta(Fail::rd, NULL, 100000, LAF_WAV, &m));
 }
 
 int main() {
@@ -658,6 +683,7 @@ int main() {
     test_mp3_fixtures();
     test_mp3_synthetic();
     test_wav();
+    test_format_line();
     test_kinds();
     test_damage();
     printf("local tags: %d checks, %d failed\n", s_checks, s_failed);

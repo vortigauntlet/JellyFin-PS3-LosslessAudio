@@ -32,5 +32,8 @@ ffmpeg $Q -f lavfi -i "$STEREO:s=44100:d=2" -i cover.jpg -map 0:a -map 1:v -c:a 
 ffmpeg $Q -f lavfi -i "$STEREO:s=44100:d=2" -c:a libmp3lame -b:a 128k -write_xing 0 -write_id3v2 0 -write_id3v1 1 \
     -metadata title="Plain" -metadata artist="C. Tester" -metadata album="Tiny" -metadata track=5 plain_v1.mp3
 ffmpeg $Q -f lavfi -i "$MONO:s=22050:d=1" -c:a libmp3lame -b:a 32k -ac 1 mono22.mp3
+# silence at both ends, no LAME header: what the engine's gapless handover trims (tests/test_music_engine.cpp)
+ffmpeg $Q -f lavfi -i "aevalsrc=if(between(t\,0.2\,0.8)\,0.5*sin(2*PI*440*t)\,0)|if(between(t\,0.2\,0.8)\,0.5*sin(2*PI*440*t)\,0):s=44100:d=1" \
+    -c:a libmp3lame -b:a 128k -write_xing 0 -write_id3v2 0 -write_id3v1 0 silence_pad.mp3
 
 ls -l *.flac *.mp3 cover.jpg

@@ -43,6 +43,10 @@
 #include "local_probe.h"
 #include "local_names.h"
 #include "local_resume.h"
+#include "local_tags.h"
+#include "local_audio.h"
+#include "local_music_fs.h"
+#include "music_screen.h"
 #include "dl_library.h"
 
 namespace {
@@ -189,6 +193,8 @@ struct Probed {
     bool     playable;
     uint32_t secs;
     char     note[64];       // "HEVC video (can't play on PS3)": for the row, faint
+    bool     music;          // a music file: label and note are about its tags and format
+    char     label[256];     // a music file's "title - artist" when it has tags
 };
 
 const int PC_N = 48;
@@ -223,8 +229,21 @@ void summarize(const LocalInfo &info, Probed *r) {
         snprintf(r->note, sizeof r->note, "Audio can't be played yet");
 }
 
+// What a music file's tags and format made of it, as the browser shows it.
+void summarize_music(const LaMeta &m, Probed *r) {
+    r->music = true;
+    r->secs = m.duration_secs;
+    r->playable = la_can_decode(&m);
+    r->label[0] = '\0';
+    if (m.title[0] && m.artist[0]) snprintf(r->label, sizeof r->label, "%s - %s", m.title, m.artist);
+    else if (m.title[0]) snprintf(r->label, sizeof r->label, "%s", m.title);
+    if (r->playable) la_format_line(&m, r->note, sizeof r->note);
+    else snprintf(r->note, sizeof r->note, "This format can't be played yet");
+}
+
 void pw_main(void *) {
     static LocalInfo info;                 // the worker's own (1.7 KB)
+    static LaMeta meta;
     while (pw_run) {
         if (pw_state != 1) { usleep(30000); continue; }
         __sync_synchronize();
@@ -236,10 +255,19 @@ void pw_main(void *) {
         if (fd >= 0) {
             char err[64] = "";
             const uint64_t size = lfs_size(fd);
-            r.readable = local_probe(probe_rd, &fd, size, leaf_of(r.path), &info, err, sizeof err);
-            lfs_close(fd);
-            if (r.readable) summarize(info, &r);
-            else snprintf(r.note, sizeof r.note, "Can't read this file");
+            const LaKind music = la_kind_of(r.path);
+            if (music != LAF_NONE) {
+                r.music = true;
+                r.readable = la_read_meta(probe_rd, &fd, size, music, &meta);
+                lfs_close(fd);
+                if (r.readable) summarize_music(meta, &r);
+                else snprintf(r.note, sizeof r.note, "Can't read this file");
+            } else {
+                r.readable = local_probe(probe_rd, &fd, size, leaf_of(r.path), &info, err, sizeof err);
+                lfs_close(fd);
+                if (r.readable) summarize(info, &r);
+                else snprintf(r.note, sizeof r.note, "Can't read this file");
+            }
         } else {
             snprintf(r.note, sizeof r.note, "Can't read this file");
         }
@@ -317,7 +345,7 @@ int load_dir(const char *path) {
     b_total = job.result;
     const int got = job.result < MAX_ENTRIES ? job.result : MAX_ENTRIES;
     for (int i = 0; i < got; i++) {
-        if (b_all[i].is_dir || lfs_media_kind_of(b_all[i].name) == LFS_KIND_VIDEO)
+        if (b_all[i].is_dir || lfs_media_kind_of(b_all[i].name) != LFS_KIND_OTHER)
             b_all[b_n++] = b_all[i];
     }
     return b_n;
@@ -366,6 +394,75 @@ void play_file(const char *path, const lfs_entry &e, const char *title, u32 resu
     res_ensure();
     lres_update(&s_res, res_key_of(path, e), player_last_position_secs(), total_secs);
     if (!lres_save_file(&s_res, res_path())) plog("media: the resume file could not be written");
+    init_btns();
+}
+
+// ---- a folder's music ----
+
+struct MusicJob {
+    char       dir[256];
+    lfs_entry *entries;
+    int        n;
+    LmTrack   *tracks;
+    int        count, skipped;
+    char       cover[32];
+    bool       has_cover;
+};
+
+void music_work(void *arg) {
+    MusicJob *j = (MusicJob *)arg;
+    j->count = lm_scan_folder(j->dir, j->entries, j->n, j->tracks, LM_MAX_TRACKS, &j->skipped);
+    j->has_cover = j->count > 0 && lm_register_cover(j->dir, j->tracks, j->count, j->cover, sizeof j->cover);
+}
+
+// The music of the folder `dir` (the entries b_all holds), from the file that was chosen: an album is the whole folder,
+// in its order; a folder with more files than the queue holds starts at the chosen one.  Returns when the music stops.
+void play_music(const char *dir, const lfs_entry &chosen) {
+    static MusicJob job;
+    static LmTrack tracks[LM_MAX_TRACKS];
+    static MusicTrack queue[MUSIC_QUEUE_MAX];
+    int music_files = 0, chosen_at = 0;
+    for (int i = 0; i < b_n; i++) {
+        if (b_all[i].is_dir || lfs_media_kind_of(b_all[i].name) != LFS_KIND_MUSIC) continue;
+        if (!strcmp(b_all[i].name, chosen.name)) chosen_at = i;
+        music_files++;
+    }
+    memset(&job, 0, sizeof job);
+    snprintf(job.dir, sizeof job.dir, "%s", dir);
+    job.entries = b_all + (music_files > LM_MAX_TRACKS ? chosen_at : 0);
+    job.n = b_n - (music_files > LM_MAX_TRACKS ? chosen_at : 0);
+    job.tracks = tracks;
+    pw_quiesce();
+    loading_run(music_work, &job, "Loading", false);
+    screen_begin();
+    if (job.count == 0) {
+        xmb_dl_notice("Can't play this", job.skipped ? "None of the music files here could be read or played."
+                                                     : "There is no music here.");
+        return;
+    }
+    char want[256];
+    int start = 0;
+    if (lfs_path_join(dir, chosen.name, want, sizeof want))
+        for (int i = 0; i < job.count; i++) if (!strcmp(tracks[i].path, want)) { start = i; break; }
+    for (int i = 0; i < job.count; i++) {
+        MusicTrack &q = queue[i];
+        memset(&q, 0, sizeof q);
+        char name[128];
+        lm_display_title(&tracks[i], name, sizeof name);
+        snprintf(q.id, sizeof q.id, "file:%d", i);
+        snprintf(q.name, sizeof q.name, "%s", name);
+        snprintf(q.artist, sizeof q.artist, "%s", tracks[i].artist);
+        snprintf(q.art_id, sizeof q.art_id, "%s", job.cover);
+        q.duration_secs = tracks[i].duration_secs;
+        q.track_num = tracks[i].track_no;
+        snprintf(q.path, sizeof q.path, "%s", tracks[i].path);
+    }
+    char album[128];
+    lm_album_name(tracks, job.count, lfs_path_leaf(dir), album, sizeof album);
+    char msg[160];
+    snprintf(msg, sizeof msg, "media: music %d track(s) from %.60s, %d skipped", job.count, dir, job.skipped);
+    plog(msg);
+    music_screen_open_local(queue, job.count, start, album);
     init_btns();
 }
 
@@ -601,6 +698,10 @@ void browse(const lfs_drive &drive) {
                         sel = 0; top = 0;
                         pc_clear();
                     }
+                } else if (lfs_media_kind_of(ent.name) == LFS_KIND_MUSIC) {
+                    play_music(cur, ent);
+                    arm.armed = false;
+                    pc_clear();
                 } else {
                     show_details(next, ent);
                     arm.armed = false;
@@ -619,7 +720,7 @@ void browse(const lfs_drive &drive) {
             centre_message(status == LFS_E_REMOVED ? "The drive was removed" : "This folder could not be read",
                            screen_top() + UIS_H(60));
         } else if (b_n == 0) {
-            centre_message("No videos or folders here", screen_top() + UIS_H(60));
+            centre_message("No videos, music or folders here", screen_top() + UIS_H(60));
         }
         for (int r = 0; r < vis && top + r < b_n; r++) {
             const int i = top + r;
@@ -627,8 +728,9 @@ void browse(const lfs_drive &drive) {
             const int y = screen_top() + r * row_pitch();
             const bool s = (i == sel);
             draw_row_frame(x, y, w, row_h(), s);
+            const bool is_music = !ent.is_dir && lfs_media_kind_of(ent.name) == LFS_KIND_MUSIC;
             drawIcon((u32)(x + UIS_W(16)), (u32)(y + (row_h() - UIS_H(22)) / 2),
-                     ent.is_dir ? ICON_COLLECTIONS : ICON_MOVIE, UIS_TF(22.0f), s ? XMB_ACCENT_ALT : XMB_TEXT_DIM);
+                     ent.is_dir ? ICON_COLLECTIONS : is_music ? ICON_MUSIC : ICON_MOVIE, UIS_TF(22.0f), s ? XMB_ACCENT_ALT : XMB_TEXT_DIM);
             const int tx = x + UIS_W(64);
             const int right = x + w - UIS_W(20);
             if (ent.is_dir) {
@@ -637,14 +739,19 @@ void browse(const lfs_drive &drive) {
             }
             char path[256] = "";
             lfs_path_join(cur, ent.name, path, sizeof path);
-            LocalTitle lt;
-            local_clean_name(ent.name, &lt);
             char name[160];
-            local_title_line(&lt, name, sizeof name);
+            const Probed *pr = path[0] ? pc_get(path) : NULL;
+            if (is_music) {
+                if (pr && pr->label[0]) snprintf(name, sizeof name, "%s", pr->label);
+                else lm_stem_title(ent.name, name, sizeof name);
+            } else {
+                LocalTitle lt;
+                local_clean_name(ent.name, &lt);
+                local_title_line(&lt, name, sizeof name);
+            }
             // size, then what the worker found out
             char sz[24], line[160];
             local_format_size(ent.size, sz, sizeof sz);
-            const Probed *pr = path[0] ? pc_get(path) : NULL;
             int n = snprintf(line, sizeof line, "%s", sz);
             u32 sub_clr = XMB_TEXT_DIM;
             if (pr && pr->readable && pr->secs) {
@@ -657,7 +764,7 @@ void browse(const lfs_drive &drive) {
                 sub_clr = XMB_TEXT_FAINT;
             }
             uint32_t rs = 0;
-            if (path[0] && lres_find(&s_res, res_key_of(path, ent), &rs, NULL) && (!pr || pr->playable || !pr->readable)) {
+            if (!is_music && path[0] && lres_find(&s_res, res_key_of(path, ent), &rs, NULL) && (!pr || pr->playable || !pr->readable)) {
                 char rt[40];
                 local_format_resume(rs, rt, sizeof rt);
                 snprintf(line + n, sizeof line - (size_t)n, "  %s  %s", MIDDOT, rt);

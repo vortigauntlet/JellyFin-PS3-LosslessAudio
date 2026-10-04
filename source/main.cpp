@@ -21,6 +21,7 @@
 #include "update_check.h"
 #include "dl_service.h"
 #include "lfs.h"
+#include "local_music_fs.h"    // lm_art_bytes
 #include <unistd.h>   // usleep
 #include "jellyfin_api.h"
 #include "thumbnail_cache.h"
@@ -288,6 +289,7 @@ int main(int argc, const char *argv[]) {
     }
 
     thumb_cache_init();
+    thumb_set_local_bytes(lm_art_bytes);        // covers of music files on a drive
     boot_anim_pump();
 
     crash_log("10 load_config");

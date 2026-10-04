@@ -23,7 +23,7 @@ extern "C" {
 // 0 at the end, or < 0 on an error.  The same shape as the probe's reader.
 typedef int (*LaRead)(void *ctx, uint64_t off, uint8_t *buf, int len);
 
-typedef enum { LA_NONE = 0, LA_FLAC, LA_MP3, LA_WAV } LaKind;
+typedef enum { LAF_NONE = 0, LAF_FLAC, LAF_MP3, LAF_WAV } LaKind;
 
 // By file name extension, case-insensitively (.flac .mp3 .wav).
 LaKind la_kind_of(const char *name);
@@ -63,6 +63,10 @@ typedef struct {
 // no frame, no "fmt " chunk) or its format is outside what la_open decodes (WAVE other than 8-32 bit
 // integer or 32/64 bit float PCM, more than 8 channels).
 bool la_read_meta(LaRead rd, void *ctx, uint64_t size, LaKind kind, LaMeta *m);
+
+// The line that says what the file is: "FLAC 44.1 kHz / 16-bit", "WAV 48 kHz / 24-bit", "192 kbps MP3" ("MP3" when the
+// bit rate is unknown).  The browser shows it under a track and the player on its meta line.
+void la_format_line(const LaMeta *m, char *out, int cap);
 
 #ifdef __cplusplus
 }

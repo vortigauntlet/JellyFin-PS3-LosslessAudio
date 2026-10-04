@@ -80,6 +80,21 @@ void lm_display_title(const LmTrack *t, char *out, int cap) {
     else stem_title(t->path, out, cap);
 }
 
+void lm_stem_title(const char *path_or_name, char *out, int cap) {
+    if (cap <= 0) return;
+    stem_title(path_or_name, out, cap);
+}
+
+bool lm_is_one_album(const LmTrack *t, int n) {
+    const char *first = NULL;
+    for (int i = 0; i < n; i++) {
+        if (!t[i].album[0]) continue;
+        if (!first) first = t[i].album;
+        else if (strcmp(first, t[i].album) != 0) return false;
+    }
+    return true;
+}
+
 void lm_album_name(const LmTrack *t, int n, const char *folder, char *out, int cap) {
     if (cap <= 0) return;
     out[0] = '\0';

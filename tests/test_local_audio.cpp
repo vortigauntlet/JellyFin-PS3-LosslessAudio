@@ -186,7 +186,7 @@ static void test_flac_exact() {
     Bytes b;
     if (!load("chirp48.flac", &b)) { CHECK(false); return; }
     Opened o;
-    CHECK(open_file(&o, b, LA_FLAC));
+    CHECK(open_file(&o, b, LAF_FLAC));
     CHECK(la_can_decode(&o.meta) && la_gapless_trimmed(o.dec));
     Floats all;
     CHECK(decode_all(o.dec, &all, 4096) == 0);
@@ -199,12 +199,12 @@ static void test_flac_exact() {
     const int chunks[] = { 1, 7, 100, 512, 513, 100000 };
     for (int c : chunks) {
         Opened p;
-        CHECK(open_file(&p, b, LA_FLAC));
+        CHECK(open_file(&p, b, LAF_FLAC));
         Floats f;
         CHECK(decode_all(p.dec, &f, c) == 0 && f == all);
     }
     Opened q;
-    CHECK(open_file(&q, b, LA_FLAC, 61));
+    CHECK(open_file(&q, b, LAF_FLAC, 61));
     Floats f61;
     CHECK(decode_all(q.dec, &f61, 4096) == 0 && f61 == all && !q.mem.overread);
     // after the end, the end
@@ -220,7 +220,7 @@ static void test_flac_resampled() {
     {
         if (!load("chirp44.flac", &b)) { CHECK(false); return; }
         Opened o;
-        CHECK(open_file(&o, b, LA_FLAC));
+        CHECK(open_file(&o, b, LAF_FLAC));
         CHECK(decode_all(o.dec, &all, 4096) == 0);
         const size_t pairs = all.size() / 2;
         CHECK(pairs <= 96000 && pairs >= 96000 - 80);           // the filter's tail is not played
@@ -233,7 +233,7 @@ static void test_flac_resampled() {
     {
         if (!load("chirp96_24.flac", &b)) { CHECK(false); return; }
         Opened o;
-        CHECK(open_file(&o, b, LA_FLAC));
+        CHECK(open_file(&o, b, LAF_FLAC));
         CHECK(o.meta.bits == 24 && o.meta.sample_rate == 96000);
         Floats f;
         CHECK(decode_all(o.dec, &f, 1000) == 0);
@@ -245,7 +245,7 @@ static void test_flac_resampled() {
     {   // five channels and a LFE folded to two the way chan_map does
         if (!load("surround6.flac", &b)) { CHECK(false); return; }
         Opened o;
-        CHECK(open_file(&o, b, LA_FLAC));
+        CHECK(open_file(&o, b, LAF_FLAC));
         Floats f;
         CHECK(decode_all(o.dec, &f, 4096) == 0 && f.size() == 24000 * 2);
         const double k = 1.0 / (1.0 + 0.7071067811865476 * 2);
@@ -267,7 +267,7 @@ static void test_flac_seek() {
     Bytes b;
     if (!load("chirp48.flac", &b)) { CHECK(false); return; }
     Opened o;
-    CHECK(open_file(&o, b, LA_FLAC));
+    CHECK(open_file(&o, b, LAF_FLAC));
     Floats all, part;
     CHECK(decode_all(o.dec, &all, 4096) == 0);
     for (uint32_t secs : { 1u, 0u, 2u, 7u }) {
@@ -287,7 +287,7 @@ static void test_flac_seek() {
     Bytes c;
     if (!load("chirp44.flac", &c)) { CHECK(false); return; }
     Opened p;
-    CHECK(open_file(&p, c, LA_FLAC));
+    CHECK(open_file(&p, c, LAF_FLAC));
     CHECK(la_seek(p.dec, 1));
     CHECK(decode_all(p.dec, &part, 4096) == 0);
     CHECK(part.size() / 2 <= 48000 && part.size() / 2 >= 48000 - 80);
@@ -298,7 +298,7 @@ static void test_flac_seek() {
     Bytes d;
     if (!load("chirp96_24.flac", &d)) { CHECK(false); return; }
     Opened q;
-    CHECK(open_file(&q, d, LA_FLAC));
+    CHECK(open_file(&q, d, LAF_FLAC));
     CHECK(la_seek(q.dec, 0));
     CHECK(decode_all(q.dec, &part, 4096) == 0 && part.size() / 2 >= 24000 - 80);
 }
@@ -309,7 +309,7 @@ static void test_mp3() {
     {   // the LAME header makes it gapless: the decode lines up with the formula without any offset
         if (!load("chirp44_v24.mp3", &b)) { CHECK(false); return; }
         Opened o;
-        CHECK(open_file(&o, b, LA_MP3));
+        CHECK(open_file(&o, b, LAF_MP3));
         CHECK(la_gapless_trimmed(o.dec));
         Floats all;
         CHECK(decode_all(o.dec, &all, 4096) == 0);
@@ -323,12 +323,12 @@ static void test_mp3() {
         const int chunks[] = { 1, 333, 5000 };
         for (int c : chunks) {
             Opened p;
-            CHECK(open_file(&p, b, LA_MP3));
+            CHECK(open_file(&p, b, LAF_MP3));
             Floats f;
             CHECK(decode_all(p.dec, &f, c) == 0 && f == all);
         }
         Opened q;
-        CHECK(open_file(&q, b, LA_MP3, 97));
+        CHECK(open_file(&q, b, LAF_MP3, 97));
         Floats fq;
         CHECK(decode_all(q.dec, &fq, 4096) == 0 && fq == all);
         // seeking: lands near the second (the table's resolution, and two frames dropped), and 0 is the start again
@@ -348,18 +348,18 @@ static void test_mp3() {
         Bytes c;
         if (!load("chirp44_v23.mp3", &c)) { CHECK(false); return; }
         Opened p;
-        CHECK(open_file(&p, c, LA_MP3));
+        CHECK(open_file(&p, c, LAF_MP3));
         Floats f, g;
         CHECK(decode_all(p.dec, &f, 4096) == 0);
         Opened o;
-        CHECK(open_file(&o, b, LA_MP3));
+        CHECK(open_file(&o, b, LAF_MP3));
         CHECK(decode_all(o.dec, &g, 4096) == 0 && f == g);
     }
     {   // without a LAME header nothing is trimmed: the sound starts late by the encoder's and decoder's delay (1105 samples at 44.1 kHz)
         Bytes c;
         if (!load("plain_v1.mp3", &c)) { CHECK(false); return; }
         Opened o;
-        CHECK(open_file(&o, c, LA_MP3));
+        CHECK(open_file(&o, c, LAF_MP3));
         CHECK(!la_gapless_trimmed(o.dec));
         Floats all;
         CHECK(decode_all(o.dec, &all, 4096) == 0);
@@ -376,7 +376,7 @@ static void test_mp3() {
         Bytes c;
         if (!load("mono22.mp3", &c)) { CHECK(false); return; }
         Opened o;
-        CHECK(open_file(&o, c, LA_MP3));
+        CHECK(open_file(&o, c, LAF_MP3));
         Floats all;
         CHECK(decode_all(o.dec, &all, 4096) == 0);
         const size_t pairs = all.size() / 2;
@@ -401,7 +401,7 @@ static void test_wav() {
         const int frames = 20000;
         const Bytes b = make_wav(f.fmt, 2, 48000, f.bits, frames, sig);
         Opened o;
-        CHECK(open_file(&o, b, LA_WAV) && la_gapless_trimmed(o.dec));
+        CHECK(open_file(&o, b, LAF_WAV) && la_gapless_trimmed(o.dec));
         Floats all;
         CHECK(decode_all(o.dec, &all, 3000) == 0 && all.size() == (size_t)frames * 2);
         double worst = 0;
@@ -418,19 +418,19 @@ static void test_wav() {
     {   // exact values: 16-bit full scale and the 8-bit centre
         const Bytes b16 = make_wav(1, 1, 48000, 16, 4, [](int i, int) { return i == 0 ? 1.0 : i == 1 ? -1.0 : i == 2 ? 0.0 : 0.5; });
         Opened o;
-        CHECK(open_file(&o, b16, LA_WAV));
+        CHECK(open_file(&o, b16, LAF_WAV));
         Floats f;
         CHECK(decode_all(o.dec, &f, 8) == 0 && f.size() == 8);
         CHECK(f[0] == 32767.0f / 32768 && f[2] == -32767.0f / 32768 && f[4] == 0.0f && f[0] == f[1]);       // mono to both sides
         const Bytes b8 = make_wav(1, 2, 48000, 8, 2, [](int, int) { return 0.0; });
         Opened p;
-        CHECK(open_file(&p, b8, LA_WAV));
+        CHECK(open_file(&p, b8, LAF_WAV));
         CHECK(decode_all(p.dec, &f, 8) == 0 && f.size() == 4 && f[0] == 0.0f && f[3] == 0.0f);
     }
     {   // a float file with values that are not sound: no number, infinity, far beyond full scale
         const Bytes b = make_wav(3, 1, 48000, 32, 8, [](int i, int) { return i == 0 ? NAN : i == 1 ? INFINITY : i == 2 ? -INFINITY : i == 3 ? 1e30 : i == 4 ? 1.5 : 0.25; });
         Opened o;
-        CHECK(open_file(&o, b, LA_WAV));
+        CHECK(open_file(&o, b, LAF_WAV));
         Floats f;
         CHECK(decode_all(o.dec, &f, 8) == 0 && f.size() == 16);
         CHECK(f[0] == 0.0f && f[2] == 2.0f && f[4] == -2.0f && f[6] == 2.0f && f[8] == 1.5f && f[10] == 0.25f);
@@ -438,7 +438,7 @@ static void test_wav() {
     {   // 44.1 kHz is converted, the sound stays where it was
         const Bytes b = make_wav(1, 2, 44100, 16, 44100, [](int i, int c) { return c == 0 ? chirp_l(i / 44100.0) : chirp_r(i / 44100.0); });
         Opened o;
-        CHECK(open_file(&o, b, LA_WAV));
+        CHECK(open_file(&o, b, LAF_WAV));
         Floats all;
         CHECK(decode_all(o.dec, &all, 4096) == 0);
         CHECK(all.size() / 2 <= 48000 && all.size() / 2 >= 48000 - 80);
@@ -452,7 +452,7 @@ static void test_wav() {
     {   // six channels of a WAVE: folded as FLAC's are
         const Bytes b = make_wav(1, 6, 48000, 16, 4800, [](int i, int c) { return 0.2 * sin(2 * PI * (300 + 100 * c) * i / 48000.0); });
         Opened o;
-        CHECK(open_file(&o, b, LA_WAV));
+        CHECK(open_file(&o, b, LAF_WAV));
         Floats f;
         CHECK(decode_all(o.dec, &f, 4096) == 0 && f.size() == 4800 * 2);
         const double k = 1.0 / (1.0 + 0.7071067811865476 * 2);
@@ -469,7 +469,7 @@ static void test_wav() {
         b.resize(b.size() - 3);
         Opened o;
         o.mem = { &b, 0, -1, false, 0 };
-        CHECK(la_read_meta(mem_read, &o.mem, b.size(), LA_WAV, &o.meta));
+        CHECK(la_read_meta(mem_read, &o.mem, b.size(), LAF_WAV, &o.meta));
         o.dec = la_open(mem_read, &o.mem, b.size(), &o.meta);
         CHECK(o.dec != NULL);
         Floats f;
@@ -481,7 +481,7 @@ static void test_can_decode() {
     printf("- what can be decoded\n");
     LaMeta m;
     memset(&m, 0, sizeof m);
-    m.kind = LA_FLAC; m.channels = 2; m.sample_rate = 44100; m.bits = 16;
+    m.kind = LAF_FLAC; m.channels = 2; m.sample_rate = 44100; m.bits = 16;
     CHECK(la_can_decode(&m));
     m.bits = 24; CHECK(la_can_decode(&m));
     m.bits = 32; CHECK(!la_can_decode(&m));                    // beyond what the decoder does
@@ -490,13 +490,13 @@ static void test_can_decode() {
     m.sample_rate = 50000; CHECK(!la_can_decode(&m));
     m.sample_rate = 192000; CHECK(la_can_decode(&m));
     m.sample_rate = 384000; CHECK(!la_can_decode(&m));
-    m.kind = LA_MP3; m.sample_rate = 44100; m.channels = 2; CHECK(la_can_decode(&m));
+    m.kind = LAF_MP3; m.sample_rate = 44100; m.channels = 2; CHECK(la_can_decode(&m));
     m.channels = 6; CHECK(!la_can_decode(&m));
-    m.kind = LA_WAV; m.channels = 2; m.bits = 16; m.block_align = 4; CHECK(la_can_decode(&m));
+    m.kind = LAF_WAV; m.channels = 2; m.bits = 16; m.block_align = 4; CHECK(la_can_decode(&m));
     m.block_align = 0; CHECK(!la_can_decode(&m));
-    m.kind = LA_NONE; CHECK(!la_can_decode(&m));
+    m.kind = LAF_NONE; CHECK(!la_can_decode(&m));
     CHECK(!la_can_decode(NULL) && la_open(mem_read, NULL, 100, NULL) == NULL);
-    m.kind = LA_FLAC; m.bits = 16; m.sample_rate = 44100;
+    m.kind = LAF_FLAC; m.bits = 16; m.sample_rate = 44100;
     CHECK(la_open(NULL, NULL, 100, &m) == NULL);
     la_close(NULL);
 }
@@ -508,7 +508,7 @@ static void test_can_decode() {
 static void test_failures() {
     printf("- a drive that goes away\n");
     const char *names[] = { "chirp48.flac", "chirp44_v24.mp3", "plain_v1.mp3" };
-    const LaKind kinds[] = { LA_FLAC, LA_MP3, LA_MP3 };
+    const LaKind kinds[] = { LAF_FLAC, LAF_MP3, LAF_MP3 };
     for (int i = 0; i < 3; i++) {
         Bytes b;
         if (!load(names[i], &b)) { CHECK(false); continue; }
@@ -544,7 +544,7 @@ static void test_failures() {
         if (!load("chirp48.flac", &b)) { CHECK(false); return; }
         Mem keep = { &b, 0, -1, false, 0 };
         LaMeta meta;
-        CHECK(la_read_meta(mem_read, &keep, b.size(), LA_FLAC, &meta));
+        CHECK(la_read_meta(mem_read, &keep, b.size(), LAF_FLAC, &meta));
         Mem failing = { &b, 0, 0, false, 0 };
         LaDecoder *d = la_open(mem_read, &failing, b.size(), &meta);
         if (d) {
@@ -563,8 +563,8 @@ static bool finite_and_bounded(const Floats &f) {
 static void test_damage() {
     printf("- damaged files\n");
     const struct { const char *name; LaKind kind; } files[] = {
-        { "chirp44.flac", LA_FLAC }, { "chirp96_24.flac", LA_FLAC }, { "surround6.flac", LA_FLAC },
-        { "chirp44_v24.mp3", LA_MP3 }, { "plain_v1.mp3", LA_MP3 }, { "mono22.mp3", LA_MP3 },
+        { "chirp44.flac", LAF_FLAC }, { "chirp96_24.flac", LAF_FLAC }, { "surround6.flac", LAF_FLAC },
+        { "chirp44_v24.mp3", LAF_MP3 }, { "plain_v1.mp3", LAF_MP3 }, { "mono22.mp3", LAF_MP3 },
     };
     uint32_t rng = 777;
     auto next = [&]() { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
@@ -593,11 +593,11 @@ static void test_damage() {
         Bytes b;
         if (!load("chirp48.flac", &b)) { CHECK(false); return; }
         Opened p;
-        CHECK(open_file(&p, b, LA_FLAC));
+        CHECK(open_file(&p, b, LAF_FLAC));
         const size_t first = (size_t)p.meta.data_off;
         for (size_t i = first + 20; i < b.size(); i += 97) b[i] ^= 0x5A;
         Opened o;
-        if (open_file(&o, b, LA_FLAC)) {
+        if (open_file(&o, b, LAF_FLAC)) {
             Floats out;
             decode_all(o.dec, &out, 4096, 600000);
             CHECK(finite_and_bounded(out) && out.size() / 2 < 96000);
@@ -608,11 +608,11 @@ static void test_damage() {
         Bytes b;
         if (!load("chirp48.flac", &b)) { CHECK(false); return; }
         Opened p;
-        CHECK(open_file(&p, b, LA_FLAC));
+        CHECK(open_file(&p, b, LAF_FLAC));
         for (size_t extra : { (size_t)0, (size_t)1, (size_t)2, (size_t)50, (size_t)3000 }) {
             Bytes cut(b.begin(), b.begin() + (long)(p.meta.data_off + extra));
             Opened o;
-            if (open_file(&o, cut, LA_FLAC)) {
+            if (open_file(&o, cut, LAF_FLAC)) {
                 Floats out;
                 CHECK(decode_all(o.dec, &out, 4096) == 0);
             }

@@ -643,19 +643,35 @@ static bool meta_wav(Win *w, uint64_t size, LaMeta *m) {
 // ---------------------------------------------------------------------------
 
 LaKind la_kind_of(const char *name) {
-    if (!name) return LA_NONE;
+    if (!name) return LAF_NONE;
     const char *dot = strrchr(name, '.');
-    if (!dot) return LA_NONE;
-    if (strlen(dot) == 5 && ieq(dot, ".flac", 5)) return LA_FLAC;
-    if (strlen(dot) == 4 && ieq(dot, ".mp3", 4)) return LA_MP3;
-    if (strlen(dot) == 4 && ieq(dot, ".wav", 4)) return LA_WAV;
-    return LA_NONE;
+    if (!dot) return LAF_NONE;
+    if (strlen(dot) == 5 && ieq(dot, ".flac", 5)) return LAF_FLAC;
+    if (strlen(dot) == 4 && ieq(dot, ".mp3", 4)) return LAF_MP3;
+    if (strlen(dot) == 4 && ieq(dot, ".wav", 4)) return LAF_WAV;
+    return LAF_NONE;
+}
+
+void la_format_line(const LaMeta *m, char *out, int cap) {
+    if (cap <= 0) return;
+    if (m->kind == LAF_MP3) {
+        if (m->bitrate_kbps > 0) snprintf(out, (size_t)cap, "%d kbps MP3", m->bitrate_kbps);
+        else snprintf(out, (size_t)cap, "MP3");
+        return;
+    }
+    char rate[16];                                      // kHz with as many decimals as the rate needs: 48, 44.1, 22.05
+    if (m->sample_rate % 1000 == 0) snprintf(rate, sizeof rate, "%d", m->sample_rate / 1000);
+    else {
+        snprintf(rate, sizeof rate, "%d.%03d", m->sample_rate / 1000, m->sample_rate % 1000);
+        for (size_t n = strlen(rate); n > 0 && rate[n - 1] == '0'; n--) rate[n - 1] = '\0';
+    }
+    snprintf(out, (size_t)cap, "%s %s kHz / %d-bit", m->kind == LAF_FLAC ? "FLAC" : "WAV", rate, m->bits);
 }
 
 bool la_read_meta(LaRead rd, void *ctx, uint64_t size, LaKind kind, LaMeta *m) {
     memset(m, 0, sizeof *m);
     m->kind = kind;
-    if (!rd || kind == LA_NONE || size < 16) return false;
+    if (!rd || kind == LAF_NONE || size < 16) return false;
     Win *w = (Win *)malloc(sizeof *w);
     if (!w) return false;
     w->rd = rd;
@@ -665,9 +681,9 @@ bool la_read_meta(LaRead rd, void *ctx, uint64_t size, LaKind kind, LaMeta *m) {
     w->len = 0;
     bool ok = false;
     switch (kind) {
-    case LA_FLAC: ok = meta_flac(w, size, m); break;
-    case LA_MP3:  ok = meta_mp3(w, size, m); break;
-    case LA_WAV:  ok = meta_wav(w, size, m); break;
+    case LAF_FLAC: ok = meta_flac(w, size, m); break;
+    case LAF_MP3:  ok = meta_mp3(w, size, m); break;
+    case LAF_WAV:  ok = meta_wav(w, size, m); break;
     default: break;
     }
     free(w);

@@ -362,12 +362,12 @@ static bool wav_unit(LaDecoder *d) {
 // ---------------------------------------------------------------------------
 
 bool la_can_decode(const LaMeta *m) {
-    if (!m || m->kind == LA_NONE || m->channels < 1 || m->channels > 8) return false;
+    if (!m || m->kind == LAF_NONE || m->channels < 1 || m->channels > 8) return false;
     if (!resample_rate_supported(m->sample_rate)) return false;
     switch (m->kind) {
-    case LA_FLAC: return m->bits >= 4 && m->bits <= 24;
-    case LA_MP3:  return m->channels <= 2;
-    case LA_WAV:  return m->block_align > 0;
+    case LAF_FLAC: return m->bits >= 4 && m->bits <= 24;
+    case LAF_MP3:  return m->channels <= 2;
+    case LAF_WAV:  return m->block_align > 0;
     default:      return false;
     }
 }
@@ -392,15 +392,15 @@ LaDecoder *la_open(LaRead rd, void *ctx, uint64_t size, const LaMeta *m) {
     d->m = *m;
     d->ch = m->channels;
     d->rate = 48000;
-    d->end = m->kind == LA_FLAC ? size : m->data_off + m->data_len;
+    d->end = m->kind == LAF_FLAC ? size : m->data_off + m->data_len;
     if (d->end > size) d->end = size;
-    d->fb_cap = m->kind == LA_FLAC ? FB_CAP_FLAC : FB_CAP_OTHER;
+    d->fb_cap = m->kind == LAF_FLAC ? FB_CAP_FLAC : FB_CAP_OTHER;
     d->fb = (uint8_t *)malloc((size_t)d->fb_cap);
     d->fifo_cap = SLICE;
     d->fifo = (float *)malloc(sizeof(float) * 2 * (size_t)d->fifo_cap);
     if (!d->fb || !d->fifo) { la_close(d); return NULL; }
 
-    if (m->kind == LA_FLAC) {
+    if (m->kind == LAF_FLAC) {
         d->fi.min_block = m->flac_min_block;
         d->fi.max_block = m->flac_max_block;
         d->fi.sample_rate = m->sample_rate;
@@ -417,7 +417,7 @@ LaDecoder *la_open(LaRead rd, void *ctx, uint64_t size, const LaMeta *m) {
         d->stage_cap = d->plane_cap * m->channels;
         chan_wave_positions(m->channels, d->pos);
         if (!set_rate(d, m->sample_rate)) { la_close(d); return NULL; }
-    } else if (m->kind == LA_MP3) {
+    } else if (m->kind == LAF_MP3) {
         d->stage_cap = MINIMP3_MAX_SAMPLES_PER_FRAME;
         d->rate = 0;                                                    // the frame's own rate sets it
         d->limit_on = m->mp3_gapless && m->total_frames > 0;
@@ -444,10 +444,10 @@ bool la_seek(LaDecoder *d, uint32_t secs) {
     uint64_t frame = (uint64_t)secs * (uint64_t)m->sample_rate;
     if (m->total_frames > 0 && frame > m->total_frames) frame = m->total_frames;
     switch (m->kind) {
-    case LA_FLAC:
+    case LAF_FLAC:
         if (frame == 0) { fb_reset(d, m->data_off); return true; }
         return flac_seek(d, frame);
-    case LA_MP3:
+    case LAF_MP3:
         return mp3_seek(d, secs);
     default: {
         uint64_t byte = m->data_off + frame * (uint64_t)m->block_align;
@@ -460,7 +460,7 @@ bool la_seek(LaDecoder *d, uint32_t secs) {
 
 int la_decode(LaDecoder *d, float *lr, int max_pairs) {
     if (!d || !lr || max_pairs <= 0) return 0;
-    bool (*unit)(LaDecoder *) = d->m.kind == LA_FLAC ? flac_unit : d->m.kind == LA_MP3 ? mp3_unit : wav_unit;
+    bool (*unit)(LaDecoder *) = d->m.kind == LAF_FLAC ? flac_unit : d->m.kind == LAF_MP3 ? mp3_unit : wav_unit;
     int got = 0;
     while (got < max_pairs) {
         if (d->fifo_pos >= d->fifo_n) {
@@ -478,5 +478,5 @@ int la_decode(LaDecoder *d, float *lr, int max_pairs) {
 }
 
 bool la_gapless_trimmed(const LaDecoder *d) {
-    return d && !(d->m.kind == LA_MP3 && !d->m.mp3_gapless);
+    return d && !(d->m.kind == LAF_MP3 && !d->m.mp3_gapless);
 }

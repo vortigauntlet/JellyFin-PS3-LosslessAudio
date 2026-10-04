@@ -62,7 +62,7 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sourc
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
      test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request \
-     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless test_sub_conv test_local_subs test_local_tags test_local_audio test_local_music
+     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless test_sub_conv test_local_subs test_local_tags test_local_audio test_local_music test_music_engine
 
 test_iec61937: test_iec61937.c ../source/audio/iec61937.c $(A52_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -256,6 +256,27 @@ test_local_music: test_local_music.cpp ../source/local/local_music.c ../source/l
 	$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -c -o local_music_t.o ../source/local/local_music.c
 	$(CXX) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -c -o lfs_path_m.o ../source/local/lfs_path.cpp
 	$(CXX) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -o $@ test_local_music.cpp local_music_t.o lfs_path_m.o -lpthread
+
+# The music engine on files from a drive: music/music_player.cpp itself, with pthreads and a recording sound card for the console's services (hoststub_music/).
+MENG_SRC = ../source/local/local_audio.c ../source/local/local_tags.c ../source/audio/flac_dec.c ../source/audio/chan_map.c ../source/audio/resample.c minimp3_impl.c
+MENG_INC = -Ihoststub_music -Ihoststub -I../source/music -I../source/audio -I../source/local -I../source/util -I../source/player/stream -I../source/video -I../source/ui/render
+test_music_engine: test_music_engine.cpp ../source/music/music_player.cpp ../source/music/music_player.h $(MENG_SRC) ../source/local/lfs_path.cpp $(wildcard fixtures/music/*) $(wildcard hoststub_music/*) $(wildcard hoststub_music/*/*)
+	for f in $(MENG_SRC); do $(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/audio -I../source/local -c -o me_$$(basename $$f .c).o $$f || exit 1; done
+	$(CXX) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(MENG_INC) -c -o me_lfs_path.o ../source/local/lfs_path.cpp
+	$(CXX) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(MENG_INC) -o $@ test_music_engine.cpp ../source/music/music_player.cpp me_*.o -lpthread -lm
+
+# The music decoders built little-endian (the host) and big-endian (the PS3's byte order, run under qemu-ppc64) and compared:
+# tags and properties exactly, samples to a hair (see cmp_floats.c).  Skipped when the cross compiler is missing.
+.PHONY: endian_music
+endian_music: test_local_audio_endian.c cmp_floats.c $(MENG_SRC) ../source/local/local_audio.h $(wildcard fixtures/music/*)
+	$(CC) -O2 -Wall -I../source/audio -I../source/local -o em_le test_local_audio_endian.c $(MENG_SRC) -lm
+	$(CC) -O2 -Wall -o cmp_floats cmp_floats.c -lm
+	./em_le em_le.txt em_le.bin fixtures/music
+	@if command -v $(PPC64CC) >/dev/null && command -v $(QEMU_PPC64) >/dev/null; then \
+	    $(PPC64CC) -static -O2 -ffp-contract=off -Wall -I../source/audio -I../source/local -o em_be test_local_audio_endian.c $(MENG_SRC) -lm && \
+	    $(QEMU_PPC64) ./em_be em_be.txt em_be.bin fixtures/music && \
+	    cmp em_le.txt em_be.txt && ./cmp_floats em_le.bin em_be.bin 2e-6 && echo 'music decoders: big-endian run agrees'; \
+	else echo 'endian_music: no powerpc64 cross compiler or qemu-ppc64, skipped'; fi
 
 # Sample-rate conversion to the port's 48 kHz.
 test_resample: test_resample.cpp ../source/audio/resample.c ../source/audio/resample.h
@@ -514,9 +535,11 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_local_tags
 	./test_local_audio
 	./test_local_music
+	./test_music_engine
 	$(MAKE) -f Makefile.host check-mohasi-readonly
 	./test_mohasi_fs
 	$(MAKE) -f Makefile.host test_mohasi_fs_be
+	$(MAKE) -f Makefile.host endian_music
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \

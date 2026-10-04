@@ -25,8 +25,13 @@
   Drives are only ever read, never written to. Limits, which the file's page
   tells you about: H.264 video only (HEVC, 4K, 10-bit and VC-1 files can't
   play on a PS3), files whose only audio is Dolby Digital Plus or Vorbis can't
-  play yet, subtitles come from MKV files only (text and PGS), and music files
-  aren't supported yet.
+  play yet, and subtitles come from MKV files only (text and PGS).
+- **Music from your drives.** FLAC, MP3 and WAV files in the Media tab play in
+  the music player: the folder is the album, in track order (from the files'
+  tags), with the cover art (inside the files, or a cover.jpg / folder.jpg
+  beside them), and the tracks run into each other without a gap. FLAC up to
+  24-bit and 192 kHz is converted to the console's 48 kHz with a proper filter,
+  not squeezed; MP3s with a LAME header are cut to their exact length.
 - **Favourites.** Star films and shows on their page; they get their own row
   on Home.
 - **Dolby Digital output.** Settings → Audio → Audio Output has a new

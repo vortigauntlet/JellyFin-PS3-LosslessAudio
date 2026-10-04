@@ -44,6 +44,12 @@ void lm_sort(LmTrack *t, int n);
 // The name to show for a track: its title tag, else the file's name with the extension, a leading track
 // number ("03 - ", "1-04. ", "07_") and underscores taken out.
 void lm_display_title(const LmTrack *t, char *out, int cap);
+// The same from a file name or an lfs path alone (what a row shows before its tags are read).
+void lm_stem_title(const char *path_or_name, char *out, int cap);
+
+// Whether the tracks are one album: at most one distinct album tag among those that have one.  A folder that is not
+// (a pile of songs) is played in its listing order, not by track number.
+bool lm_is_one_album(const LmTrack *t, int n);
 
 // The album's name: the album tag most of the tracks carry, else the folder's name (underscores as spaces).
 void lm_album_name(const LmTrack *t, int n, const char *folder, char *out, int cap);
