@@ -77,3 +77,4 @@ tests/test_local_probe
 tests/test_local_play
 tests/test_local_names
 tests/test_local_resume
+tests/test_resample
