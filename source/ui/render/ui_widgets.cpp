@@ -38,13 +38,13 @@ static int tab_icon(int tab) {
     case TABKIND_PLAYLISTS:return ICON_MUSIC;
     case TABKIND_BOXSETS:  return ICON_COLLECTIONS;
     case TABKIND_SETTINGS: return ICON_SETTINGS;
-    case TABKIND_LIVETV:   return ICON_TV;
+    case TABKIND_LIVETV:   return ICON_ANTENNA;
     case TABKIND_LOCAL:    return ICON_COLLECTIONS;
     // Every custom / untyped library shares ONE icon, so they read as a
     // family rather than masquerading as a Collections library.
     //
     // ICON_PHOTO is the only sensible glyph left: the bundled Tabler font is
-    // a 20-glyph SUBSET (ui/fonts/tabler_icons.h) and all 20 are already
+    // a 21-glyph SUBSET (ui/fonts/tabler_icons.h) and all 21 are already
     // spoken for, so nothing is truly free.  This one at least never appears
     // in the tab bar — its only other use is a list placeholder in
     // ui_lists.cpp — so it collides with nothing the user sees up here.

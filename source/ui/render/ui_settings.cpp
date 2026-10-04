@@ -167,7 +167,7 @@ static void s_language(int d)  { i18n_step_pref(d); }
 #define ACTION(id, icon, val, act)  { id, icon, val, act, NULL }
 
 // ICON_BUG is reused for diagnostics rows and ICON_MUSIC for audio: the icon
-// font is a 20-glyph subset (ui/fonts/tabler_icons.h) and a new glyph would
+// font is a 21-glyph subset (ui/fonts/tabler_icons.h) and a new glyph would
 // mean regenerating it.
 static const UiRow k_ui[] = {
     TOGGLE(SET_DEBUG_LOG,   ICON_BUG,         v_debug,     t_debug),

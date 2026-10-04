@@ -169,7 +169,7 @@ static void draw_pp_symbol(int cx, int cy, bool paused, u32 color) {
 }
 
 // Speaker/volume glyph drawn with CPU primitives (the embedded Tabler font is a
-// 20-glyph subset with no volume icon).  A filled box + cone with two sound-wave
+// 21-glyph subset with no volume icon).  A filled box + cone with two sound-wave
 // arcs, centred at (cx, cy) inside a box of height h.
 #define SPK_PUT(X,Y) do { int _x=(X),_y=(Y); \
     if (_x>=0 && (u32)_x<tw && _y>=0 && (u32)_y<th) cpu_draw_row((u32)_y)[_x]=color; } while (0)

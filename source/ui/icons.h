@@ -11,6 +11,7 @@
 #define ICON_HOME          0xEAC1   // home
 #define ICON_MOVIE         0xEAFA   // movie
 #define ICON_TV            0xEA8D   // device-tv
+#define ICON_ANTENNA       0xF094   // antenna: Live TV (the tab for TV shows keeps ICON_TV)
 #define ICON_MUSIC         0xEAFC   // music
 #define ICON_COLLECTIONS   0xEEF7   // stack-2
 #define ICON_SETTINGS      0xEB20   // settings

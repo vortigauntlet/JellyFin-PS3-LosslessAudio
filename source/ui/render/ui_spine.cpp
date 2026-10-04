@@ -165,7 +165,7 @@ static int spine_icon(int tab) {
     case TABKIND_PLAYLISTS: return ICON_MUSIC;
     case TABKIND_BOXSETS:   return ICON_COLLECTIONS;
     case TABKIND_SETTINGS:  return ICON_SETTINGS;
-    case TABKIND_LIVETV:    return ICON_TV;
+    case TABKIND_LIVETV:    return ICON_ANTENNA;
     case TABKIND_LOCAL:     return ICON_COLLECTIONS;
     default:                return ICON_PHOTO;
     }
