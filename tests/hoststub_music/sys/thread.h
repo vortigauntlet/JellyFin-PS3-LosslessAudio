@@ -20,7 +20,13 @@ static inline int sysThreadCreate(sys_ppu_thread_t *t, void (*fn)(void *), void 
                                   uint64_t flags, char *name) {
     (void)prio; (void)stack; (void)flags; (void)name;
     host_thread_start *s = new host_thread_start{ fn, arg };
-    return pthread_create(t, NULL, host_thread_main, s);
+    // The stack the console would give the thread, so a test fails if the code needs more than that.
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack < 32768 ? 32768 : (size_t)stack);
+    const int e = pthread_create(t, &attr, host_thread_main, s);
+    pthread_attr_destroy(&attr);
+    return e;
 }
 
 static inline int sysThreadJoin(sys_ppu_thread_t t, uint64_t *ret) {

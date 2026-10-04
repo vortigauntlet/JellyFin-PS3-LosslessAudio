@@ -1,14 +1,23 @@
-# Local Media — Scope
+# Local Media
 
-Status: **scoping only, nothing implemented.** This document answers "can the
-app play my own BD remuxes and 24-bit FLACs straight off a drive, with no
-Jellyfin server?" It covers what exists to build on, what each format needs,
-what the PS3 cannot do, and a staged plan.
+Status: **built for 3.2.**  This started as the scoping document for "can the app play my own BD remuxes and
+24-bit FLACs straight off a drive, with no Jellyfin server?"  The answer became yes: the Media tab, the file layer
+(`source/local/lfs`, read-only FAT32 / NTFS / exFAT), MKV / .m2ts / .ts playback through the existing player, local
+subtitles, and music files in the music screen.  What was built and in which order is in
+[release-3.2-plan.md](release-3.2-plan.md) (U1-U5); the sections below are the analysis the work started from, kept
+as it was, so "Today" and "not read" in them describe the app before 3.2.
 
-Today the answer is no. The offline feature ([offline-downloads.md](offline-downloads.md))
-plays only what it downloaded from the server, as the MPEG-TS the server sent.
-There is no file browser, no MKV demuxer, and the music player only plays the
-48 kHz MP3 the server transcodes to (`music_player.cpp`, `stream.mp3?AudioCodec=mp3`).
+How the pieces fit, now:
+
+| | Where |
+|---|---|
+| Drives and files, read-only | `source/local/lfs*`, `third_party/mohasi_fs` (NTFS, exFAT) |
+| What a video file holds, and whether the PS3 can play it | `source/local/local_probe`, `source/video/mkv_demux`, `h264_sps` |
+| Matroska and m2ts played as MPEG-TS | `source/video/mkv_ts`, `source/player/stream/stream_local`, `player/core/player_local` |
+| Audio of files: AAC, FLAC, PCM (video) | `source/audio/adec_aac`, `flac_dec`, `adec_flac`, `adec_pcm`, `chan_map`, `resample` |
+| Subtitles of Matroska files | `source/local/sub_conv`, `local_subs`, `player/subtitles` |
+| Music: tags, decoding, albums | `source/local/local_tags`, `local_audio`, `local_music`, `local_music_fs`; engine in `source/music/music_player` |
+| The browser | `source/ui/xmb/ui_media` |
 
 ## 1. Why it is worth doing
 
