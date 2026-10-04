@@ -65,4 +65,8 @@ tests/test_live_watch
 tests/test_mohasi_fs
 tests/test_mohasi_fs_be
 tests/test_lfs_path
+tests/test_h264_sps
+tests/test_mkv_demux
 tests/test_lfs_path
+tests/test_h264_sps
+tests/test_mkv_demux
