@@ -232,6 +232,27 @@ static void policy() {
     s.subs[1].usable = true;
     snprintf(s.subs[1].lang, sizeof s.subs[1].lang, "fre");                  // another spelling of the same language
     CHECK(local_pick_sub(&s, 1) == 1);
+
+    // whether the file can be played at all, and the sentence when not
+    LocalInfo p;
+    memset(&p, 0, sizeof p);
+    p.video_ok = true;
+    p.audio[p.n_audio++] = aud(LA_AC3, true, true, false, "eng");
+    char why[160] = "x";
+    CHECK(local_can_play(&p, &surround, why, sizeof why) && why[0] == '\0');
+    CHECK(local_can_play(&p, &surround, nullptr, 0));
+    p.video_ok = false;
+    snprintf(p.video_reason, sizeof p.video_reason, "HEVC");
+    CHECK(!local_can_play(&p, &surround, why, sizeof why) && strstr(why, "HEVC") && strstr(why, "picture"));
+    p.video_reason[0] = '\0';
+    CHECK(!local_can_play(&p, &surround, why, sizeof why) && strstr(why, "unsupported"));
+    p.video_ok = true;
+    p.audio[0].decodable = false;
+    snprintf(p.audio[0].label, sizeof p.audio[0].label, "English - AAC - Stereo");
+    CHECK(!local_can_play(&p, &surround, why, sizeof why) && strstr(why, "AAC") && strstr(why, "audio"));
+    p.n_audio = 0;
+    CHECK(!local_can_play(&p, &surround, why, sizeof why) && strstr(why, "no sound"));
+    CHECK(!local_can_play(&p, &surround, why, 8) && strlen(why) == 7);       // cut, still terminated
 }
 
 static void languages() {

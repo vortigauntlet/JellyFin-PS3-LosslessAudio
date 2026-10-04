@@ -92,6 +92,11 @@ int local_pick_audio(const LocalInfo *info, const LocalAudioPrefs *prefs);
 // The subtitle track to start with: a forced, usable one in the chosen audio track's language, else -1.
 int local_pick_sub(const LocalInfo *info, int audio_index);
 
+// Whether the player can play the file: a picture the console can decode and an audio track it can
+// decode (the audio is the player's clock, so a file with none cannot play silent).  When not, `why`
+// says so in a sentence fit for the screen.  `why` may be NULL.
+bool local_can_play(const LocalInfo *info, const LocalAudioPrefs *prefs, char *why, int why_cap);
+
 // ---- Blu-ray .m2ts: 192-byte source packets viewed as 188-byte TS -----------------------------------
 // A read-at over an .m2ts file that returns the stream with each packet's 4-byte header removed, so
 // offsets are 188-aligned TS offsets.  ctx must point to a LocalM2tsView.

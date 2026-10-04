@@ -520,6 +520,24 @@ int local_pick_audio(const LocalInfo *info, const LocalAudioPrefs *prefs) {
     return best;
 }
 
+bool local_can_play(const LocalInfo *info, const LocalAudioPrefs *prefs, char *why, int why_cap) {
+    char m[160] = "";
+    bool ok = true;
+    if (!info->video_ok) {
+        snprintf(m, sizeof m, "The picture (%s) is beyond what the PS3 can play.",
+                 info->video_reason[0] ? info->video_reason : "unsupported");
+        ok = false;
+    } else if (info->n_audio == 0) {
+        snprintf(m, sizeof m, "This file has no sound track.");
+        ok = false;
+    } else if (local_pick_audio(info, prefs) < 0) {
+        snprintf(m, sizeof m, "The PS3 cannot decode this file's audio yet (%.80s).", info->audio[0].label);
+        ok = false;
+    }
+    set_err(why, why_cap, m);
+    return ok;
+}
+
 int local_pick_sub(const LocalInfo *info, int audio_index) {
     if (audio_index < 0 || audio_index >= info->n_audio) return -1;
     const char *lang = info->audio[audio_index].lang;

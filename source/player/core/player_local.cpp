@@ -190,22 +190,9 @@ bool show_player_file(const char *path, const char *title, u32 resume_secs, char
     }
 
     // Refuse here, before anything is torn down for playback: HEVC and the like never reach the decoder.
-    if (!info.video_ok) {
-        char m[128];
-        snprintf(m, sizeof m, "The picture (%s) is beyond what the PS3 can play.",
-                 info.video_reason[0] ? info.video_reason : "unsupported");
-        set_why(why, why_cap, m);
-        return false;
-    }
     const LocalAudioPrefs prefs = { surround_enabled(), audio_passthrough_wanted() };
+    if (!local_can_play(&info, &prefs, why, why_cap)) return false;
     const int pick = local_pick_audio(&info, &prefs);
-    if (pick < 0) {
-        char m[128];
-        if (info.n_audio == 0) snprintf(m, sizeof m, "This file has no sound track.");
-        else snprintf(m, sizeof m, "The PS3 cannot decode this file's audio yet (%.80s).", info.audio[0].label);
-        set_why(why, why_cap, m);
-        return false;
-    }
 
     local.container = info.container;
     local.video_id  = info.video_id;
