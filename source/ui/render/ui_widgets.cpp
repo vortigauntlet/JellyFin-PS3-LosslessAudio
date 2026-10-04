@@ -388,7 +388,7 @@ void xmb_draw_tabs(void) {
         const float px    = UIS_TF(11.5f);
         const float track = px * 0.04f;
         char label[sizeof(g_tabs[t].label)];
-        snprintf(label, sizeof label, "%s", g_tabs[t].label);
+        snprintf(label, sizeof label, "%s", tr(g_tabs[t].label));
         ui_upper_ascii(label);
 
         int lw = ttf_text_width_tracked(label, px, UI_FACE_TAB, track);
@@ -576,14 +576,14 @@ void xmb_draw_jumpbar(int tab) {
 // will switch it.
 void xmb_draw_music_subtabs(int x, int y, int active, bool focused) {
     static const char *labels[MUSIC_ST_COUNT] =
-        { "Albums", "Artists", "Playlists", "Genres", "Songs" };
+        { TRN("Albums"), TRN("Artists"), TRN("Playlists"), TRN("Genres"), TRN("Songs") };
     const float px = UIS_TF(16.0f);
     for (int i = 0; i < MUSIC_ST_COUNT; i++) {
         bool is_active = (i == active);
         u32 color = is_active ? (focused ? XMB_WHITE : XMB_TEXT)
                               : XMB_TEXT_FAINT;
-        drawTTF((u32)x, (u32)y, labels[i], px, color, is_active);
-        int w = ttf_text_width(labels[i], px, is_active);
+        drawTTF((u32)x, (u32)y, tr(labels[i]), px, color, is_active);
+        int w = ttf_text_width(tr(labels[i]), px, is_active);
         if (is_active)
             drawRect((u32)x, (u32)(y + UIS_H(24)), (u32)w, UIS_H(3),
                      focused ? XMB_KEY_SEL : XMB_ACCENT);
@@ -892,7 +892,7 @@ void draw_hints_bar(const Hint *hints, int n) {
                      ? hint_badge_w()
                      : ps_btn_width(hints[i].glyph, icon_h);
         if (hints[i].label && hints[i].label[0]) {
-            total_w += gap_it + ttf_text_width(hints[i].label, text_px);
+            total_w += gap_it + ttf_text_width(tr(hints[i].label), text_px);
             if (i < n - 1) total_w += gap_sep;
         } else {
             total_w += gap_pair;
@@ -918,9 +918,9 @@ void draw_hints_bar(const Hint *hints, int n) {
         }
         if (hints[i].label && hints[i].label[0]) {
             x += gap_it;
-            drawTTF((u32)x, (u32)(cy - (int)(text_px * 0.55f)), hints[i].label,
+            drawTTF((u32)x, (u32)(cy - (int)(text_px * 0.55f)), tr(hints[i].label),
                     text_px, XMB_TEXT_DIM);
-            x += ttf_text_width(hints[i].label, text_px);
+            x += ttf_text_width(tr(hints[i].label), text_px);
             if (i < n - 1) x += gap_sep;
         } else {
             x += gap_pair;

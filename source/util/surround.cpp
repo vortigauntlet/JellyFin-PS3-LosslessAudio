@@ -1,5 +1,6 @@
 // Surround 5.1 (Alpha) setting store — see surround.h.
 
+#include "i18n.h"
 #include "surround.h"
 #include "jf_paths.h"     // jf_data_path()
 #include "audio_out.h"    // audio_out_lpcm_max_channels()
@@ -55,7 +56,7 @@ const char *surround_mode_label(void) {
     case SURROUND_HD:    return "5.1";
     case SURROUND_HD_71: return "7.1";
     case SURROUND_AC3:   return "5.1";   // retired; sanitised on load
-    default:             return "Stereo";
+    default:             return TRN("Stereo");
     }
 }
 

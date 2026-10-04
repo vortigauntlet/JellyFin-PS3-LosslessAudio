@@ -410,7 +410,7 @@ void spine_draw(void) {
         const int t  = order[i];
         const int cx = sx(spine_slot_x_f((float)i - f));
         char label[sizeof(g_tabs[t].label)];
-        snprintf(label, sizeof label, "%s", g_tabs[t].label);
+        snprintf(label, sizeof label, "%s", tr(g_tabs[t].label));
         ui_upper_ascii(label);
 
         int lw = ttf_text_width_tracked(label, lpx, UI_FACE_TAB, track);

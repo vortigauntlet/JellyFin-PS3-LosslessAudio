@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/mutex.h>
 
+#include "i18n.h"
 #include "ui_wave_audio.h"
 #include "wave_audio.h"
 #include "wave_motion.h"
@@ -188,7 +189,7 @@ int wave_audio_level(void)
 
 const char *wave_audio_level_label(void)
 {
-    static const char *const L[4] = { "Off", "Normal", "Strong", "Max" };
+    static const char *const L[4] = { TRN("Off"), TRN("Normal"), TRN("Strong"), TRN("Max") };
     const int l = wave_audio_level();
     return L[l < 0 ? 0 : (l > 3 ? 3 : l)];
 }

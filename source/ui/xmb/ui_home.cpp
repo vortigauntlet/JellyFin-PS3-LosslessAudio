@@ -171,11 +171,11 @@ static void home_init_once(void) {
     if (s_inited) return;
     s_inited = true;
     memset(s_rows, 0, sizeof(s_rows));
-    s_rows[HR_CONTINUE].title = "Continue Watching";        s_rows[HR_CONTINUE].kind = HROW_LANDSCAPE;
-    s_rows[HR_NEXTUP].title   = "Next Up";                  s_rows[HR_NEXTUP].kind   = HROW_LANDSCAPE;
-    s_rows[HR_MOVIES].title   = "Recently Added in Movies"; s_rows[HR_MOVIES].kind   = HROW_PORTRAIT;
-    s_rows[HR_SHOWS].title    = "Recently Added in Shows";  s_rows[HR_SHOWS].kind    = HROW_PORTRAIT;
-    s_rows[HR_MUSIC].title    = "Recently Added in Music"; s_rows[HR_MUSIC].kind    = HROW_SQUARE;
+    s_rows[HR_CONTINUE].title = TRN("Continue Watching");        s_rows[HR_CONTINUE].kind = HROW_LANDSCAPE;
+    s_rows[HR_NEXTUP].title   = TRN("Next Up");                  s_rows[HR_NEXTUP].kind   = HROW_LANDSCAPE;
+    s_rows[HR_MOVIES].title   = TRN("Recently Added in Movies"); s_rows[HR_MOVIES].kind   = HROW_PORTRAIT;
+    s_rows[HR_SHOWS].title    = TRN("Recently Added in Shows");  s_rows[HR_SHOWS].kind    = HROW_PORTRAIT;
+    s_rows[HR_MUSIC].title    = TRN("Recently Added in Music"); s_rows[HR_MUSIC].kind    = HROW_SQUARE;
 }
 
 static void home_each_extra(int i, const char *o, int n, void *ctx) {
@@ -607,7 +607,7 @@ void xmb_home_text_phase(void) {
         // Row header, with a dim item count when the row overflows the screen
         // (replaces the old horizontal scrollbar as the "there's more" cue).
         // v1.0: row titles are eyebrows -- Microgramma, uppercase, 0.18em.
-        int hw = xmb_draw_eyebrow(x0, vy + UIS_H(4), row->title,
+        int hw = xmb_draw_eyebrow(x0, vy + UIS_H(4), tr(row->title),
                                   row_focused ? XMB_TEXT : XMB_TEXT_FAINT);
         if (row->kind != HROW_STUB && row->count > row_visible_cols(row->kind)) {
             char cnt[8];
@@ -617,7 +617,7 @@ void xmb_home_text_phase(void) {
         }
 
         if (row->kind == HROW_STUB) {
-            const char *msg = "Coming soon";
+            const char *msg = TR("Coming soon");
             int tw = ttf_text_width(msg, UIS_TF(16));
             drawTTF((u32)(x0 + (cw - tw) / 2),
                     (u32)(card_y + ch / 2 - UIS_H(8)), msg, UIS_TF(16), XMB_TEXT_FAINT);
@@ -625,8 +625,7 @@ void xmb_home_text_phase(void) {
         }
 
         if (row->count == 0) {
-            // drawTTF is Latin-1, so plain "..." (no UTF-8 ellipsis).
-            const char *msg = row->loaded ? "Nothing here yet" : "Loading...";
+            const char *msg = row->loaded ? TR("Nothing here yet") : TR("Loading...");
             drawTTF((u32)x0, (u32)(card_y + ch / 2 - UIS_H(8)), msg, UIS_TF(15), XMB_TEXT_FAINT);
             continue;
         }

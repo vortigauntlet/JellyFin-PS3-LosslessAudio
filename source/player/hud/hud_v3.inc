@@ -177,10 +177,10 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         char a_val[72], v_val[16];
         const char *al = g_hud.audio_label;
         snprintf(a_val, sizeof a_val, "%s",
-                 (al[0] && strcmp(al, "AUDIO") != 0) ? al : "Default");
+                 (al[0] && strcmp(al, TR("AUDIO")) != 0) ? al : TR("Default"));
         snprintf(v_val, sizeof v_val, "%d%%", audio_get_volume());
-        const char *keys[3] = { "AUDIO", "VOLUME", "SUBTITLES" };
-        const char *vals[3] = { a_val, v_val, g_hud.cc_active ? "On" : "Off" };
+        const char *keys[3] = { TR("AUDIO"), TR("VOLUME"), TR("SUBTITLES") };
+        const char *vals[3] = { a_val, v_val, g_hud.cc_active ? TR("On") : TR("Off") };
         const int   slot[3] = { FOCUS_AUDIO, FOCUS_VOLUME, FOCUS_CC };
         // The audio value is the long one: clip it so the row never runs
         // into the title.
@@ -259,10 +259,10 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         const int n = V3_INCR[g_hud.incr_idx < 0 ? 0 : g_hud.incr_idx % 3];
         const float spx = UIS_TF(12.5f);
         if (g_hud.focus == FOCUS_REW) {
-            snprintf(st, sizeof st, "\xE2\x80\xB9 back %ds", n);
+            snprintf(st, sizeof st, TR("\xE2\x80\xB9 back %ds"), n);
             drawTTF((u32)bx, (u32)(by - UIS_H(24)), st, spx, XMB_ACCENT_ALT);
         } else {
-            snprintf(st, sizeof st, "ahead %ds \xE2\x80\xBA", n);
+            snprintf(st, sizeof st, TR("ahead %ds \xE2\x80\xBA"), n);
             const int sw = ttf_text_width(st, spx);
             drawTTF((u32)(bx + bw - sw), (u32)(by - UIS_H(24)), st, spx, XMB_ACCENT_ALT);
         }
@@ -302,18 +302,18 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
     {
         Hint h[6]; int n = 0;
         h[n].glyph = 'X';
-        h[n].label = g_hud.focus == FOCUS_REW    ? "Back"
-                   : g_hud.focus == FOCUS_FF     ? "Ahead"
-                   : g_hud.focus == FOCUS_AUDIO  ? "Audio"
-                   : g_hud.focus == FOCUS_VOLUME ? "Volume"
-                   : g_hud.focus == FOCUS_CC     ? "Subtitles"
-                   : paused                      ? "Play" : "Pause";
+        h[n].label = g_hud.focus == FOCUS_REW    ? TRN("Back")
+                   : g_hud.focus == FOCUS_FF     ? TRN("Ahead")
+                   : g_hud.focus == FOCUS_AUDIO  ? TRN("Audio")
+                   : g_hud.focus == FOCUS_VOLUME ? TRN("Volume")
+                   : g_hud.focus == FOCUS_CC     ? TRN("Subtitles")
+                   : paused                      ? TRN("Play") : TRN("Pause");
         n++;
         h[n].glyph = 'L'; h[n].label = "";       n++;   // L2 R2: one cluster
-        h[n].glyph = 'R'; h[n].label = "Rewind / Fast Forward"; n++;
-        h[n].glyph = 'T'; h[n].label = "Tracks"; n++;
-        h[n].glyph = 'C'; h[n].label = "Stop";   n++;
-        h[n].glyph = 'S'; h[n].label = "Hide";   n++;
+        h[n].glyph = 'R'; h[n].label = TRN("Rewind / Fast Forward"); n++;
+        h[n].glyph = 'T'; h[n].label = TRN("Tracks"); n++;
+        h[n].glyph = 'C'; h[n].label = TRN("Stop");   n++;
+        h[n].glyph = 'S'; h[n].label = TRN("Hide");   n++;
         draw_hints_bar(h, n);
         ovl_span(v3y(660), (int)s_ovl_h);
     }

@@ -24,6 +24,7 @@
 #include "subfont.h"
 #include "subcolor.h"
 #include "statsovl.h"
+#include "i18n_store.h"
 #include "update_check.h"
 
 // -------------------------------------------------------
@@ -186,7 +187,7 @@ void xmb_play_episode_with_next(const XMBItem *first, u32 resume_secs,
         XMBItem next;
         bool have = xmb_fetch_next_episode(cur.id, &next);
         if (have)
-            player_arm_next("NEXT EPISODE", "Press SELECT for next episode");
+            player_arm_next(TR("NEXT EPISODE"), TR("Press SELECT for next episode"));
         xmb_play_item(&cur, resume, media_source_id);
         if (!have || !player_take_next_request()) break;
         cur    = next;
@@ -276,7 +277,9 @@ static bool xmb_input_settings(void) {
             else                                       update_check_again();
         }
 #if ENABLE_PLAYER_STATS
-        if (g_settings_sel == 15)                                       // Player Stats Overlay
+        if (g_settings_sel == 15)                                       // Language
+            i18n_step_pref(1);
+        if (g_settings_sel == 16)                                       // Player Stats Overlay
             statsovl_set_enabled(!statsovl_enabled());
 #endif
     }
@@ -460,8 +463,8 @@ static void xmb_input_col_sub(void) {
     }
     if (BTN_PRESSED(cross) && g_col_sub_count > 0 && g_col_sub_sel < g_col_sub_count) {
         xmb_play_list_with_next(g_col_sub_items, g_col_sub_count,
-                                g_col_sub_sel, "NEXT MOVIE",
-                                "Press SELECT for next movie");
+                                g_col_sub_sel, TR("NEXT MOVIE"),
+                                TR("Press SELECT for next movie"));
         g_col_depth = 0;
         g_col_sub_sel = 0;
         g_col_sub_scroll = 0;

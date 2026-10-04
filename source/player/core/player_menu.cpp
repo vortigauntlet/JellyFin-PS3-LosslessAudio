@@ -57,7 +57,7 @@ HudAction player_handle_menu_action(PlayerState *ps, HudAction act) {
             for (int i = 0; i < ps->tracks.n_audio; i++)
                 items[i] = ps->tracks.audio[i].label;
             ps->menu_kind = PLAYER_MENU_AUDIO;
-            hud_open_menu("Audio", items, ps->tracks.n_audio, ps->cur_audio);
+            hud_open_menu(TR("Audio"), items, ps->tracks.n_audio, ps->cur_audio);
         } else {
             plog("hud: audio - no tracks");
         }
@@ -65,11 +65,11 @@ HudAction player_handle_menu_action(PlayerState *ps, HudAction act) {
         act = HUD_ACTION_NONE;
         if (ps->have_tracks && ps->tracks.n_subs > 0) {
             const char *items[JF_MAX_STREAMS + 1];
-            items[0] = "Off";
+            items[0] = TR("Off");
             for (int i = 0; i < ps->tracks.n_subs; i++)
                 items[1 + i] = ps->tracks.subs[i].label;
             ps->menu_kind = PLAYER_MENU_SUBS;
-            hud_open_menu("Subtitles", items, ps->tracks.n_subs + 1,
+            hud_open_menu(TR("Subtitles"), items, ps->tracks.n_subs + 1,
                           ps->cur_sub + 1);
         } else {
             plog("hud: subs - none available");
@@ -85,7 +85,7 @@ HudAction player_handle_menu_action(PlayerState *ps, HudAction act) {
                 // The audio chip names the track, in the selector's words.
                 char w[64];
                 vpick_audio_words(ps->tracks.audio[ps->cur_audio].label, w, sizeof w);
-                hud_set_audio_label(w[0] ? w : "Default");
+                hud_set_audio_label(w[0] ? w : TR("Default"));
             }
             act = HUD_ACTION_SEEK;     // 0-delta reopen applies the track
             char buf[96];

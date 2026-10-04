@@ -225,7 +225,7 @@ static void player_draw_next_popup(int auto_secs) {
 
     char hint[96];
     if (auto_secs >= 0)
-        snprintf(hint, sizeof(hint), "%s \xC2\xB7 starting in %ds",
+        snprintf(hint, sizeof(hint), TR("%s \xC2\xB7 starting in %ds"),
                  s_next_hint, auto_secs);
     else
         snprintf(hint, sizeof(hint), "%s", s_next_hint);
@@ -310,7 +310,7 @@ bool player_seek_wait(unsigned elapsed_ms)
     const int y = (int)display_height / 2 + UIS_H(58);
     drawTTF((u32)(((int)display_width - w) / 2), (u32)y, msg, px, 0x00FFFFFF);
     {
-        const char *c = "O  Cancel";
+        const char *c = TR("O  Cancel");
         const int cw = ttf_text_width(c, UIS_TF(13.0f));
         drawTTF((u32)(((int)display_width - cw) / 2), (u32)(y + UIS_H(26)), c,
                 UIS_TF(13.0f), 0x00B8BCD0);
@@ -336,15 +336,15 @@ static bool player_stream_wait(unsigned elapsed_ms)
 
     if (buffering_active()) {
         char lab[48];
-        snprintf(lab, sizeof lab, "Waiting for the server \xC2\xB7 %us",
+        snprintf(lab, sizeof lab, TR("Waiting for the server \xC2\xB7 %us"),
                  elapsed_ms / 1000u);
-        buffering_step(lab, false, "Cancel");
+        buffering_step(lab, false, TR("Cancel"));
         buffering_frame();
         return true;
     }
     char msg[96];
     snprintf(msg, sizeof(msg),
-             "Waiting for the server... %us   (Circle to cancel)",
+             TR("Waiting for the server... %us   (Circle to cancel)"),
              elapsed_ms / 1000u);
     player_status_screen(s_wait_title, msg);
     return true;
@@ -529,7 +529,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // presentation only draws (its artwork is already in video memory) and
     // makes no request, so responseBuffer is the worker's alone meanwhile.
     if (g_spine_on) buffering_begin(item->id, item->name);
-    player_startup_step(item->name, "Connecting", "Connecting to server...");
+    player_startup_step(item->name, TR("Connecting"), TR("Connecting to server..."));
     {
         static struct {
             const JFItem *item; const char *msid; PlayerState *ps;
@@ -655,7 +655,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // (spine gate on; the gate off keeps the status lines below).  It reuses
     // the detail page's artwork, which is still in video memory.
     if (g_spine_on && !buffering_active()) buffering_begin(item->id, item->name);
-    player_startup_step(item->name, "Preparing", "Initializing decoder...");
+    player_startup_step(item->name, TR("Preparing"), TR("Initializing decoder..."));
 
     // Release the UI thumbnail cache (joins its fetch thread, frees ~15 MB
     // of card bitmaps) — the decoder + jitter buffer below need every MB,
@@ -678,7 +678,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         player_startup_abort();
         vdec_close();
         thumb_cache_init();
-        show_error("VDEC init failed.", "See /dev_hdd0/tmp/player_log.txt");
+        show_error(TR("VDEC init failed."), "See /dev_hdd0/tmp/player_log.txt");
         ui_restore_rsx_state();
         return;
     }
@@ -699,7 +699,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     plog("show_player: audio_open done");
     crash_log("p5 audio_open OK");
 
-    player_startup_step(item->name, "Connecting", "Connecting to stream...");
+    player_startup_step(item->name, TR("Connecting"), TR("Connecting to stream..."));
 
     crash_log("p6 stream_open begin");
     plog("show_player: stream_open");
@@ -722,7 +722,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     lc_logf("stream CONNECTED sock=%d", ps.sock);
     crash_log("p7 stream_open OK");
 
-    player_startup_step(item->name, "Buffering", "Streaming... START=stop");
+    player_startup_step(item->name, TR("Buffering"), TR("Streaming... START=stop"));
 
     video_reset();
     display_diag_reset();   // this session's frame rate, not the last one's
@@ -873,7 +873,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         int last_pct       = -1;
         plog("preroll: filling read-ahead ring");
         init_btns();
-        if (buffering_active()) buffering_step("Buffering", true, "Start now");
+        if (buffering_active()) buffering_step(TR("Buffering"), true, TR("Start now"));
         while (running && ps.playing && decode_ring_fill() < target &&
                timing_get_us() < deadline) {
             sysUtilCheckCallback();
@@ -900,7 +900,7 @@ void show_player(const JFItem *item, u32 resume_secs,
                 last_draw_us = now;
                 last_pct     = pct;
                 char msg[64];
-                snprintf(msg, sizeof(msg), "Buffering... %d%%   (O: start now)",
+                snprintf(msg, sizeof(msg), TR("Buffering... %d%%   (O: start now)"),
                          pct * 100 / 90 > 100 ? 100 : pct * 100 / 90);
                 player_status_screen(item->name, msg);
             }
@@ -1339,7 +1339,7 @@ void show_player(const JFItem *item, u32 resume_secs,
         if (flip_queued) { waitflip_timeout(250000); flip_queued = false; }
         ui_restore_rsx_state();
         buffering_begin(item->id, item->name);
-        buffering_step("Returning", false, NULL);
+        buffering_step(TR("Returning"), false, NULL);
         buffering_frame();
     }
     const u64 ret_t0 = timing_get_us();

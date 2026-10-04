@@ -27,6 +27,7 @@
 #include <sysutil/sysutil.h>
 #include <rsx/gcm_sys.h>
 
+#include "i18n.h"
 #include "display_24p.h"
 #include "display_mode.h"
 #include "display_diag.h"
@@ -438,11 +439,11 @@ bool d24_session_begin(const d24_ui *ui)
 	// touches the GPU until the switch is verified.
 	if (confirmed != 1)
 		ui->draw_prompt(f25 ? "Testing 1080p 50Hz output on this TV (one time only)."
-		                    : "Testing 1080p 24Hz output on this TV (one time only).",
-		                "When the picture returns, press X if you can read this. O or 15 s = no.");
+		                    : TR("Testing 1080p 24Hz output on this TV (one time only)."),
+		                TR("When the picture returns, press X if you can read this. O or 15 s = no."));
 	else
 		ui->draw_prompt(f25 ? "Switching the TV to 1080p 50Hz for this video..."
-		                    : "Switching the TV to 1080p 24Hz for this film...", "");
+		                    : TR("Switching the TV to 1080p 24Hz for this film..."), "");
 	rsxSync();
 
 	// Baseline at the ORIGINAL rate.  Proves the measurement itself on this
@@ -512,8 +513,8 @@ bool d24_session_begin(const d24_ui *ui)
 	snprintf(hzl, sizeof(hzl), "1080p %s", hz);
 	if (!ui->draw_prompt(confirmed != 1
 	                     ? (f25 ? "The TV is now at 1080p 50Hz. Press X if you can read this."
-	                            : "The TV is now at 1080p 24Hz. Press X if you can read this.")
-	                     : hzl, confirmed != 1 ? "O or 15 s = no, go back." : "")) {
+	                            : TR("The TV is now at 1080p 24Hz. Press X if you can read this."))
+	                     : hzl, confirmed != 1 ? TR("O or 15 s = no, go back.") : "")) {
 		phase(ui, "prompt_flip_timeout");
 		revert("flip did not complete in the new mode");
 		plog("24p: RESULT mode_switch=failure (flip timed out after the switch)");
@@ -541,10 +542,10 @@ bool d24_session_begin(const d24_ui *ui)
 			{
 				char l2[80];
 				const u64 left = (until - timing_get_us()) / 1000000ULL + 1;
-				snprintf(l2, sizeof(l2), "Press X if you can read this.  O = no.  Going back in %llu s",
+				snprintf(l2, sizeof(l2), TR("Press X if you can read this.  O = no.  Going back in %llu s"),
 				         (unsigned long long)left);
 				ui->draw_prompt(f25 ? "The TV is now at 1080p 50Hz."
-				                    : "The TV is now at 1080p 24Hz.", l2);
+				                    : TR("The TV is now at 1080p 24Hz."), l2);
 			}
 			if (timing_get_us() >= next_hb) {
 				char ph[48];

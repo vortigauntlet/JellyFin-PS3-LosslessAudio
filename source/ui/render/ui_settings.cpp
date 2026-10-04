@@ -1,6 +1,7 @@
 // Settings tab rendering — account card (avatar + identity) and selectable
 // action rows: "Log Out" and the "Debug Logging" toggle.
 
+#include "i18n_store.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -24,11 +25,12 @@
 // xmb/ui_peek.cpp (declared in ui_internal.h, not included here).
 void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
 
+// Labels and help are English here and drawn through tr().
 static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
     { "Log Out", "Debug Logging", "Screen Size", "1080p Playback (Alpha)",
       "Audio Output", "Dialogue Boost", "Subtitle Font", "Subtitle Colour",
       "Theme", "Menu Particles", "Day / Night Palette", "Wave Intensity",
-      "Auto Skip", "24Hz Output", "Software Update"
+      "Auto Skip", "24Hz Output", "Software Update", "Language"
 #if ENABLE_PLAYER_STATS
     , "Player Stats Overlay"
 #endif
@@ -40,7 +42,7 @@ static const char *SETTINGS_LABELS[XMB_SETTINGS_COUNT] =
 static const int   SETTINGS_ICONS[XMB_SETTINGS_COUNT]  =
     { ICON_LOGOUT, ICON_BUG, ICON_TV, ICON_MOVIE, ICON_MUSIC, ICON_MUSIC,
       ICON_TV, ICON_TV, ICON_PHOTO, ICON_PHOTO, ICON_PHOTO, ICON_MUSIC,
-      ICON_MOVIE, ICON_TV, ICON_TV
+      ICON_MOVIE, ICON_TV, ICON_TV, ICON_TV
 #if ENABLE_PLAYER_STATS
     , ICON_BUG
 #endif
@@ -55,14 +57,18 @@ static const char *SETTINGS_HELP[XMB_SETTINGS_COUNT] = {
     "Stereo, 5.1 or 7.1 sound over HDMI.\nPick what your TV, soundbar or receiver can play.",
     "Raise the centre channel, where the dialogue is.\nHelps when voices are quiet next to music and effects.",
     "The typeface subtitles are drawn in.",
-    "The colour subtitles are drawn in.",
+    "The colour subtitles are drawn in.\n"
+    "White is the broadcast default; the others are softer.",
     "The interface colour theme.\nJellywave is the default; extra .ini themes appear here too.",
     "Let the floating particles drift behind the menus too,\nnot only while music is playing.",
-    "Brighten the background and wave by day, back to the night look\nafter dark, with a glow at dawn and dusk. Follows the console clock.",
+    "Brighten the background by day, back to the night look after\n"
+    "dark, with a glow at dawn and dusk. Follows the console clock.",
     "How strongly the wave reacts to music.\nOff keeps it calm; Max makes every beat hit hard.",
     "Skip intros and recaps automatically, without pressing X.\nCredits start the next episode's 25 second countdown instead.",
     "Auto: 24fps films switch the TV to 24Hz for smooth motion.\nEach TV is checked once first. Off keeps everything at 60Hz.",
     "Checked at every launch. X checks again. New versions:\n" UPDATE_PAGE_TEXT,
+    "The language the menus are shown in.\n"
+    "Auto follows the PS3's own language setting.",
 #if ENABLE_PLAYER_STATS
     "Show playback statistics over the video:\nframe rate, bitrate, buffer and decoder figures.",
 #endif
@@ -125,7 +131,7 @@ static int settings_row_y(int i) {
 void settings_open_help_peek(void) {
     if (g_settings_sel < 0 || g_settings_sel >= XMB_SETTINGS_COUNT) return;
     const int list_x = ((int)display_width - XMB_LIST_W) / 2;
-    peek_open_text(SETTINGS_LABELS[g_settings_sel], SETTINGS_HELP[g_settings_sel],
+    peek_open_text(tr(SETTINGS_LABELS[g_settings_sel]), tr(SETTINGS_HELP[g_settings_sel]),
                    list_x, settings_row_y(g_settings_sel), XMB_LIST_W, SET_ROW_H);
 }
 
@@ -202,10 +208,10 @@ void xmb_draw_settings(void) {
     if (g_settings_confirm) {
         int mx, my, mw, mh;
         settings_confirm_rect(&mx, &my, &mw, &mh);
-        const char *q = "Log out of this account?";
+        const char *q = TR("Log out of this account?");
         int qw = ttf_text_width(q, UIS_TF(21), true);
         drawTTF((u32)(mx + (mw - qw) / 2), (u32)(my + UIS_H(28)), q, UIS_TF(21), XMB_TEXT, true);
-        const char *s = "You'll need to sign in again to browse your library.";
+        const char *s = TR("You'll need to sign in again to browse your library.");
         int sw = ttf_text_width(s, UIS_TF(14));
         drawTTF((u32)(mx + (mw - sw) / 2), (u32)(my + UIS_H(66)), s, UIS_TF(14), XMB_TEXT_DIM);
         return;
@@ -227,11 +233,11 @@ void xmb_draw_settings(void) {
     }
 
     // Identity.
-    drawTTF((u32)tx, (u32)(py + UIS_H(14)), "Account", UIS_TF(13), XMB_TEXT_FAINT);
+    drawTTF((u32)tx, (u32)(py + UIS_H(14)), TR("Account"), UIS_TF(13), XMB_TEXT_FAINT);
     char line[320];
-    snprintf(line, sizeof(line), "%s", g_username[0] ? g_username : "(unknown)");
+    snprintf(line, sizeof(line), "%s", g_username[0] ? g_username : TR("(unknown)"));
     drawTTF((u32)tx, (u32)(py + UIS_H(34)), line, UIS_TF(21), XMB_TEXT, true);
-    snprintf(line, sizeof(line), "%s", g_server[0] ? g_server : "(no server)");
+    snprintf(line, sizeof(line), "%s", g_server[0] ? g_server : TR("(no server)"));
     drawTTF((u32)tx, (u32)(py + UIS_H(64)), line, UIS_TF(14), XMB_TEXT_DIM);
 
     // Action rows. Draw only the visible window; the input handler still
@@ -245,9 +251,9 @@ void xmb_draw_settings(void) {
         drawIcon((u32)(list_x + UIS_W(20)), (u32)(iy + (SET_ROW_H - UIS_H(20)) / 2),
                  SETTINGS_ICONS[i], UIS_TF(20.0f), clr);
         drawTTF((u32)(list_x + UIS_W(52)), (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                SETTINGS_LABELS[i], UIS_TF(18), clr, sel);
+                tr(SETTINGS_LABELS[i]), UIS_TF(18), clr, sel);
         if (i == 1) {   // Debug Logging — right-aligned On/Off state
-            const char *val = plog_enabled() ? "On" : "Off";
+            const char *val = tr(plog_enabled() ? "On" : "Off");
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
@@ -256,7 +262,7 @@ void xmb_draw_settings(void) {
         if (i == 2) {   // Screen Size — right-aligned overscan percentage
             int pm = (int)(overscan_frac() * 1000.0f + 0.5f);   // permille
             char val[16];
-            if (pm == 0) snprintf(val, sizeof(val), "Off");
+            if (pm == 0) snprintf(val, sizeof(val), "%s", TR("Off"));
             else         snprintf(val, sizeof(val), "%d.%d%%", pm / 10, pm % 10);
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
@@ -264,28 +270,28 @@ void xmb_draw_settings(void) {
                     val, UIS_TF(18), pm ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 3) {   // 1080p Playback (Alpha) — right-aligned On/Off state
-            const char *val = hd1080_enabled() ? "On" : "Off";
+            const char *val = tr(hd1080_enabled() ? "On" : "Off");
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), hd1080_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 4) {   // Audio Output — right-aligned Stereo/5.1/7.1 state
-            const char *val = surround_mode_label();
+            const char *val = tr(surround_mode_label());
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), surround_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 5) {   // Dialogue Boost — right-aligned gain state
-            const char *val = centermix_label();
+            const char *val = tr(centermix_label());
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), centermix_active() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 6) {   // Subtitle Font — right-aligned typeface name
-            const char *val = subfont_label();
+            const char *val = tr(subfont_label());
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
@@ -293,7 +299,7 @@ void xmb_draw_settings(void) {
                     subfont_get() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 7) {   // Subtitle Colour — right-aligned look name
-            const char *val = subcolor_label();
+            const char *val = tr(subcolor_label());
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
@@ -303,42 +309,42 @@ void xmb_draw_settings(void) {
         if (i == 8) {   // Theme — right-aligned live theme name
             // Always drawn in the accent, because the accent IS the thing the
             // row changes: the value's colour previews the choice.
-            const char *val = theme_current_name();
+            const char *val = tr(theme_current_name());
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), XMB_ACCENT, sel);
         }
         if (i == 9) {   // Menu Particles — right-aligned On/Off state
-            const char *val = menusnow_enabled() ? "On" : "Off";
+            const char *val = tr(menusnow_enabled() ? "On" : "Off");
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), menusnow_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 10) {  // Day / Night Palette -- right-aligned On/Off state
-            const char *val = daynight_enabled() ? "On" : "Off";
+            const char *val = tr(daynight_enabled() ? "On" : "Off");
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), daynight_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 11) {  // Wave Intensity -- right-aligned Off/Normal/Strong/Max
-            const char *val = wave_audio_level_label();
+            const char *val = tr(wave_audio_level_label());
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), wave_audio_level() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 12) {  // Auto Skip -- right-aligned On/Off state
-            const char *val = autoskip_enabled() ? "On" : "Off";
+            const char *val = tr(autoskip_enabled() ? "On" : "Off");
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), autoskip_enabled() ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
         if (i == 13) {  // 24Hz Output -- right-aligned Auto/Off state
-            const char *val = d24_enabled() ? "Auto" : "Off";
+            const char *val = tr(d24_enabled() ? "Auto" : "Off");
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
@@ -351,12 +357,13 @@ void xmb_draw_settings(void) {
                 char tag[32] = "";
                 update_check_result(tag, sizeof tag);
                 const char *v = (tag[0] == 'v' || tag[0] == 'V') ? tag + 1 : tag;
-                snprintf(val, sizeof val, "%s available", v);
+                snprintf(val, sizeof val, TR("%s available"), v);
+            } else if (st == UPD_CURRENT) {
+                snprintf(val, sizeof val, TR("Up to date (%s)"), APP_VERSION);
             } else {
                 snprintf(val, sizeof val, "%s",
-                         st == UPD_CHECKING ? "Checking..."
-                       : st == UPD_CURRENT  ? "Up to date (" APP_VERSION ")"
-                       : st == UPD_FAILED   ? "Couldn't check"
+                         st == UPD_CHECKING ? TR("Checking...")
+                       : st == UPD_FAILED   ? TR("Couldn't check")
                        :                      APP_VERSION);
             }
             int vw = ttf_text_width(val, UIS_TF(18), sel);
@@ -364,9 +371,16 @@ void xmb_draw_settings(void) {
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
                     val, UIS_TF(18), st == UPD_AVAILABLE ? XMB_ACCENT : XMB_TEXT_FAINT, sel);
         }
+        if (i == 15) {  // Language -- right-aligned Auto or the language's own name
+            const char *val = i18n_pref_label(i18n_pref());
+            int vw = ttf_text_width(val, UIS_TF(18), sel);
+            drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
+                    (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
+                    val, UIS_TF(18), XMB_ACCENT, sel);
+        }
 #if ENABLE_PLAYER_STATS
-        if (i == 15) {  // Player Stats Overlay — right-aligned On/Off state
-            const char *val = statsovl_enabled() ? "On" : "Off";
+        if (i == 16) {  // Player Stats Overlay — right-aligned On/Off state
+            const char *val = tr(statsovl_enabled() ? "On" : "Off");
             int vw = ttf_text_width(val, UIS_TF(18), sel);
             drawTTF((u32)(list_x + XMB_LIST_W - UIS_W(24) - vw),
                     (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
@@ -382,7 +396,7 @@ void xmb_draw_settings(void) {
         drawTTF((u32)(hx + UIS_W(24)), (u32)(hy + UIS_H(12)),
                 SETTINGS_LABELS[g_settings_sel], UIS_TF(17), XMB_ACCENT, true);
         char line[160];
-        const char *t = SETTINGS_HELP[g_settings_sel];
+        const char *t = tr(SETTINGS_HELP[g_settings_sel]);
         for (int ln = 0; ln < 2 && t && *t; ln++) {
             const char *nl = strchr(t, '\n');
             int n = nl ? (int)(nl - t) : (int)strlen(t);
@@ -471,11 +485,11 @@ void xmb_overscan_calib_text(void) {
     int W = (int)display_width, H = (int)display_height;
     int cy = H / 2;
 
-    const char *title = "Screen Size";
+    const char *title = TR("Screen Size");
     int tw = ttf_text_width(title, UIS_TF(26), true);
     drawTTF((u32)((W - tw) / 2), (u32)(cy - UIS_H(78)), title, UIS_TF(26), OVL_INK, true);
 
-    const char *l1 = "Match the corners to the edges of your screen";
+    const char *l1 = TR("Match the corners to the edges of your screen");
     int l1w = ttf_text_width(l1, UIS_TF(16));
     drawTTF((u32)((W - l1w) / 2), (u32)(cy - UIS_H(34)), l1, UIS_TF(16), OVL_INK_DIM);
 
@@ -485,11 +499,11 @@ void xmb_overscan_calib_text(void) {
     int pw = ttf_text_width(pct, UIS_TF(30), true);
     drawTTF((u32)((W - pw) / 2), (u32)(cy - UIS_H(2)), pct, UIS_TF(30), XMB_ACCENT_DEEP, true);
 
-    const char *hint = "D-pad Left / Right to adjust";
+    const char *hint = TR("D-pad Left / Right to adjust");
     int hw = ttf_text_width(hint, UIS_TF(15));
     drawTTF((u32)((W - hw) / 2), (u32)(cy + UIS_H(44)), hint, UIS_TF(15), OVL_INK_DIM);
 
-    const char *keys = "Cross  Save        Circle  Cancel";
+    const char *keys = TR("Cross  Save        Circle  Cancel");
     int kw = ttf_text_width(keys, UIS_TF(15));
     drawTTF((u32)((W - kw) / 2), (u32)(cy + UIS_H(70)), keys, UIS_TF(15), OVL_INK_DIM);
 }

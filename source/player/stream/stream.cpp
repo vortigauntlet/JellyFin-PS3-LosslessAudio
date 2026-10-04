@@ -1,4 +1,5 @@
 #include "stream.h"
+#include "i18n.h"
 #include "plog.h"
 #include "jellyfin_api.h"
 #include "http.h"
@@ -7,6 +8,7 @@
 #include "lclog.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ppu-types.h>
@@ -196,7 +198,23 @@ static int sb_read(int sock, u8 *dst, int want) {
 // Why the last stream_open() failed, for the error screen: "Stream connection
 // failed" alone cannot tell a refused connection from a server that answered
 // 400 because the MediaSourceId was wrong, and those need different fixes.
-static char s_last_error[64] = "";
+static char s_last_error[64] = "";      // English: logged, and read by the logic that looks for "Cancelled"
+static char s_last_error_ui[128] = "";  // the same message in the interface language, for the error screen
+
+static void clear_err(void) { s_last_error[0] = '\0'; s_last_error_ui[0] = '\0'; }
+
+// The English into s_last_error and, formatted from the translated format string, into s_last_error_ui.
+// Each call wraps its format in the TRN marker, which is how tools/i18n.py finds it.
+static void set_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void set_err(const char *fmt, ...) {
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    vsnprintf(s_last_error, sizeof s_last_error, fmt, ap);
+    vsnprintf(s_last_error_ui, sizeof s_last_error_ui, tr(fmt), ap2);
+    va_end(ap2);
+    va_end(ap);
+}
 
 int stream_open(const char *url) {
     const char *p = url;
@@ -261,8 +279,7 @@ int stream_open(const char *url) {
     addr.sin_addr.s_addr = htonl((na<<24)|(nb<<16)|(nc<<8)|nd);
 
     if (netConnect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        snprintf(s_last_error, sizeof(s_last_error),
-                 "Could not connect to %s:%d", host, port);
+        set_err(TRN("Could not connect to %s:%d"), host, port);
         netClose(sock); return -1;
     }
 
@@ -317,8 +334,7 @@ int stream_open(const char *url) {
         }
         if (n == 0) {
             plog("stream_open: closed before headers");
-            snprintf(s_last_error, sizeof(s_last_error),
-                     "Server closed the connection");
+            set_err(TRN("Server closed the connection"));
             netClose(sock); return -1;
         }
         // n < 0: receive timeout — the server hasn't started responding yet.
@@ -330,8 +346,7 @@ int stream_open(const char *url) {
         // Let the caller keep the screen alive and offer a way out.
         if (s_wait_cb && !s_wait_cb((unsigned)((now - hdr_t0) / 1000ULL))) {
             plog("stream_open: cancelled by user");
-            snprintf(s_last_error, sizeof(s_last_error),
-                     "Cancelled while waiting for the server");
+            set_err(TRN("Cancelled while waiting for the server"));
             netClose(sock); return -1;
         }
         if (now - hdr_t0 >= STREAM_HDR_DEADLINE_US) {
@@ -388,17 +403,20 @@ int stream_open(const char *url) {
         plog(buf);
     }
     if (status != 200) {
-        snprintf(s_last_error, sizeof(s_last_error), "Server returned HTTP %d",
-                 status);
+        set_err(TRN("Server returned HTTP %d"), status);
         netClose(sock); return -1;
     }
 
-    s_last_error[0] = '\0';
+    clear_err();
     return sock;
 }
 
 const char *stream_last_error(void) {
     return s_last_error[0] ? s_last_error : "Could not reach the server";
+}
+
+const char *stream_last_error_ui(void) {
+    return s_last_error_ui[0] ? s_last_error_ui : TR("Could not reach the server");
 }
 
 // Stash the partial packet so the next call resumes instead of losing bytes.

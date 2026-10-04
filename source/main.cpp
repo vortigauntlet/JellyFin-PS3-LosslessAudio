@@ -39,6 +39,7 @@
 #include "statsovl.h"
 #include "menusnow.h"
 #include "autoskip.h"
+#include "i18n_store.h"
 #include "audio.h"
 #include "video.h"
 #include "player_hud.h"
@@ -138,6 +139,7 @@ int main(int argc, const char *argv[]) {
     // ui_init() would have thrown away.
     crash_log("6.3 theme_load_setting");
     theme_load_setting();
+    i18n_load();           // the interface language: saved choice, or the console language
     // AFTER plog is up, deliberately: this decides whether card images go
     // through the RSX or the CPU blit, and which one is live has to be
     // visible in the log.  Called from ui_init() it ran before the logger
@@ -186,7 +188,7 @@ int main(int argc, const char *argv[]) {
         crash_log("7 splash drawHeader");
         drawHeader();
         crash_log("7b splash drawTTF");
-        drawTTF(40, 96, "Starting...", 16, 0x0099A0BC);
+        drawTTF(40, 96, TR("Starting..."), 16, 0x0099A0BC);
         crash_log("7c splash flip");
         flip();
     }
@@ -209,7 +211,7 @@ int main(int argc, const char *argv[]) {
         crash_log("8 FAILED");
         boot_anim_leave();
         drawHeader();
-        drawTTF(40, 96, "Network initialisation failed.", 16, 0x0099A0BC);
+        drawTTF(40, 96, TR("Network initialisation failed."), 16, 0x0099A0BC);
         flip();
         while (running) sysUtilCheckCallback();
         return 1;
@@ -304,7 +306,7 @@ int main(int argc, const char *argv[]) {
             slog_state("SERVER_URL_SCREEN");
             char new_server[256] = "http://";
             if (get_input(new_server, sizeof(new_server),
-                          "Server URL (e.g. http://192.168.1.2:8096)", false) != 1)
+                          TR("Server URL (e.g. http://192.168.1.2:8096)"), false) != 1)
                 break;
             strncpy(g_server, new_server, sizeof(g_server)-1);
             g_server[sizeof(g_server)-1] = '\0';

@@ -128,7 +128,7 @@ static bool detect_tabs_once(void) {
         XMBTab *tb = &g_tabs[next];
         memset(tb, 0, sizeof(*tb));
         snprintf(tb->label, sizeof(tb->label), "%s",
-                 name[0] ? name : "Library");
+                 name[0] ? name : TRN("Library"));
         strncpy(tb->library_id, id, sizeof(tb->library_id) - 1);
         tb->kind    = kind;
         tb->icon    = "#";

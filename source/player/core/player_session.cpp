@@ -40,9 +40,9 @@ static bool stream_budget_enabled(void) {
 void show_error(const char *line1, const char *line2) {
 #if !BUILD_FOR_RPCS3
     drawHeader();
-    drawText(40, 100, line1);
-    if (line2 && line2[0]) drawText(40, 130, line2);
-    drawText(40, 160, "O: back");
+    drawText(40, 100, tr(line1));
+    if (line2 && line2[0]) drawText(40, 130, tr(line2));
+    drawText(40, 160, TR("O: back"));
     flip();
 #else
     // Emulator: the bitmap-font (NV3089) glyph blits dead-lock the RSX FIFO in

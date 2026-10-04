@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.1.1
+
+A bug-fix release on top of 3.1. It adds no new features, apart from the
+interface languages and 50 Hz output for 25 fps video.
+
+### Playback
+- **Fixed rubber-banding motion.** With streams that use B-frame pyramids (most
+  x264 transcodes), the PS3 decoder returns pictures in decode order, so the
+  picture stepped back and forth while the sound played normally. Pictures are
+  now shown in timestamp order.
+- **Fixed 24 fps film playing at about 20 fps** on 60 Hz output when frames
+  weren't blended, followed by catch-up frame drops. The pulldown is a proper
+  3:2 again.
+- Whole frames on 60 Hz and interlaced outputs (no frame blending), so a TV's
+  film mode no longer sees a broken cadence. Put `1` in `jellyfin_blend.txt` to
+  turn blending back on.
+- A/V sync no longer chases small offsets every refresh (a hitch about once a
+  second).
+- The frame rate comes from the stream's timestamps when the decoder reports the
+  wrong one (30 fps live TV labelled 23.976), and the fallback rate is
+  consistent when nothing reports one.
+- **25 fps video switches the TV to 1080p 50Hz** when the TV supports it, through
+  the same one-time check as 24Hz Output.
+- Playback keeps updating while paused with the PS3's system overlay open.
+- A server reply announced as chunked but not chunk-framed is no longer cut off.
+
+### Languages
+- English, Japanese, Brazilian Portuguese, German, French and Spanish.
+  **Settings → Language**: Auto follows the PS3's own language setting.
+
 ## 3.1
 
 **The new interface is now what everyone gets.** In 3.0 (and the beta before it),
