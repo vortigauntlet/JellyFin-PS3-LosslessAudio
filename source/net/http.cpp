@@ -53,6 +53,15 @@ static bool        s_http_mtx_ok = false;
 // server accepted the connection and is thinking about it.
 #define HTTP_FIRST_BYTE_TRIES      3   // x HTTP_IO_TIMEOUT_SEC = 24 s
 
+// A Live TV PlaybackInfo opens and probes the channel before it answers, which
+// can take longer than 24 s.  Callers raise the budget around that one request.
+static volatile int s_first_byte_tries = HTTP_FIRST_BYTE_TRIES;
+
+void http_set_first_byte_secs(int secs) {
+    int tries = secs > 0 ? (secs + HTTP_IO_TIMEOUT_SEC - 1) / HTTP_IO_TIMEOUT_SEC : 0;
+    s_first_byte_tries = tries > HTTP_FIRST_BYTE_TRIES ? tries : HTTP_FIRST_BYTE_TRIES;
+}
+
 static void url_parse(const char *url, char *host, int hsz,
                       int *port, char *path, int psz) {
     const char *p = url;
@@ -246,7 +255,7 @@ static int read_response(int sock, char *buf, int cap,
             // Close, error, or timeout.  While NOTHING has arrived yet this is
             // a time-to-first-byte timeout rather than an idle one, so spend
             // the larger budget before giving up -- see HTTP_FIRST_BYTE_TRIES.
-            if (total == 0 && ++first_byte_tries < HTTP_FIRST_BYTE_TRIES)
+            if (total == 0 && ++first_byte_tries < s_first_byte_tries)
                 continue;
             break;
         }

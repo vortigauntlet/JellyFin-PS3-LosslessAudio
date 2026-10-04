@@ -28,6 +28,10 @@ void http_end(void);
 int  http_request(int method, const char *url, const char *body,
                   const char *token, char *out, int out_size);
 
+// How long a request may wait for the server's first byte; 0 restores the
+// default 24 s.  Never lowers it below the default.
+void http_set_first_byte_secs(int secs);
+
 // POST a NUL-terminated text/plain body (client log upload).  Same return
 // contract as http_request().
 int  http_post_text(const char *url, const char *body, const char *token,

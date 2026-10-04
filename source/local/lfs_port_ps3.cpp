@@ -126,8 +126,9 @@ static void poll_main(void *arg) {
 
 void lfs_start(void) {
     if (s_have_tid) return;
+    // Start from the initializer: lv2 rejects zeroed pshared/adaptive fields.
     sys_mutex_attr_t attr;
-    memset(&attr, 0, sizeof attr);
+    sysMutexAttrInitialize(attr);
     attr.attr_protocol  = SYS_MUTEX_PROTOCOL_FIFO;
     attr.attr_recursive = SYS_MUTEX_ATTR_NOT_RECURSIVE;
     s_mtx_ok = sysMutexCreate(&s_mtx[0], &attr) == 0 && sysMutexCreate(&s_mtx[1], &attr) == 0;

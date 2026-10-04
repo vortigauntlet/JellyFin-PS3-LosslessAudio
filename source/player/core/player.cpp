@@ -54,6 +54,7 @@
 #include "api_livetv.h"   // Live TV: the clock, closing a stream
 #include "livetv_list.h"  // Live TV: the channel list, for channel up/down
 #include "live_watch.h"   // Live TV: when to ask for a fresh stream
+#include "http.h"         // a channel PlaybackInfo may take longer than 24 s
 
 extern void crash_log(const char *msg);
 
@@ -688,6 +689,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         __sync_synchronize();
         sys_ppu_thread_t tid;
         static char tname[] = "jf_pbinfo";
+        if (live) http_set_first_byte_secs(60);
         const bool threaded = buffering_active() &&
             sysThreadCreate(&tid, [](void *a) {
                 auto *p = (decltype(pi) *)a;
@@ -715,6 +717,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
                                                sizeof(ps.session_id), &ps.total_secs,
                                                NULL, &ps.source, true);
         }
+        if (live) http_set_first_byte_secs(0);
         if (!pi.ok) {
             plog("show_player: PlaybackInfo failed, streaming without PlaySessionId");
             ps.session_id[0] = '\0';
@@ -904,6 +907,25 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     adec_set_pts_origin_us(0);
     ps.sock = local ? (player_local_open(&ps, (u64)resume_secs * 1000000ULL) ? ps.sock : -1)
                     : stream_open(url);
+    // The server can lose a channel it opened moments ago and answer the
+    // stream with HTTP 500 (Jellyfin 10.11: "live stream not found").
+    // Open the channel again, once, before giving up.
+    if (live && ps.sock < 0 && strstr(stream_last_error(), "HTTP 5")) {
+        plog("live: stream refused -- reopening the channel once");
+        usleep(1000 * 1000);
+        http_set_first_byte_secs(60);
+        const bool reopened = jellyfin_get_playback_info(item->id, media_source_id, ps.session_id,
+                                                         sizeof(ps.session_id), &ps.total_secs,
+                                                         NULL, &ps.source, true);
+        http_set_first_byte_secs(0);
+        if (reopened && ps.source.id[0]) {
+            ps.total_secs = ps.source.runtime_secs = 0;
+            build_stream_url(url, sizeof(url), &ps, 0);
+            plog_url("url", url);
+            stream_set_header_deadline(20);
+            ps.sock = stream_open(url);
+        }
+    }
     stream_set_wait_cb(NULL);
     if (ps.sock < 0) {
         plog("show_player: stream_open FAILED");
