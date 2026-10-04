@@ -18,7 +18,13 @@ int jf_fetch_channels(JFChannel *out, int max);
 
 // The same, for `count` channels from list position `start` (the server's
 // order: by number).  *total (optional) is how many channels the server has.
-int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *total);
+//
+// `search` (optional) lists only the channels whose name matches it, from
+// every category, in number order.  The server's /LiveTv/Channels ignores a
+// search term, so this asks /Users/<id>/Items for channels; those replies carry
+// no current programme (the guide request fills the rows in).
+int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *total,
+                            const char *search = NULL);
 
 // Every channel's number, in the server's order and nothing else (small
 // replies), for working out where the categories start.  Up to `max` numbers

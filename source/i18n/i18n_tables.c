@@ -9,9 +9,9 @@ extern const int i18n_n;
 extern const char *const i18n_keys[];
 extern const char *const *const i18n_text[LANG__COUNT];
 
-const int i18n_n = 454;
+const int i18n_n = 458;
 
-const char *const i18n_keys[454] = {
+const char *const i18n_keys[458] = {
     "  %s  %s free",
     "  (can't be decoded yet)",
     "%.40s video (can't play on PS3)",
@@ -85,6 +85,7 @@ const char *const i18n_keys[454] = {
     "Caps",
     "Cast",
     "Cast & Crew",
+    "Category",
     "Change quality",
     "Changing channel",
     "Channel",
@@ -216,6 +217,7 @@ const char *const i18n_keys[454] = {
     "Next Up",
     "Next: %s  %s",
     "No channels",
+    "No channels found",
     "No description.",
     "No items in this library",
     "No log yet",
@@ -309,8 +311,10 @@ const char *const i18n_keys[454] = {
     "Screen Size",
     "Scroll",
     "Search",
+    "Search channels",
     "Search failed: %d",
     "Search your library",
+    "Search: %s  (%d found)  -  O to go back",
     "Searching for \"%s\"...",
     "Searching: %.60s",
     "Seasons",
@@ -468,7 +472,7 @@ const char *const i18n_keys[454] = {
     "\342\200\271 back %ds",
 };
 
-static const char *const i18n_text_ja[454] = {
+static const char *const i18n_text_ja[458] = {
     "  %s  %s \347\251\272\343\201\215",
     "  \357\274\210\343\201\276\343\201\240\343\203\207\343\202\263\343\203\274\343\203\211\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
     "%.40s \343\201\256\346\230\240\345\203\217\357\274\210PS3\343\201\247\343\201\257\345\206\215\347\224\237\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
@@ -542,6 +546,7 @@ static const char *const i18n_text_ja[454] = {
     "\345\244\247\346\226\207\345\255\227",
     "\343\202\255\343\203\243\343\202\271\343\203\210",
     "\343\202\255\343\203\243\343\202\271\343\203\210\357\274\206\343\202\271\343\202\277\343\203\203\343\203\225",
+    "\343\202\253\343\203\206\343\202\264\343\203\252",
     "\347\224\273\350\263\252\343\202\222\345\244\211\346\233\264",
     "\343\203\201\343\203\243\343\203\263\343\203\215\343\203\253\343\202\222\345\210\207\343\202\212\346\233\277\343\201\210\344\270\255",
     "\343\203\201\343\203\243\343\203\263\343\203\215\343\203\253",
@@ -673,6 +678,7 @@ static const char *const i18n_text_ja[454] = {
     "\346\254\241\343\201\253\350\246\213\343\202\213",
     "\346\254\241\357\274\232%s  %s",
     "\343\203\201\343\203\243\343\203\263\343\203\215\343\203\253\343\201\214\343\201\202\343\202\212\343\201\276\343\201\233\343\202\223",
+    "\350\251\262\345\275\223\343\201\231\343\202\213\343\203\201\343\203\243\343\203\263\343\203\215\343\203\253\343\201\214\343\201\202\343\202\212\343\201\276\343\201\233\343\202\223",
     "\350\252\254\346\230\216\343\201\257\343\201\202\343\202\212\343\201\276\343\201\233\343\202\223\343\200\202",
     "\343\201\223\343\201\256\343\203\251\343\202\244\343\203\226\343\203\251\343\203\252\343\201\253\343\201\257\351\240\205\347\233\256\343\201\214\343\201\202\343\202\212\343\201\276\343\201\233\343\202\223",
     "\343\203\255\343\202\260\343\201\252\343\201\227",
@@ -766,8 +772,10 @@ static const char *const i18n_text_ja[454] = {
     "\347\224\273\351\235\242\343\202\265\343\202\244\343\202\272",
     "\343\202\271\343\202\257\343\203\255\343\203\274\343\203\253",
     "\346\244\234\347\264\242",
+    "\343\203\201\343\203\243\343\203\263\343\203\215\343\203\253\343\202\222\346\244\234\347\264\242",
     "\346\244\234\347\264\242\343\201\253\345\244\261\346\225\227\343\201\227\343\201\276\343\201\227\343\201\237\357\274\232%d",
     "\343\203\251\343\202\244\343\203\226\343\203\251\343\203\252\343\202\222\346\244\234\347\264\242",
+    "\346\244\234\347\264\242: %s\357\274\210%d\344\273\266\357\274\211  -  O\343\201\247\346\210\273\343\202\213",
     "\343\200\214%s\343\200\215\343\202\222\346\244\234\347\264\242\344\270\255...",
     "\346\244\234\347\264\242\344\270\255\357\274\232%.60s",
     "\343\202\267\343\203\274\343\202\272\343\203\263",
@@ -925,7 +933,7 @@ static const char *const i18n_text_ja[454] = {
     "\342\200\271 %d\347\247\222\346\210\273\343\202\213",
 };
 
-static const char *const i18n_text_pt_BR[454] = {
+static const char *const i18n_text_pt_BR[458] = {
     "  %s  %s livres",
     "  (ainda n\303\243o pode ser decodificado)",
     "V\303\255deo %.40s (n\303\243o reproduz no PS3)",
@@ -999,6 +1007,7 @@ static const char *const i18n_text_pt_BR[454] = {
     "Mai\303\272s",
     "Elenco",
     "Elenco e equipe",
+    "Categoria",
     "Alterar qualidade",
     "Trocando de canal",
     "Canal",
@@ -1130,6 +1139,7 @@ static const char *const i18n_text_pt_BR[454] = {
     "A seguir",
     "A seguir: %s  %s",
     "Nenhum canal",
+    "Nenhum canal encontrado",
     "Sem descri\303\247\303\243o.",
     "Nenhum item nesta biblioteca",
     "Nenhum log ainda",
@@ -1223,8 +1233,10 @@ static const char *const i18n_text_pt_BR[454] = {
     "Tamanho da tela",
     "Rolar",
     "Buscar",
+    "Buscar canais",
     "A pesquisa falhou: %d",
     "Pesquisar na biblioteca",
+    "Busca: %s  (%d encontrados)  -  O para voltar",
     "Pesquisando \"%s\"...",
     "Pesquisando: %.60s",
     "Temporadas",
@@ -1382,7 +1394,7 @@ static const char *const i18n_text_pt_BR[454] = {
     "\342\200\271 voltar %ds",
 };
 
-static const char *const i18n_text_de[454] = {
+static const char *const i18n_text_de[458] = {
     "  %s  %s frei",
     "  (kann noch nicht decodiert werden)",
     "%.40s-Video (auf der PS3 nicht abspielbar)",
@@ -1456,6 +1468,7 @@ static const char *const i18n_text_de[454] = {
     "Umschalt",
     "Besetzung",
     "Besetzung & Crew",
+    "Kategorie",
     "Qualit\303\244t \303\244ndern",
     "Kanalwechsel",
     "Kanal",
@@ -1587,6 +1600,7 @@ static const char *const i18n_text_de[454] = {
     "Als N\303\244chstes",
     "Danach: %s  %s",
     "Keine Kan\303\244le",
+    "Keine Sender gefunden",
     "Keine Beschreibung.",
     "Keine Eintr\303\244ge in dieser Mediathek",
     "Noch kein Protokoll",
@@ -1680,8 +1694,10 @@ static const char *const i18n_text_de[454] = {
     "Bildgr\303\266\303\237e",
     "Scrollen",
     "Suche",
+    "Sender suchen",
     "Suche fehlgeschlagen: %d",
     "Mediathek durchsuchen",
+    "Suche: %s  (%d gefunden)  -  O: zur\303\274ck",
     "Suche nach \342\200\236%s\342\200\234...",
     "Suche: %.60s",
     "Staffeln",
@@ -1839,7 +1855,7 @@ static const char *const i18n_text_de[454] = {
     "\342\200\271 %ds zur\303\274ck",
 };
 
-static const char *const i18n_text_fr[454] = {
+static const char *const i18n_text_fr[458] = {
     "  %s  %s libres",
     "  (ne peut pas encore \303\252tre d\303\251cod\303\251)",
     "Vid\303\251o %.40s (non lisible sur PS3)",
@@ -1913,6 +1929,7 @@ static const char *const i18n_text_fr[454] = {
     "Maj",
     "Distribution",
     "Distribution et \303\251quipe",
+    "Cat\303\251gorie",
     "Changer la qualit\303\251",
     "Changement de cha\303\256ne",
     "Cha\303\256ne",
@@ -2044,6 +2061,7 @@ static const char *const i18n_text_fr[454] = {
     "\303\200 suivre",
     "Ensuite : %s  %s",
     "Aucune cha\303\256ne",
+    "Aucune cha\303\256ne trouv\303\251e",
     "Aucune description.",
     "Aucun \303\251l\303\251ment dans cette biblioth\303\250que",
     "Pas encore de journal",
@@ -2137,8 +2155,10 @@ static const char *const i18n_text_fr[454] = {
     "Taille de l'\303\251cran",
     "D\303\251filer",
     "Recherche",
+    "Rechercher une cha\303\256ne",
     "\303\211chec de la recherche : %d",
     "Rechercher dans la biblioth\303\250que",
+    "Recherche : %s  (%d trouv\303\251es)  -  O : retour",
     "Recherche de \302\253 %s \302\273...",
     "Recherche : %.60s",
     "Saisons",
@@ -2296,7 +2316,7 @@ static const char *const i18n_text_fr[454] = {
     "\342\200\271 reculer de %ds",
 };
 
-static const char *const i18n_text_es[454] = {
+static const char *const i18n_text_es[458] = {
     "  %s  %s libres",
     "  (a\303\272n no se puede decodificar)",
     "V\303\255deo %.40s (no se puede reproducir en la PS3)",
@@ -2370,6 +2390,7 @@ static const char *const i18n_text_es[454] = {
     "May\303\272s",
     "Reparto",
     "Reparto y equipo",
+    "Categor\303\255a",
     "Cambiar calidad",
     "Cambiando de canal",
     "Canal",
@@ -2501,6 +2522,7 @@ static const char *const i18n_text_es[454] = {
     "A continuaci\303\263n",
     "Siguiente: %s  %s",
     "Sin canales",
+    "No se encontraron canales",
     "Sin descripci\303\263n.",
     "No hay elementos en esta biblioteca",
     "A\303\272n sin registro",
@@ -2594,8 +2616,10 @@ static const char *const i18n_text_es[454] = {
     "Tama\303\261o de pantalla",
     "Desplazar",
     "Buscar",
+    "Buscar canales",
     "Fall\303\263 la b\303\272squeda: %d",
     "Buscar en tu biblioteca",
+    "B\303\272squeda: %s  (%d encontrados)  -  O para volver",
     "Buscando \302\253%s\302\273...",
     "Buscando: %.60s",
     "Temporadas",

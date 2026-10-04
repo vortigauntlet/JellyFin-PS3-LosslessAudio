@@ -38,7 +38,8 @@ int jf_fetch_channels(JFChannel *out, int max) {
     return jf_fetch_channels_range(out, max, 0, max, NULL);
 }
 
-int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *total_out) {
+int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *total_out,
+                            const char *search) {
     if (max > LIVETV_MAX_CHANNELS) max = LIVETV_MAX_CHANNELS;
     if (count > max) count = max;
     if (start < 0) start = 0;
@@ -50,11 +51,21 @@ int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *
     do {
         char url[512];
         const int want = count - n < CHANNEL_PAGE ? count - n : CHANNEL_PAGE;
-        snprintf(url, sizeof url,
-                 "%s/LiveTv/Channels?UserId=%s&EnableImages=true&ImageTypeLimit=1"
-                 "&AddCurrentProgram=true&EnableUserData=true&SortBy=SortName"
-                 "&StartIndex=%d&Limit=%d",
-                 g_server, g_userid, start + n, want);
+        if (search && search[0]) {
+            char enc[160];
+            url_encode_query(search, enc, sizeof enc);
+            snprintf(url, sizeof url,
+                     "%s/Users/%s/Items?Recursive=true&IncludeItemTypes=LiveTvChannel"
+                     "&searchTerm=%s&EnableImages=true&ImageTypeLimit=1&EnableUserData=true"
+                     "&SortBy=SortName&StartIndex=%d&Limit=%d",
+                     g_server, g_userid, enc, start + n, want);
+        } else {
+            snprintf(url, sizeof url,
+                     "%s/LiveTv/Channels?UserId=%s&EnableImages=true&ImageTypeLimit=1"
+                     "&AddCurrentProgram=true&EnableUserData=true&SortBy=SortName"
+                     "&StartIndex=%d&Limit=%d",
+                     g_server, g_userid, start + n, want);
+        }
         buf[0] = '\0';
         const int st = http_request(HTTP_GET, url, NULL, g_token, buf, PAGE_BUF);
         if (st != 200) {
@@ -76,7 +87,8 @@ int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *
     if (total_out) *total_out = total;
     livetv_sort_channels(out, n);
     char b[80];
-    snprintf(b, sizeof b, "livetv: %d channel(s) from %d of %d", n, start, total);
+    snprintf(b, sizeof b, "livetv: %d channel(s) from %d of %d%s", n, start, total,
+             (search && search[0]) ? " (search)" : "");
     plog(b);
     return n;
 }

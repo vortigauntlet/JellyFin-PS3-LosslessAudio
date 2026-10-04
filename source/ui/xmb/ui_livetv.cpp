@@ -20,6 +20,8 @@
 //     livetv_page_ranges() turns them into list ranges, and only the page on
 //     screen is fetched in full.  The blocks are the ones the server's
 //     playlist is numbered in (CATS below).
+//   * Select asks for a name on the on-screen keyboard and lists every channel
+//     that matches, from all categories; O goes back to the category.
 //
 // Layout is all UIS-scaled; both screens work at 720p and 1080p.
 
@@ -117,13 +119,19 @@ bool       s_index_ok = false;                      // s_nums / s_pages describe
 bool       s_index_tried = false;                   // asked since the tab opened (or the list changed)
 bool paging(void) { return s_index_ok && s_nnums > PAGE_MIN && s_npages > 1; }
 
+// ---- search ----
+bool s_search_on = false;
+char s_term[48]  = "";
+int  s_gen       = 0;       // bumped when the list being fetched changes (page, search)
+
 // ---- the worker ----
 enum { J_IDLE = 0, J_QUEUED, J_RUNNING, J_DONE };
 enum { JOB_CHANNELS = 1, JOB_GUIDE = 2, JOB_INDEX = 4 };
 
 struct Job {
     int      kind;
-    int      cfirst, ccount, page;                  // the channel window asked for, and its page
+    int      cfirst, ccount, gen;                   // the channel window asked for, and which list (s_gen)
+    char     term[48];                              // a search, or "" for the page
     int      first, rows;                           // guide rows asked for
     int      n_ids;
     char     ids[GUIDE_ROWS][40];
@@ -155,7 +163,8 @@ void worker_main(void *) {
         }
         if (j.kind & JOB_CHANNELS) {
             int total = 0;
-            const int n = jf_fetch_channels_range(w_ch, MAX_CH, j.cfirst, j.ccount, &total);
+            const int n = jf_fetch_channels_range(w_ch, MAX_CH, j.cfirst, j.ccount, &total,
+                                                  j.term[0] ? j.term : NULL);
             if (n >= 0) { w_n = n; w_ctotal = total; w_ch_ok = true; }
         }
         if (j.kind & JOB_GUIDE) {
@@ -314,8 +323,12 @@ void submit(int kind) {
     if (s_jstate != J_IDLE || !s_run) return;
     memset(&s_job, 0, sizeof s_job);
     s_job.kind = kind;
-    s_job.page = s_page;
-    if (paging()) {
+    s_job.gen = s_gen;
+    if (s_search_on) {
+        snprintf(s_job.term, sizeof s_job.term, "%s", s_term);
+        s_job.cfirst = 0;
+        s_job.ccount = MAX_CH;
+    } else if (paging()) {
         s_job.cfirst = s_pages[s_page].first;
         s_job.ccount = s_pages[s_page].count < MAX_CH ? s_pages[s_page].count : MAX_CH;
     } else {
@@ -359,12 +372,14 @@ void collect(void) {
             char b[80];
             snprintf(b, sizeof b, "livetv: %d channel(s) in %d page(s)", s_nnums, s_npages);
             plog(b);
-            if (s_page != was_page || !s_loaded) { s_n = 0; s_loaded = false; s_sel = 0; s_top = 0; }
+            if (!s_search_on && (s_page != was_page || !s_loaded)) {
+                s_gen++; s_n = 0; s_loaded = false; s_sel = 0; s_top = 0;
+            }
             s_last_refresh_us = 0;          // the page is known now: fetch it
         }
     }
-    if ((j.kind & JOB_CHANNELS) && j.page != s_page) {
-        // The page was changed while this one was on its way: drop it.
+    if ((j.kind & JOB_CHANNELS) && j.gen != s_gen) {
+        // The page or the search changed while this one was on its way: drop it.
         s_last_refresh_us = 0;
     } else if (j.kind & JOB_CHANNELS) {
         if (w_ch_ok) {
@@ -379,13 +394,13 @@ void collect(void) {
             if (s_sel >= s_n) s_sel = s_n > 0 ? s_n - 1 : 0;
             s_pg_rows = 0;                  // the guide's rows are by position: ask again
             // The server's list grew or shrank since the numbers were read.
-            if (s_index_ok && w_ctotal != s_nnums) s_index_tried = false;
+            if (s_index_ok && !j.term[0] && w_ctotal != s_nnums) s_index_tried = false;
         } else if (!s_loaded) {
             s_failed = true;
         }
         s_last_refresh_us = timing_get_us();
     }
-    if ((j.kind & JOB_GUIDE) && j.page == s_page) {     // (not another category's rows)
+    if ((j.kind & JOB_GUIDE) && j.gen == s_gen) {       // (not another list's rows)
         memcpy(s_pg, w_pg, sizeof(JFProgram) * (size_t)w_pn);
         s_pn = w_pn;
         s_pg_first = j.first; s_pg_rows = j.rows; s_pg_win0 = j.w0;
@@ -442,18 +457,48 @@ void tick(void) {
 //  Selection
 // ---------------------------------------------------------------------------
 
-// L2 / R2: another category.  The list empties until its page arrives.
+// The list on screen is about to be another one (a category, a search): empty
+// it until the new one arrives, and let anything still on its way be dropped.
+void list_changed(void) {
+    s_gen++;
+    s_n = 0; s_pn = 0;
+    s_loaded = false; s_failed = false;
+    s_sel = 0; s_top = 0;
+    s_pg_rows = 0;
+    s_last_refresh_us = 0;
+}
+
+// L2 / R2: another category.
 void set_page(int p) {
     if (s_npages <= 1) return;
     if (p < 0) p = s_npages - 1;
     if (p >= s_npages) p = 0;
     if (p == s_page) return;
     s_page = p;
-    s_n = 0; s_pn = 0;
-    s_loaded = false; s_failed = false;
-    s_sel = 0; s_top = 0;
-    s_pg_rows = 0;
-    s_last_refresh_us = 0;
+    list_changed();
+}
+
+void search_begin(const char *term) {
+    snprintf(s_term, sizeof s_term, "%s", term);
+    s_search_on = true;
+    list_changed();
+}
+
+void search_end(void) {
+    s_search_on = false;
+    s_term[0] = '\0';
+    list_changed();
+}
+
+// Select: ask for a name, then list the channels that match it.
+void search_ask(void) {
+    char term[48];
+    const int r = get_input(term, sizeof term, TR("Search channels"), false);
+    init_btns();
+    // Trailing spaces would only make the match narrower than it looks.
+    int len = (int)strlen(term);
+    while (len > 0 && term[len - 1] == ' ') term[--len] = '\0';
+    if (r == 1 && len > 0) search_begin(term);
 }
 
 // "Sports | NFL", "News": the page's name.
@@ -668,6 +713,7 @@ void xmb_livetv_on_enter(void) {
     read_utc_offset();
     s_guide = false;
     s_top = 0;
+    if (s_search_on) search_end();              // a search belongs to one visit
     if (!s_index_ok) s_index_tried = false;     // try the numbers again
     s_last_refresh_us = 0;          // refresh now: the list may be a minute old
     s_view_changed_us = timing_get_us();
@@ -693,14 +739,18 @@ int xmb_livetv_index_of(const char *id) {
 }
 
 bool xmb_livetv_at_top(void) { return s_sel <= 0; }
-bool xmb_livetv_modal(void)  { return s_guide || s_in_details; }
+bool xmb_livetv_modal(void)  { return s_guide || s_in_details || s_search_on; }
 
 bool xmb_input_livetv(void) {
     if (BTN_PRESSED(l1)) { s_guide = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { s_guide = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
-    if (!s_guide && !s_in_details && paging()) {
-        if (BTN_PRESSED(l2)) { set_page(s_page - 1); ui_sfx_play(SFX_CURSOR); return false; }
-        if (BTN_PRESSED(r2)) { set_page(s_page + 1); ui_sfx_play(SFX_CURSOR); return false; }
+    if (!s_guide && !s_in_details) {
+        if (BTN_PRESSED(select)) { search_ask(); return false; }
+        if (s_search_on && BTN_PRESSED(circle)) { search_end(); ui_sfx_play(SFX_CANCEL); return false; }
+        if (paging() && !s_search_on) {
+            if (BTN_PRESSED(l2)) { set_page(s_page - 1); ui_sfx_play(SFX_CURSOR); return false; }
+            if (BTN_PRESSED(r2)) { set_page(s_page + 1); ui_sfx_play(SFX_CURSOR); return false; }
+        }
     }
     if (!s_ch || s_n <= 0) return false;
 
@@ -756,11 +806,18 @@ bool xmb_input_livetv(void) {
 }
 
 void xmb_livetv_hints(void) {
-    Hint h[6]; int n = 0;
+    Hint h[8]; int n = 0;
     if (!s_guide) {
         h[n].glyph = 'X'; h[n].label = TRN("Watch"); n++;
         h[n].glyph = 'T'; h[n].label = TRN("Favourite"); n++;
         if (have_guide()) { h[n].glyph = 'E'; h[n].label = TRN("Guide"); n++; }
+        // L2 and R2 pair into one "Category" hint (an empty label pairs with the next).
+        if (paging() && !s_search_on) {
+            h[n].glyph = 'L'; h[n].label = ""; n++;
+            h[n].glyph = 'R'; h[n].label = TRN("Category"); n++;
+        }
+        h[n].glyph = 'B'; h[n].label = TRN("Search"); n++;
+        if (s_search_on) { h[n].glyph = 'C'; h[n].label = TRN("Back"); n++; }
     } else {
         h[n].glyph = 'X'; h[n].label = TRN("Watch / details"); n++;
         h[n].glyph = 'E'; h[n].label = TRN("Move"); n++;
@@ -905,7 +962,11 @@ void xmb_draw_livetv(void) {
                 UIS_TF(18), XMB_TEXT_DIM);
         return;
     }
-    if (paging() && !s_guide) {
+    if (s_search_on && !s_guide) {
+        char line[200];
+        snprintf(line, sizeof line, TR("Search: %s  (%d found)  -  O to go back"), s_term, s_n);
+        drawTTF((u32)list_x(), (u32)(band_top() - UIS_H(18)), line, UIS_TF(13), XMB_ACCENT_ALT);
+    } else if (paging() && !s_guide) {
         char lab[96], line[160];
         page_label(lab, sizeof lab);
         snprintf(line, sizeof line, "L2 <   %s   (%d / %d)   > R2", lab, s_page + 1, s_npages);
@@ -913,7 +974,8 @@ void xmb_draw_livetv(void) {
     }
     if (s_n <= 0) {
         const char *m = s_failed ? TR("Couldn't load the channel list")
-                      : !s_loaded ? TR("Loading channels...") : TR("No channels");
+                      : !s_loaded ? TR("Loading channels...")
+                      : s_search_on ? TR("No channels found") : TR("No channels");
         drawTTF((u32)(cx - ttf_text_width(m, UIS_TF(18)) / 2), (u32)(band_top() + UIS_H(60)), m,
                 UIS_TF(18), XMB_TEXT_DIM);
         return;

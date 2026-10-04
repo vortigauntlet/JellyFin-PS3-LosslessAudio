@@ -15,5 +15,10 @@
   "Canadian": {"ja": "カナダ", "pt-BR": "Canadá", "de": "Kanada", "fr": "Canada", "es": "Canadá"},
   "Latino": {"ja": "ラテン", "pt-BR": "Latino", "de": "Lateinamerika", "fr": "Amérique latine", "es": "Latino"},
   "Local (US)": {"ja": "米国ローカル", "pt-BR": "Locais (EUA)", "de": "Lokal (USA)", "fr": "Locales (É.-U.)", "es": "Locales (EE. UU.)"},
-  "Other": {"ja": "その他", "pt-BR": "Outros", "de": "Sonstige", "fr": "Autres", "es": "Otros"}
+  "Other": {"ja": "その他", "pt-BR": "Outros", "de": "Sonstige", "fr": "Autres", "es": "Otros"},
+
+  "Search channels": {"ja": "チャンネルを検索", "pt-BR": "Buscar canais", "de": "Sender suchen", "fr": "Rechercher une chaîne", "es": "Buscar canales"},
+  "No channels found": {"ja": "該当するチャンネルがありません", "pt-BR": "Nenhum canal encontrado", "de": "Keine Sender gefunden", "fr": "Aucune chaîne trouvée", "es": "No se encontraron canales"},
+  "Search: %s  (%d found)  -  O to go back": {"ja": "検索: %s（%d件）  -  Oで戻る", "pt-BR": "Busca: %s  (%d encontrados)  -  O para voltar", "de": "Suche: %s  (%d gefunden)  -  O: zurück", "fr": "Recherche : %s  (%d trouvées)  -  O : retour", "es": "Búsqueda: %s  (%d encontrados)  -  O para volver"},
+  "Category": {"ja": "カテゴリ", "pt-BR": "Categoria", "de": "Kategorie", "fr": "Catégorie", "es": "Categoría"}
 }
