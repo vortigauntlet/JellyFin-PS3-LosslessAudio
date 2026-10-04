@@ -27,6 +27,7 @@
 #include "subfont.h"
 #include "subcolor.h"
 #include "dl_manager.h"     // Downloads / Offline Library rows
+#include "i18n_store.h"     // Language
 
 // xmb/ui_peek.cpp (declared in ui_internal.h, not included here).
 void peek_open_text(const char *title, const char *body, int x, int y, int w, int h);
@@ -53,7 +54,7 @@ static void val_text(char *buf, int cap, bool *lit, const char *t, bool on) {
     *lit = on;
 }
 static void val_onoff(char *buf, int cap, bool *lit, bool on) {
-    val_text(buf, cap, lit, on ? "On" : "Off", on);
+    val_text(buf, cap, lit, on ? TR("On") : TR("Off"), on);
 }
 
 // ---- values ----
@@ -65,22 +66,23 @@ static void v_autoskip(char *b, int c, bool *l) { val_onoff(b, c, l, autoskip_en
 #if ENABLE_PLAYER_STATS
 static void v_stats(char *b, int c, bool *l)    { val_onoff(b, c, l, statsovl_enabled()); }
 #endif
-static void v_24hz(char *b, int c, bool *l)     { val_text(b, c, l, d24_enabled() ? "Auto" : "Off", d24_enabled()); }
-static void v_audio(char *b, int c, bool *l)    { val_text(b, c, l, surround_mode_label(), surround_enabled()); }
+static void v_24hz(char *b, int c, bool *l)     { val_text(b, c, l, d24_enabled() ? TR("Auto") : TR("Off"), d24_enabled()); }
+static void v_audio(char *b, int c, bool *l)    { val_text(b, c, l, tr(surround_mode_label()), surround_enabled()); }
 static void v_dialogue(char *b, int c, bool *l) {
     // Nothing is decoded here with Dolby Digital output, so there is nothing
     // to boost: the value reads n/a and is drawn faint.
-    if (audio_passthrough_wanted()) val_text(b, c, l, "n/a", false);
-    else                            val_text(b, c, l, centermix_label(), centermix_active());
+    if (audio_passthrough_wanted()) val_text(b, c, l, TR("n/a"), false);
+    else                            val_text(b, c, l, tr(centermix_label()), centermix_active());
 }
 static void v_subfont(char *b, int c, bool *l)  { val_text(b, c, l, subfont_label(), subfont_get() != 0); }
-static void v_subcolor(char *b, int c, bool *l) { val_text(b, c, l, subcolor_label(), subcolor_get() != 0); }
+static void v_subcolor(char *b, int c, bool *l) { val_text(b, c, l, tr(subcolor_label()), subcolor_get() != 0); }
 // Always lit: the accent IS what the row changes, so its colour previews it.
 static void v_theme(char *b, int c, bool *l)    { val_text(b, c, l, theme_current_name(), true); }
-static void v_wave(char *b, int c, bool *l)     { val_text(b, c, l, wave_audio_level_label(), wave_audio_level() != 0); }
+static void v_wave(char *b, int c, bool *l)     { val_text(b, c, l, tr(wave_audio_level_label()), wave_audio_level() != 0); }
+static void v_language(char *b, int c, bool *l) { val_text(b, c, l, i18n_pref_label(i18n_pref()), true); }
 static void v_screen(char *b, int c, bool *l) {
     const int pm = (int)(overscan_frac() * 1000.0f + 0.5f);   // permille
-    if (pm == 0) val_text(b, c, l, "Off", false);
+    if (pm == 0) val_text(b, c, l, TR("Off"), false);
     else { snprintf(b, (size_t)c, "%d.%d%%", pm / 10, pm % 10); *l = true; }
 }
 static void v_update(char *b, int c, bool *l) {
@@ -89,12 +91,12 @@ static void v_update(char *b, int c, bool *l) {
         char tag[32] = "";
         update_check_result(tag, sizeof tag);
         const char *v = (tag[0] == 'v' || tag[0] == 'V') ? tag + 1 : tag;
-        snprintf(b, (size_t)c, "%s available", v);
+        snprintf(b, (size_t)c, TR("%s available"), v);
     } else {
-        snprintf(b, (size_t)c, "%s",
-                 st == UPD_CHECKING ? "Checking..."
-               : st == UPD_CURRENT  ? "Up to date (" APP_VERSION ")"
-               : st == UPD_FAILED   ? "Couldn't check"
+        if (st == UPD_CURRENT) snprintf(b, (size_t)c, TR("Up to date (%s)"), APP_VERSION);
+        else snprintf(b, (size_t)c, "%s",
+                 st == UPD_CHECKING ? TR("Checking...")
+               : st == UPD_FAILED   ? TR("Couldn't check")
                :                      APP_VERSION);
     }
     *l = st == UPD_AVAILABLE;
@@ -102,28 +104,28 @@ static void v_update(char *b, int c, bool *l) {
 static void v_sendlog(char *b, int c, bool *l) {
     const int st = log_upload_state();
     val_text(b, c, l,
-             st == LOGUP_SENDING ? "Sending..."
-           : st == LOGUP_SENT    ? "Sent"
-           : st == LOGUP_FAILED  ? "Failed"
-           : st == LOGUP_NOLOG   ? "No log yet"
-           :                       "X to send",
+             st == LOGUP_SENDING ? TR("Sending...")
+           : st == LOGUP_SENT    ? TR("Sent")
+           : st == LOGUP_FAILED  ? TR("Failed")
+           : st == LOGUP_NOLOG   ? TR("No log yet")
+           :                       TR("X to send"),
              st == LOGUP_SENT);
 }
 // The tallies are a lock and a walk of the slot table (no copies, no disk).
 static void v_downloads(char *b, int c, bool *l) {
     int active = 0, completed = 0, failed = 0;
     dl_counts(&active, &completed, &failed);
-    if (!dl_manager_ready())  { val_text(b, c, l, "Unavailable", false); return; }
-    if (active)      { snprintf(b, (size_t)c, "%d active", active); *l = true; }
-    else if (failed) { snprintf(b, (size_t)c, "%d failed", failed); *l = false; }
-    else             val_text(b, c, l, "None", false);
+    if (!dl_manager_ready())  { val_text(b, c, l, TR("Unavailable"), false); return; }
+    if (active)      { snprintf(b, (size_t)c, TR("%d active"), active); *l = true; }
+    else if (failed) { snprintf(b, (size_t)c, TR("%d failed"), failed); *l = false; }
+    else             val_text(b, c, l, TR("None"), false);
 }
 static void v_offline(char *b, int c, bool *l) {
     int active = 0, completed = 0, failed = 0;
     dl_counts(&active, &completed, &failed);
-    if (!dl_manager_ready())  { val_text(b, c, l, "Unavailable", false); return; }
+    if (!dl_manager_ready())  { val_text(b, c, l, TR("Unavailable"), false); return; }
     if (completed) { snprintf(b, (size_t)c, "%d", completed); *l = true; }
-    else           val_text(b, c, l, "Empty", false);
+    else           val_text(b, c, l, TR("Empty"), false);
 }
 
 // ---- activation and stepping ----
@@ -152,6 +154,7 @@ static void s_subfont(int d)   { subfont_step(d); }
 static void s_subcolor(int d)  { subcolor_step(d); }
 static void s_theme(int d)     { theme_step(d); }
 static void s_wave(int d)      { wave_audio_step(d); }
+static void s_language(int d)  { i18n_step_pref(d); }
 
 // A toggle takes X and either direction as the same flip; a value row takes X
 // as a step forward.  Neither names an activate function: X falls through to
@@ -171,6 +174,7 @@ static const UiRow k_ui[] = {
     VALUE (SET_DIALOGUE,    ICON_MUSIC,       v_dialogue,  s_dialogue),
     VALUE (SET_SUB_FONT,    ICON_TV,          v_subfont,   s_subfont),
     VALUE (SET_SUB_COLOUR,  ICON_TV,          v_subcolor,  s_subcolor),
+    VALUE (SET_LANGUAGE,    ICON_TV,          v_language,  s_language),
     VALUE (SET_THEME,       ICON_PHOTO,       v_theme,     s_theme),
     TOGGLE(SET_PARTICLES,   ICON_PHOTO,       v_particles, t_particles),
     TOGGLE(SET_DAYNIGHT,    ICON_PHOTO,       v_daynight,  t_daynight),
@@ -272,7 +276,7 @@ void settings_open_help_peek(void) {
     if (!r) return;
     layout_update();
     const int list_x = ((int)display_width - XMB_LIST_W) / 2;
-    peek_open_text(r->label, r->help, list_x, row_y(g_settings_sel), XMB_LIST_W, SET_ROW_H);
+    peek_open_text(tr(r->label), tr(r->help), list_x, row_y(g_settings_sel), XMB_LIST_W, SET_ROW_H);
 }
 
 // Centered confirm dialog rect.
@@ -299,10 +303,17 @@ static void fill_circle(int cx, int cy, int r, u32 color) {
 }
 
 // A section header's label, upper case with a little air between letters.
+// Whole UTF-8 characters: a byte at a time would split a kana or an accent.
+static int utf8_len(unsigned char c) { return c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4; }
+
 static void header_label(const char *src, char *out, int cap) {
     int n = 0;
-    for (int i = 0; src[i] && n < cap - 1; i++)
-        out[n++] = (src[i] >= 'a' && src[i] <= 'z') ? (char)(src[i] - 32) : src[i];
+    for (int i = 0; src[i]; ) {
+        const int k = utf8_len((unsigned char)src[i]);
+        if (n + k > cap - 1) break;
+        for (int j = 0; j < k && src[i + j]; j++, i++)
+            out[n++] = (k == 1 && src[i] >= 'a' && src[i] <= 'z') ? (char)(src[i] - 32) : src[i];
+    }
     out[n] = '\0';
 }
 
@@ -311,8 +322,10 @@ static void header_label(const char *src, char *out, int cap) {
 
 static int header_label_width(const char *label) {
     int w = 0;
-    for (int i = 0; label[i]; i++) {
-        const char one[2] = { label[i], '\0' };
+    for (int i = 0; label[i]; ) {
+        const int k = utf8_len((unsigned char)label[i]);
+        char one[5] = { 0 };
+        for (int j = 0; j < k && label[i]; j++) one[j] = label[i++];
         w += ttf_text_width(one, HEADER_PX) + HEADER_TRACK;
     }
     return w;
@@ -345,8 +358,8 @@ void xmb_cpu_draw_settings(void) {
         const int iy = item_y(it);
         if (it->is_header) {
             // A 1px rule from the end of the label to the list's right edge.
-            char lab[24];
-            header_label(settings_section_label((setting_section)it->index), lab, sizeof lab);
+            char lab[48];
+            header_label(tr(settings_section_label((setting_section)it->index)), lab, sizeof lab);
             const int x0 = list_x + UIS_W(20) + header_label_width(lab) + UIS_W(12);
             const int x1 = list_x + XMB_LIST_W;
             if (x1 > x0)
@@ -374,10 +387,10 @@ void xmb_draw_settings(void) {
     if (g_settings_confirm) {
         int mx, my, mw, mh;
         settings_confirm_rect(&mx, &my, &mw, &mh);
-        const char *q = "Log out of this account?";
+        const char *q = TR("Log out of this account?");
         int qw = ttf_text_width(q, UIS_TF(21), true);
         drawTTF((u32)(mx + (mw - qw) / 2), (u32)(my + UIS_H(28)), q, UIS_TF(21), XMB_TEXT, true);
-        const char *s = "You'll need to sign in again to browse your library.";
+        const char *s = TR("You'll need to sign in again to browse your library.");
         int sw = ttf_text_width(s, UIS_TF(14));
         drawTTF((u32)(mx + (mw - sw) / 2), (u32)(my + UIS_H(66)), s, UIS_TF(14), XMB_TEXT_DIM);
         return;
@@ -401,11 +414,11 @@ void xmb_draw_settings(void) {
     }
 
     // Identity.
-    drawTTF((u32)tx, (u32)(py + UIS_H(14)), "Account", UIS_TF(13), XMB_TEXT_FAINT);
+    drawTTF((u32)tx, (u32)(py + UIS_H(14)), TR("Account"), UIS_TF(13), XMB_TEXT_FAINT);
     char line[320];
-    snprintf(line, sizeof(line), "%s", g_username[0] ? g_username : "(unknown)");
+    snprintf(line, sizeof(line), "%s", g_username[0] ? g_username : TR("(unknown)"));
     drawTTF((u32)tx, (u32)(py + UIS_H(34)), line, UIS_TF(21), XMB_TEXT, true);
-    snprintf(line, sizeof(line), "%s", g_server[0] ? g_server : "(no server)");
+    snprintf(line, sizeof(line), "%s", g_server[0] ? g_server : TR("(no server)"));
     drawTTF((u32)tx, (u32)(py + UIS_H(64)), line, UIS_TF(14), XMB_TEXT_DIM);
 
     // Headers and rows.  Only what is fully inside the band is drawn; the
@@ -418,12 +431,14 @@ void xmb_draw_settings(void) {
         last_bottom = iy + it->h;
 
         if (it->is_header) {
-            char lab[24];
-            header_label(settings_section_label((setting_section)it->index), lab, sizeof lab);
+            char lab[48];
+            header_label(tr(settings_section_label((setting_section)it->index)), lab, sizeof lab);
             int x = list_x + UIS_W(20);
             const int ty = iy + it->h - UIS_H(14) - (int)HEADER_PX / 2;
-            for (int i = 0; lab[i]; i++) {
-                const char one[2] = { lab[i], '\0' };
+            for (int i = 0; lab[i]; ) {
+                const int k = utf8_len((unsigned char)lab[i]);
+                char one[5] = { 0 };
+                for (int j = 0; j < k && lab[i]; j++) one[j] = lab[i++];
                 drawTTF((u32)x, (u32)ty, one, HEADER_PX, XMB_TEXT_FAINT);
                 x += ttf_text_width(one, HEADER_PX) + HEADER_TRACK;
             }
@@ -437,7 +452,7 @@ void xmb_draw_settings(void) {
         drawIcon((u32)(list_x + UIS_W(20)), (u32)(iy + (SET_ROW_H - UIS_H(20)) / 2),
                  u ? u->icon : ICON_TV, UIS_TF(20.0f), clr);
         drawTTF((u32)(list_x + UIS_W(52)), (u32)(iy + (SET_ROW_H - UIS_H(18)) / 2 - UIS_H(2)),
-                r->label, UIS_TF(18), clr, sel);
+                tr(r->label), UIS_TF(18), clr, sel);
         if (u && u->value) {
             char val[48];
             bool lit = false;
@@ -455,9 +470,9 @@ void xmb_draw_settings(void) {
         int hx, hy, hw, hh;
         help_rect(&hx, &hy, &hw, &hh);
         drawTTF((u32)(hx + UIS_W(24)), (u32)(hy + UIS_H(12)),
-                cur->label, UIS_TF(17), XMB_ACCENT, true);
+                tr(cur->label), UIS_TF(17), XMB_ACCENT, true);
         char hl[160];
-        const char *t = cur->help;
+        const char *t = tr(cur->help);
         for (int ln = 0; ln < 2 && t && *t; ln++) {
             const char *nl = strchr(t, '\n');
             int n = nl ? (int)(nl - t) : (int)strlen(t);
@@ -474,7 +489,8 @@ void xmb_draw_settings(void) {
     {
         int footer_y = (int)display_height - XMB_BOTTOM_PAD - UIS_H(26);
         if (footer_y > last_bottom + 6) {
-            const char *ver = "Jellyfin for PS3 " APP_VERSION " \xC2\xB7 built " __DATE__;
+            char ver[96];
+            snprintf(ver, sizeof ver, TR("Jellyfin for PS3 %s \xC2\xB7 built %s"), APP_VERSION, __DATE__);
             int vw = ttf_text_width(ver, UIS_TF(13));
             drawTTF((u32)((W - vw) / 2), (u32)footer_y, ver, UIS_TF(13), XMB_TEXT_FAINT);
         }
@@ -535,11 +551,11 @@ void xmb_overscan_calib_text(void) {
     int W = (int)display_width, H = (int)display_height;
     int cy = H / 2;
 
-    const char *title = "Screen Size";
+    const char *title = TR("Screen Size");
     int tw = ttf_text_width(title, UIS_TF(26), true);
     drawTTF((u32)((W - tw) / 2), (u32)(cy - UIS_H(78)), title, UIS_TF(26), OVL_INK, true);
 
-    const char *l1 = "Match the corners to the edges of your screen";
+    const char *l1 = TR("Match the corners to the edges of your screen");
     int l1w = ttf_text_width(l1, UIS_TF(16));
     drawTTF((u32)((W - l1w) / 2), (u32)(cy - UIS_H(34)), l1, UIS_TF(16), OVL_INK_DIM);
 
@@ -549,11 +565,11 @@ void xmb_overscan_calib_text(void) {
     int pw = ttf_text_width(pct, UIS_TF(30), true);
     drawTTF((u32)((W - pw) / 2), (u32)(cy - UIS_H(2)), pct, UIS_TF(30), XMB_ACCENT_DEEP, true);
 
-    const char *hint = "D-pad Left / Right to adjust";
+    const char *hint = TR("D-pad Left / Right to adjust");
     int hw = ttf_text_width(hint, UIS_TF(15));
     drawTTF((u32)((W - hw) / 2), (u32)(cy + UIS_H(44)), hint, UIS_TF(15), OVL_INK_DIM);
 
-    const char *keys = "Cross  Save        Circle  Cancel";
+    const char *keys = TR("Cross  Save        Circle  Cancel");
     int kw = ttf_text_width(keys, UIS_TF(15));
     drawTTF((u32)((W - kw) / 2), (u32)(cy + UIS_H(70)), keys, UIS_TF(15), OVL_INK_DIM);
 }

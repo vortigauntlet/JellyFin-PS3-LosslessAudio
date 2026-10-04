@@ -38,7 +38,7 @@ static void add_media_tab(int next) {
     if (next >= XMB_TAB_COUNT) return;
     XMBTab *tb = &g_tabs[next];
     memset(tb, 0, sizeof(*tb));
-    snprintf(tb->label, sizeof(tb->label), "Media");
+    snprintf(tb->label, sizeof(tb->label), "%s", TRN("Media"));
     tb->icon    = "#";
     tb->kind    = TABKIND_LOCAL;
     tb->enabled = true;
@@ -146,7 +146,7 @@ static bool detect_tabs_once(void) {
         XMBTab *tb = &g_tabs[next];
         memset(tb, 0, sizeof(*tb));
         snprintf(tb->label, sizeof(tb->label), "%s",
-                 name[0] ? name : "Library");
+                 name[0] ? name : TRN("Library"));
         // No library to list for Live TV: leaving the id empty keeps the
         // frame loop from fetching "items" for a tab that has none.
         if (kind != TABKIND_LIVETV)

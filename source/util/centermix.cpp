@@ -1,5 +1,6 @@
 // Dialogue / centre-channel handling — see centermix.h.
 
+#include "i18n.h"
 #include "centermix.h"
 #include "jf_paths.h"     // jf_data_path()
 #include <stdio.h>
@@ -50,13 +51,13 @@ void centermix_cycle(void) { centermix_step(+1); }
 
 const char *centermix_label(void) {
     switch (s_mode) {
-    case CENTER_NORMAL:  return "Off";
+    case CENTER_NORMAL:  return TRN("Off");
     case CENTER_P3:      return "+3 dB";
     case CENTER_P6:      return "+6 dB";
     case CENTER_P10:     return "+10 dB";
     case CENTER_PHANTOM: return "Phantom";   // retired; unreachable via the UI
-    case CENTER_STEREO:  return "Stereo";    // retired; unreachable via the UI
-    default:             return "Off";
+    case CENTER_STEREO:  return TRN("Stereo");    // retired; unreachable via the UI
+    default:             return TRN("Off");
     }
 }
 

@@ -345,6 +345,11 @@ Display, System). `L2`/`R2` jump between sections, `Left`/`Right` change a value
 in either direction (`X` still steps forward), `△` explains the row, and `Up` from
 the first row returns to the tabs.
 
+**Language.** The app speaks English, 日本語, Português (Brasil), Deutsch, Français
+and Español. It follows the PS3's system language; **Settings → Display → Language**
+picks one by hand (the names are in their own language, so you can always find the
+right one). Titles and descriptions come from your server as it has them.
+
 **Live TV.** `X` watches the channel, `△` makes it a favourite, `Right` opens the
 guide (`O` or `Left` at its first column comes back). While watching, `Up`/`Down`
 change channel.

@@ -231,13 +231,13 @@ void depth_lib_text(int tab) {
                       ? &v.items[v.sel] : NULL;
     const char *title;
     switch (xmb_kind(tab)) {
-    case TABKIND_SEARCH:   title = "Search";   break;
-    case TABKIND_SETTINGS: title = "Settings"; break;
-    case TABKIND_LIVETV:   title = "Live TV";  break;
-    case TABKIND_LOCAL:    title = "Media";    break;
+    case TABKIND_SEARCH:   title = TR("Search");   break;
+    case TABKIND_SETTINGS: title = TR("Settings"); break;
+    case TABKIND_LIVETV:   title = TR("Live TV");  break;
+    case TABKIND_LOCAL:    title = TR("Media");    break;
     default:
         title = it ? it->name
-              : !g_items_loaded[tab] ? "Loading..." : "Nothing here yet";
+              : !g_items_loaded[tab] ? TR("Loading...") : TR("Nothing here yet");
         break;
     }
     // The tab's name is already on the spine row: no eyebrow repeating it.

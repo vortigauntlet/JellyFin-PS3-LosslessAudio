@@ -150,13 +150,13 @@ int       s_sel = 0;
 int       s_dl_count = 0;
 
 void drive_sub(const lfs_drive &d, char *out, int cap) {
-    if (d.kind == LFS_USB_UNSUPPORTED) { snprintf(out, (size_t)cap, "A file system this app cannot read"); return; }
+    if (d.kind == LFS_USB_UNSUPPORTED) { snprintf(out, (size_t)cap, TR("A file system this app cannot read")); return; }
     char tot[24] = "", fr[24] = "";
     if (d.total) local_format_size(d.total, tot, sizeof tot);
     if (d.free)  local_format_size(d.free, fr, sizeof fr);
     int n = snprintf(out, (size_t)cap, "%s", lfs_kind_name(d.kind));
     if (tot[0] && n < cap) n += snprintf(out + n, (size_t)cap - (size_t)n, "  %s  %s", MIDDOT, tot);
-    if (fr[0] && n < cap)  snprintf(out + n, (size_t)cap - (size_t)n, "  %s  %s free", MIDDOT, fr);
+    if (fr[0] && n < cap)  snprintf(out + n, (size_t)cap - (size_t)n, TR("  %s  %s free"), MIDDOT, fr);
 }
 
 // Rows: Downloads, then the drives.  Re-read when the set of drives changes, and the number of
@@ -223,10 +223,12 @@ void summarize(const LocalInfo &info, Probed *r) {
     r->playable = local_can_play(&info, &prefs, why, sizeof why);
     r->note[0] = '\0';
     if (!info.video_ok)
-        snprintf(r->note, sizeof r->note, "%.40s video (can't play on PS3)",
-                 info.video_reason[0] ? info.video_reason : "This");
+    {
+        if (info.video_reason[0]) snprintf(r->note, sizeof r->note, TR("%.40s video (can't play on PS3)"), info.video_reason);
+        else                      snprintf(r->note, sizeof r->note, "%s", TR("This video can't play on PS3"));
+    }
     else if (!r->playable)
-        snprintf(r->note, sizeof r->note, "Audio can't be played yet");
+        snprintf(r->note, sizeof r->note, TR("Audio can't be played yet"));
 }
 
 // What a music file's tags and format made of it, as the browser shows it.
@@ -238,7 +240,7 @@ void summarize_music(const LaMeta &m, Probed *r) {
     if (m.title[0] && m.artist[0]) snprintf(r->label, sizeof r->label, "%s - %s", m.title, m.artist);
     else if (m.title[0]) snprintf(r->label, sizeof r->label, "%s", m.title);
     if (r->playable) la_format_line(&m, r->note, sizeof r->note);
-    else snprintf(r->note, sizeof r->note, "This format can't be played yet");
+    else snprintf(r->note, sizeof r->note, TR("This format can't be played yet"));
 }
 
 void pw_main(void *) {
@@ -261,15 +263,15 @@ void pw_main(void *) {
                 r.readable = la_read_meta(probe_rd, &fd, size, music, &meta);
                 lfs_close(fd);
                 if (r.readable) summarize_music(meta, &r);
-                else snprintf(r.note, sizeof r.note, "Can't read this file");
+                else snprintf(r.note, sizeof r.note, TR("Can't read this file"));
             } else {
                 r.readable = local_probe(probe_rd, &fd, size, leaf_of(r.path), &info, err, sizeof err);
                 lfs_close(fd);
                 if (r.readable) summarize(info, &r);
-                else snprintf(r.note, sizeof r.note, "Can't read this file");
+                else snprintf(r.note, sizeof r.note, TR("Can't read this file"));
             }
         } else {
-            snprintf(r.note, sizeof r.note, "Can't read this file");
+            snprintf(r.note, sizeof r.note, TR("Can't read this file"));
         }
         pw_out = r;
         __sync_synchronize();
@@ -337,7 +339,7 @@ int load_dir(const char *path) {
     snprintf(job.path, sizeof job.path, "%s", path);
     job.out = b_all;
     job.max = MAX_ENTRIES;
-    loading_run(list_work, &job, "Loading", false);
+    loading_run(list_work, &job, TR("Loading"), false);
     screen_begin();
     b_n = 0;
     b_total = 0;
@@ -376,18 +378,18 @@ struct DetailJob { char path[256]; LocalInfo *info; bool ok; char err[64]; };
 void detail_work(void *arg) {
     DetailJob *j = (DetailJob *)arg;
     int fd = lfs_open(j->path);
-    if (fd < 0) { j->ok = false; snprintf(j->err, sizeof j->err, fd == LFS_E_REMOVED ? "The drive was removed." : "The file could not be opened."); return; }
+    if (fd < 0) { j->ok = false; snprintf(j->err, sizeof j->err, fd == LFS_E_REMOVED ? TR("The drive was removed.") : TR("The file could not be opened.")); return; }
     const uint64_t size = lfs_size(fd);
     j->ok = local_probe(probe_rd, &fd, size, leaf_of(j->path), j->info, j->err, sizeof j->err);
     lfs_close(fd);
-    if (!j->ok && !j->err[0]) snprintf(j->err, sizeof j->err, "This file could not be read.");
+    if (!j->ok && !j->err[0]) snprintf(j->err, sizeof j->err, TR("This file could not be read."));
 }
 
 void play_file(const char *path, const lfs_entry &e, const char *title, u32 resume_secs, uint32_t total_secs) {
     pw_quiesce();
     char why[160] = "";
     if (!show_player_file(path, title, resume_secs, why, sizeof why)) {
-        xmb_dl_notice("Can't play this file", why[0] ? why : "The player could not start it.");
+        xmb_dl_notice(TR("Can't play this file"), why[0] ? why : TR("The player could not start it."));
         return;
     }
     // where it ended: remembered, or forgotten when it was watched through
@@ -433,11 +435,11 @@ void play_music(const char *dir, const lfs_entry &chosen) {
     job.n = b_n - (music_files > LM_MAX_TRACKS ? chosen_at : 0);
     job.tracks = tracks;
     pw_quiesce();
-    loading_run(music_work, &job, "Loading", false);
+    loading_run(music_work, &job, TR("Loading"), false);
     screen_begin();
     if (job.count == 0) {
-        xmb_dl_notice("Can't play this", job.skipped ? "None of the music files here could be read or played."
-                                                     : "There is no music here.");
+        xmb_dl_notice(TR("Can't play this"), job.skipped ? TR("None of the music files here could be read or played.")
+                                                     : TR("There is no music here."));
         return;
     }
     char want[256];
@@ -479,7 +481,7 @@ void show_details(const char *path, const lfs_entry &e) {
     memset(&job, 0, sizeof job);
     snprintf(job.path, sizeof job.path, "%s", path);
     job.info = &info;
-    loading_run(detail_work, &job, "Loading", false);
+    loading_run(detail_work, &job, TR("Loading"), false);
     screen_begin();
 
     LocalTitle lt;
@@ -500,8 +502,8 @@ void show_details(const char *path, const lfs_entry &e) {
     const char *labels[2];
     int n_labels = 0;
     if (can) {
-        if (have_resume) { local_format_resume(res_secs, b_resume, sizeof b_resume); labels[n_labels++] = b_resume; labels[n_labels++] = "Play from the start"; }
-        else labels[n_labels++] = "Play";
+        if (have_resume) { local_format_resume(res_secs, b_resume, sizeof b_resume); labels[n_labels++] = b_resume; labels[n_labels++] = TR("Play from the start"); }
+        else labels[n_labels++] = TR("Play");
     }
     int sel = 0;
     Arm arm;
@@ -536,31 +538,32 @@ void show_details(const char *path, const lfs_entry &e) {
             char sz[24], du[32], line[240];
             local_format_size(e.size, sz, sizeof sz);
             local_format_duration(info.duration_secs, du, sizeof du);
-            const char *cont = info.container == LM_MKV ? "Matroska" : info.container == LM_M2TS ? "Blu-ray m2ts" : "MPEG-TS";
+            const char *cont = info.container == LM_MKV ? TR("Matroska") : info.container == LM_M2TS ? TR("Blu-ray m2ts") : TR("MPEG-TS");
             int n = snprintf(line, sizeof line, "%s  %s  %s", cont, MIDDOT, sz);
             if (du[0] && n < (int)sizeof line) n += snprintf(line + n, sizeof line - (size_t)n, "  %s  %s", MIDDOT, du);
             wrap_lines(x, y, line, UIS_TF(16), XMB_TEXT_DIM, w, UIS_H(26));
             wrap_lines(x, y, info.video_desc, UIS_TF(16), info.video_ok ? XMB_TEXT_DIM : XMB_ACCENT_ALT, w, UIS_H(34));
 
-            drawTTF((u32)x, (u32)y, "Audio", UIS_TF(15), XMB_TEXT, true);
+            drawTTF((u32)x, (u32)y, TR("Audio"), UIS_TF(15), XMB_TEXT, true);
             y += UIS_H(28);
             for (int i = 0; i < info.n_audio; i++) {
                 char a[120];
-                snprintf(a, sizeof a, "%s%s", info.audio[i].label, info.audio[i].decodable ? "" : "  (can't be decoded yet)");
+                snprintf(a, sizeof a, "%s%s", info.audio[i].label, info.audio[i].decodable ? "" : TR("  (can't be decoded yet)"));
                 wrap_lines(x + UIS_W(14), y, a, UIS_TF(14), info.audio[i].decodable ? XMB_TEXT_DIM : XMB_TEXT_FAINT, w - UIS_W(14), UIS_H(24));
             }
-            if (info.n_audio == 0) wrap_lines(x + UIS_W(14), y, "None", UIS_TF(14), XMB_TEXT_FAINT, w, UIS_H(24));
+            if (info.n_audio == 0) wrap_lines(x + UIS_W(14), y, TR("None"), UIS_TF(14), XMB_TEXT_FAINT, w, UIS_H(24));
             y += UIS_H(8);
             if (info.n_subs > 0) {
                 int shown = 0;
                 for (int i = 0; i < info.n_subs; i++) shown += info.subs[i].usable ? 1 : 0;
                 char s[96];
                 if (shown == info.n_subs)
-                    snprintf(s, sizeof s, "Subtitles: %d track%s", shown, shown == 1 ? "" : "s");
+                    snprintf(s, sizeof s, shown == 1 ? TR("Subtitles: %d track") : TR("Subtitles: %d tracks"), shown);
                 else if (shown == 0)
-                    snprintf(s, sizeof s, "Subtitles: %d track%s in the file, none the player can show", info.n_subs, info.n_subs == 1 ? "" : "s");
+                    snprintf(s, sizeof s, info.n_subs == 1 ? TR("Subtitles: %d track in the file, none the player can show")
+                                                         : TR("Subtitles: %d tracks in the file, none the player can show"), info.n_subs);
                 else
-                    snprintf(s, sizeof s, "Subtitles: %d of %d tracks can be shown", shown, info.n_subs);
+                    snprintf(s, sizeof s, TR("Subtitles: %d of %d tracks can be shown"), shown, info.n_subs);
                 wrap_lines(x, y, s, UIS_TF(14), XMB_TEXT_FAINT, w, UIS_H(30));
             }
             if (!can) {
@@ -576,8 +579,8 @@ void show_details(const char *path, const lfs_entry &e) {
             by += bh + UIS_H(8);
         }
         { Hint h[2]; int nh = 0;
-          if (n_labels) { h[nh].glyph = 'X'; h[nh].label = "Select"; nh++; }
-          h[nh].glyph = 'C'; h[nh].label = "Back"; nh++;
+          if (n_labels) { h[nh].glyph = 'X'; h[nh].label = TRN("Select"); nh++; }
+          h[nh].glyph = 'C'; h[nh].label = TRN("Back"); nh++;
           draw_hints_bar(h, nh); }
         flip();
     }
@@ -616,7 +619,7 @@ void probe_collect(void) {
 // A drive's (or the disk's) folders, from its root, until the user backs out to the list of places.
 void browse(const lfs_drive &drive) {
     b_all = (lfs_entry *)malloc(sizeof(lfs_entry) * MAX_ENTRIES);
-    if (!b_all) { xmb_dl_notice("Not enough memory", "The folder could not be listed."); return; }
+    if (!b_all) { xmb_dl_notice(TR("Not enough memory"), TR("The folder could not be listed.")); return; }
     pw_start();
     pc_clear();
     res_ensure();
@@ -646,12 +649,12 @@ void browse(const lfs_drive &drive) {
         if (lfs_generation() != seen_gen) {
             seen_gen = lfs_generation();
             if (!drive_present(drive_id)) {
-                xmb_dl_notice("The drive was removed", "Plug it back in to browse it again.");
+                xmb_dl_notice(TR("The drive was removed"), TR("Plug it back in to browse it again."));
                 break;
             }
         }
         if (status == LFS_E_REMOVED) {
-            xmb_dl_notice("The drive was removed", "Plug it back in to browse it again.");
+            xmb_dl_notice(TR("The drive was removed"), TR("Plug it back in to browse it again."));
             break;
         }
 
@@ -687,7 +690,7 @@ void browse(const lfs_drive &drive) {
                 const lfs_entry ent = b_all[sel];
                 char next[256];
                 if (!lfs_path_join(cur, ent.name, next, sizeof next)) {
-                    xmb_dl_notice("Can't open this", "The path is too long.");
+                    xmb_dl_notice(TR("Can't open this"), TR("The path is too long."));
                 } else if (ent.is_dir) {
                     if (depth < MAX_DEPTH) {
                         snprintf(stack[depth].path, sizeof stack[depth].path, "%s", cur);
@@ -714,13 +717,13 @@ void browse(const lfs_drive &drive) {
         frame_begin();
         char where[200];
         pretty_path(cur, drive_label, where, sizeof where);
-        draw_screen_title("Media", where);
+        draw_screen_title(TR("Media"), where);
         const int x = list_x(), w = list_w();
         if (status < 0) {
-            centre_message(status == LFS_E_REMOVED ? "The drive was removed" : "This folder could not be read",
+            centre_message(status == LFS_E_REMOVED ? TR("The drive was removed") : TR("This folder could not be read"),
                            screen_top() + UIS_H(60));
         } else if (b_n == 0) {
-            centre_message("No videos, music or folders here", screen_top() + UIS_H(60));
+            centre_message(TR("No videos, music or folders here"), screen_top() + UIS_H(60));
         }
         for (int r = 0; r < vis && top + r < b_n; r++) {
             const int i = top + r;
@@ -780,14 +783,14 @@ void browse(const lfs_drive &drive) {
         }
         if (b_total > MAX_ENTRIES) {
             char m[64];
-            snprintf(m, sizeof m, "The first %d of %d entries", MAX_ENTRIES, b_total);
+            snprintf(m, sizeof m, TR("The first %d of %d entries"), MAX_ENTRIES, b_total);
             const int mw = ttf_text_width(m, UIS_TF(13));
             drawTTF((u32)(x + w - mw), (u32)(XMB_OY + UIS_H(90)), m, UIS_TF(13), XMB_TEXT_FAINT);
         }
         { Hint h[5]; int nh = 0;
-          if (b_n > 0) { h[nh].glyph = 'X'; h[nh].label = "Open"; nh++; }
-          if (b_n > vis) { h[nh].glyph = 'L'; h[nh].label = ""; nh++; h[nh].glyph = 'R'; h[nh].label = "Page"; nh++; }
-          h[nh].glyph = 'C'; h[nh].label = "Back"; nh++;
+          if (b_n > 0) { h[nh].glyph = 'X'; h[nh].label = TRN("Open"); nh++; }
+          if (b_n > vis) { h[nh].glyph = 'L'; h[nh].label = ""; nh++; h[nh].glyph = 'R'; h[nh].label = TRN("Page"); nh++; }
+          h[nh].glyph = 'C'; h[nh].label = TRN("Back"); nh++;
           draw_hints_bar(h, nh); }
         flip();
     }
@@ -807,8 +810,8 @@ void open_root_row(int row) {
     if (di < 0 || di >= s_nd) return;
     const lfs_drive d = s_dr[di];
     if (d.kind == LFS_USB_UNSUPPORTED) {
-        xmb_dl_notice("Can't read this drive",
-                      "It uses a file system this app cannot read. NTFS, exFAT and FAT32 work.");
+        xmb_dl_notice(TR("Can't read this drive"),
+                      TR("It uses a file system this app cannot read. NTFS, exFAT and FAT32 work."));
         return;
     }
     browse(d);
@@ -829,9 +832,9 @@ void draw_root_text(int top, int x, int w) {
         char title[64], sub[120];
         int icon = ICON_COLLECTIONS;
         if (r == 0) {
-            snprintf(title, sizeof title, "Downloads");
-            if (s_dl_count > 0) snprintf(sub, sizeof sub, "%d on this console, ready to play offline", s_dl_count);
-            else snprintf(sub, sizeof sub, "Nothing downloaded yet");
+            snprintf(title, sizeof title, TR("Downloads"));
+            if (s_dl_count > 0) snprintf(sub, sizeof sub, TR("%d on this console, ready to play offline"), s_dl_count);
+            else snprintf(sub, sizeof sub, TR("Nothing downloaded yet"));
             icon = ICON_PLAY;
         } else {
             const lfs_drive &d = s_dr[r - 1];
@@ -880,7 +883,7 @@ bool xmb_input_media(void) {
 
 void xmb_media_hints(void) {
     Hint h[2]; int n = 0;
-    h[n].glyph = 'X'; h[n].label = "Open"; n++;
+    h[n].glyph = 'X'; h[n].label = TRN("Open"); n++;
     // Every bar but Search's ends with Square and the visualiser it switches to.
     h[n].glyph = 'S'; h[n].label = wave_vis_next_label(); n++;
     draw_hints_bar(h, n);
@@ -918,10 +921,10 @@ void xmb_show_media(void) {
             }
         }
         frame_begin();
-        draw_screen_title("Media", "Plays from this console or a USB drive -- no server needed");
+        draw_screen_title(TR("Media"), TR("Plays from this console or a USB drive -- no server needed"));
         draw_root_panels(screen_top(), list_x(), list_w());
         draw_root_text(screen_top(), list_x(), list_w());
-        { static const Hint h[] = {{'X', "Open"}, {'C', "Back"}};
+        { static const Hint h[] = {{'X', TRN("Open")}, {'C', TRN("Back")}};
           draw_hints_bar(h, 2); }
         flip();
     }

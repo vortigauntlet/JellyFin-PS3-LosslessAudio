@@ -2,6 +2,7 @@
 #include <ppu-types.h>
 #include <io/pad.h>
 #include "rsxutil.h"
+#include "i18n.h"
 
 #define FONT_SCALE   2
 #define CHAR_SIZE    (8 * FONT_SCALE)

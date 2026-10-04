@@ -104,14 +104,14 @@ void jellyfin_session_expired(void) {
     remove(jf_data_path("jellyfin_config.txt"));
 
     drawHeader();
-    drawTTF(40, 96,  "Session expired", 20, XMB_TEXT);
+    drawTTF(40, 96,  TR("Session expired"), 20, XMB_TEXT);
     drawTTF(40, 128,
-            "The server rejected this device's saved login, so the library "
-            "could not be read.", 14, XMB_TEXT_DIM);
+            TR("The server rejected this device's saved login, so the library "
+               "could not be read."), 14, XMB_TEXT_DIM);
     drawTTF(40, 152,
-            "This usually means another client signed in and took over the "
-            "session.", 14, XMB_TEXT_DIM);
-    drawTTF(40, 188, "X: sign in again", 16, XMB_ACCENT);
+            TR("This usually means another client signed in and took over the "
+               "session."), 14, XMB_TEXT_DIM);
+    drawTTF(40, 188, TR("X: sign in again"), 16, XMB_ACCENT);
     flip();
 
     init_btns();
@@ -133,13 +133,13 @@ static void trim(char *s) {
 
 int do_login(void) {
     char password[64] = "";
-    if (get_input(g_username, sizeof(g_username), "Username", false) != 1) return 0;
-    if (get_input(password,   sizeof(password),   "Password", true)  != 1) return 0;
+    if (get_input(g_username, sizeof(g_username), TR("Username"), false) != 1) return 0;
+    if (get_input(password,   sizeof(password),   TR("Password"), true)  != 1) return 0;
     trim(g_username);
     trim(password);
 
     drawHeader();
-    drawTTF(40, 96, "Signing in...", 18, XMB_TEXT);
+    drawTTF(40, 96, TR("Signing in..."), 18, XMB_TEXT);
     {
         char line[320];
         snprintf(line, sizeof(line), "%s  \xC2\xB7  %s", g_username, g_server);
@@ -178,14 +178,14 @@ int do_login(void) {
     }
 
     drawHeader();
-    drawTTF(40, 96, "Couldn't sign in", 22, XMB_TEXT, true);
+    drawTTF(40, 96, TR("Couldn't sign in"), 22, XMB_TEXT, true);
     {
         const char *why;
-        if      (status == 401) why = "Wrong username or password.";
-        else if (status == 404) why = "Wrong server URL or path.";
-        else if (status == 400) why = "Bad request - check your credentials.";
-        else if (status ==  -1) why = "Could not reach the server.";
-        else                    why = "The server returned an unexpected error.";
+        if      (status == 401) why = TR("Wrong username or password.");
+        else if (status == 404) why = TR("Wrong server URL or path.");
+        else if (status == 400) why = TR("Bad request - check your credentials.");
+        else if (status ==  -1) why = TR("Could not reach the server.");
+        else                    why = TR("The server returned an unexpected error.");
         char line[96];
         snprintf(line, sizeof(line), "%s  (status %d)", why, status);
         drawTTF(40, 136, line, 16, XMB_TEXT_DIM);
@@ -195,7 +195,7 @@ int do_login(void) {
         drawTTF(40, 164, snippet, 13, XMB_TEXT_FAINT);
     }
     {
-        static const Hint h[] = {{'X',"Try again"}};
+        static const Hint h[] = {{'X',TRN("Try again")}};
         draw_hints_bar(h, 1);
     }
     flip();

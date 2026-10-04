@@ -32,6 +32,16 @@
   beside them), and the tracks run into each other without a gap. FLAC up to
   24-bit and 192 kHz is converted to the console's 48 kHz with a proper filter,
   not squeezed; MP3s with a LAME header are cut to their exact length.
+- **Languages.** The menus, messages and button hints are now available in
+  **English, 日本語, Português (Brasil), Deutsch, Français and Español.** The
+  app follows your PS3's own language setting (Japanese, French, Spanish,
+  German and both Portuguese variants map to their language; anything else
+  stays English). To choose one yourself: Settings → Display → Language
+  (Auto, or one of the six, each named in its own language so you can always
+  find your way back). Japanese titles and subtitles from your server now
+  draw too: the kana and the common kanji are built in. Track names (audio
+  and subtitle labels), codec names and anything your server supplies, such
+  as titles and descriptions, are shown as the server sends them.
 - **Favourites.** Star films and shows on their page; they get their own row
   on Home.
 - **Dolby Digital output.** Settings → Audio → Audio Output has a new

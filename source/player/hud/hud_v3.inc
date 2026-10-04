@@ -178,12 +178,12 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         const int  r  = UIS_H(9);
         char a_val[72], v_val[16];
         const char *al = g_hud.audio_label;
-        snprintf(a_val, sizeof a_val, "%s",
-                 (al[0] && strcmp(al, "AUDIO") != 0) ? al : "Default");
-        if (audio_passthrough_active()) snprintf(v_val, sizeof v_val, "Receiver");
+        const bool named = al[0] && strcmp(al, "AUDIO") != 0;
+        snprintf(a_val, sizeof a_val, "%s", named ? al : TR("Default"));
+        if (audio_passthrough_active()) snprintf(v_val, sizeof v_val, TR("Receiver"));
         else                            snprintf(v_val, sizeof v_val, "%d%%", audio_get_volume());
-        const char *keys[3] = { "AUDIO", "VOLUME", "SUBTITLES" };
-        const char *vals[3] = { a_val, v_val, g_hud.cc_active ? "On" : "Off" };
+        const char *keys[3] = { TR("AUDIO"), TR("VOLUME"), TR("SUBTITLES") };
+        const char *vals[3] = { a_val, v_val, g_hud.cc_active ? TR("On") : TR("Off") };
         const int   slot[3] = { FOCUS_AUDIO, FOCUS_VOLUME, FOCUS_CC };
         // The audio value is the long one: clip it so the row never runs
         // into the title.
@@ -226,7 +226,7 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
             // The volume slider opens above its chip while adjusting.
             if (slot[i] == FOCUS_VOLUME && g_hud.vol_active && audio_passthrough_active()) {
                 // Nothing is mixed here: the receiver decodes and owns the level.
-                const char *msg = "Volume is set on your soundbar or receiver";
+                const char *msg = TR("Volume is set on your soundbar or receiver");
                 const float mpx = UIS_TF(12.0f);
                 const int mw = ttf_text_width(msg, mpx) + UIS_W(28), mh = UIS_H(34);
                 const int mx = x + w[i] - mw, my = cy - UIS_H(14) - mh;
@@ -272,10 +272,10 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         const int n = V3_INCR[g_hud.incr_idx < 0 ? 0 : g_hud.incr_idx % 3];
         const float spx = UIS_TF(12.5f);
         if (g_hud.focus == FOCUS_REW) {
-            snprintf(st, sizeof st, "\xE2\x80\xB9 back %ds", n);
+            snprintf(st, sizeof st, TR("\xE2\x80\xB9 back %ds"), n);
             drawTTF((u32)bx, (u32)(by - UIS_H(24)), st, spx, XMB_ACCENT_ALT);
         } else {
-            snprintf(st, sizeof st, "ahead %ds \xE2\x80\xBA", n);
+            snprintf(st, sizeof st, TR("ahead %ds \xE2\x80\xBA"), n);
             const int sw = ttf_text_width(st, spx);
             drawTTF((u32)(bx + bw - sw), (u32)(by - UIS_H(24)), st, spx, XMB_ACCENT_ALT);
         }
@@ -303,9 +303,9 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
         const float tpx = UIS_TF(12.5f);
         if (g_hud.live) {
             // The LIVE badge, then the programme; its times at the right.
-            const int bh2 = UIS_H(18), bw2 = ttf_text_width_face("LIVE", UIS_TF(9.5f), UI_FACE_EYEBROW) + UIS_W(16);
+            const int bh2 = UIS_H(18), bw2 = ttf_text_width_face(TR("LIVE"), UIS_TF(9.5f), UI_FACE_EYEBROW) + UIS_W(16);
             v3_rrect(bx, v3y(644), bw2, bh2, bh2 / 2, 0, 0x00D8344A, 235, 0, 0);
-            drawTTF_face((u32)(bx + UIS_W(8)), (u32)(v3y(644) + UIS_H(4)), "LIVE", UIS_TF(9.5f),
+            drawTTF_face((u32)(bx + UIS_W(8)), (u32)(v3y(644) + UIS_H(4)), TR("LIVE"), UIS_TF(9.5f),
                          WHITE, UI_FACE_EYEBROW);
             int tw_max = bw - bw2 - UIS_W(12);
             if (g_hud.live_times[0]) {
@@ -334,22 +334,22 @@ static void hud_body_v3(u64 elapsed_us, bool paused, bool scrubbing) {
     {
         Hint h[6]; int n = 0;
         h[n].glyph = 'X';
-        h[n].label = g_hud.focus == FOCUS_REW    ? "Back"
-                   : g_hud.focus == FOCUS_FF     ? "Ahead"
-                   : g_hud.focus == FOCUS_AUDIO  ? "Audio"
-                   : g_hud.focus == FOCUS_VOLUME ? "Volume"
-                   : g_hud.focus == FOCUS_CC     ? "Subtitles"
-                   : paused                      ? "Play" : "Pause";
+        h[n].label = g_hud.focus == FOCUS_REW    ? TRN("Back")
+                   : g_hud.focus == FOCUS_FF     ? TRN("Ahead")
+                   : g_hud.focus == FOCUS_AUDIO  ? TRN("Audio")
+                   : g_hud.focus == FOCUS_VOLUME ? TRN("Volume")
+                   : g_hud.focus == FOCUS_CC     ? TRN("Subtitles")
+                   : paused                      ? TRN("Play") : TRN("Pause");
         n++;
         if (g_hud.live) {
-            h[n].glyph = 'D'; h[n].label = "Channel"; n++;
+            h[n].glyph = 'D'; h[n].label = TRN("Channel"); n++;
         } else {
             h[n].glyph = 'L'; h[n].label = "";       n++;   // L2 R2: one cluster
-            h[n].glyph = 'R'; h[n].label = "Rewind / Fast Forward"; n++;
+            h[n].glyph = 'R'; h[n].label = TRN("Rewind / Fast Forward"); n++;
         }
-        h[n].glyph = 'T'; h[n].label = "Tracks"; n++;
-        h[n].glyph = 'C'; h[n].label = "Stop";   n++;
-        h[n].glyph = 'S'; h[n].label = "Hide";   n++;
+        h[n].glyph = 'T'; h[n].label = TRN("Tracks"); n++;
+        h[n].glyph = 'C'; h[n].label = TRN("Stop");   n++;
+        h[n].glyph = 'S'; h[n].label = TRN("Hide");   n++;
         draw_hints_bar(h, n);
         ovl_span(v3y(660), (int)s_ovl_h);
     }

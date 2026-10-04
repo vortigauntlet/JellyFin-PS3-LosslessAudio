@@ -230,7 +230,7 @@ static void player_draw_next_popup(int auto_secs) {
 
     char hint[96];
     if (auto_secs >= 0)
-        snprintf(hint, sizeof(hint), "%s \xC2\xB7 starting in %ds",
+        snprintf(hint, sizeof(hint), TR("%s \xC2\xB7 starting in %ds"),
                  s_next_hint, auto_secs);
     else
         snprintf(hint, sizeof(hint), "%s", s_next_hint);
@@ -312,13 +312,13 @@ bool player_seek_wait(unsigned elapsed_ms)
     rsxSync();
     char msg[64];
     snprintf(msg, sizeof msg, "%s \xC2\xB7 %us",
-             s_seekwait_label ? s_seekwait_label : "Waiting for the server", elapsed_ms / 1000u);
+             s_seekwait_label ? s_seekwait_label : TR("Waiting for the server"), elapsed_ms / 1000u);
     const float px = UIS_TF(16.0f);
     const int w = ttf_text_width(msg, px);
     const int y = (int)display_height / 2 + UIS_H(58);
     drawTTF((u32)(((int)display_width - w) / 2), (u32)y, msg, px, 0x00FFFFFF);
     {
-        const char *c = "O  Cancel";
+        const char *c = TR("O  Cancel");
         const int cw = ttf_text_width(c, UIS_TF(13.0f));
         drawTTF((u32)(((int)display_width - cw) / 2), (u32)(y + UIS_H(26)), c,
                 UIS_TF(13.0f), 0x00B8BCD0);
@@ -344,15 +344,15 @@ static bool player_stream_wait(unsigned elapsed_ms)
 
     if (buffering_active()) {
         char lab[48];
-        snprintf(lab, sizeof lab, "Waiting for the server \xC2\xB7 %us",
+        snprintf(lab, sizeof lab, TR("Waiting for the server \xC2\xB7 %us"),
                  elapsed_ms / 1000u);
-        buffering_step(lab, false, "Cancel");
+        buffering_step(lab, false, TR("Cancel"));
         buffering_frame();
         return true;
     }
     char msg[96];
     snprintf(msg, sizeof(msg),
-             "Waiting for the server... %us   (Circle to cancel)",
+             TR("Waiting for the server... %us   (Circle to cancel)"),
              elapsed_ms / 1000u);
     player_status_screen(s_wait_title, msg);
     return true;
@@ -677,7 +677,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // presentation only draws (its artwork is already in video memory) and
     // makes no request, so responseBuffer is the worker's alone meanwhile.
     if (g_spine_on) buffering_begin(item->id, item->name);
-    player_startup_step(item->name, "Connecting", "Connecting to server...");
+    player_startup_step(item->name, TR("Connecting"), TR("Connecting to server..."));
     {
         static struct {
             const JFItem *item; const char *msid; PlayerState *ps;
@@ -726,8 +726,8 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     if (live && !ps.source.id[0]) {
         plog("live: the server opened no stream for this channel");
         player_startup_abort();
-        show_error("This channel could not be opened.",
-                   "The server has no stream for it right now.");
+        show_error(TR("This channel could not be opened."),
+                   TR("The server has no stream for it right now."));
         ui_restore_rsx_state();
         return;
     }
@@ -841,7 +841,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // (spine gate on; the gate off keeps the status lines below).  It reuses
     // the detail page's artwork, which is still in video memory.
     if (g_spine_on && !buffering_active()) buffering_begin(item->id, item->name);
-    player_startup_step(item->name, "Preparing", "Initializing decoder...");
+    player_startup_step(item->name, TR("Preparing"), TR("Initializing decoder..."));
 
     // Release the UI thumbnail cache (joins its fetch thread, frees ~15 MB
     // of card bitmaps) — the decoder + jitter buffer below need every MB,
@@ -865,7 +865,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         player_startup_abort();
         vdec_close();
         thumb_cache_init();
-        show_error("VDEC init failed.", "See /dev_hdd0/tmp/player_log.txt");
+        show_error(TR("VDEC init failed."), "See /dev_hdd0/tmp/player_log.txt");
         ui_restore_rsx_state();
         return;
     }
@@ -890,7 +890,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     plog("show_player: audio_open done");
     crash_log("p5 audio_open OK");
 
-    player_startup_step(item->name, "Connecting", "Connecting to stream...");
+    player_startup_step(item->name, TR("Connecting"), TR("Connecting to stream..."));
 
     crash_log("p6 stream_open begin");
     plog("show_player: stream_open");
@@ -915,10 +915,10 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         if (live) {
             // Circle during the wait is an answer, not a fault.
             if (!strstr(stream_last_error(), "Cancelled"))
-                show_error(stream_last_error(), "Live TV");
+                show_error(stream_last_error_ui(), TR("Live TV"));
             live_abort();
         } else {
-            show_error(stream_last_error(), url);
+            show_error(stream_last_error_ui(), url);
         }
         ui_restore_rsx_state();
         return;
@@ -927,7 +927,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     lc_logf("stream CONNECTED sock=%d", ps.sock);
     crash_log("p7 stream_open OK");
 
-    player_startup_step(item->name, "Buffering", "Streaming... START=stop");
+    player_startup_step(item->name, TR("Buffering"), TR("Streaming... START=stop"));
 
     video_reset();
     display_diag_reset();   // this session's frame rate, not the last one's
@@ -1093,7 +1093,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         int last_pct       = -1;
         plog("preroll: filling read-ahead ring");
         init_btns();
-        if (buffering_active()) buffering_step("Buffering", true, "Start now");
+        if (buffering_active()) buffering_step(TR("Buffering"), true, TR("Start now"));
         while (running && ps.playing && decode_ring_fill() < target &&
                timing_get_us() < deadline) {
             sysUtilCheckCallback();
@@ -1121,7 +1121,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
                 last_draw_us = now;
                 last_pct     = pct;
                 char msg[64];
-                snprintf(msg, sizeof(msg), "Buffering... %d%%   (O: start now)",
+                snprintf(msg, sizeof(msg), TR("Buffering... %d%%   (O: start now)"),
                          pct * 100 / 90 > 100 ? 100 : pct * 100 / 90);
                 player_status_screen(item->name, msg);
             }
@@ -1405,7 +1405,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
                     ps.sub_is_text = ps.sub_is_pgs = false;
                     hud_set_cc_active(false);
                     live_ch = ch;
-                    live_label   = "Changing channel";
+                    live_label   = TR("Changing channel");
                     live_changed = true;
                     char b[96];
                     snprintf(b, sizeof b, "live: channel -> %.40s", ch.name);
@@ -1436,10 +1436,10 @@ void show_player_run(const JFItem *item, u32 resume_secs,
             const u64 now_lv = timing_get_us();
             const LiveEvent ev = live_watch_step(&live_w, now_lv, ps.paused, ps.frame_count,
                                                  ps.stream_ended);
-            if (ev == LIVE_EV_RESUME_STALE) live_label = "Returning to live";
+            if (ev == LIVE_EV_RESUME_STALE) live_label = TR("Returning to live");
             else if (ev != LIVE_EV_NONE) {
                 plog(ev == LIVE_EV_STALLED ? "live: no new picture for 15 s" : "live: stream ended");
-                live_label = "Reconnecting";
+                live_label = TR("Reconnecting");
             }
             // The same channel asked for again and again is a stream that will
             // not stay up: stop rather than hammer the server.
@@ -1453,7 +1453,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
 
         if (act == HUD_ACTION_SEEK) {
             g_prog.pos_valid = false;
-            const bool seek_ok = live ? live_reopen(&ps, live_label ? live_label : "Waiting for the server")
+            const bool seek_ok = live ? live_reopen(&ps, live_label ? live_label : TR("Waiting for the server"))
                                       : player_execute_seek(&ps);
             snprintf(g_prog.sess, sizeof g_prog.sess, "%s", ps.session_id);
             if (live) {
@@ -1652,7 +1652,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         if (flip_queued) { waitflip_timeout(250000); flip_queued = false; }
         ui_restore_rsx_state();
         buffering_begin(item->id, item->name);
-        buffering_step("Returning", false, NULL);
+        buffering_step(TR("Returning"), false, NULL);
         buffering_frame();
     }
     const u64 ret_t0 = timing_get_us();
@@ -1716,7 +1716,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     }
     // A drive pulled mid-film ends the stream like a clean end would: say why.
     if (local && stream_file_removed()) {
-        show_error("The drive was removed.", "Plug it back in to play this again.");
+        show_error(TR("The drive was removed."), TR("Plug it back in to play this again."));
         ui_restore_rsx_state();
     }
     crash_log("p19 done");

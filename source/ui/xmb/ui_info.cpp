@@ -54,7 +54,9 @@ static void info_clip_text(int x, int y, const char *text, float px,
         snprintf(fb, sizeof(fb), "%s", text);
         int fl = (int)strlen(fb);
         while (fl > 1) {
-            fb[--fl] = '\0';
+            fl--;
+            while (fl > 1 && ((unsigned char)fb[fl] & 0xC0) == 0x80) fl--;     // not inside a character
+            fb[fl] = '\0';
             char tr[164];
             snprintf(tr, sizeof(tr), "%s..", fb);
             if (ttf_text_width_face(tr, px, face) <= max_w) {
@@ -72,7 +74,9 @@ static void info_clip_text(int x, int y, const char *text, float px,
     snprintf(buf, sizeof(buf), "%s", text);
     int len = (int)strlen(buf);
     while (len > 1) {
-        buf[--len] = '\0';
+        len--;
+        while (len > 1 && ((unsigned char)buf[len] & 0xC0) == 0x80) len--;     // not inside a character
+        buf[len] = '\0';
         char trial[164];
         snprintf(trial, sizeof(trial), "%s..", buf);
         if (ttf_text_width(trial, px, bold) <= max_w) {
@@ -194,7 +198,7 @@ static int info_choose_version(const char *title,
                            pw - UIS_W(100), false);
         }
 
-        { static const Hint h[] = {{'X', "Select"}, {'C', "Back"}};
+        { static const Hint h[] = {{'X', TRN("Select")}, {'C', TRN("Back")}};
           draw_hints_bar(h, 2); }
         flip();
     }
@@ -232,6 +236,7 @@ static int info_choose_version(const char *title,
 #include "ui_spine.h"
 #include "ui_depth.h"      // the L2 -> L3 arrival
 #include "ui_text_gpu.h"
+#include "line_break.h"
 #include "http.h"
 #include "api_facts.h"
 #include "vremember.h"       // jellyfin_warm_playback()
@@ -257,6 +262,14 @@ static void info_audio_chip(const char *audio, char *out, size_t cap) {
     snprintf(out, cap, "%s", (sp && sp[1]) ? sp + 1 : audio);
 }
 
+// The bytes of `p` that make up its next line (render/line_break.h): broken at a space or after a CJK
+// character, never inside a UTF-8 sequence.  Width is summed per character; ignoring kerning is fine
+// for wrapping.
+static int fit_width(const char *ch, void *ctx) { return ttf_text_width(ch, *(const float *)ctx); }
+static int info_fit(const char *p, float px, int max_w, int cap) {
+    return lb_fit(p, max_w, cap, fit_width, &px);
+}
+
 // Word-wrap `text` at max_w, drawing up to max_lines at `pitch`.  Returns the
 // number of lines drawn.
 static int info_wrap(int x, int y, const char *text, float px, u32 colour,
@@ -264,18 +277,9 @@ static int info_wrap(int x, int y, const char *text, float px, u32 colour,
     const char *p = text;
     int lines = 0;
     while (*p && lines < max_lines) {
-        int fit = 0, last_sp = -1, wpx = 0;
-        char buf[200], one[2] = { 0, 0 };
-        while (p[fit] && fit < (int)sizeof(buf) - 4) {
-            if (p[fit] == ' ') last_sp = fit;
-            one[0] = p[fit];
-            wpx += ttf_text_width(one, px);
-            if (wpx > max_w) break;
-            fit++;
-        }
-        const bool more = p[fit] != 0;
-        int take = (!more || fit >= (int)sizeof(buf) - 4) ? fit
-                 : (last_sp > 0 ? last_sp : fit);
+        char buf[200];
+        int take = info_fit(p, px, max_w, (int)sizeof(buf) - 4);
+        const bool more = p[take] != 0;
         if (take <= 0) take = 1;
         if (lines == max_lines - 1 && more && take < (int)strlen(p))
             snprintf(buf, sizeof buf, "%.*s...", take, p);   // last line: cut
@@ -393,7 +397,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             memset(&ld, 0, sizeof ld);
             ld.it = it; ld.detail = &detail; ld.versions = &versions;
             ld.pw = PW; ld.ph = PH;
-            loading_run(info_load_work, &ld, "Loading", true);
+            loading_run(info_load_work, &ld, TR("Loading"), true);
             {
                 int remembered = vquality_for_item(it->id);
                 if (remembered >= 0) vquality_set((vquality_t)remembered);
@@ -557,7 +561,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                         g_play_gen++;                  // Home's Favourites row is stale
                     } else {
                         favourite = !want;
-                        snprintf(dl_toast, sizeof dl_toast, "%s", "Couldn't update favourites");
+                        snprintf(dl_toast, sizeof dl_toast, "%s", TR("Couldn't update favourites"));
                         dl_toast_until = timing_get_us() + 3000000ULL;
                     }
                 } else if (focus == F3_VERSION) {
@@ -586,7 +590,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                         r = dl_download_item(&jf, &detail, &versions.source[version_sel]);
                         if (r == DL_OK) {
                             snprintf(dl_toast, sizeof dl_toast, "%s",
-                                     "Added to Downloads (Settings \xE2\x80\xBA Downloads)");
+                                     TR("Added to Downloads (Settings \xE2\x80\xBA Downloads)"));
                         } else {
                             const DlSpaceReport rep = dl_last_space_report();
                             dl_ui_result_message(r, &rep, dl_toast, sizeof dl_toast);
@@ -601,7 +605,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                         const int resume = xmb_resume_choice(it);
                         if (resume >= 0 && !show_player_offline(it->id, (u32)resume))
                             snprintf(dl_toast, sizeof dl_toast, "%s",
-                                     "The offline copy is missing or damaged");
+                                     TR("The offline copy is missing or damaged"));
                         exit_armed = false;
                         init_btns();
                         dl_toast_until = timing_get_us() + 3000000ULL;
@@ -902,12 +906,12 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             char lab[40];
             if (id == F3_RESUME) {
                 const u32 s = it->resume_secs;
-                snprintf(lab, sizeof lab, "Resume %u:%02u:%02u",
+                snprintf(lab, sizeof lab, TR("Resume %u:%02u:%02u"),
                          s / 3600u, (s / 60u) % 60u, s % 60u);
-            } else if (id == F3_PLAY)    snprintf(lab, sizeof lab, "Play");
-            else if (id == F3_START)     snprintf(lab, sizeof lab, "Play from start");
-            else if (id == F3_FAVOURITE) snprintf(lab, sizeof lab, favourite ? "Favourited" : "Favourite");
-            else                         snprintf(lab, sizeof lab, watched ? "Watched" : "Mark as watched");
+            } else if (id == F3_PLAY)    snprintf(lab, sizeof lab, TR("Play"));
+            else if (id == F3_START)     snprintf(lab, sizeof lab, TR("Play from start"));
+            else if (id == F3_FAVOURITE) snprintf(lab, sizeof lab, favourite ? TR("Favourited") : TR("Favourite"));
+            else                         snprintf(lab, sizeof lab, watched ? TR("Watched") : TR("Mark as watched"));
             const bool primary = (id == F3_RESUME || id == F3_PLAY);
             const float bpx = UIS_TF(15.0f);
             const int lw = ttf_text_width(lab, bpx, primary);
@@ -932,9 +936,9 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
 
         if (season_btn) {
             char sl[48];
-            if (detail.season_num == 0)      snprintf(sl, sizeof sl, "\xE2\x80\xB9  Back to Specials");
-            else if (detail.season_num > 0)  snprintf(sl, sizeof sl, "\xE2\x80\xB9  Back to Season %d", detail.season_num);
-            else                             snprintf(sl, sizeof sl, "\xE2\x80\xB9  Back to Season");
+            if (detail.season_num == 0)      snprintf(sl, sizeof sl, TR("\xE2\x80\xB9  Back to Specials"));
+            else if (detail.season_num > 0)  snprintf(sl, sizeof sl, TR("\xE2\x80\xB9  Back to Season %d"), detail.season_num);
+            else                             snprintf(sl, sizeof sl, TR("\xE2\x80\xB9  Back to Season"));
             const float spx = UIS_TF(13.0f);
             const int sw = ttf_text_width(sl, spx, frow == 2);
             drawTTF((u32)(PX + (PW - sw) / 2), (u32)(BSY + (BSH - (int)spx) / 2 - UIS_H(1)), sl, spx,
@@ -944,7 +948,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         // Director line.
         if (director) {
             char line[140];
-            snprintf(line, sizeof line, "Director \xC2\xB7 %s", director);
+            snprintf(line, sizeof line, TR("Director \xC2\xB7 %s"), director);
             drawTTF((u32)TX, (u32)IY(402), line, UIS_TF(13.0f), XMB_TEXT_FAINT);   // was 467
         }
 
@@ -962,8 +966,8 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         // Selector labels.
         for (int i = 0; i < n1; i++) {
             const int y = SY + (SH - (int)UIS_TF(12.0f)) / 2 - UIS_H(1);
-            const char *name = row1[i] == F3_VERSION ? "Version"
-                             : row1[i] == F3_DOWNLOAD ? "Offline" : "Quality";
+            const char *name = row1[i] == F3_VERSION ? TR("Version")
+                             : row1[i] == F3_DOWNLOAD ? TR("Offline") : TR("Quality");
             drawTTF((u32)(sx_[i] + UIS_W(15)), (u32)y, name, UIS_TF(12.0f), XMB_TEXT_DIM);
             char val[64];
             if (row1[i] == F3_DOWNLOAD) {
@@ -983,9 +987,9 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                 const vquality_t vq = vquality_get();
                 vquality_params(vq, hd1080_enabled(), display_width, display_height,
                                 &qw, &qh, NULL, NULL, &qbr);
-                if (qbr == 0) snprintf(val, sizeof val, "Original \xC2\xB7 direct play");
+                if (qbr == 0) snprintf(val, sizeof val, TR("Original \xC2\xB7 direct play"));
                 else          snprintf(val, sizeof val, "%s \xC2\xB7 %u Mbps",
-                                       vquality_label(vq), qbr / 1000000u);
+                                       tr(vquality_label(vq)), qbr / 1000000u);
             }
             const int vx = sx_[i] + UIS_W(row1[i] == F3_VERSION ? 70 : 66);
             info_clip_text(vx, y, val, UIS_TF(12.5f), XMB_TEXT,
@@ -1002,16 +1006,16 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         {
             Hint h[2];
             h[0].glyph = 'X';
-            h[0].label = focus == F3_RESUME ? "Resume" : focus == F3_PLAY ? "Play"
-                       : focus == F3_START ? "Play from start"
-                       : focus == F3_WATCHED ? "Mark watched"
-                       : focus == F3_FAVOURITE ? (favourite ? "Remove favourite" : "Favourite")
-                       : focus == F3_VERSION ? "Choose version"
+            h[0].label = focus == F3_RESUME ? TR("Resume") : focus == F3_PLAY ? TR("Play")
+                       : focus == F3_START ? TR("Play from start")
+                       : focus == F3_WATCHED ? TR("Mark watched")
+                       : focus == F3_FAVOURITE ? (favourite ? TR("Remove favourite") : TR("Favourite"))
+                       : focus == F3_VERSION ? TR("Choose version")
                        : focus == F3_DOWNLOAD
                            ? dl_ui_action_label(dl_ui_item_action(dl_have ? &dl_st : NULL,
                                                                   can_download, &dl_cx))
-                       : "Change quality";
-            h[1].glyph = 'C'; h[1].label = "Back";
+                       : TR("Change quality");
+            h[1].glyph = 'C'; h[1].label = TR("Back");
             draw_hints_bar(h, 2);
         }
 
@@ -1245,7 +1249,7 @@ void xmb_show_item_info(const XMBItem *root) {
                     r = dl_download_item(&jf, &detail, &versions.source[version_sel]);
                     if (r == DL_OK) {
                         snprintf(dl_toast, sizeof(dl_toast), "%s",
-                                 "Added to Downloads (Settings > Downloads)");
+                                 TR("Added to Downloads (Settings \xE2\x80\xBA Downloads)"));
                     } else {
                         const DlSpaceReport rep = dl_last_space_report();
                         dl_ui_result_message(r, &rep, dl_toast, sizeof(dl_toast));
@@ -1260,7 +1264,7 @@ void xmb_show_item_info(const XMBItem *root) {
                     int resume = xmb_resume_choice(it);
                     if (resume >= 0 && !show_player_offline(it->id, (u32)resume))
                         snprintf(dl_toast, sizeof(dl_toast),
-                                 "The offline copy is missing or damaged");
+                                 TR("The offline copy is missing or damaged"));
                     exit_armed = false;
                     init_btns();
                 }
@@ -1426,7 +1430,7 @@ void xmb_show_item_info(const XMBItem *root) {
                 u32 fg = pf ? XMB_KEY_LABEL_SEL : XMB_TEXT_DIM;
                 drawIcon((u32)(tx + UIS_W(16)), (u32)(Y + (bh - UIS_H(22)) / 2), ICON_PLAY,
                          UIS_TF(22.0f), fg);
-                drawTTF((u32)(tx + UIS_W(46)), (u32)(Y + (bh - UIS_H(20)) / 2 + 1), "Play",
+                drawTTF((u32)(tx + UIS_W(46)), (u32)(Y + (bh - UIS_H(20)) / 2 + 1), TR("Play"),
                         UIS_TF(20), fg, true);
 
                 // DOWNLOAD FOR OFFLINE, beside Play.  Its label is the live
@@ -1477,7 +1481,7 @@ void xmb_show_item_info(const XMBItem *root) {
                     drawRect((u32)(tx - 1), (u32)(Y + bh), (u32)(bw + UIS_W(2)), 1,
                              XMB_HAIRLINE);
                 }
-                drawTTF_vcentered((u32)(tx + UIS_W(16)), Y + bh / 2, "Version", UIS_TF(16),
+                drawTTF_vcentered((u32)(tx + UIS_W(16)), Y + bh / 2, TR("Version"), UIS_TF(16),
                                   vf ? XMB_ACCENT : XMB_TEXT_FAINT, true);
                 info_clip_text(tx + UIS_W(118), Y + UIS_H(11),
                                versions.source[version_sel].label, UIS_TF(18),
@@ -1508,7 +1512,7 @@ void xmb_show_item_info(const XMBItem *root) {
                     drawRect((u32)(tx - 1), (u32)(Y + bh), (u32)(bw + UIS_W(2)), 1,
                              XMB_HAIRLINE);
                 }
-                drawTTF_vcentered((u32)(tx + UIS_W(16)), Y + bh / 2, "Quality", UIS_TF(16),
+                drawTTF_vcentered((u32)(tx + UIS_W(16)), Y + bh / 2, TR("Quality"), UIS_TF(16),
                                   qf ? XMB_ACCENT : XMB_TEXT_FAINT, true);
 
                 // Spell out what the setting actually asks the server for —
@@ -1525,13 +1529,13 @@ void xmb_show_item_info(const XMBItem *root) {
                     // a settings file written by an older build -- say what it
                     // is rather than printing a bitrate of zero.
                     snprintf(qtxt, sizeof(qtxt),
-                             "Original  (direct play, no re-encode)");
+                             TR("Original  (direct play, no re-encode)"));
                 else if (vq == VQ_AUTO)
-                    snprintf(qtxt, sizeof(qtxt), "Auto  (%ux%u, %u Mbps)",
+                    snprintf(qtxt, sizeof(qtxt), TR("Auto  (%ux%u, %u Mbps)"),
                              (unsigned)qw, (unsigned)qh, qbr / 1000000u);
                 else
                     snprintf(qtxt, sizeof(qtxt), "%s  (%u Mbps)",
-                             vquality_label(vq), qbr / 1000000u);
+                             tr(vquality_label(vq)), qbr / 1000000u);
                 // A quality value ("Auto  (1920x1080, 25 Mbps)") -- section 3.0
                 // gives codec and quality values to the spec face, "set one
                 // step smaller than its host line".
@@ -1553,22 +1557,10 @@ void xmb_show_item_info(const XMBItem *root) {
                 const char *p = detail.overview;
                 int lines_drawn = 0;
                 while (*p && lines_drawn < max_lines) {
-                    // Longest prefix that fits, broken at a space.
-                    // (Width accumulated per char; ignoring kerning is fine
-                    // for wrapping.)
-                    int  fit = 0, last_sp = -1;
-                    int  wpx = 0;
+                    // Longest prefix that fits, broken at a space or after a
+                    // CJK character, never inside a UTF-8 sequence.
                     char buf[160];
-                    char one[2] = { 0, 0 };
-                    while (p[fit] && fit < (int)sizeof(buf) - 1) {
-                        if (p[fit] == ' ') last_sp = fit;
-                        one[0] = p[fit];
-                        wpx += ttf_text_width(one, UIS_TF(19));
-                        if (wpx > wrap_w) break;
-                        fit++;
-                    }
-                    int take = (!p[fit] || fit >= (int)sizeof(buf) - 1) ? fit
-                             : (last_sp > 0 ? last_sp : fit);
+                    int take = info_fit(p, UIS_TF(19), wrap_w, (int)sizeof(buf) - 1);
                     if (take <= 0) take = 1;
                     snprintf(buf, sizeof(buf), "%.*s", take, p);
                     drawTTF((u32)tx, (u32)Y, buf, UIS_TF(19), XMB_TEXT);
@@ -1582,10 +1574,10 @@ void xmb_show_item_info(const XMBItem *root) {
 
             // Fact rows: faint label column, bright values.
             struct { const char *label; const char *value; } facts[] = {
-                { "Video",   detail.video_info  },
-                { "Audio",   detail.audio_info  },
-                { "Genres",  detail.genres      },
-                { "Studios", detail.studios     },
+                { TR("Video"),   detail.video_info  },
+                { TR("Audio"),   detail.audio_info  },
+                { TR("Genres"),  detail.genres      },
+                { TR("Studios"), detail.studios     },
             };
             for (int i = 0; i < 4; i++) {
                 if (!facts[i].value[0]) continue;
@@ -1608,7 +1600,7 @@ void xmb_show_item_info(const XMBItem *root) {
             // detail.people[] since before this fork, and this row has always
             // drawn them.  Only the shape, sizes and face changed.
             if (detail.n_people > 0) {
-                xmb_draw_eyebrow(X, sec, "Cast & Crew", XMB_TEXT_FAINT);
+                xmb_draw_eyebrow(X, sec, TR("Cast & Crew"), XMB_TEXT_FAINT);
                 sec += UIS_H(42);
                 const int dia = UIS_H(64);          // the circle
                 const int cw  = UIS_W(92);          // the column it sits in
@@ -1634,7 +1626,7 @@ void xmb_show_item_info(const XMBItem *root) {
             // More Like This — recommended poster cards.  Left/right selects a
             // card (Cross opens it); the row scrolls horizontally to follow.
             if (n_similar > 0) {
-                xmb_draw_eyebrow(X, sec, "More Like This", XMB_TEXT_FAINT);
+                xmb_draw_eyebrow(X, sec, TR("More Like This"), XMB_TEXT_FAINT);
                 sec += UIS_H(42);
                 const int cw = UIS_W(148), ch = SIM_CH, gap = UIS_W(22);
                 const int pitch = cw + gap;
@@ -1687,12 +1679,12 @@ void xmb_show_item_info(const XMBItem *root) {
         }
         {
             Hint h[3]; int nh = 0;
-            h[nh].glyph = 'C'; h[nh].label = "Back";  nh++;
-            if (max_scroll > 0) { h[nh].glyph = 'D'; h[nh].label = "Scroll"; nh++; }
+            h[nh].glyph = 'C'; h[nh].label = TR("Back");  nh++;
+            if (max_scroll > 0) { h[nh].glyph = 'D'; h[nh].label = TR("Scroll"); nh++; }
             h[nh].glyph = 'X';
-            h[nh].label = (focus == FOCUS_SIM)     ? "Open" :
-                          (focus == FOCUS_VERSION) ? "Choose version" :
-                          (focus == FOCUS_QUALITY) ? "Change quality" : "Play";
+            h[nh].label = (focus == FOCUS_SIM)     ? TR("Open") :
+                          (focus == FOCUS_VERSION) ? TR("Choose version") :
+                          (focus == FOCUS_QUALITY) ? TR("Change quality") : TR("Play");
             if (focus == FOCUS_DOWNLOAD)
                 h[nh].label = dl_ui_action_label(
                     dl_ui_item_action(dl_have ? &dl_st : NULL, can_download, &dl_cx));
@@ -1743,10 +1735,10 @@ int xmb_resume_choice(const XMBItem *it) {
                             s / 3600, (s % 3600) / 60, s % 60);
     else           snprintf(tstr, sizeof(tstr), "%u:%02u", s / 60, s % 60);
     char opt_resume[48];
-    snprintf(opt_resume, sizeof(opt_resume), "Resume from %s", tstr);
+    snprintf(opt_resume, sizeof(opt_resume), TR("Resume from %s"), tstr);
     char sub[48];
-    snprintf(sub, sizeof(sub), "Stopped at %s", tstr);
-    const char *opts[2] = { opt_resume, "Start from beginning" };
+    snprintf(sub, sizeof(sub), TR("Stopped at %s"), tstr);
+    const char *opts[2] = { opt_resume, TR("Start from beginning") };
 
     rsxSync();
     flip();
@@ -1814,7 +1806,7 @@ int xmb_resume_choice(const XMBItem *it) {
                               i == sel ? XMB_TEXT : XMB_TEXT_DIM);
         }
 
-        { static const Hint h[] = {{'X', "Select"}, {'C', "Back"}};
+        { static const Hint h[] = {{'X', TRN("Select")}, {'C', TRN("Back")}};
           draw_hints_bar(h, 2); }
         flip();
     }

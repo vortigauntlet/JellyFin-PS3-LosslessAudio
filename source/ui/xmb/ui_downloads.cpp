@@ -138,7 +138,7 @@ bool xmb_dl_confirm(const char *title, const char *line, const char *safe,
             drawTTF_vcentered((u32)(cx + UIS_W(16)), oy + oh / 2, opts[i], UIS_TF(19),
                               i == sel ? XMB_TEXT : XMB_TEXT_DIM);
         }
-        { static const Hint h[] = {{'X', "Select"}, {'C', "Back"}};
+        { static const Hint h[] = {{'X', TRN("Select")}, {'C', TRN("Back")}};
           draw_hints_bar(h, 2); }
         flip();
     }
@@ -178,8 +178,8 @@ void xmb_dl_notice(const char *title, const char *line) {
         const int oh = UIS_H(44), oy = py + ph - oh - UIS_H(24);
         drawRect((u32)cx, (u32)oy, (u32)mw, (u32)oh, XMB_PANEL_HI);
         drawRect((u32)(cx - UIS_W(4)), (u32)oy, UIS_W(3), (u32)oh, XMB_ACCENT);
-        drawTTF_vcentered((u32)(cx + UIS_W(16)), oy + oh / 2, "OK", UIS_TF(19), XMB_TEXT);
-        { static const Hint h[] = {{'X', "OK"}};
+        drawTTF_vcentered((u32)(cx + UIS_W(16)), oy + oh / 2, TR("OK"), UIS_TF(19), XMB_TEXT);
+        { static const Hint h[] = {{'X', TRN("OK")}};
           draw_hints_bar(h, 1); }
         flip();
     }
@@ -279,7 +279,7 @@ void xmb_show_downloads(void) {
                 int r = DL_OK;
                 if (act == DL_UI_PLAY_OFFLINE) {
                     if (!show_player_offline(id, 0))
-                        snprintf(toast, sizeof(toast), "The offline copy is missing or damaged");
+                        snprintf(toast, sizeof(toast), TR("The offline copy is missing or damaged"));
                     else
                         toast[0] = '\0';
                     toast_until = timing_get_us() + DL_TOAST_US;
@@ -287,10 +287,10 @@ void xmb_show_downloads(void) {
                     armed = false;
                 } else if (!dl_ui_action_needs_confirm(act, &st) ||
                            xmb_dl_confirm(st.rec.title,
-                                          act == DL_UI_REMOVE ? "Delete the downloaded file from the HDD?"
-                                                              : "Stop and throw away what has downloaded so far?",
-                                          act == DL_UI_REMOVE ? "Keep it" : "Keep downloading",
-                                          act == DL_UI_REMOVE ? "Delete" : "Cancel download")) {
+                                          act == DL_UI_REMOVE ? TR("Delete the downloaded file from the HDD?")
+                                                              : TR("Stop and throw away what has downloaded so far?"),
+                                          act == DL_UI_REMOVE ? TR("Keep it") : TR("Keep downloading"),
+                                          act == DL_UI_REMOVE ? TR("Delete") : TR("Cancel download"))) {
                     switch (act) {
                     case DL_UI_PAUSE:  r = dl_pause(id);  break;
                     case DL_UI_RESUME: r = dl_resume(id); break;
@@ -334,11 +334,11 @@ void xmb_show_downloads(void) {
             dl_ui_banner(&cx, &s_space, dl_space_held(), banner, sizeof(banner));
         }
         frame_begin();
-        draw_title("Downloads", hdd, banner, DL_WARN_CLR);
+        draw_title(TR("Downloads"), hdd, banner, DL_WARN_CLR);
         const int x = XMB_ITEM_PAD, w = (int)display_width - 2 * XMB_ITEM_PAD;
         if (n == 0) {
-            draw_empty("Nothing is downloading.",
-                       "Open a film or an episode and choose Download.");
+            draw_empty(TR("Nothing is downloading."),
+                       TR("Open a film or an episode and choose Download."));
         }
         for (int i = 0; i < visible && top + i < n; i++) {
             if (!vis_ok[i]) continue;
@@ -374,7 +374,7 @@ void xmb_show_downloads(void) {
             // Square here is the row's own secondary action, not the visualiser
             // cycle, so this bar is drawn without the visualiser hint.
             Hint h[3]; int nh = 0;
-            h[nh].glyph = 'C'; h[nh].label = "Back"; nh++;
+            h[nh].glyph = 'C'; h[nh].label = TR("Back"); nh++;
             const int vi = sel - top;
             if (n > 0 && vi >= 0 && vi < visible && vis_ok[vi]) {
                 const char *p = dl_ui_action_label(dl_ui_row_primary(&vis[vi]));
@@ -432,7 +432,7 @@ void xmb_show_offline(void) {
                 static char id[DL_ID_MAX];
                 snprintf(id, sizeof(id), "%s", vis[vi].meta.id);
                 if (!show_player_offline(id, 0)) {
-                    snprintf(toast, sizeof(toast), "The offline copy is missing or damaged");
+                    snprintf(toast, sizeof(toast), TR("The offline copy is missing or damaged"));
                     toast_until = timing_get_us() + DL_TOAST_US;
                 }
                 reload = true;            // the library may have changed under us
@@ -442,11 +442,11 @@ void xmb_show_offline(void) {
                 char title[DL_TITLE_MAX], sub[160];
                 dl_ui_offline_lines(&vis[vi].meta, vis[vi].meta_ok, vis[vi].bytes,
                                     title, sizeof(title), sub, sizeof(sub));
-                if (xmb_dl_confirm(title, "Delete the downloaded file from the HDD?",
-                                   "Keep it", "Delete")) {
+                if (xmb_dl_confirm(title, TR("Delete the downloaded file from the HDD?"),
+                                   TR("Keep it"), TR("Delete"))) {
                     int r = dl_remove(vis[vi].meta.id);
                     snprintf(toast, sizeof(toast), "%s",
-                             r == DL_OK ? "Deleted" : dl_ui_result_text(r));
+                             r == DL_OK ? TR("Deleted") : dl_ui_result_text(r));
                     toast_until = timing_get_us() + DL_TOAST_US;
                     reload = true;
                 }
@@ -470,12 +470,12 @@ void xmb_show_offline(void) {
         // ---- draw ----
         thumb_cache_tick();
         frame_begin();
-        draw_title("Offline", n > 0 ? "Plays from the HDD -- no server needed" : "", "", XMB_TEXT_DIM);
+        draw_title(TR("Offline"), n > 0 ? TR("Plays from the HDD -- no server needed") : "", "", XMB_TEXT_DIM);
         const int x = XMB_ITEM_PAD, w = (int)display_width - 2 * XMB_ITEM_PAD;
         if (n == 0)
-            draw_empty("Nothing downloaded yet.",
-                       dl_manager_ready() ? "Open a film or an episode and choose Download."
-                                          : "Downloads are unavailable: no writable HDD folder.");
+            draw_empty(TR("Nothing downloaded yet."),
+                       dl_manager_ready() ? TR("Open a film or an episode and choose Download.")
+                                          : TR("Downloads are unavailable: no writable HDD folder."));
         for (int i = 0; i < visible && top + i < n; i++) {
             if (!vis_ok[i]) continue;
             char title[DL_TITLE_MAX], sub[160];
@@ -503,10 +503,10 @@ void xmb_show_offline(void) {
         draw_toast(toast, toast_until);
         {
             Hint h[3]; int nh = 0;
-            h[nh].glyph = 'C'; h[nh].label = "Back"; nh++;
+            h[nh].glyph = 'C'; h[nh].label = TR("Back"); nh++;
             if (n > 0) {
-                h[nh].glyph = 'S'; h[nh].label = "Delete"; nh++;
-                h[nh].glyph = 'X'; h[nh].label = "Play"; nh++;
+                h[nh].glyph = 'S'; h[nh].label = TR("Delete"); nh++;
+                h[nh].glyph = 'X'; h[nh].label = TR("Play"); nh++;
             }
             draw_hints_bar(h, nh);
         }
@@ -524,10 +524,10 @@ bool xmb_offer_offline_after_login_failure(void) {
     lfs_drive drives[9];
     const bool usb = lfs_drives(drives, 9) > 1;          // the internal disk is always the first
     if (!downloads && !usb) return false;
-    if (!xmb_dl_confirm("Couldn't sign in",
-                        downloads ? "You have downloads on this console, or a drive to play from. Open them?"
-                                  : "A USB drive is plugged in. Play from it without the server?",
-                        "Try again", "Open Media"))
+    if (!xmb_dl_confirm(TR("Couldn't sign in"),
+                        downloads ? TR("You have downloads on this console, or a drive to play from. Open them?")
+                                  : TR("A USB drive is plugged in. Play from it without the server?"),
+                        TR("Try again"), TR("Open Media")))
         return false;
     xmb_show_media();
     return true;

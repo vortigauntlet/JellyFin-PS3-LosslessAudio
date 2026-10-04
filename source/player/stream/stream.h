@@ -35,6 +35,8 @@ int stream_open(const char *url);
 // and those need completely different fixes.  Valid until the next
 // stream_open().
 const char *stream_last_error(void);
+// The same message in the interface language, for the error screen.
+const char *stream_last_error_ui(void);
 
 // Read exactly 'size' bytes, transparently decoding chunked transfer encoding.
 // Fully resumable across calls — all state is in static storage.

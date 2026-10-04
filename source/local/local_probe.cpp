@@ -1,6 +1,7 @@
 // local_probe: see local_probe.h.
 
 #include "local_probe.h"
+#include "i18n.h"
 #include "lang_names.h"
 #include "mkv_demux.h"
 #include "mkv_ts.h"
@@ -150,9 +151,9 @@ static LocalAudioCodec from_mkv_audio(MkvAudioCodec c) {
 static bool probe_mkv(LocalReadAt rd, void *ctx, uint64_t size, LocalInfo *o, char *err, int cap) {
     // the parsed file is ~60 KB: kept off the stack, since a worker thread's is 128 KB
     MkvFile *fp = (MkvFile *)malloc(sizeof *fp);
-    if (!fp) { set_err(err, cap, "out of memory"); return false; }
+    if (!fp) { set_err(err, cap, TR("out of memory")); return false; }
     MkvFile &f = *fp;
-    if (mkv_open(&f, rd, ctx, size) != 0) { set_err(err, cap, f.err[0] ? f.err : "not a Matroska file"); free(fp); return false; }
+    if (mkv_open(&f, rd, ctx, size) != 0) { set_err(err, cap, f.err[0] ? f.err : TR("not a Matroska file")); free(fp); return false; }
     o->container = LM_MKV;
     o->duration_secs = (uint32_t)(f.duration_ns / 1e9 + 0.5);
 
@@ -160,7 +161,7 @@ static bool probe_mkv(LocalReadAt rd, void *ctx, uint64_t size, LocalInfo *o, ch
     if (!v) {
         o->video_ok = false;
         snprintf(o->video_reason, sizeof o->video_reason, "no video");
-        snprintf(o->video_desc, sizeof o->video_desc, "No video");
+        snprintf(o->video_desc, sizeof o->video_desc, TR("No video"));
     } else {
         o->video_id = v->number; o->width = v->width; o->height = v->height;
         if (v->default_duration_ns) o->fps = 1e9 / (double)v->default_duration_ns;
@@ -293,7 +294,7 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
     // the read window and the tables are ~100 KB: off the stack, since a worker thread's is 128 KB
     struct Bufs { uint8_t chunk[TS_PKT * 348]; Psi pat, pmt; uint8_t vbuf[24 * 1024]; };
     Bufs *bufs = (Bufs *)calloc(1, sizeof *bufs);
-    if (!bufs) { set_err(err, cap, "out of memory"); return false; }
+    if (!bufs) { set_err(err, cap, TR("out of memory")); return false; }
     uint8_t *chunk = bufs->chunk;
     Psi &pat = bufs->pat, &pmt = bufs->pmt;
     uint8_t (&vbuf)[24 * 1024] = bufs->vbuf;
@@ -309,7 +310,7 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
         int s = -1;
         for (int i = 0; i < TS_PKT && i + 2 * TS_PKT < n; i++)
             if (head[i] == 0x47 && head[i + TS_PKT] == 0x47 && head[i + 2 * TS_PKT] == 0x47) { s = i; break; }
-        if (s < 0) { free(bufs); set_err(err, cap, "not a transport stream"); return false; }
+        if (s < 0) { free(bufs); set_err(err, cap, TR("not a transport stream")); return false; }
         pos = (uint64_t)s;
     }
     while (pos < ts_size && pos < SCAN_BYTES && !(have_pmt && vlen >= (int)sizeof vbuf)) {
@@ -364,7 +365,7 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
         }
         pos += (uint64_t)n - (uint64_t)n % TS_PKT;
     }
-    if (!have_pmt) { free(bufs); set_err(err, cap, "no program in the first megabytes"); return false; }
+    if (!have_pmt) { free(bufs); set_err(err, cap, TR("no program in the first megabytes")); return false; }
 
     // the picture
     const TsStream *vs = NULL;
@@ -372,7 +373,7 @@ static bool probe_ts(LocalReadAt rd, void *ctx, uint64_t size, bool m2ts, LocalI
     if (!vs) {
         o->video_ok = false;
         snprintf(o->video_reason, sizeof o->video_reason, "no video");
-        snprintf(o->video_desc, sizeof o->video_desc, "No video");
+        snprintf(o->video_desc, sizeof o->video_desc, TR("No video"));
     } else {
         o->video_id = vs->pid;
         const char *codec = "Video";
@@ -481,14 +482,14 @@ bool local_probe(LocalReadAt rd, void *ctx, uint64_t size, const char *name, Loc
     out->size = size;
     uint8_t head[4 + 4 * TS_PKT];
     const int n = rd(ctx, 0, head, (int)sizeof head);
-    if (n < 4) { set_err(err, cap, n < 0 ? "cannot read the file" : "the file is empty"); return false; }
+    if (n < 4) { set_err(err, cap, n < 0 ? TR("cannot read the file") : TR("the file is empty")); return false; }
     if (head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3) return probe_mkv(rd, ctx, size, out, err, cap);
     if (n >= 4 + 3 * M2TS_PKT && head[4] == 0x47 && head[4 + M2TS_PKT] == 0x47 && head[4 + 2 * M2TS_PKT] == 0x47 &&
         !(head[0] == 0x47 && head[TS_PKT] == 0x47 && head[2 * TS_PKT] == 0x47))
         return probe_ts(rd, ctx, size, true, out, err, cap);
     if (ends_with(name, ".ts") || ends_with(name, ".m2ts") || ends_with(name, ".mts") || head[0] == 0x47)
         return probe_ts(rd, ctx, size, false, out, err, cap);
-    set_err(err, cap, "not a video file this player reads");
+    set_err(err, cap, TR("not a video file this player reads"));
     return false;
 }
 
@@ -526,14 +527,14 @@ bool local_can_play(const LocalInfo *info, const LocalAudioPrefs *prefs, char *w
     char m[160] = "";
     bool ok = true;
     if (!info->video_ok) {
-        snprintf(m, sizeof m, "The picture (%s) is beyond what the PS3 can play.",
-                 info->video_reason[0] ? info->video_reason : "unsupported");
+        snprintf(m, sizeof m, TR("The picture (%s) is beyond what the PS3 can play."),
+                 info->video_reason[0] ? info->video_reason : TR("unsupported"));
         ok = false;
     } else if (info->n_audio == 0) {
-        snprintf(m, sizeof m, "This file has no sound track.");
+        snprintf(m, sizeof m, TR("This file has no sound track."));
         ok = false;
     } else if (local_pick_audio(info, prefs) < 0) {
-        snprintf(m, sizeof m, "The PS3 cannot decode this file's audio yet (%.80s).", info->audio[0].label);
+        snprintf(m, sizeof m, TR("The PS3 cannot decode this file's audio yet (%.80s)."), info->audio[0].label);
         ok = false;
     }
     set_err(why, why_cap, m);

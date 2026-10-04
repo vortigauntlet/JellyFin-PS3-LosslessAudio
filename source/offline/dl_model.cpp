@@ -2,6 +2,7 @@
 // See dl_model.h.
 
 #include "dl_model.h"
+#include "i18n.h"
 
 #include <stddef.h>   // offsetof
 #include <stdio.h>
@@ -24,21 +25,21 @@ static const char *const k_error_names[DL_ERR_COUNT] = {
 
 static const char *const k_error_text[DL_ERR_COUNT] = {
     "",
-    "Server unreachable",
-    "Server timed out",
-    "Connection lost",
-    "Download interrupted",
-    "Server error",
-    "Unexpected server response",
-    "Server refused the request",
-    "Sign-in expired",
-    "No longer on the server",
-    "Paused: the HDD is down to its free-space reserve",
-    "Could not write to the HDD",
-    "Unsupported address (https)",
-    "Download data is damaged",
-    "Server sent an incomplete video",
-    "Cannot check free HDD space: downloads paused",
+    TRN("Server unreachable"),
+    TRN("Server timed out"),
+    TRN("Connection lost"),
+    TRN("Download interrupted"),
+    TRN("Server error"),
+    TRN("Unexpected server response"),
+    TRN("Server refused the request"),
+    TRN("Sign-in expired"),
+    TRN("No longer on the server"),
+    TRN("Paused: the HDD is down to its free-space reserve"),
+    TRN("Could not write to the HDD"),
+    TRN("Unsupported address (https)"),
+    TRN("Download data is damaged"),
+    TRN("Server sent an incomplete video"),
+    TRN("Cannot check free HDD space: downloads paused"),
 };
 
 const char *dl_state_name(DlState s) {

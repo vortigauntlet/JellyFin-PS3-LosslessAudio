@@ -1,6 +1,7 @@
 // Offline downloads -- what the screens say and do.  See dl_ui.h.
 
 #include "dl_ui.h"
+#include "i18n.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -43,50 +44,50 @@ DlUiAction dl_ui_item_action(const DlStatus *st, bool can_download,
 
 void dl_ui_item_label(const DlStatus *st, bool can_download,
                       const DlUiContext *cx, char *out, int cap) {
-    if (!cx->ready)   { snprintf(out, (size_t)cap, "Downloads unavailable"); return; }
+    if (!cx->ready)   { snprintf(out, (size_t)cap, TR("Downloads unavailable")); return; }
     if (!st) {
-        snprintf(out, (size_t)cap, "%s", can_download ? "Download" : "Can't download");
+        snprintf(out, (size_t)cap, "%s", can_download ? TR("Download") : TR("Can't download"));
         return;
     }
     const int pct = percent(&st->rec);
     switch (st->rec.state) {
     case DL_QUEUED:
-        if (cx->auth_held)           snprintf(out, (size_t)cap, "Queued (sign in)");
-        else if (cx->playback_block) snprintf(out, (size_t)cap, "Queued (streaming)");
-        else if (st->retry_in_ms)    snprintf(out, (size_t)cap, "Retrying...");
-        else                         snprintf(out, (size_t)cap, "Queued");
+        if (cx->auth_held)           snprintf(out, (size_t)cap, TR("Queued (sign in)"));
+        else if (cx->playback_block) snprintf(out, (size_t)cap, TR("Queued (streaming)"));
+        else if (st->retry_in_ms)    snprintf(out, (size_t)cap, TR("Retrying..."));
+        else                         snprintf(out, (size_t)cap, TR("Queued"));
         break;
     case DL_DOWNLOADING:
-        if (pct >= 0) snprintf(out, (size_t)cap, "Downloading %d%%", pct);
-        else          snprintf(out, (size_t)cap, "Downloading");
+        if (pct >= 0) snprintf(out, (size_t)cap, TR("Downloading %d%%"), pct);
+        else          snprintf(out, (size_t)cap, TR("Downloading"));
         break;
     case DL_PAUSED:
-        if (pct >= 0) snprintf(out, (size_t)cap, "Paused %d%%", pct);
-        else          snprintf(out, (size_t)cap, "Paused");
+        if (pct >= 0) snprintf(out, (size_t)cap, TR("Paused %d%%"), pct);
+        else          snprintf(out, (size_t)cap, TR("Paused"));
         break;
-    case DL_COMPLETED: snprintf(out, (size_t)cap, "Play offline"); break;
+    case DL_COMPLETED: snprintf(out, (size_t)cap, TR("Play offline")); break;
     case DL_FAILED:
     case DL_CANCELLED:
-        snprintf(out, (size_t)cap, "%s", can_download ? "Retry download" : "Can't download");
+        snprintf(out, (size_t)cap, "%s", can_download ? TR("Retry download") : TR("Can't download"));
         break;
-    default: snprintf(out, (size_t)cap, "Download"); break;
+    default: snprintf(out, (size_t)cap, TR("Download")); break;
     }
 }
 
 const char *dl_ui_result_text(int r) {
     switch (r) {
     case DL_OK:          return "";
-    case DL_E_NOT_READY: return "Downloads are unavailable (no writable HDD folder)";
-    case DL_E_INVALID:   return "This version can't be downloaded";
-    case DL_E_EXISTS:    return "Already downloaded or in the queue";
-    case DL_E_FULL:      return "The download list is full";
-    case DL_E_NO_SPACE:  return "Not enough HDD space";
-    case DL_E_SPACE_UNKNOWN: return "Can't check free HDD space: downloads paused";
-    case DL_E_SIZE_UNKNOWN:  return "Size unknown, can't check space";
-    case DL_E_IO:        return "Could not write to the HDD";
-    case DL_E_NOT_FOUND: return "No longer in the download list";
-    case DL_E_STATE:     return "Not possible right now";
-    default:             return "Something went wrong";
+    case DL_E_NOT_READY: return TR("Downloads are unavailable (no writable HDD folder)");
+    case DL_E_INVALID:   return TR("This version can't be downloaded");
+    case DL_E_EXISTS:    return TR("Already downloaded or in the queue");
+    case DL_E_FULL:      return TR("The download list is full");
+    case DL_E_NO_SPACE:  return TR("Not enough HDD space");
+    case DL_E_SPACE_UNKNOWN: return TR("Can't check free HDD space: downloads paused");
+    case DL_E_SIZE_UNKNOWN:  return TR("Size unknown, can't check space");
+    case DL_E_IO:        return TR("Could not write to the HDD");
+    case DL_E_NOT_FOUND: return TR("No longer in the download list");
+    case DL_E_STATE:     return TR("Not possible right now");
+    default:             return TR("Something went wrong");
     }
 }
 
@@ -95,9 +96,9 @@ const char *dl_ui_result_text(int r) {
 // ---------------------------------------------------------------------------
 
 const char *dl_ui_queue_banner(const DlUiContext *cx) {
-    if (!cx->ready)         return "Downloads are unavailable: no writable HDD folder";
-    if (cx->auth_held)      return "Sign in to continue downloads";
-    if (cx->playback_block) return "Downloads pause while you stream -- they resume afterwards";
+    if (!cx->ready)         return TR("Downloads are unavailable: no writable HDD folder");
+    if (cx->auth_held)      return TR("Sign in to continue downloads");
+    if (cx->playback_block) return TR("Downloads pause while you stream -- they resume afterwards");
     return "";
 }
 
@@ -111,7 +112,7 @@ void dl_ui_result_message(int r, const DlSpaceReport *rep, char *out, int cap) {
         gb(rep->avail_bytes, avail, sizeof(avail));
         gb(rep->reserve_bytes, keep, sizeof(keep));
         snprintf(out, (size_t)cap,
-                 "Not enough space: needs %s, %s available (%s is always kept free)",
+                 TR("Not enough space: needs %s, %s available (%s is always kept free)"),
                  need, avail, keep);
         return;
     }
@@ -123,23 +124,23 @@ void dl_ui_banner(const DlUiContext *cx, const DlSpaceReport *space, bool held,
     const char *base = dl_ui_queue_banner(cx);
     if (base[0] || !held || !space) { snprintf(out, (size_t)cap, "%s", base); return; }
     if (space->state == DL_SPACE_UNKNOWN) {
-        snprintf(out, (size_t)cap, "Can't check free HDD space: downloads paused");
+        snprintf(out, (size_t)cap, TR("Can't check free HDD space: downloads paused"));
         return;
     }
     char keep[24];
     gb(space->reserve_bytes, keep, sizeof(keep));
-    snprintf(out, (size_t)cap, "Paused: the HDD is down to %s free", keep);
+    snprintf(out, (size_t)cap, TR("Paused: the HDD is down to %s free"), keep);
 }
 
 void dl_ui_hdd_header(const DlSpaceReport *space, char *out, int cap) {
     if (!space || space->state == DL_SPACE_UNKNOWN) {
-        snprintf(out, (size_t)cap, "HDD: free space unknown \xC2\xB7 downloads are paused");
+        snprintf(out, (size_t)cap, TR("HDD: free space unknown \xC2\xB7 downloads are paused"));
         return;
     }
     char fr[24], keep[24];
     gb(space->free_bytes, fr, sizeof(fr));
     gb(space->reserve_bytes, keep, sizeof(keep));
-    snprintf(out, (size_t)cap, "HDD: %s free \xC2\xB7 downloads keep %s free", fr, keep);
+    snprintf(out, (size_t)cap, TR("HDD: %s free \xC2\xB7 downloads keep %s free"), fr, keep);
 }
 
 void dl_ui_row(const DlStatus *st, const DlUiContext *cx, DlUiRow *o) {
@@ -161,44 +162,44 @@ void dl_ui_row(const DlStatus *st, const DlUiContext *cx, DlUiRow *o) {
     const int pm = dl_progress_permille(r);
     switch (r->state) {
     case DL_DOWNLOADING:
-        snprintf(o->status, sizeof(o->status), "Downloading");
+        snprintf(o->status, sizeof(o->status), TR("Downloading"));
         o->permille = pm;          // -1 for a transcode (length unknown)
         o->emphasis = true;
         break;
     case DL_QUEUED:
         if (cx->auth_held) {
-            snprintf(o->status, sizeof(o->status), "Waiting for sign-in");
+            snprintf(o->status, sizeof(o->status), TR("Waiting for sign-in"));
             o->warning = true;
         } else if (cx->playback_block) {
-            snprintf(o->status, sizeof(o->status), "Paused while streaming");
+            snprintf(o->status, sizeof(o->status), TR("Paused while streaming"));
         } else if (st->retry_in_ms > 0) {
-            snprintf(o->status, sizeof(o->status), "Retrying in %us -- %s",
-                     (unsigned)((st->retry_in_ms + 999) / 1000), dl_error_text(r->error));
+            snprintf(o->status, sizeof(o->status), TR("Retrying in %us -- %s"),
+                     (unsigned)((st->retry_in_ms + 999) / 1000), tr(dl_error_text(r->error)));
             o->warning = true;
         } else {
-            snprintf(o->status, sizeof(o->status), "Waiting...");
+            snprintf(o->status, sizeof(o->status), TR("Waiting..."));
         }
         if (r->bytes_done > 0) o->permille = pm;
         break;
     case DL_PAUSED:
         // The manager pauses an item for space; the reason is in its error.
         if (r->error == DL_ERR_NO_SPACE || r->error == DL_ERR_SPACE_UNKNOWN) {
-            snprintf(o->status, sizeof(o->status), "%s", dl_error_text(r->error));
+            snprintf(o->status, sizeof(o->status), "%s", tr(dl_error_text(r->error)));
             o->warning = true;
         } else {
-            snprintf(o->status, sizeof(o->status), "Paused");
+            snprintf(o->status, sizeof(o->status), TR("Paused"));
         }
         if (r->bytes_done > 0) o->permille = pm;
         break;
     case DL_COMPLETED:
-        snprintf(o->status, sizeof(o->status), "Downloaded");
+        snprintf(o->status, sizeof(o->status), TR("Downloaded"));
         break;
     case DL_FAILED:
-        snprintf(o->status, sizeof(o->status), "Failed -- %s", dl_error_text(r->error));
+        snprintf(o->status, sizeof(o->status), TR("Failed -- %s"), tr(dl_error_text(r->error)));
         o->warning = true;
         break;
     case DL_CANCELLED:
-        snprintf(o->status, sizeof(o->status), "Cancelled");
+        snprintf(o->status, sizeof(o->status), TR("Cancelled"));
         o->size[0] = '\0';
         break;
     default: break;
@@ -228,13 +229,13 @@ DlUiAction dl_ui_row_secondary(const DlStatus *st) {
 
 const char *dl_ui_action_label(DlUiAction a) {
     switch (a) {
-    case DL_UI_START:        return "Download";
-    case DL_UI_PAUSE:        return "Pause";
-    case DL_UI_RESUME:       return "Resume";
-    case DL_UI_RETRY:        return "Retry";
-    case DL_UI_PLAY_OFFLINE: return "Play";
-    case DL_UI_CANCEL:       return "Cancel";
-    case DL_UI_REMOVE:       return "Delete";
+    case DL_UI_START:        return TR("Download");
+    case DL_UI_PAUSE:        return TR("Pause");
+    case DL_UI_RESUME:       return TR("Resume");
+    case DL_UI_RETRY:        return TR("Retry");
+    case DL_UI_PLAY_OFFLINE: return TR("Play");
+    case DL_UI_CANCEL:       return TR("Cancel");
+    case DL_UI_REMOVE:       return TR("Delete");
     default:                 return "";
     }
 }
@@ -266,8 +267,8 @@ void dl_ui_offline_lines(const DlMeta *m, bool meta_ok, uint64_t bytes,
     }
     if (meta_ok && m->runtime_secs >= 60) {
         const unsigned mins = m->runtime_secs / 60;
-        if (mins >= 60) snprintf(parts[n++], sizeof(parts[0]), "%uh %02um", mins / 60, mins % 60);
-        else            snprintf(parts[n++], sizeof(parts[0]), "%u min", mins);
+        if (mins >= 60) snprintf(parts[n++], sizeof(parts[0]), TR("%uh %02um"), mins / 60, mins % 60);
+        else            snprintf(parts[n++], sizeof(parts[0]), TR("%u min"), mins);
     }
     dl_ui_format_bytes(bytes, parts[n++], sizeof(parts[0]));
     sub[0] = '\0';

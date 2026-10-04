@@ -58,7 +58,7 @@ int osk_build(ORow rows[OSK_MAX_ROWS], bool sym, bool caps) {
         for (const char *p = R0; *p; p++) rows[0].keys[rows[0].n++] = okey(OK_CHAR, *p, 0, 1);
         for (const char *p = R1; *p; p++) rows[1].keys[rows[1].n++] = okey(OK_CHAR, caps ? (char)toupper(*p) : *p, 0, 1);
         for (const char *p = R2; *p; p++) rows[2].keys[rows[2].n++] = okey(OK_CHAR, caps ? (char)toupper(*p) : *p, 0, 1);
-        rows[3].keys[rows[3].n++] = okey(OK_SHIFT, 0, "Caps", 2);
+        rows[3].keys[rows[3].n++] = okey(OK_SHIFT, 0, TR("Caps"), 2);
         for (const char *p = R3; *p; p++) rows[3].keys[rows[3].n++] = okey(OK_CHAR, caps ? (char)toupper(*p) : *p, 0, 1);
         rows[3].keys[rows[3].n++] = okey(OK_BACK, 0, "<", 2);
         nr = 4;
@@ -77,8 +77,8 @@ int osk_build(ORow rows[OSK_MAX_ROWS], bool sym, bool caps) {
         nr = 5;
     }
     rows[nr].keys[rows[nr].n++] = okey(OK_SYM,   0, sym ? "ABC" : "#+=", 2);
-    rows[nr].keys[rows[nr].n++] = okey(OK_SPACE, 0, "Space", 5);
-    rows[nr].keys[rows[nr].n++] = okey(OK_ENTER, 0, "Enter", 3);
+    rows[nr].keys[rows[nr].n++] = okey(OK_SPACE, 0, TR("Space"), 5);
+    rows[nr].keys[rows[nr].n++] = okey(OK_ENTER, 0, TR("Enter"), 3);
     return nr + 1;
 }
 
@@ -187,8 +187,8 @@ void osk_draw(const char *prompt, const char *input, bool is_password,
     }
 
     // Hints.  Square = backspace, Start = confirm, Circle = cancel.
-    static const Hint hints[] = {{'X',"Select"},{'S',"Delete"},
-                                 {'A',"Done"},{'C',"Cancel"}};
+    static const Hint hints[] = {{'X',TRN("Select")},{'S',TRN("Delete")},
+                                 {'A',TRN("Done")},{'C',TRN("Cancel")}};
     draw_hints_bar(hints, 4);
 
     flip();

@@ -1,5 +1,6 @@
 // local_names: see local_names.h.
 
+#include "i18n.h"
 #include "local_names.h"
 
 #include <ctype.h>
@@ -130,15 +131,15 @@ void local_format_size(uint64_t bytes, char *out, int cap) {
 void local_format_duration(uint32_t secs, char *out, int cap) {
     if (cap <= 0) return;
     if (secs == 0) { out[0] = '\0'; return; }
-    if (secs < 60) { snprintf(out, (size_t)cap, "under a minute"); return; }
+    if (secs < 60) { snprintf(out, (size_t)cap, TR("under a minute")); return; }
     const uint32_t mins = (secs + 30) / 60;
-    if (mins < 60) snprintf(out, (size_t)cap, "%u min", (unsigned)mins);
-    else if (mins % 60 == 0) snprintf(out, (size_t)cap, "%u h", (unsigned)(mins / 60));
-    else snprintf(out, (size_t)cap, "%u h %u min", (unsigned)(mins / 60), (unsigned)(mins % 60));
+    if (mins < 60) snprintf(out, (size_t)cap, TR("%u min"), (unsigned)mins);
+    else if (mins % 60 == 0) snprintf(out, (size_t)cap, TR("%u h"), (unsigned)(mins / 60));
+    else snprintf(out, (size_t)cap, TR("%u h %u min"), (unsigned)(mins / 60), (unsigned)(mins % 60));
 }
 
 void local_format_resume(uint32_t secs, char *out, int cap) {
     if (cap <= 0) return;
-    if (secs >= 3600) snprintf(out, (size_t)cap, "Resume from %u:%02u:%02u", (unsigned)(secs / 3600), (unsigned)(secs / 60 % 60), (unsigned)(secs % 60));
-    else snprintf(out, (size_t)cap, "Resume from %u:%02u", (unsigned)(secs / 60), (unsigned)(secs % 60));
+    if (secs >= 3600) snprintf(out, (size_t)cap, TR("Resume from %u:%02u:%02u"), (unsigned)(secs / 3600), (unsigned)(secs / 60 % 60), (unsigned)(secs % 60));
+    else snprintf(out, (size_t)cap, TR("Resume from %u:%02u"), (unsigned)(secs / 60), (unsigned)(secs % 60));
 }

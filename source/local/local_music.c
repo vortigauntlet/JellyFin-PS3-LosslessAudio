@@ -1,5 +1,6 @@
 // A folder of music files as an album: see local_music.h.
 
+#include "i18n.h"
 #include "local_music.h"
 
 #include <stdio.h>
@@ -125,7 +126,7 @@ void lm_album_artist(const LmTrack *t, int n, char *out, int cap) {
     }
     if (best < 0) return;
     if (best_count * 10 >= tagged * 7) snprintf(out, (size_t)cap, "%s", t[best].artist);
-    else snprintf(out, (size_t)cap, "Various Artists");
+    else snprintf(out, (size_t)cap, TR("Various Artists"));
 }
 
 int lm_pick_art(const LmTrack *t, int n) {

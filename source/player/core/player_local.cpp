@@ -14,6 +14,7 @@
 
 #include <ppu-types.h>
 
+#include "i18n.h"
 #include "player.h"
 #include "player_internal.h"
 #include "stream.h"
@@ -194,7 +195,7 @@ bool show_player_file(const char *path, const char *title, u32 resume_secs, char
 
     int fd = lfs_open(path);
     if (fd < 0) {
-        set_why(why, why_cap, fd == LFS_E_REMOVED ? "The drive was removed." : "The file could not be opened.");
+        set_why(why, why_cap, fd == LFS_E_REMOVED ? TR("The drive was removed.") : TR("The file could not be opened."));
         return false;
     }
     const uint64_t size = lfs_size(fd);
@@ -202,7 +203,7 @@ bool show_player_file(const char *path, const char *title, u32 resume_secs, char
     const bool probed = local_probe(local_read_at, &fd, size, file_name_of(path), &info, err, sizeof err);
     lfs_close(fd);
     if (!probed) {
-        set_why(why, why_cap, err[0] ? err : "This file could not be read.");
+        set_why(why, why_cap, err[0] ? err : TR("This file could not be read."));
         return false;
     }
 
@@ -260,7 +261,7 @@ bool show_player_file(const char *path, const char *title, u32 resume_secs, char
         // A transport stream is entered at a key frame found in the file itself.
         const bool m2ts = info.container == LM_M2TS;
         if (!probe_open(path, &fd)) {
-            set_why(why, why_cap, "The file could not be opened.");
+            set_why(why, why_cap, TR("The file could not be opened."));
             return false;
         }
         LocalM2tsView view = { local_read_at, &fd };
@@ -272,7 +273,7 @@ bool show_player_file(const char *path, const char *title, u32 resume_secs, char
                                                 scratch, cap, &local.idx);
         lfs_close(fd);
         if (!indexed) {
-            set_why(why, why_cap, "This file has no picture the player can start from.");
+            set_why(why, why_cap, TR("This file has no picture the player can start from."));
             return false;
         }
     }

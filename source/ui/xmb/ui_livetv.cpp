@@ -17,6 +17,7 @@
 //
 // Layout is all UIS-scaled; both screens work at 720p and 1080p.
 
+#include "i18n.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -423,7 +424,7 @@ void show_details(const JFChannel *c, const JFProgram *p) {
     memset(&job, 0, sizeof job);
     snprintf(job.id, sizeof job.id, "%s", p->id);
     s_in_details = true;
-    loading_run(overview_work, &job, "Loading", false);
+    loading_run(overview_work, &job, TR("Loading"), false);
 
     rsxSync();
     flip();
@@ -470,8 +471,8 @@ void show_details(const JFChannel *c, const JFProgram *p) {
         if (job.text[0])
             wrap_text(cx, y, job.text, UIS_TF(14), XMB_TEXT_DIM, mw, UIS_H(22), 6);
         else
-            drawTTF((u32)cx, (u32)y, "No description.", UIS_TF(14), XMB_TEXT_FAINT);
-        { static const Hint h[] = {{'X', "OK"}};
+            drawTTF((u32)cx, (u32)y, TR("No description."), UIS_TF(14), XMB_TEXT_FAINT);
+        { static const Hint h[] = {{'X', TRN("OK")}};
           draw_hints_bar(h, 1); }
         flip();
     }
@@ -643,13 +644,13 @@ bool xmb_input_livetv(void) {
 void xmb_livetv_hints(void) {
     Hint h[6]; int n = 0;
     if (!s_guide) {
-        h[n].glyph = 'X'; h[n].label = "Watch"; n++;
-        h[n].glyph = 'T'; h[n].label = "Favourite"; n++;
-        if (have_guide()) { h[n].glyph = 'E'; h[n].label = "Guide"; n++; }
+        h[n].glyph = 'X'; h[n].label = TRN("Watch"); n++;
+        h[n].glyph = 'T'; h[n].label = TRN("Favourite"); n++;
+        if (have_guide()) { h[n].glyph = 'E'; h[n].label = TRN("Guide"); n++; }
     } else {
-        h[n].glyph = 'X'; h[n].label = "Watch / details"; n++;
-        h[n].glyph = 'E'; h[n].label = "Move"; n++;
-        h[n].glyph = 'C'; h[n].label = "List"; n++;
+        h[n].glyph = 'X'; h[n].label = TRN("Watch / details"); n++;
+        h[n].glyph = 'E'; h[n].label = TRN("Move"); n++;
+        h[n].glyph = 'C'; h[n].label = TRN("List"); n++;
     }
     // Every bar but Search's ends with Square and the visualiser it switches to.
     h[n].glyph = 'S'; h[n].label = wave_vis_next_label(); n++;
@@ -785,14 +786,14 @@ void xmb_draw_livetv(void) {
     tick();
     const int cx = (int)display_width / 2;
     if (!s_ch || s_alloc_failed) {
-        const char *m = "Live TV is unavailable";
+        const char *m = TR("Live TV is unavailable");
         drawTTF((u32)(cx - ttf_text_width(m, UIS_TF(18)) / 2), (u32)(band_top() + UIS_H(60)), m,
                 UIS_TF(18), XMB_TEXT_DIM);
         return;
     }
     if (s_n <= 0) {
-        const char *m = s_failed ? "Couldn't load the channel list"
-                      : !s_loaded ? "Loading channels..." : "No channels";
+        const char *m = s_failed ? TR("Couldn't load the channel list")
+                      : !s_loaded ? TR("Loading channels...") : TR("No channels");
         drawTTF((u32)(cx - ttf_text_width(m, UIS_TF(18)) / 2), (u32)(band_top() + UIS_H(60)), m,
                 UIS_TF(18), XMB_TEXT_DIM);
         return;
@@ -831,7 +832,7 @@ void xmb_draw_livetv(void) {
                 if (nn.next[0]) {
                     char hm[16], line[160];
                     fmt_hm(nn.next_start, hm, sizeof hm);
-                    snprintf(line, sizeof line, "Next: %s  %s", hm, nn.next);
+                    snprintf(line, sizeof line, TR("Next: %s  %s"), hm, nn.next);
                     clip_draw(rx, y + UIS_H(40), line, UIS_TF(12), XMB_TEXT_FAINT, UIS_W(250), false);
                 }
             }

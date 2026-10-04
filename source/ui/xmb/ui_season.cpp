@@ -187,7 +187,7 @@ void xmb_season_download_sheet(const XMBItem *season) {
     snprintf(g_tv_season_id,   sizeof g_tv_season_id,   "%s", season->id);
     snprintf(g_tv_season_name, sizeof g_tv_season_name, "%s", season->name);
     if (dl_season_busy()) {
-        xmb_dl_notice("Download season", "A season is already being added to Downloads.");
+        xmb_dl_notice(TR("Download season"), TR("A season is already being added to Downloads."));
         return;
     }
 
@@ -195,12 +195,12 @@ void xmb_season_download_sheet(const XMBItem *season) {
     uint64_t   *est = (uint64_t *)malloc(sizeof(uint64_t) * DL_SEASON_MAX);
     if (!eps || !est) { free(eps); free(est); return; }
     ListJob job = { eps, 0 };
-    loading_run(list_work, &job, "Loading", false);
+    loading_run(list_work, &job, TR("Loading"), false);
 
     if (job.n < 0) {
-        xmb_dl_notice("Download season", "Couldn't get this season's episodes from the server.");
+        xmb_dl_notice(TR("Download season"), TR("Couldn't get this season's episodes from the server."));
     } else if (job.n == 0) {
-        xmb_dl_notice("Download season", "This season has no episodes.");
+        xmb_dl_notice(TR("Download season"), TR("This season has no episodes."));
     } else {
         StreamPrefs prefs;
         stream_prefs_current(&prefs);
@@ -217,30 +217,30 @@ void xmb_season_download_sheet(const XMBItem *season) {
         const int fit = dl_space_fit_prefix(&rep, est, job.n);
 
         char title[DL_TITLE_MAX + 16], line[200], act[80], a[24], b[24];
-        snprintf(title, sizeof title, "Download %s", season->name);
+        snprintf(title, sizeof title, TR("Download %s"), season->name);
         dl_ui_format_bytes(need, a, sizeof a);
         dl_ui_format_bytes(rep.avail_bytes, b, sizeof b);
         if (rep.state == DL_SPACE_UNKNOWN) {
-            xmb_dl_notice(title, "Can't check free HDD space: downloads paused.");
+            xmb_dl_notice(title, TR("Can't check free HDD space: downloads paused."));
         } else if (fit >= job.n) {
-            snprintf(line, sizeof line, "%d episodes, about %s. %s free above the reserve.",
+            snprintf(line, sizeof line, TR("%d episodes, about %s. %s free above the reserve."),
                      job.n, a, b);
-            snprintf(act, sizeof act, "Download %s (%d episodes)", season->name, job.n);
-            if (xmb_dl_confirm(title, line, "Cancel", act))
+            snprintf(act, sizeof act, TR("Download %s (%d episodes)"), season->name, job.n);
+            if (xmb_dl_confirm(title, line, TR("Cancel"), act))
                 season_start(g_tv_series_id, season->id, 0);
         } else if (fit > 0) {
             char keep[24];
             dl_ui_format_bytes(rep.reserve_bytes, keep, sizeof keep);
-            snprintf(line, sizeof line, "Needs about %s, %s available (%s is always kept free).",
+            snprintf(line, sizeof line, TR("Needs about %s, %s available (%s is always kept free)."),
                      a, b, keep);
-            snprintf(act, sizeof act, "Download the first %d that fit", fit);
-            if (xmb_dl_confirm(title, line, "Cancel", act))
+            snprintf(act, sizeof act, TR("Download the first %d that fit"), fit);
+            if (xmb_dl_confirm(title, line, TR("Cancel"), act))
                 season_start(g_tv_series_id, season->id, fit);
         } else {
             char keep[24];
             dl_ui_format_bytes(rep.reserve_bytes, keep, sizeof keep);
             snprintf(line, sizeof line,
-                     "Not enough space: needs about %s, %s available (%s is always kept free).",
+                     TR("Not enough space: needs about %s, %s available (%s is always kept free)."),
                      a, b, keep);
             xmb_dl_notice(title, line);
         }
@@ -264,23 +264,24 @@ void xmb_season_toast_draw(void) {
 
     char msg[96] = "";
     if (st.state == DL_SEASON_RUNNING) {
-        snprintf(msg, sizeof msg, "Queuing %d of %d...", st.done + 1 > st.total ? st.total : st.done + 1,
+        snprintf(msg, sizeof msg, TR("Queuing %d of %d..."), st.done + 1 > st.total ? st.total : st.done + 1,
                  st.total);
     } else if (st.state != DL_SEASON_IDLE && now - done_at < 5000000ULL) {
         if (st.state == DL_SEASON_DONE) {
             if (st.added > 0)
-                snprintf(msg, sizeof msg, "%d episode%s added to Downloads", st.added,
-                         st.added == 1 ? "" : "s");
+                snprintf(msg, sizeof msg,
+                         st.added == 1 ? TR("%d episode added to Downloads")
+                                       : TR("%d episodes added to Downloads"), st.added);
             else if (st.skipped > 0)
-                snprintf(msg, sizeof msg, "Already in Downloads");
+                snprintf(msg, sizeof msg, TR("Already in Downloads"));
             else
-                snprintf(msg, sizeof msg, "Nothing could be added");
+                snprintf(msg, sizeof msg, TR("Nothing could be added"));
         } else if (st.state == DL_SEASON_NO_SPACE) {
-            snprintf(msg, sizeof msg, "Stopped: not enough HDD space (%d added)", st.added);
+            snprintf(msg, sizeof msg, TR("Stopped: not enough HDD space (%d added)"), st.added);
         } else if (st.state == DL_SEASON_CANCELLED) {
-            snprintf(msg, sizeof msg, "Stopped (%d added)", st.added);
+            snprintf(msg, sizeof msg, TR("Stopped (%d added)"), st.added);
         } else if (st.state == DL_SEASON_FAILED) {
-            snprintf(msg, sizeof msg, "Couldn't get the season's episodes");
+            snprintf(msg, sizeof msg, TR("Couldn't get the season's episodes"));
         }
     }
     if (!msg[0]) return;

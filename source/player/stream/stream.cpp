@@ -1,4 +1,5 @@
 #include "stream.h"
+#include "i18n.h"
 #include "plog.h"
 #include "jellyfin_api.h"
 #include "http.h"
@@ -7,6 +8,7 @@
 #include "lclog.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ppu-types.h>
@@ -264,7 +266,23 @@ static int sb_read(int sock, u8 *dst, int want) {
 // Why the last stream_open() failed, for the error screen: "Stream connection
 // failed" alone cannot tell a refused connection from a server that answered
 // 400 because the MediaSourceId was wrong, and those need different fixes.
-static char s_last_error[64] = "";
+static char s_last_error[64] = "";      // English: logged, and read by the logic that looks for "Cancelled"
+static char s_last_error_ui[128] = "";  // the same message in the interface language, for the error screen
+
+static void clear_err(void) { s_last_error[0] = '\0'; s_last_error_ui[0] = '\0'; }
+
+// The English into s_last_error and, formatted from the translated format string, into s_last_error_ui.
+// Each call wraps its format in the TRN marker, which is how tools/i18n.py finds it.
+static void set_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void set_err(const char *fmt, ...) {
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    vsnprintf(s_last_error, sizeof s_last_error, fmt, ap);
+    vsnprintf(s_last_error_ui, sizeof s_last_error_ui, tr(fmt), ap2);
+    va_end(ap2);
+    va_end(ap);
+}
 
 static unsigned s_hdr_deadline_secs = 0;
 void stream_set_header_deadline(unsigned secs) { s_hdr_deadline_secs = secs; }
@@ -336,8 +354,7 @@ int stream_open(const char *url) {
     addr.sin_addr.s_addr = htonl((na<<24)|(nb<<16)|(nc<<8)|nd);
 
     if (netConnect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        snprintf(s_last_error, sizeof(s_last_error),
-                 "Could not connect to %s:%d", host, port);
+        set_err(TRN("Could not connect to %s:%d"), host, port);
         netClose(sock); return -1;
     }
 
@@ -392,8 +409,7 @@ int stream_open(const char *url) {
         }
         if (n == 0) {
             plog("stream_open: closed before headers");
-            snprintf(s_last_error, sizeof(s_last_error),
-                     "Server closed the connection");
+            set_err(TRN("Server closed the connection"));
             netClose(sock); return -1;
         }
         // n < 0: receive timeout — the server hasn't started responding yet.
@@ -405,8 +421,7 @@ int stream_open(const char *url) {
         // Let the caller keep the screen alive and offer a way out.
         if (s_wait_cb && !s_wait_cb((unsigned)((now - hdr_t0) / 1000ULL))) {
             plog("stream_open: cancelled by user");
-            snprintf(s_last_error, sizeof(s_last_error),
-                     "Cancelled while waiting for the server");
+            set_err(TRN("Cancelled while waiting for the server"));
             netClose(sock); return -1;
         }
         if (now - hdr_t0 >= hdr_deadline_us) {
@@ -414,9 +429,8 @@ int stream_open(const char *url) {
             // Two minutes with no headers usually means the server is still
             // grinding on the transcode — a 4K HEVC source re-encoded to
             // H.264 is the classic case.
-            snprintf(s_last_error, sizeof(s_last_error),
-                     "Server did not respond in %us (still transcoding?)",
-                     (unsigned)(hdr_deadline_us / 1000000ULL));
+            set_err(TRN("Server did not respond in %us (still transcoding?)"),
+                    (unsigned)(hdr_deadline_us / 1000000ULL));
             netClose(sock); return -1;
         }
         if (now - hdr_log_us >= 5000000ULL) {
@@ -464,12 +478,11 @@ int stream_open(const char *url) {
         plog(buf);
     }
     if (status != 200) {
-        snprintf(s_last_error, sizeof(s_last_error), "Server returned HTTP %d",
-                 status);
+        set_err(TRN("Server returned HTTP %d"), status);
         netClose(sock); return -1;
     }
 
-    s_last_error[0] = '\0';
+    clear_err();
     return sock;
 }
 
@@ -492,22 +505,21 @@ static void file_stream_reset(int kind) {
     s_ctrail       = 0;
     s_carry_n      = 0;
     sb_reset();
-    s_last_error[0] = '\0';
+    clear_err();
 }
 
 static int file_open_at(const char *path, u64 offset, int kind) {
     file_close_stream();
     const int fd = lfs_open(path);
     if (fd < 0) {
-        snprintf(s_last_error, sizeof(s_last_error), "%s",
-                 fd == LFS_E_REMOVED ? "The drive was removed" : "Could not open the file");
+        set_err(fd == LFS_E_REMOVED ? TRN("The drive was removed") : TRN("Could not open the file"));
         return -1;
     }
     // an m2ts offset counts in the stripped stream: 188 of every 192 bytes
     const uint64_t at = kind == FILE_M2TS ? offset / 188u * 192u : offset;
     if (at > lfs_size(fd)) {
         lfs_close(fd);
-        snprintf(s_last_error, sizeof(s_last_error), "Could not seek the file");
+        set_err(TRN("Could not seek the file"));
         return -1;
     }
     s_file_h   = fd;
@@ -530,16 +542,15 @@ int stream_open_mkv(const char *path, int video_track, int audio_track, int sub_
     if (!s_mkv_open) {
         const int fd = lfs_open(path);
         if (fd < 0) {
-            snprintf(s_last_error, sizeof(s_last_error), "%s",
-                     fd == LFS_E_REMOVED ? "The drive was removed" : "Could not open the file");
+            set_err(fd == LFS_E_REMOVED ? TRN("The drive was removed") : TRN("Could not open the file"));
             return -1;
         }
         s_file_err = 0;
         s_mkv_h = fd;
         if (mkv_open(&s_mkv, mkv_lfs_read, &s_mkv_h, lfs_size(fd)) != 0) {
-            snprintf(s_last_error, sizeof(s_last_error), "%s",
-                     s_file_err == LFS_E_REMOVED ? "The drive was removed"
-                   : s_mkv.err[0] ? s_mkv.err : "Could not read the Matroska file");
+            if (s_file_err == LFS_E_REMOVED)  set_err(TRN("The drive was removed"));
+            else if (s_mkv.err[0])            set_err("%s", s_mkv.err);
+            else                              set_err(TRN("Could not read the Matroska file"));
             lfs_close(fd);
             s_mkv_h = -1;
             return -1;
@@ -552,9 +563,9 @@ int stream_open_mkv(const char *path, int video_track, int audio_track, int sub_
     s_mkv_ts = mkv_ts_open_subs(&s_mkv, video_track, audio_track, sub_track, sub_sink, sub_ctx, start_ns, actual_start_ns,
                                 why, sizeof why);
     if (!s_mkv_ts) {
-        snprintf(s_last_error, sizeof(s_last_error), "%s",
-                 s_file_err == LFS_E_REMOVED ? "The drive was removed"
-               : why[0] ? why : "Could not start the Matroska file");
+        if (s_file_err == LFS_E_REMOVED)  set_err(TRN("The drive was removed"));
+        else if (why[0])                  set_err("%s", why);
+        else                              set_err(TRN("Could not start the Matroska file"));
         return -1;
     }
     char b[96];
@@ -603,6 +614,10 @@ u8 *stream_scratch(int *cap) {
 
 const char *stream_last_error(void) {
     return s_last_error[0] ? s_last_error : "Could not reach the server";
+}
+
+const char *stream_last_error_ui(void) {
+    return s_last_error_ui[0] ? s_last_error_ui : TR("Could not reach the server");
 }
 
 // Stash the partial packet so the next call resumes instead of losing bytes.

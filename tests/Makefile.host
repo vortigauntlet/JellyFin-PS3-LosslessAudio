@@ -14,9 +14,9 @@
 CC      ?= cc
 CXX     ?= c++
 CFLAGS  ?= -O2 -Wall
-CFLAGS  += -I../source/audio -I../source/audio/a52 -I../source/util
+CFLAGS  += -I../source/audio -I../source/audio/a52 -I../source/util -I../source/i18n
 CXXFLAGS ?= -O2 -Wall
-CXXFLAGS += -I../source/api -I../source/net
+CXXFLAGS += -I../source/api -I../source/net -I../source/i18n
 
 A52_DIR  = ../source/audio/a52
 A52_SRCS = $(A52_DIR)/parse.c $(A52_DIR)/bit_allocate.c $(A52_DIR)/bitstream.c \
@@ -62,7 +62,7 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sourc
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
      test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request \
-     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless test_sub_conv test_local_subs test_local_tags test_local_audio test_local_music test_music_engine
+     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless test_sub_conv test_local_subs test_local_tags test_local_audio test_local_music test_music_engine test_i18n test_i18n_text test_line_break
 
 test_iec61937: test_iec61937.c ../source/audio/iec61937.c $(A52_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -127,7 +127,8 @@ OFFLINE_SRCS = $(OFFLINE_DIR)/dl_model.cpp $(OFFLINE_DIR)/dl_http.cpp \
                $(OFFLINE_DIR)/dl_store.cpp $(OFFLINE_DIR)/dl_manager.cpp \
                $(OFFLINE_DIR)/dl_ts.cpp $(OFFLINE_DIR)/dl_request.cpp \
                $(OFFLINE_DIR)/dl_service.cpp $(OFFLINE_DIR)/dl_library.cpp \
-               $(OFFLINE_DIR)/dl_ui.cpp $(OFFLINE_DIR)/dl_season.cpp
+               $(OFFLINE_DIR)/dl_ui.cpp $(OFFLINE_DIR)/dl_season.cpp \
+               ../source/i18n/i18n.c ../source/i18n/i18n_tables.c
 # Stage 3: the downloader shares the PLAYER's stream decision, so the test
 # links the player's real stream_request.cpp and what it calls -- the real
 # quality ladder (vquality.cpp), track labels (track_codec.c) and
@@ -202,7 +203,7 @@ test_mkv_ts: test_mkv_ts.cpp mkv_builder.h ../source/video/mkv_ts.cpp ../source/
 	$(CC) $(CFLAGS) -c -o aac_adts_p.o ../source/audio/aac_adts.c
 	$(CC) $(CFLAGS) -c -o flac_dec_p.o ../source/audio/flac_dec.c
 	$(CC) $(CFLAGS) -c -o resample_p.o ../source/audio/resample.c
-	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/video -I../source/util -I../source/audio -o $@ test_mkv_ts.cpp 	    ../source/video/mkv_ts.cpp ../source/video/mkv_demux.cpp ../source/video/ts_demux.cpp aac_adts_p.o flac_dec_p.o resample_p.o -lm
+	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/video -I../source/util -I../source/audio -o $@ test_mkv_ts.cpp 	    ../source/video/mkv_ts.cpp ../source/video/mkv_demux.cpp ../source/video/ts_demux.cpp aac_adts_p.o flac_dec_p.o resample_p.o ../source/i18n/i18n.c ../source/i18n/i18n_tables.c -lm
 
 # What a local video file is, which track to start with (Matroska, TS and m2ts fixtures).
 PROBE_SRC = ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp             ../source/video/h264_sps.c ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp             ../source/util/lang_names.c
@@ -212,7 +213,7 @@ test_local_probe: test_local_probe.cpp $(PROBE_SRC) ../source/local/local_probe.
 	$(CC) $(CFLAGS) -c -o aac_adts_p.o ../source/audio/aac_adts.c
 	$(CC) $(CFLAGS) -c -o flac_dec_p.o ../source/audio/flac_dec.c
 	$(CC) $(CFLAGS) -c -o resample_p.o ../source/audio/resample.c
-	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -I../source/video -I../source/util -I../source/audio -I../source/player/stream -I../source/offline 	    -o $@ test_local_probe.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp 	    ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o flac_dec_p.o resample_p.o -pthread -lm
+	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -I../source/video -I../source/util -I../source/audio -I../source/player/stream -I../source/offline 	    -o $@ test_local_probe.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp 	    ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o flac_dec_p.o resample_p.o ../source/i18n/i18n.c ../source/i18n/i18n_tables.c -pthread -lm
 
 # AAC: the ADTS and config helpers, the channel map, and the libfaad glue (adec_aac.cpp) with the resampler, over
 # ffmpeg-made files.  Needs libfaad (apt: libfaad-dev).
@@ -253,9 +254,9 @@ test_local_audio: test_local_audio.cpp minimp3_impl.c ../source/local/local_audi
 
 # A folder of music files as an album: order, names, the cover registry (threads, sanitizers).
 test_local_music: test_local_music.cpp ../source/local/local_music.c ../source/local/local_music.h ../source/local/lfs_path.cpp ../source/local/lfs_path.h
-	$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -c -o local_music_t.o ../source/local/local_music.c
+	$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -I../source/i18n -c -o local_music_t.o ../source/local/local_music.c
 	$(CXX) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -c -o lfs_path_m.o ../source/local/lfs_path.cpp
-	$(CXX) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -o $@ test_local_music.cpp local_music_t.o lfs_path_m.o -lpthread
+	$(CXX) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -o $@ test_local_music.cpp local_music_t.o lfs_path_m.o ../source/i18n/i18n.c ../source/i18n/i18n_tables.c -lpthread
 
 # The music engine on files from a drive: music/music_player.cpp itself, with pthreads and a recording sound card for the console's services (hoststub_music/).
 MENG_SRC = ../source/local/local_audio.c ../source/local/local_tags.c ../source/audio/flac_dec.c ../source/audio/chan_map.c ../source/audio/resample.c minimp3_impl.c
@@ -301,7 +302,7 @@ test_sub_conv: test_sub_conv.cpp ../source/local/sub_conv.c ../source/local/sub_
 # The Media browser's names for files, and its resume table.
 test_local_names: test_local_names.cpp ../source/local/local_names.c ../source/local/local_names.h
 	$(CC) $(CFLAGS) -Wextra -I../source/local -c -o local_names_host.o ../source/local/local_names.c
-	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -o $@ test_local_names.cpp local_names_host.o
+	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -o $@ test_local_names.cpp local_names_host.o ../source/i18n/i18n.c ../source/i18n/i18n_tables.c
 
 test_local_resume: test_local_resume.cpp ../source/local/local_resume.c ../source/local/local_resume.h
 	$(CC) $(CFLAGS) -Wextra -I../source/local -c -o local_resume_host.o ../source/local/local_resume.c
@@ -317,7 +318,7 @@ test_local_play: test_local_play.cpp $(PROBE_SRC) ../source/video/ts_demux.cpp .
 	$(CC) $(CFLAGS) -c -o resample_p.o ../source/audio/resample.c
 	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/local -I../source/video -I../source/util -I../source/audio -I../source/player/stream -I../source/offline \
 	    -o $@ test_local_play.cpp ../source/video/ts_demux.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp \
-	    ../source/video/mkv_ts.cpp ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o flac_dec_p.o resample_p.o -lm
+	    ../source/video/mkv_ts.cpp ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o flac_dec_p.o resample_p.o ../source/i18n/i18n.c ../source/i18n/i18n_tables.c -lm
 
 # lfs: drives, hotplug, paths, listings and reads, over directory trees and the NTFS / exFAT images.
 LFS_SRC = test_lfs.cpp lfs_port_host.cpp ../source/local/lfs.cpp ../source/local/lfs_path.cpp
@@ -325,7 +326,7 @@ test_lfs: $(LFS_SRC) mohasi_host_storage.c ../source/local/lfs.h ../source/local
 	$(CC) -O2 -Wall -Wno-misleading-indentation -I../third_party/mohasi_fs -c -o mohasi_ntfs.o ../third_party/mohasi_fs/ntfs.c
 	$(CC) -O2 -Wall -Wno-misleading-indentation -I../third_party/mohasi_fs -c -o mohasi_exfat.o ../third_party/mohasi_fs/exfat.c
 	$(CC) -O2 -Wall -I../third_party/mohasi_fs -c -o mohasi_storage.o mohasi_host_storage.c
-	$(CXX) -O2 -Wall -Wextra -I../source/local -I../third_party/mohasi_fs -o $@ $(LFS_SRC) mohasi_ntfs.o mohasi_exfat.o mohasi_storage.o -lpthread
+	$(CXX) -O2 -Wall -Wextra -I../source/local -I../source/i18n -I../third_party/mohasi_fs -o $@ $(LFS_SRC) ../source/i18n/i18n.c ../source/i18n/i18n_tables.c mohasi_ntfs.o mohasi_exfat.o mohasi_storage.o -lpthread
 
 # The vendored NTFS / exFAT readers (third_party/mohasi_fs) against images made by the Linux
 # drivers (fixtures/fs/make_images.sh), on a fake storage device that reads the image.
@@ -536,6 +537,10 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_local_audio
 	./test_local_music
 	./test_music_engine
+	./test_i18n
+	./test_i18n_text
+	./test_line_break
+	python3 ../tools/i18n.py check
 	$(MAKE) -f Makefile.host check-mohasi-readonly
 	./test_mohasi_fs
 	$(MAKE) -f Makefile.host test_mohasi_fs_be
@@ -714,7 +719,7 @@ test_wave_motes: test_wave_motes.c ../source/ui/render/wave_motes.h \
 # machine, the version selector's words and the ambient screensaver.
 test_experience: test_experience.c ../source/ui/render/art_colour.h \
                  ../source/ui/render/buffer_anim.h ../source/ui/render/experience.h
-	$(CC) $(CFLAGS) -Wextra -o $@ test_experience.c -lm
+	$(CC) $(CFLAGS) -Wextra -o $@ test_experience.c ../source/i18n/i18n.c ../source/i18n/i18n_tables.c -lm
 
 # JSON string decoding (source/api/json_unescape.h): \u0027 and friends.
 test_json_unescape: test_json_unescape.c ../source/api/json_unescape.h
@@ -887,3 +892,19 @@ test_canyon: test_canyon.c ../source/music/sv_spectrum.h ../source/ui/render/can
 
 test_wave_snow: test_wave_snow.c ../source/ui/render/wave_snow.h
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_snow.c -lm
+
+# The interface language: lookup, fallback, codes, the generated catalog tables.
+test_i18n: test_i18n.c ../source/i18n/i18n.c ../source/i18n/i18n_tables.c ../source/i18n/i18n.h
+	$(CC) $(CFLAGS) -Wextra -o $@ test_i18n.c ../source/i18n/i18n.c ../source/i18n/i18n_tables.c
+
+# Translations vs the fonts and the screen: glyph coverage, kana sizing, Settings rows fitting their boxes.
+test_i18n_text: test_i18n_text.cpp ../source/ui/settings_model.c ../source/i18n/i18n.c ../source/i18n/i18n_tables.c ../source/gfx/notosansjp.h
+	$(CXX) $(CXXFLAGS) $(FONTS_INC) -I../source/ui -I../source/net -Wno-unused-function -c -o test_i18n_text.o test_i18n_text.cpp
+	$(CC) $(CFLAGS) -I../source/ui -I../source/net -c -o ti_model.o ../source/ui/settings_model.c
+	$(CC) $(CFLAGS) -c -o ti_i18n.o ../source/i18n/i18n.c
+	$(CC) $(CFLAGS) -c -o ti_tables.o ../source/i18n/i18n_tables.c
+	$(CXX) -o $@ test_i18n_text.o ti_model.o ti_i18n.o ti_tables.o -lm
+
+# Where to break a line of server text: spaces, CJK without spaces, never inside a UTF-8 sequence.
+test_line_break: test_line_break.c ../source/ui/render/line_break.h
+	$(CC) $(CFLAGS) -Wextra -I../source/ui/render -o $@ test_line_break.c

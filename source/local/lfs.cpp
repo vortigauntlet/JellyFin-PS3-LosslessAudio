@@ -3,6 +3,7 @@
 // (lfs_port_ps3.cpp) and the mohasi storage seam (third_party/mohasi_fs/jf_port_ps3.c), so
 // tests/test_lfs.cpp runs this file on the host over directory trees and NTFS/exFAT images.
 
+#include "i18n.h"
 #include "lfs.h"
 #include "lfs_port.h"
 #include "lfs_path.h"
@@ -79,11 +80,11 @@ struct Guard {
 
 const char *lfs_kind_name(lfs_kind k) {
     switch (k) {
-    case LFS_HDD:         return "Internal";
+    case LFS_HDD:         return TR("Internal");
     case LFS_USB_FAT:     return "FAT32";
     case LFS_USB_NTFS:    return "NTFS";
     case LFS_USB_EXFAT:   return "exFAT";
-    default:              return "Unsupported";
+    default:              return TR("Unsupported");
     }
 }
 
@@ -121,7 +122,7 @@ int lfs_drives(lfs_drive *out, int max) {
         lfs_drive *d = &out[n++];
         memset(d, 0, sizeof *d);
         snprintf(d->id, sizeof d->id, "hdd");
-        snprintf(d->label, sizeof d->label, "Internal disk");
+        snprintf(d->label, sizeof d->label, TR("Internal disk"));
         d->kind = LFS_HDD;
         d->total = s_hdd_total; d->free = s_hdd_free;
     }
@@ -132,7 +133,7 @@ int lfs_drives(lfs_drive *out, int max) {
         memset(d, 0, sizeof *d);
         snprintf(d->id, sizeof d->id, "usb%d", p);
         if (s.label[0]) snprintf(d->label, sizeof d->label, "%s", s.label);
-        else            snprintf(d->label, sizeof d->label, "USB drive %d", p + 1);
+        else            snprintf(d->label, sizeof d->label, TR("USB drive %d"), p + 1);
         d->kind = s.state == SLOT_UNSUPPORTED ? LFS_USB_UNSUPPORTED : s.kind;
         d->total = s.total; d->free = s.free;
     }
@@ -146,7 +147,7 @@ static void drop_volume(int p) {               // io lock held
 
 static void set_label(Slot *s, int port, const char *vol_label) {
     if (vol_label && vol_label[0]) snprintf(s->label, sizeof s->label, "%s", vol_label);
-    else                           snprintf(s->label, sizeof s->label, "USB drive %d", port + 1);
+    else                           snprintf(s->label, sizeof s->label, TR("USB drive %d"), port + 1);
 }
 
 // A device that has been present long enough: say what it is.  Called without locks.
