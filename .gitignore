@@ -62,3 +62,5 @@ tests/test_settings_model_nostats
 tests/test_userdata
 tests/test_livetv
 tests/test_live_watch
+tests/test_mohasi_fs
+tests/test_mohasi_fs_be

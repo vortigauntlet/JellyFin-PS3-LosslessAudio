@@ -556,6 +556,10 @@ its own trace in `/dev_hdd0/tmp/update_detection.txt`.
   **[PSL1GHT](https://github.com/ps3dev/PSL1GHT)** alive: the SDK, toolchain, and
   libraries that make open PS3 homebrew possible in the first place. PSL1GHT is
   MIT-licensed, Copyright (c) 2011 PSL1GHT Development Team.
+- **[mohasi/ps3-dev](https://github.com/mohasi/ps3-dev)**, whose hand-written NTFS and
+  exFAT readers (Apache-2.0) are vendored, read-only, in
+  [`third_party/mohasi_fs`](third_party/mohasi_fs) so the app can play files from
+  USB drives. What was changed is listed in that directory's README.
 - The authors of the embedded libraries (minimp3, stb_image, stb_truetype), and the
   Jellyfin project itself.
 

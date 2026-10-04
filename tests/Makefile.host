@@ -184,6 +184,32 @@ test_livetv: test_livetv.cpp ../source/api/livetv.cpp ../source/api/livetv.h \
 test_live_watch: test_live_watch.c ../source/player/core/live_watch.h
 	$(CC) $(CFLAGS) -Wextra -I../source/player/core -o $@ test_live_watch.c
 
+# The vendored NTFS / exFAT readers (third_party/mohasi_fs) against images made by the Linux
+# drivers (fixtures/fs/make_images.sh), on a fake storage device that reads the image.
+MOHASI     = ../third_party/mohasi_fs
+MOHASI_SRC = test_mohasi_fs.c mohasi_host_storage.c $(MOHASI)/ntfs.c $(MOHASI)/exfat.c
+MOHASI_DEP = $(MOHASI_SRC) $(MOHASI)/ntfs.h $(MOHASI)/exfat.h $(MOHASI)/jf_port.h \
+             $(wildcard fixtures/fs/*.img.gz)
+test_mohasi_fs: $(MOHASI_DEP)
+	$(CC) -O2 -Wall -Wextra -Wno-misleading-indentation -I$(MOHASI) -o $@ $(MOHASI_SRC)
+
+# The readers must never grow a write path back: no write syscall, no raw syscall trampolines.
+# (Comments are stripped first; the wording of a comment is not code.)
+check-mohasi-readonly:
+	@bad=$$(for f in $(MOHASI)/ntfs.c $(MOHASI)/exfat.c $(MOHASI)/jf_port.h $(MOHASI)/jf_port_ps3.c; do \
+	    sed -e 's@//.*@@' $$f | grep -n -E '\b603\b|STORAGE_WRITE|writeSectors|writeStorageRaw|allocateClusters|scCall|sys_storage_write' \
+	        | sed "s@^@$$f: @"; \
+	done); \
+	if [ -n "$$bad" ]; then echo "write path found in the vendored readers:"; echo "$$bad"; exit 1; fi; \
+	echo "mohasi readers: no write path"
+
+# The same, built big-endian and run under qemu-ppc64 (skipped when the cross compiler is missing).
+test_mohasi_fs_be: $(MOHASI_DEP)
+	@if command -v powerpc64-linux-gnu-gcc >/dev/null && command -v qemu-ppc64 >/dev/null; then \
+	    powerpc64-linux-gnu-gcc -static -O2 -Wall -Wno-misleading-indentation -I$(MOHASI) -o $@ $(MOHASI_SRC) && \
+	    qemu-ppc64 ./$@; \
+	else echo "test_mohasi_fs_be: no powerpc64 cross compiler or qemu-ppc64, skipped"; fi
+
 test_dts_hd: test_dts_hd.c $(DTS_HD_DEPS)
 	$(CC) $(DCAHD_CFLAGS) $(CFLAGS) -o $@ $^ -lm
 
@@ -348,6 +374,9 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_userdata
 	./test_livetv
 	./test_live_watch
+	$(MAKE) -f Makefile.host check-mohasi-readonly
+	./test_mohasi_fs
+	$(MAKE) -f Makefile.host test_mohasi_fs_be
 
 clean:
 	rm -f test_ac3_map test_ac3_decode test_media_sources test_subtitles \
@@ -360,9 +389,10 @@ clean:
 	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq test_wave_motes test_display_mode \
 	      test_offline test_stream_request track_codec_host.o \
 	      test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch \
+	      test_mohasi_fs test_mohasi_fs_be \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
-.PHONY: all check clean
+.PHONY: all check clean check-mohasi-readonly
 
 # 24p output decision record (source/video/display_mode.c).  Pure C, no PS3
 # headers, fixtures taken from a real videoGetDeviceInfo dump.
