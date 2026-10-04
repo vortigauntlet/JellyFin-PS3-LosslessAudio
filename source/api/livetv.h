@@ -64,6 +64,18 @@ void livetv_sort_channels(JFChannel *c, int n);
 // [0, 1000].  -1 when there is no programme (no times, or end <= start).
 int livetv_progress_permille(uint64_t now, uint64_t start, uint64_t end);
 
+// A channel number's value; false when it is empty or not a number.
+bool livetv_number_value(const char *s, double *v);
+
+// Paging a long list by category.  `nums` are the channel numbers in list
+// order (the server sorts by number); `bases` are the lowest number of each
+// category, ascending.  Channels numbered below bases[0] join the first.  For
+// every category that has channels, in order, fills first[] (index of its
+// first channel), count[] and cat[] (its position in `bases`).  Returns the
+// number of pages written, at most `max`.
+int livetv_page_ranges(const float *nums, int n, const int *bases, int n_bases,
+                       int *first, int *count, int *cat, int max);
+
 // The channel after / before `cur` in list order, wrapping.  -1 for an empty
 // list.  cur outside the list counts as before the first / after the last.
 int livetv_step_channel(int cur, int n, int dir);

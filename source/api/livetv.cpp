@@ -124,6 +124,21 @@ static bool number_value(const char *s, double *v) {
     return end != s;
 }
 
+bool livetv_number_value(const char *s, double *v) { return number_value(s, v); }
+
+int livetv_page_ranges(const float *nums, int n, const int *bases, int n_bases,
+                       int *first, int *count, int *cat, int max) {
+    if (!nums || !bases || !first || !count || !cat || n <= 0 || n_bases <= 0 || max <= 0) return 0;
+    int pages = 0, i = 0;
+    for (int k = 0; k < n_bases && pages < max; k++) {
+        const bool last = k + 1 >= n_bases;
+        const int start = i;
+        while (i < n && (last || nums[i] < (float)bases[k + 1])) i++;
+        if (i > start) { first[pages] = start; count[pages] = i - start; cat[pages] = k; pages++; }
+    }
+    return pages;
+}
+
 static int channel_cmp(const JFChannel *a, const JFChannel *b) {
     if (a->favourite != b->favourite) return a->favourite ? -1 : 1;
     double va = 0, vb = 0;

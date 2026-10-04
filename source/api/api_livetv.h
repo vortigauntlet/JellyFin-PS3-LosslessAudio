@@ -7,12 +7,24 @@
 // thread can run them while the UI thread uses responseBuffer.  See livetv.h
 // for the parsing they rest on.
 
-#define LIVETV_MAX_CHANNELS 200
+// One page of the Live TV tab: the most channels held at once.  A longer list
+// is shown a category at a time (ui_livetv.cpp).
+#define LIVETV_MAX_CHANNELS 700
 
 // The channel list, sorted (favourites, then number, then name), with each
 // channel's current programme.  Fetched in pages so a reply never reaches the
 // response cap.  Returns the count, or -1 when the server could not be asked.
 int jf_fetch_channels(JFChannel *out, int max);
+
+// The same, for `count` channels from list position `start` (the server's
+// order: by number).  *total (optional) is how many channels the server has.
+int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *total);
+
+// Every channel's number, in the server's order and nothing else (small
+// replies), for working out where the categories start.  Up to `max` numbers
+// stored; a channel without a number stores -1.  Returns the count, or -1 when
+// the server could not be asked.  *total (optional) is the server's count.
+int jf_fetch_channel_numbers(float *out, int max, int *total);
 
 // Programmes airing between `from_ticks` (their end must be after it) and
 // `to_ticks` (their start must be before it) for up to `n` channels, in start

@@ -226,12 +226,63 @@ static void clock_format(void) {
     livetv_format_hm(t, -20 * 3600, b, sizeof b);   CHECK(!strcmp(b, "23:30"));      // before it
 }
 
+// Paging a long list by category.  The bases are the ones the tab uses.
+static void page_ranges(void) {
+    printf("- page ranges\n");
+    const int bases[] = { 1, 101, 151, 1000, 9000 };
+    int first[8], count[8], cat[8];
+
+    // A list as the server sorts it: 1-3 (page 0), 101-104 (page 1), nothing in
+    // 151-999, 1000-1001 (page 3), 9000- (page 4).  The empty category has no page.
+    const float a[] = { 1, 2, 3, 101, 102, 103, 104, 1000, 1001, 9000, 9001, 9002 };
+    int np = livetv_page_ranges(a, 12, bases, 5, first, count, cat, 8);
+    CHECK(np == 4);
+    CHECK(first[0] == 0  && count[0] == 3 && cat[0] == 0);
+    CHECK(first[1] == 3  && count[1] == 4 && cat[1] == 1);
+    CHECK(first[2] == 7  && count[2] == 2 && cat[2] == 3);
+    CHECK(first[3] == 9  && count[3] == 3 && cat[3] == 4);
+
+    // Numbers below the first base, and a channel without a number (-1), join
+    // the page they sit in front of.
+    const float b[] = { -1, 0.5f, 1, 2, 120 };
+    np = livetv_page_ranges(b, 5, bases, 5, first, count, cat, 8);
+    CHECK(np == 2 && first[0] == 0 && count[0] == 4 && cat[0] == 0);
+    CHECK(first[1] == 4 && count[1] == 1 && cat[1] == 1);
+
+    // Fractions stay with their whole number's block; the last page runs to the end.
+    const float c[] = { 100.5f, 101, 150.9f, 151, 99999 };
+    np = livetv_page_ranges(c, 5, bases, 5, first, count, cat, 8);
+    CHECK(np == 4);
+    CHECK(first[0] == 0 && count[0] == 1 && cat[0] == 0);
+    CHECK(first[1] == 1 && count[1] == 2 && cat[1] == 1);
+    CHECK(first[2] == 3 && count[2] == 1 && cat[2] == 2);
+    CHECK(first[3] == 4 && count[3] == 1 && cat[3] == 4);
+
+    // Every channel lands on exactly one page, in order, and `max` is respected.
+    int total = 0;
+    np = livetv_page_ranges(a, 12, bases, 5, first, count, cat, 8);
+    for (int i = 0; i < np; i++) { CHECK(first[i] == total); total += count[i]; }
+    CHECK(total == 12);
+    CHECK(livetv_page_ranges(a, 12, bases, 5, first, count, cat, 2) == 2);
+
+    // Nothing to page.
+    CHECK(livetv_page_ranges(a, 0, bases, 5, first, count, cat, 8) == 0);
+    CHECK(livetv_page_ranges(a, 12, bases, 0, first, count, cat, 8) == 0);
+    CHECK(livetv_page_ranges(NULL, 12, bases, 5, first, count, cat, 8) == 0);
+
+    double v = 0;
+    CHECK(livetv_number_value("101", &v) && v == 101);
+    CHECK(livetv_number_value("5.1", &v) && v > 5.09 && v < 5.11);
+    CHECK(!livetv_number_value("", &v) && !livetv_number_value("abc", &v));
+}
+
 int main(void) {
     time_parsing();
     clock_format();
     channels();
     programmes();
     list_rules();
+    page_ranges();
     printf("live tv: %d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;
 }

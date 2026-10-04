@@ -14,6 +14,12 @@
 //     from the player, so "now" stays current.
 //   * the guide is hidden entirely when no channel has any programme: Right
 //     then does nothing and the list shows names only.
+//   * a server with more than PAGE_MIN channels is shown a category at a time
+//     (L2 / R2 change it).  The categories are blocks of channel numbers: one
+//     light request at the start fetches every channel's number, the pure
+//     livetv_page_ranges() turns them into list ranges, and only the page on
+//     screen is fetched in full.  The blocks are the ones the server's
+//     playlist is numbered in (CATS below).
 //
 // Layout is all UIS-scaled; both screens work at 720p and 1080p.
 
@@ -52,6 +58,9 @@ const uint64_t T_30M  = 30 * T_MIN;
 const uint64_t T_3H   = 180 * T_MIN;
 
 const int      MAX_CH      = LIVETV_MAX_CHANNELS;
+const int      MAX_INDEX   = 6000;                  // channel numbers kept (24 KB)
+const int      PAGE_MIN    = 200;                   // at most this many: one list, no pages
+const int      MAX_PAGES   = 24;
 const int      MAX_PG      = 400;                   // programmes kept: ~130 KB
 const int      GUIDE_ROWS  = 16;                    // channels asked for at once
 const uint64_t REFRESH_US  = 60ULL * 1000000ULL;
@@ -80,12 +89,41 @@ int        s_seen_first = -1, s_seen_win_top = -1;
 uint64_t   s_seen_win0 = 0;
 bool       s_in_details = false;
 
+// ---- categories ----
+// The lowest channel number of each, ascending.  Labels from 1000 up are
+// generic; the ones below it are sports.  Names in capitals are not translated.
+struct CatDef { int base; const char *label; bool translate; };
+const CatDef CATS[] = {
+    {    1, TRN("Networks"),        true  }, {  101, "NFL",                  false },
+    {  151, "NBA",                  false }, {  201, "NHL",                  false },
+    {  251, "MLB",                  false }, {  331, TRN("Motorsport"),      true  },
+    {  351, TRN("Combat"),          true  }, {  371, TRN("Regional teams"),  true  },
+    {  421, TRN("International"),   true  }, {  471, "ESPN+",                false },
+    {  651, "PPV",                  false }, {  671, "WNBA",                 false },
+    { 1000, TRN("News"),            true  }, { 2000, TRN("Entertainment"),   true  },
+    { 3000, TRN("Movies"),          true  }, { 4000, TRN("Kids"),            true  },
+    { 5000, TRN("Music"),           true  }, { 6000, TRN("Canadian"),        true  },
+    { 7000, TRN("Latino"),          true  }, { 8000, "24/7",                 false },
+    { 9000, TRN("Local (US)"),      true  }, {19000, TRN("Other"),           true  },
+};
+const int N_CATS = (int)(sizeof CATS / sizeof CATS[0]);
+const int SPORTS_BELOW = 1000;
+
+struct Page { int first, count, cat; };
+Page       s_pages[MAX_PAGES];  int s_npages = 0;
+int        s_page = 0;                              // the one shown
+float     *s_nums = NULL;       int s_nnums = 0;    // every channel's number, list order
+bool       s_index_ok = false;                      // s_nums / s_pages describe the server
+bool       s_index_tried = false;                   // asked since the tab opened (or the list changed)
+bool paging(void) { return s_index_ok && s_nnums > PAGE_MIN && s_npages > 1; }
+
 // ---- the worker ----
 enum { J_IDLE = 0, J_QUEUED, J_RUNNING, J_DONE };
-enum { JOB_CHANNELS = 1, JOB_GUIDE = 2 };
+enum { JOB_CHANNELS = 1, JOB_GUIDE = 2, JOB_INDEX = 4 };
 
 struct Job {
     int      kind;
+    int      cfirst, ccount, page;                  // the channel window asked for, and its page
     int      first, rows;                           // guide rows asked for
     int      n_ids;
     char     ids[GUIDE_ROWS][40];
@@ -95,6 +133,8 @@ struct Job {
 volatile int     s_jstate = J_IDLE;
 Job              s_job;
 JFChannel       *w_ch = NULL;    int w_n = 0;       bool w_ch_ok = false;
+int              w_ctotal = 0;                      // the server's channel count, with that reply
+float           *w_nums = NULL;  int w_nnums = 0;   bool w_idx_ok = false;
 JFProgram       *w_pg = NULL;    int w_pn = 0;
 sys_ppu_thread_t s_tid;
 bool             s_have_tid = false;
@@ -107,10 +147,16 @@ void worker_main(void *) {
         s_jstate = J_RUNNING;
         const Job j = s_job;
         w_ch_ok = false;
+        w_idx_ok = false;
         w_pn = 0;
+        if (j.kind & JOB_INDEX) {
+            w_nnums = jf_fetch_channel_numbers(w_nums, MAX_INDEX, NULL);
+            w_idx_ok = w_nnums >= 0;
+        }
         if (j.kind & JOB_CHANNELS) {
-            const int n = jf_fetch_channels(w_ch, MAX_CH);
-            if (n >= 0) { w_n = n; w_ch_ok = true; }
+            int total = 0;
+            const int n = jf_fetch_channels_range(w_ch, MAX_CH, j.cfirst, j.ccount, &total);
+            if (n >= 0) { w_n = n; w_ctotal = total; w_ch_ok = true; }
         }
         if (j.kind & JOB_GUIDE) {
             const char *ids[GUIDE_ROWS];
@@ -124,15 +170,17 @@ void worker_main(void *) {
 }
 
 bool ensure_alloc(void) {
-    if (s_ch && s_pg && w_ch && w_pg) return true;
+    if (s_ch && s_pg && w_ch && w_pg && s_nums && w_nums) return true;
     if (s_alloc_failed) return false;
     s_ch = (JFChannel *)malloc(sizeof(JFChannel) * MAX_CH);
     w_ch = (JFChannel *)malloc(sizeof(JFChannel) * MAX_CH);
     s_pg = (JFProgram *)malloc(sizeof(JFProgram) * MAX_PG);
     w_pg = (JFProgram *)malloc(sizeof(JFProgram) * MAX_PG);
-    if (!s_ch || !w_ch || !s_pg || !w_pg) {
-        free(s_ch); free(w_ch); free(s_pg); free(w_pg);
-        s_ch = w_ch = NULL; s_pg = w_pg = NULL;
+    s_nums = (float *)malloc(sizeof(float) * MAX_INDEX);
+    w_nums = (float *)malloc(sizeof(float) * MAX_INDEX);
+    if (!s_ch || !w_ch || !s_pg || !w_pg || !s_nums || !w_nums) {
+        free(s_ch); free(w_ch); free(s_pg); free(w_pg); free(s_nums); free(w_nums);
+        s_ch = w_ch = NULL; s_pg = w_pg = NULL; s_nums = w_nums = NULL;
         s_alloc_failed = true;
         plog("livetv: no memory for the channel list");
         return false;
@@ -266,6 +314,14 @@ void submit(int kind) {
     if (s_jstate != J_IDLE || !s_run) return;
     memset(&s_job, 0, sizeof s_job);
     s_job.kind = kind;
+    s_job.page = s_page;
+    if (paging()) {
+        s_job.cfirst = s_pages[s_page].first;
+        s_job.ccount = s_pages[s_page].count < MAX_CH ? s_pages[s_page].count : MAX_CH;
+    } else {
+        s_job.cfirst = 0;
+        s_job.ccount = MAX_CH;
+    }
     if (kind & JOB_GUIDE) {
         int first = s_top - 2;
         if (first < 0) first = 0;
@@ -286,7 +342,31 @@ void collect(void) {
     if (s_jstate != J_DONE) return;
     __sync_synchronize();
     const Job j = s_job;
-    if (j.kind & JOB_CHANNELS) {
+    if (j.kind & JOB_INDEX) {
+        if (w_idx_ok) {
+            const int cat_was = (s_index_ok && s_page < s_npages) ? s_pages[s_page].cat : -1;
+            memcpy(s_nums, w_nums, sizeof(float) * (size_t)w_nnums);
+            s_nnums = w_nnums;
+            int bases[N_CATS], first[MAX_PAGES], count[MAX_PAGES], cat[MAX_PAGES];
+            for (int i = 0; i < N_CATS; i++) bases[i] = CATS[i].base;
+            const int np = livetv_page_ranges(s_nums, s_nnums, bases, N_CATS, first, count, cat, MAX_PAGES);
+            const int was_page = s_page;
+            for (int i = 0; i < np; i++) { s_pages[i].first = first[i]; s_pages[i].count = count[i]; s_pages[i].cat = cat[i]; }
+            s_npages = np;
+            s_page = 0;
+            for (int i = 0; i < np; i++) if (cat[i] == cat_was) { s_page = i; break; }
+            s_index_ok = true;
+            char b[80];
+            snprintf(b, sizeof b, "livetv: %d channel(s) in %d page(s)", s_nnums, s_npages);
+            plog(b);
+            if (s_page != was_page || !s_loaded) { s_n = 0; s_loaded = false; s_sel = 0; s_top = 0; }
+            s_last_refresh_us = 0;          // the page is known now: fetch it
+        }
+    }
+    if ((j.kind & JOB_CHANNELS) && j.page != s_page) {
+        // The page was changed while this one was on its way: drop it.
+        s_last_refresh_us = 0;
+    } else if (j.kind & JOB_CHANNELS) {
         if (w_ch_ok) {
             char keep[40] = "";
             if (s_sel >= 0 && s_sel < s_n) snprintf(keep, sizeof keep, "%s", s_ch[s_sel].id);
@@ -298,12 +378,14 @@ void collect(void) {
             if (at >= 0) s_sel = at;
             if (s_sel >= s_n) s_sel = s_n > 0 ? s_n - 1 : 0;
             s_pg_rows = 0;                  // the guide's rows are by position: ask again
+            // The server's list grew or shrank since the numbers were read.
+            if (s_index_ok && w_ctotal != s_nnums) s_index_tried = false;
         } else if (!s_loaded) {
             s_failed = true;
         }
         s_last_refresh_us = timing_get_us();
     }
-    if (j.kind & JOB_GUIDE) {
+    if ((j.kind & JOB_GUIDE) && j.page == s_page) {     // (not another category's rows)
         memcpy(s_pg, w_pg, sizeof(JFProgram) * (size_t)w_pn);
         s_pn = w_pn;
         s_pg_first = j.first; s_pg_rows = j.rows; s_pg_win0 = j.w0;
@@ -342,6 +424,11 @@ void tick(void) {
     }
     if (s_jstate != J_IDLE) return;
 
+    if (!s_index_tried) {                   // before the list: it says which part to fetch
+        s_index_tried = true;
+        submit(JOB_INDEX);
+        return;
+    }
     if (s_last_refresh_us == 0 || now - s_last_refresh_us >= REFRESH_US) {
         if (s_last_refresh_us == 0) s_last_refresh_us = now;   // (so a failure does not retry every frame)
         submit(JOB_CHANNELS);
@@ -354,6 +441,28 @@ void tick(void) {
 // ---------------------------------------------------------------------------
 //  Selection
 // ---------------------------------------------------------------------------
+
+// L2 / R2: another category.  The list empties until its page arrives.
+void set_page(int p) {
+    if (s_npages <= 1) return;
+    if (p < 0) p = s_npages - 1;
+    if (p >= s_npages) p = 0;
+    if (p == s_page) return;
+    s_page = p;
+    s_n = 0; s_pn = 0;
+    s_loaded = false; s_failed = false;
+    s_sel = 0; s_top = 0;
+    s_pg_rows = 0;
+    s_last_refresh_us = 0;
+}
+
+// "Sports | NFL", "News": the page's name.
+void page_label(char *out, int cap) {
+    const CatDef &c = CATS[s_pages[s_page].cat];
+    const char *name = c.translate ? tr(c.label) : c.label;
+    if (c.base < SPORTS_BELOW) snprintf(out, (size_t)cap, "%s | %s", TR("Sports"), name);
+    else                       snprintf(out, (size_t)cap, "%s", name);
+}
 
 void keep_visible(void) {
     const int vis = s_guide ? guide_rows_visible() : rows_visible();
@@ -559,6 +668,7 @@ void xmb_livetv_on_enter(void) {
     read_utc_offset();
     s_guide = false;
     s_top = 0;
+    if (!s_index_ok) s_index_tried = false;     // try the numbers again
     s_last_refresh_us = 0;          // refresh now: the list may be a minute old
     s_view_changed_us = timing_get_us();
     if (s_sel >= s_n) s_sel = 0;
@@ -588,6 +698,10 @@ bool xmb_livetv_modal(void)  { return s_guide || s_in_details; }
 bool xmb_input_livetv(void) {
     if (BTN_PRESSED(l1)) { s_guide = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { s_guide = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
+    if (!s_guide && !s_in_details && paging()) {
+        if (BTN_PRESSED(l2)) { set_page(s_page - 1); ui_sfx_play(SFX_CURSOR); return false; }
+        if (BTN_PRESSED(r2)) { set_page(s_page + 1); ui_sfx_play(SFX_CURSOR); return false; }
+    }
     if (!s_ch || s_n <= 0) return false;
 
     if (!s_guide) {
@@ -790,6 +904,12 @@ void xmb_draw_livetv(void) {
         drawTTF((u32)(cx - ttf_text_width(m, UIS_TF(18)) / 2), (u32)(band_top() + UIS_H(60)), m,
                 UIS_TF(18), XMB_TEXT_DIM);
         return;
+    }
+    if (paging() && !s_guide) {
+        char lab[96], line[160];
+        page_label(lab, sizeof lab);
+        snprintf(line, sizeof line, "L2 <   %s   (%d / %d)   > R2", lab, s_page + 1, s_npages);
+        drawTTF((u32)list_x(), (u32)(band_top() - UIS_H(18)), line, UIS_TF(13), XMB_ACCENT_ALT);
     }
     if (s_n <= 0) {
         const char *m = s_failed ? TR("Couldn't load the channel list")

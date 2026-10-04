@@ -35,19 +35,26 @@ int jf_utc_offset_secs(void) {
 }
 
 int jf_fetch_channels(JFChannel *out, int max) {
+    return jf_fetch_channels_range(out, max, 0, max, NULL);
+}
+
+int jf_fetch_channels_range(JFChannel *out, int max, int start, int count, int *total_out) {
     if (max > LIVETV_MAX_CHANNELS) max = LIVETV_MAX_CHANNELS;
-    if (!g_server[0] || !g_userid[0] || !g_token[0] || max <= 0) return -1;
+    if (count > max) count = max;
+    if (start < 0) start = 0;
+    if (!g_server[0] || !g_userid[0] || !g_token[0] || count <= 0) return -1;
     char *buf = (char *)malloc(PAGE_BUF);
     if (!buf) return -1;
     int n = 0, total = 0;
     bool ok = true;
     do {
         char url[512];
+        const int want = count - n < CHANNEL_PAGE ? count - n : CHANNEL_PAGE;
         snprintf(url, sizeof url,
                  "%s/LiveTv/Channels?UserId=%s&EnableImages=true&ImageTypeLimit=1"
                  "&AddCurrentProgram=true&EnableUserData=true&SortBy=SortName"
                  "&StartIndex=%d&Limit=%d",
-                 g_server, g_userid, n, CHANNEL_PAGE);
+                 g_server, g_userid, start + n, want);
         buf[0] = '\0';
         const int st = http_request(HTTP_GET, url, NULL, g_token, buf, PAGE_BUF);
         if (st != 200) {
@@ -58,17 +65,59 @@ int jf_fetch_channels(JFChannel *out, int max) {
             break;
         }
         bool trunc = false;
-        const int got = livetv_parse_channels(buf, (int)strlen(buf), out + n, max - n,
+        const int got = livetv_parse_channels(buf, (int)strlen(buf), out + n, count - n,
                                               &total, &trunc);
         if (trunc) plog("livetv: channel reply truncated -- showing what arrived");
         n += got;
         if (got <= 0) break;
-    } while (n < total && n < max);
+    } while (start + n < total && n < count);
     free(buf);
     if (!ok) return -1;
+    if (total_out) *total_out = total;
     livetv_sort_channels(out, n);
     char b[80];
-    snprintf(b, sizeof b, "livetv: %d channel(s)", n);
+    snprintf(b, sizeof b, "livetv: %d channel(s) from %d of %d", n, start, total);
+    plog(b);
+    return n;
+}
+
+#define NUMBER_PAGE 200
+
+int jf_fetch_channel_numbers(float *out, int max, int *total_out) {
+    if (!g_server[0] || !g_userid[0] || !g_token[0] || max <= 0) return -1;
+    char *buf = (char *)malloc(PAGE_BUF);
+    JFChannel *page = (JFChannel *)malloc(sizeof(JFChannel) * NUMBER_PAGE);
+    if (!buf || !page) { free(buf); free(page); return -1; }
+    int n = 0, total = 0;
+    bool ok = true;
+    do {
+        char url[512];
+        snprintf(url, sizeof url,
+                 "%s/LiveTv/Channels?UserId=%s&EnableImages=false&EnableUserData=false"
+                 "&AddCurrentProgram=false&SortBy=SortName&StartIndex=%d&Limit=%d",
+                 g_server, g_userid, n, NUMBER_PAGE);
+        buf[0] = '\0';
+        const int st = http_request(HTTP_GET, url, NULL, g_token, buf, PAGE_BUF);
+        if (st != 200) {
+            char b[80];
+            snprintf(b, sizeof b, "livetv: numbers http %d", st);
+            plog(b);
+            ok = n > 0;
+            break;
+        }
+        bool trunc = false;
+        const int got = livetv_parse_channels(buf, (int)strlen(buf), page, NUMBER_PAGE, &total, &trunc);
+        if (got <= 0) break;
+        for (int i = 0; i < got && n < max; i++) {
+            double v = -1;
+            out[n++] = livetv_number_value(page[i].number, &v) ? (float)v : -1.0f;
+        }
+    } while (n < total && n < max);
+    free(buf); free(page);
+    if (!ok) return -1;
+    if (total_out) *total_out = total;
+    char b[80];
+    snprintf(b, sizeof b, "livetv: %d channel number(s) of %d", n, total);
     plog(b);
     return n;
 }
