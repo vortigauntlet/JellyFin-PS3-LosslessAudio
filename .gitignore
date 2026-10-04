@@ -68,7 +68,9 @@ tests/test_lfs_path
 tests/test_h264_sps
 tests/test_mkv_demux
 tests/test_mkv_ts
+tests/test_local_probe
 tests/test_lfs_path
 tests/test_h264_sps
 tests/test_mkv_demux
 tests/test_mkv_ts
+tests/test_local_probe
