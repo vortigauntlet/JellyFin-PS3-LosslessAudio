@@ -1,4 +1,4 @@
-// Host test for the AAC path: source/audio/aac_adts.c, aac_map.c and the libfaad glue in adec_aac.cpp,
+// Host test for the AAC path: source/audio/aac_adts.c, chan_map.c and the libfaad glue in adec_aac.cpp,
 // with the resampler, against ffmpeg-made ADTS files (fixtures/aac, make_aac.py).
 //
 //   make -f Makefile.host test_aac && ./test_aac
@@ -7,7 +7,7 @@
 // below, and libfaad); the tests listen for the tones the fixtures were made of.
 
 #include "aac_adts.h"
-#include "aac_map.h"
+#include "chan_map.h"
 #include "adec_aac.h"
 
 #include <math.h>
@@ -140,53 +140,71 @@ static void adts_and_config() {
 static void mapping() {
     printf("- channel mapping\n");
     // five channels distinct, FC FL FR SL SR LFE as libfaad orders a 5.1 file
-    const unsigned char pos51[6] = { AAC_POS_FRONT_CENTER, AAC_POS_FRONT_LEFT, AAC_POS_FRONT_RIGHT, AAC_POS_BACK_LEFT, AAC_POS_BACK_RIGHT, AAC_POS_LFE };
+    const unsigned char pos51[6] = { CH_POS_FRONT_CENTER, CH_POS_FRONT_LEFT, CH_POS_FRONT_RIGHT, CH_POS_BACK_LEFT, CH_POS_BACK_RIGHT, CH_POS_LFE };
     const float in[6] = { 0.3f, 0.1f, 0.2f, 0.5f, 0.6f, 0.4f };           // C L R Ls Rs LFE
     float out[6], o2[2];
-    aac_map_frames(in, 1, 6, pos51, out, 6);
+    chan_map_frames(in, 1, 6, pos51, out, 6);
     CHECK(out[0] == 0.1f && out[1] == 0.2f && out[2] == 0.3f && out[3] == 0.4f && out[4] == 0.5f && out[5] == 0.6f);   // FL FR FC LFE SL SR
-    aac_map_frames(in, 1, 6, pos51, o2, 2);
+    chan_map_frames(in, 1, 6, pos51, o2, 2);
     const float down = 1.0f / (1.0f + 2.0f * 0.7071067811865476f);
     CHECK(fabsf(o2[0] - (0.1f + 0.7071f * 0.3f + 0.7071f * 0.5f) * down) < 1e-5f && fabsf(o2[1] - (0.2f + 0.7071f * 0.3f + 0.7071f * 0.6f) * down) < 1e-5f);
 
     // plain stereo is left alone; mono goes to the centre (6 wide) or both sides (2 wide)
-    const unsigned char posst[2] = { AAC_POS_FRONT_LEFT, AAC_POS_FRONT_RIGHT };
+    const unsigned char posst[2] = { CH_POS_FRONT_LEFT, CH_POS_FRONT_RIGHT };
     const float st[2] = { 0.25f, -0.5f };
-    aac_map_frames(st, 1, 2, posst, o2, 2);
+    chan_map_frames(st, 1, 2, posst, o2, 2);
     CHECK(o2[0] == 0.25f && o2[1] == -0.5f);
-    aac_map_frames(st, 1, 2, posst, out, 6);
+    chan_map_frames(st, 1, 2, posst, out, 6);
     CHECK(out[0] == 0.25f && out[1] == -0.5f && out[2] == 0 && out[3] == 0 && out[4] == 0 && out[5] == 0);
-    const unsigned char posm[1] = { AAC_POS_FRONT_CENTER };
+    const unsigned char posm[1] = { CH_POS_FRONT_CENTER };
     const float mo[1] = { 0.7f };
-    aac_map_frames(mo, 1, 1, posm, o2, 2);
+    chan_map_frames(mo, 1, 1, posm, o2, 2);
     CHECK(o2[0] == 0.7f && o2[1] == 0.7f);
-    aac_map_frames(mo, 1, 1, posm, out, 6);
+    chan_map_frames(mo, 1, 1, posm, out, 6);
     CHECK(out[2] == 0.7f && out[0] == 0 && out[1] == 0);
 
     // 7.1: the side pair is the surround pair, the back pair folds in at -3 dB
-    const unsigned char pos71[8] = { AAC_POS_FRONT_CENTER, AAC_POS_FRONT_LEFT, AAC_POS_FRONT_RIGHT, AAC_POS_SIDE_LEFT, AAC_POS_SIDE_RIGHT, AAC_POS_BACK_LEFT, AAC_POS_BACK_RIGHT, AAC_POS_LFE };
+    const unsigned char pos71[8] = { CH_POS_FRONT_CENTER, CH_POS_FRONT_LEFT, CH_POS_FRONT_RIGHT, CH_POS_SIDE_LEFT, CH_POS_SIDE_RIGHT, CH_POS_BACK_LEFT, CH_POS_BACK_RIGHT, CH_POS_LFE };
     const float in8[8] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f };
-    aac_map_frames(in8, 1, 8, pos71, out, 6);
+    chan_map_frames(in8, 1, 8, pos71, out, 6);
     CHECK(fabsf(out[4] - (0.4f + 0.7071068f * 0.6f)) < 1e-6f && fabsf(out[5] - (0.5f + 0.7071068f * 0.7f)) < 1e-6f && out[3] == 0.8f);
     // a back centre goes to both surrounds at -3 dB
-    const unsigned char posbc[4] = { AAC_POS_FRONT_CENTER, AAC_POS_FRONT_LEFT, AAC_POS_FRONT_RIGHT, AAC_POS_BACK_CENTER };
+    const unsigned char posbc[4] = { CH_POS_FRONT_CENTER, CH_POS_FRONT_LEFT, CH_POS_FRONT_RIGHT, CH_POS_BACK_CENTER };
     const float inb[4] = { 0.1f, 0.2f, 0.3f, 0.5f };
-    aac_map_frames(inb, 1, 4, posbc, out, 6);
+    chan_map_frames(inb, 1, 4, posbc, out, 6);
     CHECK(fabsf(out[4] - 0.5f * 0.7071068f) < 1e-6f && fabsf(out[5] - 0.5f * 0.7071068f) < 1e-6f);
     // unknown positions: the usual order, or left out one by one
     const unsigned char unk[3] = { 0, 0, 0 };
     const float i3[3] = { 0.1f, 0.2f, 0.3f };
-    aac_map_frames(i3, 1, 3, unk, out, 6);
+    chan_map_frames(i3, 1, 3, unk, out, 6);
     CHECK(out[0] == 0.1f && out[1] == 0.2f && out[2] == 0.3f);
-    const unsigned char half[2] = { AAC_POS_FRONT_RIGHT, AAC_POS_UNKNOWN };
-    aac_map_frames(st, 1, 2, half, out, 6);
+    const unsigned char half[2] = { CH_POS_FRONT_RIGHT, CH_POS_UNKNOWN };
+    chan_map_frames(st, 1, 2, half, out, 6);
     CHECK(out[1] == 0.25f && out[0] == 0 && out[2] == 0);
-    aac_map_frames(st, 1, 2, nullptr, out, 6);                              // no positions at all
+    chan_map_frames(st, 1, 2, nullptr, out, 6);                              // no positions at all
     CHECK(out[0] == 0.25f && out[1] == -0.5f);
+    // WAVE / FLAC / Matroska PCM order: a 5.1 stream is already in the port's order, 7.1 folds its sides in, quad is front and back
+    unsigned char wp[8];
+    chan_wave_positions(6, wp);
+    CHECK(wp[0] == CH_POS_FRONT_LEFT && wp[1] == CH_POS_FRONT_RIGHT && wp[2] == CH_POS_FRONT_CENTER && wp[3] == CH_POS_LFE && wp[4] == CH_POS_BACK_LEFT && wp[5] == CH_POS_BACK_RIGHT);
+    const float w6[6] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f };
+    chan_map_frames(w6, 1, 6, wp, out, 6);
+    CHECK(memcmp(out, w6, sizeof w6) == 0);
+    chan_wave_positions(1, wp);  CHECK(wp[0] == CH_POS_FRONT_CENTER);
+    chan_wave_positions(2, wp);  CHECK(wp[0] == CH_POS_FRONT_LEFT && wp[1] == CH_POS_FRONT_RIGHT);
+    chan_wave_positions(3, wp);  CHECK(wp[2] == CH_POS_FRONT_CENTER);
+    chan_wave_positions(4, wp);  CHECK(wp[2] == CH_POS_BACK_LEFT && wp[3] == CH_POS_BACK_RIGHT);
+    chan_wave_positions(5, wp);  CHECK(wp[2] == CH_POS_FRONT_CENTER && wp[3] == CH_POS_BACK_LEFT && wp[4] == CH_POS_BACK_RIGHT);
+    chan_wave_positions(7, wp);  CHECK(wp[4] == CH_POS_BACK_CENTER && wp[5] == CH_POS_SIDE_LEFT && wp[6] == CH_POS_SIDE_RIGHT);
+    chan_wave_positions(8, wp);  CHECK(wp[4] == CH_POS_BACK_LEFT && wp[6] == CH_POS_SIDE_LEFT && wp[7] == CH_POS_SIDE_RIGHT);
+    unsigned char wp9[12];
+    memset(wp9, 7, sizeof wp9);
+    chan_wave_positions(10, wp9);
+    CHECK(wp9[0] == CH_POS_UNKNOWN && wp9[9] == CH_POS_UNKNOWN);                 // more than 8: unknown
     // many frames
     std::vector<float> many(1000 * 2), got(1000 * 2);
     for (size_t i = 0; i < many.size(); i++) many[i] = (float)i * 0.001f;
-    aac_map_frames(many.data(), 1000, 2, posst, got.data(), 2);
+    chan_map_frames(many.data(), 1000, 2, posst, got.data(), 2);
     CHECK(got == many);
 }
 

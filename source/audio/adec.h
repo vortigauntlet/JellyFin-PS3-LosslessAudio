@@ -19,6 +19,8 @@ typedef enum {
                           // (see adec_truehd.h)
     ADEC_CODEC_AAC = 4,   // libfaad, up to 5.1, ADTS frames, any rate converted to 48 kHz
                           // (local files only; see adec_aac.h)
+    ADEC_CODEC_FLAC = 5,  // audio/flac_dec.c, lossless, up to 8 channels (local files; adec_flac.h)
+    ADEC_CODEC_PCM = 6,   // uncompressed audio of a Matroska file (local files; adec_pcm.h)
 } adec_codec_t;
 
 // Switch decoder.  Call from the demux when the PMT selects the audio

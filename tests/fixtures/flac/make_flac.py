@@ -81,11 +81,22 @@ def main():
     run("ffmpeg -nostdin -v error -y -i tone16.wav -t 0.3 -c:a flac -compression_level 0 fixed.flac")
     for fs in (100, 1152, 5000):
         run("ffmpeg -nostdin -v error -y -i tone16.wav -t 0.3 -c:a flac -frame_size %d fs%d.flac" % (fs, fs))
+    # a Matroska file with FLAC and every PCM layout the player carries (test_lossless.cpp, test_mkv_ts.cpp):
+    #   a1 FLAC stereo 44.1 kHz 1000 Hz | a2 PCM s16le stereo 44.1 kHz 1000 Hz | a3 PCM s24le 5.1 16 kHz, a tone per channel |
+    #   a4 PCM f32le mono 32 kHz 800 Hz | a5 PCM s16be stereo 22.05 kHz, 440 Hz left and 880 Hz right
+    def tone(f, rate):
+        return "-f lavfi -t 0.25 -i sine=frequency=%d:sample_rate=%d" % (f, rate)
+    inputs = [tone(1000, 44100), tone(1000, 44100)] + [tone(f, 16000) for f in tones] + [tone(800, 32000), tone(440, 22050), tone(880, 22050)]
+    run("ffmpeg -nostdin -v error -y -f lavfi -t 1 -i testsrc=size=64x64:rate=24 " + " ".join(inputs) + " "
+        '-filter_complex "[3][4][5][6][7][8]amerge=inputs=6,channelmap=map=0|1|2|3|4|5:channel_layout=5.1[m];'
+        '[10][11]amerge=inputs=2,channelmap=map=0|1:channel_layout=stereo[st]" '
+        '-map 0:v -map 1:a -map 2:a -map "[m]" -map 9:a -map "[st]" '
+        "-c:v libx264 -pix_fmt yuv420p -g 12 -ac:a:0 2 -ac:a:1 2 -c:a:0 flac -c:a:1 pcm_s16le -c:a:2 pcm_s24le -c:a:3 pcm_f32le -c:a:4 pcm_s16be flac_pcm.mkv")
     for f in os.listdir(HERE):
         if f.endswith(".wav"):
             os.remove(os.path.join(HERE, f))
     for f in sorted(os.listdir(HERE)):
-        if f.endswith(".flac"):
+        if f.endswith((".flac", ".mkv")):
             print(f, os.path.getsize(os.path.join(HERE, f)))
 
 

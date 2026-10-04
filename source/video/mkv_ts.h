@@ -39,6 +39,10 @@ extern "C" {
 
 // Audio the player has a decoder for (mkv_ts_open refuses a track whose codec is not one of these).
 bool mkv_ts_audio_supported(MkvAudioCodec c);
+// Whether this track can be carried: its codec, and what that codec needs of the track (an AAC config the ADTS
+// header can be made from, a FLAC STREAMINFO, a PCM layout and a sample rate the resampler converts).  When not,
+// `reason` says why in a few words ("unsupported AAC setup", "no decoder for this audio", ...).
+bool mkv_ts_audio_track_supported(const MkvTrack *t, char *reason, int reason_cap);
 // The video can be carried: H.264 with 4-byte NAL lengths... or any length size 1..4, avcC well-formed.
 bool mkv_ts_video_supported(const MkvFile *f, int video_track, char *reason, int reason_cap);
 

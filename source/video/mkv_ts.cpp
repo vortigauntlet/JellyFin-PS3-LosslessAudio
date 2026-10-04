@@ -2,6 +2,9 @@
 
 #include "mkv_ts.h"
 #include "aac_adts.h"
+#include "flac_dec.h"
+#include "resample.h"
+#include "pcm_fmt.h"
 
 #include <algorithm>
 #include <stdio.h>
@@ -16,7 +19,9 @@
 #define FRAME_BUF_SIZE   (1536 * 1024 + 4096)      // H.264 level 4.1's largest access unit (ts_demux.h) and headroom
 
 // stream types the player's demuxer (ts_demux.cpp) selects an audio decoder by
-enum { ST_H264 = 0x1B, ST_MP3 = 0x03, ST_MP2 = 0x04, ST_AAC = 0x0F, ST_AC3 = 0x81, ST_DTS = 0x82, ST_TRUEHD = 0x83 };
+// ST_FLAC and ST_PCM are this player's own private types (ts_demux.cpp): no transport stream has one for them
+enum { ST_H264 = 0x1B, ST_MP3 = 0x03, ST_MP2 = 0x04, ST_AAC = 0x0F, ST_AC3 = 0x81, ST_DTS = 0x82, ST_TRUEHD = 0x83,
+       ST_FLAC = 0xE1, ST_PCM = 0xE2 };
 
 static uint8_t *s_frame_buf = NULL;
 
@@ -25,7 +30,62 @@ static void set_err(char *err, int cap, const char *msg) {
 }
 
 bool mkv_ts_audio_supported(MkvAudioCodec c) {
-    return c == MKV_AC_AC3 || c == MKV_AC_DTS || c == MKV_AC_TRUEHD || c == MKV_AC_MP3 || c == MKV_AC_MP2 || c == MKV_AC_AAC;
+    return c == MKV_AC_AC3 || c == MKV_AC_DTS || c == MKV_AC_TRUEHD || c == MKV_AC_MP3 || c == MKV_AC_MP2 || c == MKV_AC_AAC ||
+           c == MKV_AC_FLAC || c == MKV_AC_PCM;
+}
+
+// The 8-byte header adec_pcm.h puts before every PES of a PCM track, from the track's own fields.  False (with a
+// reason) for a layout the player does not play.
+static bool pcm_header(const MkvTrack *t, uint8_t hdr[PCM_HEADER_BYTES], const char **why) {
+    const char *id = t->codec_id;
+    const bool lit = !strcmp(id, "A_PCM/INT/LIT"), big = !strcmp(id, "A_PCM/INT/BIG"), fl = !strcmp(id, "A_PCM/FLOAT/IEEE");
+    const int rate = (int)(t->sample_rate + 0.5), bits = t->bit_depth;
+    *why = NULL;
+    if (!lit && !big && !fl) *why = "unsupported PCM layout";
+    else if (t->channels < 1 || t->channels > 8) *why = "unsupported PCM channels";
+    else if (fl ? bits != 32 : !(bits == 8 || bits == 16 || bits == 24 || bits == 32)) *why = "unsupported PCM sample size";
+    else if (!resample_rate_supported(rate)) *why = "unsupported sample rate";
+    if (*why) return false;
+    hdr[0] = 'P'; hdr[1] = 'C';
+    hdr[2] = (uint8_t)t->channels; hdr[3] = (uint8_t)bits;
+    hdr[4] = (uint8_t)((fl ? PCM_FLAG_FLOAT : 0) | (big ? PCM_FLAG_BIG : 0));
+    hdr[5] = (uint8_t)(rate >> 16); hdr[6] = (uint8_t)(rate >> 8); hdr[7] = (uint8_t)rate;
+    return true;
+}
+
+// The stream header adec_flac.h wants before the first frame: "fLaC" and the STREAMINFO block, which Matroska keeps as
+// the track's CodecPrivate ("fLaC" and every metadata block).  42 bytes.
+#define FLAC_HDR_BYTES 42
+static bool flac_header(const MkvTrack *t, uint8_t hdr[FLAC_HDR_BYTES], const char **why) {
+    FlacInfo si;
+    *why = NULL;
+    const uint8_t *cp = t->codec_private;
+    const int blen = t->cp_len >= 8 ? (cp[5] << 16) | (cp[6] << 8) | cp[7] : 0;
+    if (t->cp_len < 42 || memcmp(cp, "fLaC", 4) != 0 || (cp[4] & 0x7F) != 0 || blen < 34) {
+        *why = "unreadable FLAC setup";                   // (other metadata blocks after STREAMINFO do not matter)
+        return false;
+    }
+    memcpy(hdr, "fLaC", 4);
+    hdr[4] = 0x80; hdr[5] = 0; hdr[6] = 0; hdr[7] = 34;               // the last (only) block: STREAMINFO, 34 bytes
+    memcpy(hdr + 8, cp + 8, 34);
+    if (flac_parse_header(hdr, FLAC_HDR_BYTES, &si) <= 0) *why = "unreadable FLAC setup";
+    else if (si.channels > 8 || si.bps > 24 || si.bps < 4) *why = "unsupported FLAC format";
+    else if (!resample_rate_supported(si.sample_rate)) *why = "unsupported sample rate";
+    return *why == NULL;
+}
+
+bool mkv_ts_audio_track_supported(const MkvTrack *t, char *reason, int cap) {
+    const MkvAudioCodec mc = mkv_audio_codec(t);
+    const char *why = NULL;
+    uint8_t scratch[FLAC_HDR_BYTES];
+    AacConfig aac;
+    if (t->unsupported_encoding) why = "encrypted";
+    else if (!mkv_ts_audio_supported(mc)) why = "no decoder for this audio";
+    else if (mc == MKV_AC_AAC) { if (t->strip_len || !aac_parse_asc(t->codec_private, t->cp_len, &aac)) why = "unsupported AAC setup"; }
+    else if (mc == MKV_AC_FLAC) flac_header(t, scratch, &why);
+    else if (mc == MKV_AC_PCM) pcm_header(t, scratch, &why);
+    if (reason && cap > 0) snprintf(reason, (size_t)cap, "%s", why ? why : "");
+    return why == NULL;
 }
 
 bool mkv_ts_video_supported(const MkvFile *f, int video_track, char *reason, int cap) {
@@ -73,6 +133,11 @@ struct MkvTs {
     bool      aac;                                  // the audio is AAC: each frame gets an ADTS header
     AacConfig aac_cfg;
     uint8_t   adts[8];
+    bool      flac;                                 // FLAC: the stream header goes before the first frame
+    uint8_t   flac_hdr[FLAC_HDR_BYTES];
+    bool      flac_hdr_pending;
+    bool      pcm;                                  // uncompressed: every frame carries a header (adec_pcm.h)
+    uint8_t   pcm_hdr[PCM_HEADER_BYTES];
     int       nal_len_size;
     uint8_t   pre_key[1024];  int pre_key_len;      // AUD + SPS + PPS: before key frames
     uint8_t   pre_aud[8];     int pre_aud_len;      // AUD only
@@ -280,6 +345,10 @@ static bool prepare_frame(MkvTs *t, const MkvFrame *fr) {
         if (t->aac) {
             if (!aac_make_adts(&t->aac_cfg, (int)fr->size, t->adts)) return false;     // too big for ADTS: skipped
             pre = t->adts; pre_len = 7;
+        } else if (t->flac) {
+            if (t->flac_hdr_pending) { pre = t->flac_hdr; pre_len = FLAC_HDR_BYTES; t->flac_hdr_pending = false; }
+        } else if (t->pcm) {
+            pre = t->pcm_hdr; pre_len = PCM_HEADER_BYTES;
         }
         const uint32_t plen = 3 + 5 + (uint32_t)pre_len + fr->size;
         t->hdr[4] = plen < 65536 ? (uint8_t)(plen >> 8) : 0;
@@ -329,8 +398,9 @@ MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_
     mkv_parse_avcc(vt->codec_private, vt->cp_len, &avc);
 
     uint8_t stype = 0, sid = 0xBD;
-    bool is_aac = false;
+    bool is_aac = false, is_flac = false, is_pcm = false;
     AacConfig aac_cfg;
+    uint8_t flac_hdr[FLAC_HDR_BYTES], pcm_hdr[PCM_HEADER_BYTES];
     memset(&aac_cfg, 0, sizeof aac_cfg);
     if (audio_track) {
         const MkvTrack *at = mkv_track(f, audio_track);
@@ -346,6 +416,16 @@ MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_
             // the config in CodecPrivate becomes each frame's ADTS header
             if (at->strip_len || !aac_parse_asc(at->codec_private, at->cp_len, &aac_cfg)) { set_err(err, err_cap, "unsupported AAC setup"); return NULL; }
             stype = ST_AAC; sid = 0xC0; is_aac = true; break;
+        case MKV_AC_FLAC: {
+            const char *why = NULL;
+            if (!flac_header(at, flac_hdr, &why)) { set_err(err, err_cap, why); return NULL; }
+            stype = ST_FLAC; is_flac = true; break;
+        }
+        case MKV_AC_PCM: {
+            const char *why = NULL;
+            if (at->strip_len || !pcm_header(at, pcm_hdr, &why)) { set_err(err, err_cap, why ? why : "unsupported PCM"); return NULL; }
+            stype = ST_PCM; is_pcm = true; break;
+        }
         default: set_err(err, err_cap, "no decoder for this audio"); return NULL;
         }
     }
@@ -357,6 +437,8 @@ MkvTs *mkv_ts_open(MkvFile *f, int video_track, int audio_track, uint64_t start_
     t->f = f; t->vtrack = video_track; t->atrack = audio_track;
     t->a_stream_type = stype; t->a_stream_id = sid;
     t->aac = is_aac; t->aac_cfg = aac_cfg;
+    t->flac = is_flac; t->flac_hdr_pending = is_flac; memcpy(t->flac_hdr, flac_hdr, sizeof flac_hdr);
+    t->pcm = is_pcm; memcpy(t->pcm_hdr, pcm_hdr, sizeof pcm_hdr);
     t->nal_len_size = avc.nal_length_size;
     // AUD (primary_pic_type 7: any slice types), and for key frames the parameter sets after it
     static const uint8_t aud[] = { 0, 0, 0, 1, 0x09, 0xF0 };

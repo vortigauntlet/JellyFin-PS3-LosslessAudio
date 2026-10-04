@@ -206,7 +206,7 @@ static bool probe_mkv(LocalReadAt rd, void *ctx, uint64_t size, LocalInfo *o, ch
             a->codec = from_mkv_audio(mc);
             const bool ma = strstr(t->codec_id, "LOSSLESS") != NULL || strstr(t->codec_id, "/MA") != NULL;
             if (a->codec == LA_DTS && ma) a->codec = LA_DTS_HD;
-            a->decodable = mkv_ts_audio_supported(mc) && !t->unsupported_encoding;
+            a->decodable = mkv_ts_audio_track_supported(t, NULL, 0);
             a->is_default = t->is_default;
             a->commentary = has_word(t->name, "commentary");
             a->channels = t->channels;

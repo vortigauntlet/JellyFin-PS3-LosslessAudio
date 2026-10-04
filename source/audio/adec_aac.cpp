@@ -2,9 +2,9 @@
 
 #include "adec_aac.h"
 #include "adec.h"
+#include "adec_out.h"
 #include "aac_adts.h"
-#include "aac_map.h"
-#include "resample.h"
+#include "chan_map.h"
 #include "plog.h"
 
 #include <stdio.h>
@@ -15,24 +15,16 @@
 
 // The largest ADTS frame is 8191 bytes; the carry holds one and a partial successor.
 #define AAC_CARRY_BYTES  (2 * 8192)
-// One frame is 1024 samples a channel, 2048 with SBR; 8 channels at most are read, 6 are kept.
+// One frame is 1024 samples a channel, 2048 with SBR.
 #define AAC_MAX_FRAMES   2048
 
 static NeAACDecHandle s_dec = NULL;
 static bool     s_inited    = false;
 static bool     s_src_mono  = false;        // the stream's headers say mono (libfaad then returns it as two identical channels)
-static int      s_out_ch    = 0;
 static u8       s_carry[AAC_CARRY_BYTES];
 static int      s_carry_len = 0;
-static Resampler *s_rs      = NULL;
-static int      s_rs_rate   = 0;
 static bool     s_logged    = false;
 static u32      s_bad       = 0;
-
-static void drop_resampler(void) {
-    if (s_rs) { resample_close(s_rs); s_rs = NULL; }
-    s_rs_rate = 0;
-}
 
 bool adec_aac_open(int out_channels) {
     adec_aac_close();
@@ -43,7 +35,7 @@ bool adec_aac_open(int out_channels) {
     }
     NeAACDecConfigurationPtr cfg = NeAACDecGetCurrentConfiguration(s_dec);
     cfg->outputFormat = FAAD_FMT_FLOAT;
-    cfg->downMatrix = 0;                       // the fold-down is aac_map's
+    cfg->downMatrix = 0;                       // the fold-down is chan_map's
     cfg->dontUpSampleImplicitSBR = 0;          // SBR output at its own (double) rate
     if (!NeAACDecSetConfiguration(s_dec, cfg)) {
         plog("adec_aac: NeAACDecSetConfiguration failed");
@@ -51,21 +43,22 @@ bool adec_aac_open(int out_channels) {
         s_dec = NULL;
         return false;
     }
-    s_out_ch = (out_channels == 6) ? 6 : 2;
+    adec_out_open(out_channels);
     s_inited = false;
     s_src_mono = false;
     s_carry_len = 0;
     s_logged = false;
     s_bad = 0;
     char b[64];
-    snprintf(b, sizeof(b), "adec_aac: open out_ch=%d caps=0x%lx", s_out_ch, (unsigned long)NeAACDecGetCapabilities());
+    snprintf(b, sizeof(b), "adec_aac: open out_ch=%d caps=0x%lx", out_channels == 6 ? 6 : 2,
+             (unsigned long)NeAACDecGetCapabilities());
     plog(b);
     return true;
 }
 
 void adec_aac_close(void) {
     if (s_dec) { NeAACDecClose(s_dec); s_dec = NULL; }
-    drop_resampler();
+    adec_out_close();
     s_inited = false;
     s_carry_len = 0;
 }
@@ -73,10 +66,10 @@ void adec_aac_close(void) {
 void adec_aac_reset(void) {
     s_carry_len = 0;
     if (s_dec && s_inited) NeAACDecPostSeekReset(s_dec, 0);
-    if (s_rs) resample_reset(s_rs);
+    adec_out_reset();
 }
 
-// One decoded frame: map to the port's channels, convert the rate, hand it on.
+// One decoded frame: on to the output stage.
 static void deliver(const NeAACDecFrameInfo &info, const float *pcm) {
     int ch = info.channels;
     int frames = ch > 0 ? (int)(info.samples / (unsigned long)ch) : 0;
@@ -85,7 +78,7 @@ static void deliver(const NeAACDecFrameInfo &info, const float *pcm) {
 
     // libfaad (built with parametric stereo, as both the console's and the host's are) decodes a mono stream as two
     // identical channels, so that PS can fill the second; without PS in use the first channel is the sound
-    unsigned char pos1[1] = { AAC_POS_FRONT_CENTER };
+    unsigned char pos1[1] = { CH_POS_FRONT_CENTER };
     const unsigned char *pos = info.channel_position;
     static float mono_buf[AAC_MAX_FRAMES];
     if (s_src_mono && ch == 2 && !info.ps) {
@@ -94,11 +87,6 @@ static void deliver(const NeAACDecFrameInfo &info, const float *pcm) {
         pos = pos1;
         ch = 1;
     }
-
-    // libfaad's float output is already scaled to +-1.0 (2.7 multiplies by 2^-15 in to_PCM_float, 2.11 likewise)
-    static float mapped[AAC_MAX_FRAMES * 6];
-    aac_map_frames(pcm, frames, ch, pos, mapped, s_out_ch);
-
     if (!s_logged) {
         s_logged = true;
         char b[112];
@@ -106,31 +94,8 @@ static void deliver(const NeAACDecFrameInfo &info, const float *pcm) {
                  (int)info.sbr, (int)info.ps, (int)info.object_type);
         plog(b);
     }
-
-    const int rate = (int)info.samplerate;
-    if (rate == 48000) {
-        adec_push_frames(mapped, frames);
-        return;
-    }
-    if (!s_rs || s_rs_rate != rate) {
-        drop_resampler();
-        s_rs = resample_open(rate, s_out_ch);
-        s_rs_rate = rate;
-        if (!s_rs) {
-            char b[64];
-            snprintf(b, sizeof(b), "adec_aac: cannot convert %d Hz, silent", rate);
-            plog(b);
-        }
-    }
-    if (!s_rs) return;
-    // in slices of 512 frames: from 8 kHz (the largest ratio, x6) that is 3072 frames and the filter's
-    // tail, which the buffer holds
-    static float converted[4096 * 6];
-    for (int at = 0; at < frames; at += 512) {
-        const int n_in = frames - at < 512 ? frames - at : 512;
-        const int made = resample_process(s_rs, mapped + (size_t)at * (size_t)s_out_ch, n_in, converted, 4096);
-        if (made > 0) adec_push_frames(converted, made);
-    }
+    // libfaad's float output is already scaled to +-1.0 (2.7 multiplies by 2^-15 in to_PCM_float, 2.11 likewise)
+    adec_out_push(pcm, frames, ch, pos, (int)info.samplerate);
 }
 
 static void decode_carry(void) {

@@ -11,6 +11,7 @@
 #include "mkv_builder.h"
 #include "ts_demux.h"
 #include "aac_adts.h"
+#include "pcm_fmt.h"
 
 #include <codec/vdec.h>   // VDEC_TS_INVALID (hoststub)
 #include <math.h>
@@ -151,6 +152,15 @@ static Want expect(MkvFile *f, int vt, int at, uint64_t from_cluster_time_hint, 
     const MkvTrack *atrack = at ? mkv_track(f, at) : nullptr;
     AacConfig acfg;
     const bool aac = atrack && mkv_audio_codec(atrack) == MKV_AC_AAC && aac_parse_asc(atrack->codec_private, atrack->cp_len, &acfg);
+    const MkvAudioCodec amc = atrack ? mkv_audio_codec(atrack) : MKV_AC_OTHER;
+    bool flac_header_due = amc == MKV_AC_FLAC;                       // "fLaC" and STREAMINFO go before the first frame only
+    Vec pcm_hdr;
+    if (amc == MKV_AC_PCM) {
+        const int rate = (int)(atrack->sample_rate + 0.5);
+        pcm_hdr = { 'P', 'C', (uint8_t)atrack->channels, (uint8_t)atrack->bit_depth,
+                    (uint8_t)((!strcmp(atrack->codec_id, "A_PCM/FLOAT/IEEE") ? PCM_FLAG_FLOAT : 0) | (!strcmp(atrack->codec_id, "A_PCM/INT/BIG") ? PCM_FLAG_BIG : 0)),
+                    (uint8_t)(rate >> 16), (uint8_t)(rate >> 8), (uint8_t)rate };
+    }
     MkvFrame fr;
     bool started = false;
     int64_t origin = 0;
@@ -163,6 +173,13 @@ static Want expect(MkvFile *f, int vt, int at, uint64_t from_cluster_time_hint, 
             if (!started || fr.pts_ns < origin) continue;
             Vec d;
             if (aac) { uint8_t h[7]; aac_make_adts(&acfg, (int)fr.size, h); d.assign(h, h + 7); }
+            else if (flac_header_due) {
+                static const uint8_t magic[8] = { 'f', 'L', 'a', 'C', 0x80, 0, 0, 34 };
+                d.assign(magic, magic + 8);
+                d.insert(d.end(), atrack->codec_private + 8, atrack->codec_private + 42);
+                flac_header_due = false;
+            }
+            else if (amc == MKV_AC_PCM) d = pcm_hdr;
             else if (fr.prefix_len) d.assign(fr.prefix, fr.prefix + fr.prefix_len);
             d.insert(d.end(), fr.data, fr.data + fr.size);
             w.audio.push_back(d);
@@ -234,8 +251,9 @@ static void real_file() {
     CHECK(mkv_ts_audio_supported(MKV_AC_AC3) && mkv_ts_audio_supported(MKV_AC_DTS) &&
           mkv_ts_audio_supported(MKV_AC_TRUEHD) && mkv_ts_audio_supported(MKV_AC_MP3) &&
           mkv_ts_audio_supported(MKV_AC_AAC) && mkv_ts_audio_supported(MKV_AC_MP2) &&
-          !mkv_ts_audio_supported(MKV_AC_EAC3) && !mkv_ts_audio_supported(MKV_AC_FLAC) &&
-          !mkv_ts_audio_supported(MKV_AC_PCM) && !mkv_ts_audio_supported(MKV_AC_VORBIS) && !mkv_ts_audio_supported(MKV_AC_OTHER));
+          mkv_ts_audio_supported(MKV_AC_FLAC) && mkv_ts_audio_supported(MKV_AC_PCM) &&
+          !mkv_ts_audio_supported(MKV_AC_EAC3) && !mkv_ts_audio_supported(MKV_AC_VORBIS) && !mkv_ts_audio_supported(MKV_AC_OPUS) &&
+          !mkv_ts_audio_supported(MKV_AC_OTHER));
 
     for (int audio : { 2, 3, 0 }) {
         char err[64] = "";
@@ -321,7 +339,19 @@ static void other_real_files() {
                 CHECK(same(p, expect(&f, 1, 2, 0, false, 0), "dts"));
                 ffmpeg_decodes(ts, 24, "dts");
             }
-            CHECK(mkv_ts_open(&f, 1, 3, 0, nullptr, err, sizeof err) == nullptr && strstr(err, "decoder"));   // FLAC: no decoder in the player
+            {   // its second track is FLAC: carried, with the stream header on the first frame only
+                MkvTs *t3 = mkv_ts_open(&f, 1, 3, 0, nullptr, err, sizeof err);
+                CHECK(t3 != nullptr);
+                if (t3) {
+                    Vec ts = drain(t3);
+                    mkv_ts_close(t3);
+                    Parsed p = parse_ts(ts);
+                    CHECK(p.audio_codec == TS_AUDIO_FLAC && p.audio_pid == 0x101 && p.audio.size() >= 2);
+                    CHECK(p.audio.size() >= 2 && p.audio[0].payload.size() > 42 && !memcmp(p.audio[0].payload.data(), "fLaC", 4) &&
+                          p.audio[1].payload.size() > 2 && p.audio[1].payload[0] == 0xFF && (p.audio[1].payload[1] & 0xFE) == 0xF8);
+                    CHECK(same(p, expect(&f, 1, 3, 0, false, 0), "dts.mkv flac"));
+                }
+            }
             CHECK(mkv_ts_open(&f, 1, 9, 0, nullptr, err, sizeof err) == nullptr);                              // no such track
             CHECK(mkv_ts_open(&f, 2, 0, 0, nullptr, err, sizeof err) == nullptr && err[0]);                   // not a video track
             mkv_close(&f);
@@ -388,6 +418,48 @@ static void aac_file() {
         CHECK(want.channels == (audio == 2 ? 2 : 6) && want.sample_rate == (audio == 2 ? 44100 : 48000));
         ffmpeg_decodes(ts, 48, audio == 2 ? "aac2" : "aac3");
     }
+    mkv_ts_release();
+    mkv_close(&f);
+    fclose(fp);
+}
+
+// FLAC and the PCM layouts (fixtures/flac/flac_pcm.mkv): every frame carried with what the decoder needs.  ffmpeg cannot read
+// these private stream types, so the stream is checked against the Matroska frames, and the decoders are run on it in test_lossless.
+static void lossless_file() {
+    printf("- flac_pcm.mkv (FLAC and PCM s16le, s24le, f32le, s16be)\n");
+    FILE *fp = fopen("fixtures/flac/flac_pcm.mkv", "rb");
+    CHECK(fp != nullptr);
+    if (!fp) return;
+    fseeko(fp, 0, SEEK_END);
+    MkvFile f;
+    CHECK(mkv_open(&f, file_read, fp, (uint64_t)ftello(fp)) == 0);
+    struct { int track; int codec; int ch, bits, rate; } want[] = {
+        { 2, TS_AUDIO_FLAC, 2, 16, 44100 }, { 3, TS_AUDIO_PCM, 2, 16, 44100 }, { 4, TS_AUDIO_PCM, 6, 24, 16000 },
+        { 5, TS_AUDIO_PCM, 1, 32, 32000 }, { 6, TS_AUDIO_PCM, 2, 16, 22050 },
+    };
+    for (auto &w : want) {
+        char err[64] = "", why[64] = "";
+        const MkvTrack *tr = mkv_track(&f, w.track);
+        CHECK(tr != nullptr && mkv_ts_audio_track_supported(tr, why, sizeof why) && !why[0]);
+        MkvTs *t = mkv_ts_open(&f, 1, w.track, 0, nullptr, err, sizeof err);
+        CHECK(t != nullptr);
+        if (!t) { printf("  track %d: %s\n", w.track, err); continue; }
+        Vec ts = drain(t);
+        mkv_ts_close(t);
+        Parsed p = parse_ts(ts);
+        CHECK(!p.bad_sync && !p.bad_cc && !p.bad_size && p.audio_codec == w.codec && p.audio_pid == 0x101 && !p.audio.empty());
+        char tag[40]; snprintf(tag, sizeof tag, "lossless track %d", w.track);
+        CHECK(same(p, expect(&f, 1, w.track, 0, false, 0), tag));
+        if (w.codec == TS_AUDIO_PCM) {
+            const Vec &a = p.audio[0].payload;
+            CHECK(a.size() > 8 && a[0] == 'P' && a[1] == 'C' && a[2] == w.ch && a[3] == w.bits && (a[5] << 16 | a[6] << 8 | a[7]) == w.rate);
+            // whole sample frames after the header, in every PES
+            bool whole = true;
+            for (const Pes &q : p.audio) if ((q.payload.size() - 8) % (size_t)(w.ch * w.bits / 8) != 0) whole = false;
+            CHECK(whole);
+        }
+    }
+    CHECK(mkv_ts_audio_track_supported(mkv_track(&f, 5), nullptr, 0));
     mkv_ts_release();
     mkv_close(&f);
     fclose(fp);
@@ -574,6 +646,7 @@ int main() {
     real_file();
     other_real_files();
     aac_file();
+    lossless_file();
     hand_built();
     printf("mkv ts: %d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;

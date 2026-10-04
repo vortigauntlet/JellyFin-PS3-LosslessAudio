@@ -66,9 +66,15 @@ static void mkv_files() {
 
     CHECK(probe_file("fixtures/mkv/dts.mkv", &i));
     CHECK(i.n_audio == 2 && i.audio[0].codec == LA_DTS && i.audio[0].decodable);
-    CHECK(i.audio[1].codec == LA_FLAC && !i.audio[1].decodable);
+    CHECK(i.audio[1].codec == LA_FLAC && i.audio[1].decodable);                // FLAC is carried now
     LocalAudioPrefs p = { true, false };
     CHECK(local_pick_audio(&i, &p) == 0);                                   // the one it can decode
+
+    // FLAC and PCM in Matroska, whatever their rate
+    CHECK(probe_file("fixtures/flac/flac_pcm.mkv", &i));
+    CHECK(i.n_audio == 5 && i.audio[0].codec == LA_FLAC && i.audio[1].codec == LA_PCM && i.audio[2].codec == LA_PCM);
+    for (int k = 0; k < 5; k++) CHECK(i.audio[k].decodable);
+    CHECK(i.audio[2].channels == 6 && !strcmp(i.audio[2].label, "Unknown - PCM - 5.1") && !strcmp(i.audio[0].label, "Unknown - FLAC - Stereo - Default"));
 
     // AAC is decodable now (libfaad): a stereo 44.1 kHz track and a 5.1 one
     CHECK(probe_file("fixtures/aac/aac.mkv", &i));

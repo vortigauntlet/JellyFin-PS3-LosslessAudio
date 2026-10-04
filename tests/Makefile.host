@@ -62,7 +62,7 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sourc
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
      test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request \
-     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac
+     test_settings_model test_settings_model_nostats test_userdata test_livetv test_live_watch test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless
 
 test_iec61937: test_iec61937.c ../source/audio/iec61937.c $(A52_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -200,7 +200,9 @@ test_mkv_demux: test_mkv_demux.cpp mkv_builder.h ../source/video/mkv_demux.cpp .
 # Matroska as MPEG-TS, read back through the player's own TS demuxer (ts_demux.cpp, built against hoststub/).
 test_mkv_ts: test_mkv_ts.cpp mkv_builder.h ../source/video/mkv_ts.cpp ../source/video/mkv_ts.h              ../source/video/mkv_demux.cpp ../source/video/ts_demux.cpp ../source/video/ts_demux.h $(wildcard fixtures/mkv/*)
 	$(CC) $(CFLAGS) -c -o aac_adts_p.o ../source/audio/aac_adts.c
-	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/video -I../source/util -I../source/audio -o $@ test_mkv_ts.cpp 	    ../source/video/mkv_ts.cpp ../source/video/mkv_demux.cpp ../source/video/ts_demux.cpp aac_adts_p.o
+	$(CC) $(CFLAGS) -c -o flac_dec_p.o ../source/audio/flac_dec.c
+	$(CC) $(CFLAGS) -c -o resample_p.o ../source/audio/resample.c
+	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/video -I../source/util -I../source/audio -o $@ test_mkv_ts.cpp 	    ../source/video/mkv_ts.cpp ../source/video/mkv_demux.cpp ../source/video/ts_demux.cpp aac_adts_p.o flac_dec_p.o resample_p.o -lm
 
 # What a local video file is, which track to start with (Matroska, TS and m2ts fixtures).
 PROBE_SRC = ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp             ../source/video/h264_sps.c ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp             ../source/util/lang_names.c
@@ -208,17 +210,27 @@ test_local_probe: test_local_probe.cpp $(PROBE_SRC) ../source/local/local_probe.
 	$(CC) $(CFLAGS) -c -o h264_sps_p.o ../source/video/h264_sps.c
 	$(CC) $(CFLAGS) -c -o lang_names_p.o ../source/util/lang_names.c
 	$(CC) $(CFLAGS) -c -o aac_adts_p.o ../source/audio/aac_adts.c
-	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -I../source/video -I../source/util -I../source/audio -I../source/player/stream -I../source/offline 	    -o $@ test_local_probe.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp 	    ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o -pthread
+	$(CC) $(CFLAGS) -c -o flac_dec_p.o ../source/audio/flac_dec.c
+	$(CC) $(CFLAGS) -c -o resample_p.o ../source/audio/resample.c
+	$(CXX) $(CXXFLAGS) -Wextra -I../source/local -I../source/video -I../source/util -I../source/audio -I../source/player/stream -I../source/offline 	    -o $@ test_local_probe.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp ../source/video/mkv_ts.cpp 	    ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o flac_dec_p.o resample_p.o -pthread -lm
 
 # AAC: the ADTS and config helpers, the channel map, and the libfaad glue (adec_aac.cpp) with the resampler, over
 # ffmpeg-made files.  Needs libfaad (apt: libfaad-dev).
-test_aac: test_aac.cpp ../source/audio/aac_adts.c ../source/audio/aac_map.c ../source/audio/adec_aac.cpp ../source/audio/resample.c \
-          ../source/audio/aac_adts.h ../source/audio/aac_map.h ../source/audio/adec_aac.h $(wildcard fixtures/aac/*)
+test_aac: test_aac.cpp ../source/audio/aac_adts.c ../source/audio/chan_map.c ../source/audio/adec_aac.cpp ../source/audio/adec_out.cpp ../source/audio/resample.c \
+          ../source/audio/aac_adts.h ../source/audio/chan_map.h ../source/audio/adec_aac.h $(wildcard fixtures/aac/*)
 	$(CC) $(CFLAGS) -O2 -Wextra -c -o aac_adts_t.o ../source/audio/aac_adts.c
-	$(CC) $(CFLAGS) -O2 -Wextra -c -o aac_map_t.o ../source/audio/aac_map.c
+	$(CC) $(CFLAGS) -O2 -Wextra -c -o chan_map_t.o ../source/audio/chan_map.c
 	$(CC) $(CFLAGS) -O2 -c -o resample_t.o ../source/audio/resample.c
-	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/audio -I../source/util -o $@ test_aac.cpp ../source/audio/adec_aac.cpp \
-	    aac_adts_t.o aac_map_t.o resample_t.o -lfaad -lm
+	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/audio -I../source/util -o $@ test_aac.cpp ../source/audio/adec_aac.cpp ../source/audio/adec_out.cpp \
+	    aac_adts_t.o chan_map_t.o resample_t.o -lfaad -lm
+
+# FLAC and PCM from a Matroska file, end to end: mkv_ts, the demuxer, the slots, the decoders, what comes out.
+test_lossless: test_lossless.cpp ../source/audio/adec_flac.cpp ../source/audio/adec_pcm.cpp ../source/audio/adec_out.cpp ../source/audio/flac_dec.c  ../source/audio/chan_map.c ../source/audio/resample.c ../source/video/mkv_ts.cpp ../source/video/mkv_demux.cpp ../source/video/ts_demux.cpp  ../source/audio/aac_adts.c $(wildcard fixtures/flac/*)
+	$(CC) $(CFLAGS) -O2 -c -o flac_dec_l.o ../source/audio/flac_dec.c
+	$(CC) $(CFLAGS) -O2 -c -o chan_map_l.o ../source/audio/chan_map.c
+	$(CC) $(CFLAGS) -O2 -c -o resample_l.o ../source/audio/resample.c
+	$(CC) $(CFLAGS) -O2 -c -o aac_adts_l.o ../source/audio/aac_adts.c
+	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/video -I../source/util -I../source/audio -o $@ test_lossless.cpp ../source/audio/adec_flac.cpp  ../source/audio/adec_pcm.cpp ../source/audio/adec_out.cpp ../source/video/mkv_ts.cpp ../source/video/mkv_demux.cpp ../source/video/ts_demux.cpp  flac_dec_l.o chan_map_l.o resample_l.o aac_adts_l.o -lm
 
 # The FLAC decoder, against ffmpeg-made files and frames made by the test's own encoder; built with the address and
 # undefined-behaviour sanitizers.
@@ -246,9 +258,11 @@ test_local_play: test_local_play.cpp $(PROBE_SRC) ../source/video/ts_demux.cpp .
 	$(CC) $(CFLAGS) -c -o h264_sps_p.o ../source/video/h264_sps.c
 	$(CC) $(CFLAGS) -c -o lang_names_p.o ../source/util/lang_names.c
 	$(CC) $(CFLAGS) -c -o aac_adts_p.o ../source/audio/aac_adts.c
+	$(CC) $(CFLAGS) -c -o flac_dec_p.o ../source/audio/flac_dec.c
+	$(CC) $(CFLAGS) -c -o resample_p.o ../source/audio/resample.c
 	$(CXX) $(CXXFLAGS) -Wextra -Ihoststub -I../source/local -I../source/video -I../source/util -I../source/audio -I../source/player/stream -I../source/offline \
 	    -o $@ test_local_play.cpp ../source/video/ts_demux.cpp ../source/local/local_probe.cpp ../source/video/mkv_demux.cpp \
-	    ../source/video/mkv_ts.cpp ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o
+	    ../source/video/mkv_ts.cpp ../source/player/stream/stream_local.cpp ../source/offline/dl_ts.cpp h264_sps_p.o lang_names_p.o aac_adts_p.o flac_dec_p.o resample_p.o -lm
 
 # lfs: drives, hotplug, paths, listings and reads, over directory trees and the NTFS / exFAT images.
 LFS_SRC = test_lfs.cpp lfs_port_host.cpp ../source/local/lfs.cpp ../source/local/lfs_path.cpp
@@ -460,6 +474,7 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_resample
 	./test_aac
 	./test_flac
+	./test_lossless
 	$(MAKE) -f Makefile.host check-mohasi-readonly
 	./test_mohasi_fs
 	$(MAKE) -f Makefile.host test_mohasi_fs_be

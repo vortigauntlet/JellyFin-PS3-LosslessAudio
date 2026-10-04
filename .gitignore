@@ -80,3 +80,4 @@ tests/test_local_resume
 tests/test_resample
 tests/test_aac
 tests/test_flac
+tests/test_lossless

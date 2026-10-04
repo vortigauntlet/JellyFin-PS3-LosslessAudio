@@ -6,6 +6,8 @@
 #include "adec_dts.h"
 #include "adec_truehd.h"
 #include "adec_aac.h"
+#include "adec_flac.h"
+#include "adec_pcm.h"
 #include "resample.h"
 #include "audio.h"           // audio_output_channels() — port width drives ring width
 #include "plog.h"
@@ -287,10 +289,13 @@ void adec_push_frames(const float *frames, int n) {
 }
 
 // Hand elementary-stream bytes to whichever decoder currently owns the ring.
-static void adec_decode_es(const u8 *es, int len) {
+// head: the first chunk of a PES (a continuation chunk is the tail of the one before)
+static void adec_decode_es(const u8 *es, int len, bool head) {
     if (len <= 0) return;
     if (s_codec == ADEC_CODEC_AC3) { adec_ac3_decode_payload(es, len); return; }
     if (s_codec == ADEC_CODEC_AAC) { adec_aac_decode_payload(es, len); return; }
+    if (s_codec == ADEC_CODEC_FLAC) { adec_flac_decode_payload(es, len); return; }
+    if (s_codec == ADEC_CODEC_PCM) { adec_pcm_decode_payload(es, len, head); return; }
     if (s_codec == ADEC_CODEC_DTS) { adec_dts_decode_payload(es, len); return; }
     if (s_codec == ADEC_CODEC_TRUEHD) {
         adec_truehd_decode_payload(es, len);
@@ -325,7 +330,7 @@ static void adec_decode_pes(const u8 *pes, int pes_len, bool cont) {
     // would read as "no PTS" (audio_get_clock_us) and its time would run ahead of the picture's.
     static bool s_skip_cont = false;
     if (cont) {
-        if (!s_skip_cont) adec_decode_es(pes, pes_len);
+        if (!s_skip_cont) adec_decode_es(pes, pes_len, false);
         return;
     }
     s_skip_cont = false;
@@ -353,7 +358,7 @@ static void adec_decode_pes(const u8 *pes, int pes_len, bool cont) {
     if (pes[0] || pes[1] || pes[2] != 0x01) return;
     int hdr  = 9 + pes[8];
     if (hdr >= pes_len) return;
-    adec_decode_es(pes + hdr, pes_len - hdr);
+    adec_decode_es(pes + hdr, pes_len - hdr, true);
 }
 
 // Enqueue one chunk.  Caller holds s_pes_mtx.
@@ -513,6 +518,8 @@ void adec_flush(void) {
     adec_dts_reset();   // ditto for DTS (also clears a pending ext-substream skip)
     adec_truehd_reset();// ditto for TrueHD (also drops the major-sync lock)
     adec_aac_reset();   // ditto for AAC (the decoder's overlap and the resampler's history)
+    adec_flac_reset();  // FLAC and PCM: the carry goes, and the next PES brings the header again
+    adec_pcm_reset();
     s_wr = s_rd = s_n = 0;
     s_next_pcm_pts_us = s_read_pts_us = 0;
     s_pts_valid = false;
@@ -540,6 +547,8 @@ void adec_stop(void) {
     adec_dts_close();
     adec_truehd_close();
     adec_aac_close();
+    adec_flac_close();
+    adec_pcm_close();
     mp3_drop_resampler();
     s_codec   = ADEC_CODEC_MP3;
     s_ring_ch = 2;
@@ -578,6 +587,8 @@ static const char *adec_codec_name(adec_codec_t c) {
     case ADEC_CODEC_DTS:    return "dts";
     case ADEC_CODEC_TRUEHD: return "truehd";
     case ADEC_CODEC_AAC:    return "aac";
+    case ADEC_CODEC_FLAC:   return "flac";
+    case ADEC_CODEC_PCM:    return "pcm";
     default:                return "mp3";
     }
 }
@@ -601,7 +612,8 @@ void adec_set_codec(adec_codec_t codec) {
         audio_bitstream_end();
     }
     adec_ac3_set_passthrough(codec == ADEC_CODEC_AC3 && audio_passthrough_active());
-    if (codec == ADEC_CODEC_AC3 || codec == ADEC_CODEC_DTS || codec == ADEC_CODEC_AAC)
+    if (codec == ADEC_CODEC_AC3 || codec == ADEC_CODEC_DTS || codec == ADEC_CODEC_AAC ||
+        codec == ADEC_CODEC_FLAC || codec == ADEC_CODEC_PCM)
         want_ch = wide_port ? 6 : 2;
     else if (codec == ADEC_CODEC_TRUEHD)
         // Never decode WIDER than the port actually is.  The port is now
@@ -621,6 +633,8 @@ void adec_set_codec(adec_codec_t codec) {
     if (codec != ADEC_CODEC_DTS)    adec_dts_close();
     if (codec != ADEC_CODEC_TRUEHD) adec_truehd_close();
     if (codec != ADEC_CODEC_AAC)    adec_aac_close();
+    if (codec != ADEC_CODEC_FLAC)   adec_flac_close();
+    if (codec != ADEC_CODEC_PCM)    adec_pcm_close();
 
     if (codec == ADEC_CODEC_AC3) {
         if (!adec_ac3_open(want_ch)) {
@@ -645,6 +659,18 @@ void adec_set_codec(adec_codec_t codec) {
     } else if (codec == ADEC_CODEC_AAC) {
         if (!adec_aac_open(want_ch)) {
             plog("adec_set_codec: AAC open failed, staying on MP3");
+            codec   = ADEC_CODEC_MP3;
+            want_ch = 2;
+        }
+    } else if (codec == ADEC_CODEC_FLAC) {
+        if (!adec_flac_open(want_ch)) {
+            plog("adec_set_codec: FLAC open failed, staying on MP3");
+            codec   = ADEC_CODEC_MP3;
+            want_ch = 2;
+        }
+    } else if (codec == ADEC_CODEC_PCM) {
+        if (!adec_pcm_open(want_ch)) {
+            plog("adec_set_codec: PCM open failed, staying on MP3");
             codec   = ADEC_CODEC_MP3;
             want_ch = 2;
         }
