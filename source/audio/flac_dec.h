@@ -37,6 +37,7 @@ int flac_parse_header(const uint8_t *buf, int len, FlacInfo *info);
 
 typedef struct {
     int blocksize;                    // samples in each channel of this frame
+    uint64_t sample_pos;              // the stream's sample this frame starts at (from its header, so a seek can find where it is)
     int channels;
     int bps;                          // bits per sample (samples are right-justified in an int32)
     int sample_rate;

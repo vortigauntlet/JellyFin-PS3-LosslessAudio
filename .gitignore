@@ -83,3 +83,6 @@ tests/test_flac
 tests/test_lossless
 tests/test_sub_conv
 tests/test_local_subs
+tests/test_local_tags
+tests/test_local_audio
+tests/test_local_music

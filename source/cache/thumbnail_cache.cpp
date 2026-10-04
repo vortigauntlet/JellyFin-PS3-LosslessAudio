@@ -121,6 +121,8 @@ static const char *img_name(u8 img) {
 
 static ThumbLocalResolver s_local_resolver = NULL;
 void thumb_set_local_source(ThumbLocalResolver resolve) { s_local_resolver = resolve; }
+static ThumbLocalBytes s_local_bytes = NULL;
+void thumb_set_local_bytes(ThumbLocalBytes provide) { s_local_bytes = provide; }
 
 // A whole local file into buf.  Returns its length, or -1 when it is missing
 // or does not fit.
@@ -306,7 +308,10 @@ static void fetch_thread_fn(void *arg) {
                 g_server, item_id, img_name(img), tw, th);
 
         glogf("fetch START %s %dx%d%s", item_id, tw, th, local ? " (local)" : "");
-        int bytes = local ? read_local_file(lpath, s_fetch_buf, FETCH_BUF_SIZE)
+        // A provider's own key is answered by the provider alone; any other goes to a local file or the server.
+        int bytes = s_local_bytes ? s_local_bytes(item_id, s_fetch_buf, FETCH_BUF_SIZE) : 0;
+        if (bytes == 0)
+            bytes = local ? read_local_file(lpath, s_fetch_buf, FETCH_BUF_SIZE)
                           : http_fetch_binary(url, g_token, s_fetch_buf, FETCH_BUF_SIZE);
         if (bytes <= 0) {
             char msg[128];

@@ -18,6 +18,15 @@ void thumb_cache_shutdown(void);
 typedef bool (*ThumbLocalResolver)(const char *key, char *path, int cap);
 void thumb_set_local_source(ThumbLocalResolver resolve);
 
+// Artwork that is bytes somewhere else: a picture inside a music file on a drive.  The provider is asked
+// for each key first; it returns the image's bytes (> 0), 0 when the key is not one of its own (the
+// request then goes on to the resolver above and the server), or < 0 when the key is its own and the
+// picture could not be read (the request fails; nothing is fetched from the server for it).  It fills at
+// most `cap` bytes, runs on the fetch thread, and must be thread-safe and quick.  Set once, before any
+// request.
+typedef int (*ThumbLocalBytes)(const char *key, unsigned char *buf, int cap);
+void thumb_set_local_bytes(ThumbLocalBytes provide);
+
 // Which Jellyfin image to fetch for an item.
 //
 // Primary is the right default nearly everywhere: it's the portrait poster for

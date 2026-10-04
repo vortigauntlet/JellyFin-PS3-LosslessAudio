@@ -225,6 +225,8 @@ int flac_decode_frame(const uint8_t *buf, int len, const FlacInfo *info, int32_t
     else return -1;
     if (pos + 1 + extra > len) return 0;
     for (int i = 1; i <= extra; i++) if ((buf[pos + i] & 0xC0) != 0x80) return -1;
+    uint64_t number = extra == 0 ? (uint64_t)lead : (uint64_t)(lead & (0x3F >> extra));
+    for (int i = 1; i <= extra; i++) number = (number << 6) | (uint64_t)(buf[pos + i] & 0x3F);
     pos += 1 + extra;
 
     int blocksize;
@@ -288,6 +290,8 @@ int flac_decode_frame(const uint8_t *buf, int len, const FlacInfo *info, int32_t
         }
     }
     fr->blocksize = blocksize;
+    // A fixed-block stream numbers its frames; a variable one numbers its first samples.
+    fr->sample_pos = (buf[1] & 1) ? number : number * (uint64_t)(info && info->max_block > 0 ? info->max_block : blocksize);
     fr->channels = channels;
     fr->bps = bps;
     fr->sample_rate = rate;
