@@ -166,6 +166,7 @@ static int spine_icon(int tab) {
     case TABKIND_BOXSETS:   return ICON_COLLECTIONS;
     case TABKIND_SETTINGS:  return ICON_SETTINGS;
     case TABKIND_LIVETV:    return ICON_TV;
+    case TABKIND_LOCAL:     return ICON_COLLECTIONS;
     default:                return ICON_PHOTO;
     }
 }
@@ -224,6 +225,7 @@ static void spine_open_column_item(int tab) {
         return;
     }
     if (k == TABKIND_SEARCH || k == TABKIND_SETTINGS || k == TABKIND_LIVETV ||
+        k == TABKIND_LOCAL ||
         !g_items_loaded[tab] || g_item_count[tab] <= 0 ||
         g_sel < 0 || g_sel >= g_item_count[tab]) {
         spine_go(SPINE_L2);
@@ -255,7 +257,7 @@ static void spine_peek_column_item(int tab) {
     const int k = xmb_kind(tab);
     if (k == TABKIND_HOME) { xmb_home_peek_focused(); return; }
     if (k == TABKIND_SEARCH || k == TABKIND_SETTINGS || k == TABKIND_LIVETV ||
-        k == TABKIND_MUSIC ||
+        k == TABKIND_LOCAL || k == TABKIND_MUSIC ||
         !g_items_loaded[tab] || g_item_count[tab] <= 0 ||
         g_sel < 0 || g_sel >= g_item_count[tab])
         return;
@@ -305,6 +307,11 @@ bool spine_try_back(int tab) {
         // and Up themselves; only the channel list's top row hands them over.
         if (xmb_livetv_modal()) return false;
         leave = back || (up && xmb_livetv_at_top());
+        break;
+    case TABKIND_LOCAL:
+        // The folder browser and the details page are screens of their own
+        // that return here; this is only the list of drives.
+        leave = back || (up && xmb_media_at_top());
         break;
     case TABKIND_MUSIC:
         // The grid's top row already moves Up onto the Albums/Artists/...
@@ -467,7 +474,7 @@ typedef char spine_focus_slots_fit[(XMB_TAB_COUNT <= DEPTH_MAX_CATS) ? 1 : -1];
 static bool spine_grid_tab(int tab) {
     const int k = xmb_kind(tab);
     return tab != XMB_TAB_HOME && k != TABKIND_SEARCH && k != TABKIND_SETTINGS &&
-           k != TABKIND_LIVETV;
+           k != TABKIND_LIVETV && k != TABKIND_LOCAL;
 }
 
 void spine_focus_leave(int tab, bool window_dropped) {

@@ -48,6 +48,7 @@ typedef enum {
     TABKIND_GENERIC,    // homevideos / musicvideos / mixed / untyped
     TABKIND_SETTINGS,
     TABKIND_LIVETV,     // Jellyfin's "livetv" view: its own channel list and guide
+    TABKIND_LOCAL,      // "Media": the internal disk's folders and USB drives, no server needed
 } XMBTabKind;
 
 typedef struct {

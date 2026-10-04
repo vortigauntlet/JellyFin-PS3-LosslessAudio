@@ -183,6 +183,13 @@ void xmb_draw_livetv(void);           // text phase
 bool xmb_livetv_at_top(void);         // the list's first row (Up there leaves the tab)
 bool xmb_livetv_modal(void);          // the guide or a details panel has O and Up
 void xmb_livetv_hints(void);          // the tab's hint bar
+// Media tab (xmb/ui_media.cpp): the drives and the files on them.
+void xmb_media_on_enter(void);
+bool xmb_input_media(void);           // the tab's input (it never exits the XMB)
+void xmb_cpu_draw_media(void);        // CPU phase: the rows' panels
+void xmb_draw_media(void);            // text phase
+bool xmb_media_at_top(void);          // the first row (Up there leaves the tab)
+void xmb_media_hints(void);           // the tab's hint bar
 // The channel list in display order, for the player's channel up/down.
 #include "livetv_list.h"
 // X and Left/Right on a Settings row, by its position in the displayed order

@@ -30,6 +30,7 @@
 #include "dl_library.h"
 #include "dl_ui.h"
 #include "dl_service.h"
+#include "lfs.h"               // the drives, for the sign-in failure offer
 
 #define DL_WARN_CLR   0x00E8B64CUL   // the rating star's gold: attention, not error red
 #define DL_TOAST_US   3000000ULL
@@ -516,14 +517,18 @@ void xmb_show_offline(void) {
 }
 
 bool xmb_offer_offline_after_login_failure(void) {
-    // Only worth asking when there is something to play.
-    if (!dl_service_wait_restored(1500)) return false;
+    // Only worth asking when there is something to play: a download, or a USB drive
+    // (the Media screen plays both, and needs no server).
     char one[1][DL_ID_MAX];
-    if (dl_library_ids(one, 1) == 0) return false;
+    const bool downloads = dl_service_wait_restored(1500) && dl_library_ids(one, 1) > 0;
+    lfs_drive drives[9];
+    const bool usb = lfs_drives(drives, 9) > 1;          // the internal disk is always the first
+    if (!downloads && !usb) return false;
     if (!xmb_dl_confirm("Couldn't sign in",
-                        "You have downloads on this console. Play one offline?",
-                        "Try again", "Open Offline"))
+                        downloads ? "You have downloads on this console, or a drive to play from. Open them?"
+                                  : "A USB drive is plugged in. Play from it without the server?",
+                        "Try again", "Open Media"))
         return false;
-    xmb_show_offline();
+    xmb_show_media();
     return true;
 }

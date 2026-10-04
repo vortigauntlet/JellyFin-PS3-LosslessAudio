@@ -31,6 +31,19 @@
 #define DETECT_TABS_TRIES     6
 #define DETECT_TABS_RETRY_US  1500000
 
+// The Media tab -- the internal disk's folders and USB drives -- is the last of
+// the tabs whatever the server says, and is there when it says nothing: it
+// needs no server.  `next` is the first free slot.
+static void add_media_tab(int next) {
+    if (next >= XMB_TAB_COUNT) return;
+    XMBTab *tb = &g_tabs[next];
+    memset(tb, 0, sizeof(*tb));
+    snprintf(tb->label, sizeof(tb->label), "Media");
+    tb->icon    = "#";
+    tb->kind    = TABKIND_LOCAL;
+    tb->enabled = true;
+}
+
 // One attempt at fetching and parsing /Users/{id}/Views.  Returns false only
 // when the request or the parse failed outright — a reply that parses to
 // zero libraries is a real answer, not a miss, so it does not retry.
@@ -53,6 +66,7 @@ static bool detect_tabs_once(void) {
         snprintf(b, sizeof(b),
                  "detect_tabs: http=%d for /Users/*/Views", status);
         plog(b);
+        add_media_tab(next);
         return false;
     }
 
@@ -63,6 +77,7 @@ static bool detect_tabs_once(void) {
                  "detect_tabs: no Items[] in %d-byte reply, head=[%.90s]",
                  (int)strlen(responseBuffer), responseBuffer);
         plog(b);
+        add_media_tab(next);
         return false;
     }
     p += 9;
@@ -87,13 +102,13 @@ static bool detect_tabs_once(void) {
         xmb_json_str_range(obj, olen, "Name",           name, sizeof(name));
         if (!id[0]) continue;
 
-        if (next >= XMB_TAB_COUNT) {
+        if (next >= XMB_TAB_COUNT - 1) {        // (the last slot is the Media tab's)
             // More libraries than the tab bar can hold.  Say so rather than
             // dropping them silently — silent dropping is the bug this whole
             // change exists to fix.
             char b[96];
             snprintf(b, sizeof(b), "detect_tabs: OVER %d libraries, skipping '%s'",
-                     XMB_LIB_MAX, name);
+                     XMB_LIB_MAX - 1, name);
             plog(b);
             break;
         }
@@ -150,6 +165,7 @@ static bool detect_tabs_once(void) {
     { char b[64];
       snprintf(b, sizeof(b), "detect_tabs: %d libraries", next - XMB_TAB_LIB0);
       plog(b); }
+    add_media_tab(next);
     return true;
 }
 

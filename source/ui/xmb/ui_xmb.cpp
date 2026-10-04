@@ -216,6 +216,8 @@ static void xmb_draw_gpu_phase(int tab) {
         xmb_home_gpu_phase();
     } else if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_livetv_gpu();
+    } else if (xmb_kind(tab) == TABKIND_LOCAL) {
+        // nothing on the GPU: the list is panels and text
     } else if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS) {
         GridGeom gg; const XMBItem *items;
         int count, sel, scroll, y0, a_start, a_total; bool more;
@@ -253,6 +255,8 @@ static void xmb_draw_cpu_phase(int tab) {
         xmb_cpu_draw_settings();
     } else if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_cpu_draw_livetv();
+    } else if (xmb_kind(tab) == TABKIND_LOCAL) {
+        xmb_cpu_draw_media();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_cpu_phase();
     } else {
@@ -282,6 +286,8 @@ static void xmb_draw_text_phase(int tab) {
         xmb_draw_settings();
     } else if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_draw_livetv();
+    } else if (xmb_kind(tab) == TABKIND_LOCAL) {
+        xmb_draw_media();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_text_phase();
     } else {
@@ -450,6 +456,8 @@ static void xmb_draw_hints(int tab) {
 
     if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_livetv_hints();
+    } else if (xmb_kind(tab) == TABKIND_LOCAL) {
+        xmb_media_hints();
     } else if (tab == XMB_TAB_SETTINGS) {
         if (g_settings_confirm) {
             static const Hint h[] = {{'X',"Confirm"},{'C',"Cancel"}};
@@ -574,7 +582,7 @@ void ui_run_xmb(void) {
             static u64 s_lib_gap_us  = 5000000ULL;
             bool have_lib = false;
             for (int t = XMB_TAB_LIB0; t < XMB_TAB_COUNT; t++)
-                if (g_tabs[t].enabled) { have_lib = true; break; }
+                if (g_tabs[t].enabled && g_tabs[t].kind != TABKIND_LOCAL) { have_lib = true; break; }   // Media is always there
             if (have_lib) {
                 s_lib_next_us = 0;
                 s_lib_gap_us  = 5000000ULL;
@@ -608,7 +616,8 @@ void ui_run_xmb(void) {
 
         int tab = g_active_tab;
         if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS
-            && tab != XMB_TAB_HOME && xmb_kind(tab) != TABKIND_LIVETV)
+            && tab != XMB_TAB_HOME && xmb_kind(tab) != TABKIND_LIVETV
+            && xmb_kind(tab) != TABKIND_LOCAL)
             if (!g_items_loaded[tab]) {
                 if (first_iter) crash_log("13.7 fetch_tab_items");
                 xmb_fetch_tab_items(tab);

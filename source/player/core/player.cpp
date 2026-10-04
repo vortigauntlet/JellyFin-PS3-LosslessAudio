@@ -562,6 +562,7 @@ void show_player(const JFItem *item, u32 resume_secs,
 void show_player_run(const JFItem *item, u32 resume_secs,
                      const char *media_source_id, const PlayerLocal *local) {
     crash_log("p1 enter");
+    s_last_pos_secs = 0;             // a playback that never gets going leaves no position behind
     exit_reports_join();
     music_join_stale();
     plog("show_player: enter");

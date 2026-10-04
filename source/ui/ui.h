@@ -210,6 +210,9 @@ void xmb_season_stop(void);
 // The Live TV list refreshes on a worker thread (xmb/ui_livetv.cpp); at exit it
 // is told to stop and joined.
 void xmb_livetv_stop(void);
+// The Media screen (drives, then folders and files; xmb/ui_media.cpp) as a screen of its own: the
+// sign-in failure screen's way to what needs no server.  Returns when the user backs out.
+void xmb_show_media(void);
 // If there are downloads to play, ask whether to open them.  True when the
 // Offline library was opened (the caller then retries sign-in as before).
 bool xmb_offer_offline_after_login_failure(void);
