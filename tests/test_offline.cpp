@@ -379,6 +379,9 @@ static void test_url_parse(void) {
     CHECK(dl_url_parse("http://jelly.local/", &u) && u.port == 8096);  // app default
     CHECK(dl_url_parse("http://h:80", &u) && u.port == 80 && strcmp(u.path, "/") == 0);
     CHECK(dl_url_parse("http://h?x=1", &u) && strcmp(u.path, "/?x=1") == 0);
+    CHECK(dl_url_parse("192.168.1.2:8096/Videos/x/stream.ts?a=1", &u) &&
+          strcmp(u.host, "192.168.1.2") == 0 && u.port == 8096);   // scheme-less server
+    CHECK(!dl_url_parse("ftp://h/x", &u));
     CHECK(!dl_url_parse("https://h/x", &u));          // no TLS on this path
     CHECK(!dl_url_parse("ftp://h/x", &u));
     CHECK(!dl_url_parse("http://", &u));

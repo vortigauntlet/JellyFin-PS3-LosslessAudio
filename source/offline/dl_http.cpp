@@ -10,12 +10,21 @@
 
 bool dl_url_parse(const char *url, DlUrl *out) {
     const char *p = url;
-    if (strncmp(p, "http://", 7) != 0) return false;   // https: no TLS here
-    p += 7;
+    // The server address is stored as typed, and the rest of the app (http.cpp)
+    // takes it with or without "http://".  A bare "host:port" must download
+    // too, or every download from such a server is refused.
+    if (strncmp(p, "http://", 7) == 0) p += 7;
+    else if (strstr(p, "://")) return false;           // https: no TLS here
     const char *h = p;
     while (*p && *p != ':' && *p != '/' && *p != '?') p++;
     int hl = (int)(p - h);
     if (hl <= 0 || hl >= (int)sizeof(out->host)) return false;
+    for (int i = 0; i < hl; i++) {
+        const char c = h[i];
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+        if (!ok) return false;     // "not a url", "[::1]", ...
+    }
     memcpy(out->host, h, (size_t)hl);
     out->host[hl] = '\0';
     // No port means 8096, not 80 -- the same default http.cpp and stream.cpp
