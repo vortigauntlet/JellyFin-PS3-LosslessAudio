@@ -452,7 +452,7 @@ void progress_thread_fn(void *arg) {
     // The start report, off the display thread (see show_player).
     snprintf(item, sizeof item, "%s", g_prog.item);
     snprintf(sess, sizeof sess, "%s", g_prog.sess);
-    char live_id[96];
+    char live_id[128];
     snprintf(live_id, sizeof live_id, "%s", g_prog.live_id);
     if (PROG_LIVE()) jellyfin_report_playing(item, sess, g_prog.base_us * 10ULL, live_id);
 

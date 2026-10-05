@@ -276,6 +276,27 @@ static void direct_stream_off(void) {
     }
 }
 
+// Jellyfin's live stream id is three 32-digit ids joined by underscores (98
+// characters).  A 96-byte copy cut off the last three and the server could not
+// find the stream (HTTP 500 on the console): the whole id must reach the URL.
+static void live_stream_id_length(void) {
+    printf("- live stream id length\n");
+    const char *id = "e2329f4997b378e64ccf8fa396deb76e_af999c25a00715699361240d4c6c7a53_c955cfc46ce79741b9adcab51b75776d";
+    CHECK(strlen(id) == 98);
+    GoldenCase c = { "live", VQORIG, 0, 0, 0, 1920, 1080, -1, GS_NONE, GV_LIVE, 1, 0 };
+    Built b; build_case(&c, &b);
+    snprintf(b.src.live_stream_id, sizeof b.src.live_stream_id, "%s", id);
+    b.sel.item_id = "CHAN0001";
+    b.sel.live    = true;
+    StreamRequest rq;
+    stream_request_resolve(&b.p, &b.sel, &rq);
+    CHECK(strcmp(rq.live_stream_id, id) == 0);
+    char url[1024];
+    stream_url_build(url, sizeof url, &rq, SERVER, DEVICE, "sess1234", 0);
+    const std::string want = std::string("&LiveStreamId=") + id + "&PlaySessionId=sess1234";
+    CHECK(std::string(url).find(want) != std::string::npos);
+}
+
 static void initial_selection(void) {
     printf("- initial selection\n");
     JFTracks t; fill_tracks(&t);
@@ -296,6 +317,7 @@ int main(void) {
     subtitles();
     dolby_digital();
     live_tv();
+    live_stream_id_length();
     direct_stream_off();
     initial_selection();
     printf("%d checks, %d failed\n", s_checks, s_failed);

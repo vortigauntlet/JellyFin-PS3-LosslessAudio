@@ -93,7 +93,10 @@ typedef struct {
     int         sub_idx;           // -1 = none; else the track to burn in
     char        item_id[64];
     char        source_id[96];     // MediaSourceId (item id when none chosen)
-    char        live_stream_id[96];
+// Jellyfin names a live stream "<tuner>_<provider>_<channel>", three 32-digit ids:
+// 98 characters.  Every copy of it needs room for all of them (a 96-byte copy
+// loses the last three and the server answers the stream request with a 500).
+    char        live_stream_id[128];
 } StreamRequest;
 
 // The player's rule for the tracks a title starts with: the source's

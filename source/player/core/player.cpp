@@ -368,7 +368,7 @@ static bool player_stream_wait(unsigned elapsed_ms)
 // libnet pool, and both requests timed out at 5 s (`http=-1`).  Now the socket
 // is closed first, the two requests run on a thread of their own, and the
 // Returning screen is up while they and the teardown run.
-static struct { char item[64]; char sess[128]; char live[96]; u64 ticks; } s_exit_rep;
+static struct { char item[64]; char sess[128]; char live[128]; u64 ticks; } s_exit_rep;
 static volatile bool    s_exit_rep_done = true;
 static bool             s_exit_rep_live = false;    // a thread still to join
 static sys_ppu_thread_t s_exit_rep_tid;

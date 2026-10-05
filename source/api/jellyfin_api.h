@@ -140,7 +140,7 @@ typedef struct {
 // not stable across versions.
 typedef struct {
     char     id[96];             // MediaSourceId used by stream.ts
-    char     live_stream_id[96]; // populated after opening remote/live sources
+    char     live_stream_id[128]; // populated after opening remote/live sources (98 chars: see stream_request.h)
     char     label[128];         // MediaSource.Name (HUD display text)
     char     summary[96];        // "1080p · REMUX · DTS-HD MA 7.1 · 38.8 GB" (api/version_summary.h)
     unsigned runtime_secs;

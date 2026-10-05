@@ -52,7 +52,7 @@ struct ProgressShared {
     volatile u64  base_us;      // PlayerState.play_base_us
     char          item[64];
     char          sess[64];
-    char          live_id[96];  // Live TV: the opened stream, "" otherwise
+    char          live_id[128]; // Live TV: the opened stream, "" otherwise (98 chars)
 };
 extern ProgressShared g_prog;
 void progress_thread_fn(void *arg);
