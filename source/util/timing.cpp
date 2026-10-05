@@ -274,8 +274,9 @@ bool avsync_is_locked(void) {
 s64 avsync_biased_period(s64 nominal_vblank_us) {
     // Video ahead (smooth > 0) → consume LESS per vblank → slow video down.
     // Video behind (smooth < 0) → consume MORE per vblank → speed video up.
-    // Quadratic bias: delta = sign(smooth) * min((|smooth|/1000)^2, 5000).
-    // At ±10ms gives ±100µs bias; caps at ±5000µs around ±71ms.
+    // Beyond a ±30 ms dead band (see below), quadratic bias:
+    // delta = sign(smooth) * min(((|smooth|-30000)/1000)^2, 5000) us;
+    // caps at ±5000µs around ±101ms.
     // Engage the correction for sub-second offsets too, not only once "locked"
     // (<41ms).  A subtitle burn-in reopen leaves the video/audio content ~0.2s
     // apart; with the label folded out (see avsync_compute_diff) that residual
@@ -285,7 +286,17 @@ s64 avsync_biased_period(s64 nominal_vblank_us) {
     if (!s_avsync_initialized) return nominal_vblank_us;
     { s64 s = s_avsync_smooth_us; if (s > 1500000 || s < -1500000) return nominal_vblank_us; }
     s64 smooth   = avsync_get_smoothed_diff();
-    s64 abs_ms   = (smooth < 0 ? -smooth : smooth) / 1000;
+    // Dead band.  The measured offset is the FRONT frame's PTS against the audio
+    // clock, so even a perfect sync reads ~half a frame (10-20 ms) behind, and
+    // the old always-on quadratic term answered that with +50..+400 us on every
+    // vblank, forever: video 1% fast, so a 24 fps frame (exactly 2.5 vblanks)
+    // slid across the vblank grid, the blend weights swept 0..1 about once a
+    // second and the 3-2 hold broke into 3-3 / 2-2 each time it wrapped -- a
+    // hitch every ~1.5 s on a clean stream.  Inside +-30 ms the period is the
+    // nominal one and the cadence stays rigid.
+    s64 abs_us   = smooth < 0 ? -smooth : smooth;
+    if (abs_us <= 30000) return nominal_vblank_us;
+    s64 abs_ms   = (abs_us - 30000) / 1000;
     s64 delta_us = abs_ms * abs_ms;
     if (delta_us > 5000) delta_us = 5000;
     return nominal_vblank_us - (smooth > 0 ? delta_us : -delta_us);
