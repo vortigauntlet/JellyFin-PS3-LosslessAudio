@@ -243,7 +243,11 @@ one_to_one_done: ;
 #ifdef VID_DISABLE_BLEND
         bool b_ok  = false;   // force pure-A: no crossfade ever
 #else
-        bool b_ok  = (jbuf_peek_next() != NULL) && s_vid_b_present;
+        // Interlaced output scans each flip out as alternating fields, so a
+        // per-vblank temporal blend reads as back-and-forth motion on a CRT.
+        // Present whole frames with pulldown only.
+        bool b_ok  = (jbuf_peek_next() != NULL) && s_vid_b_present &&
+                     !timing_display_interlaced();
 #endif
 
         if (!b_ok || dur_a >= vblank_period_us) {

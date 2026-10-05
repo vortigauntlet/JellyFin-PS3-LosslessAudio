@@ -28,6 +28,7 @@ static u64 s_last_shown_us = 0;
 static u32           s_fps_num          = 30;
 static u32           s_fps_den          = 1;
 static u32           s_display_num      = 60000;  // display refresh rate numerator
+static bool          s_display_interlaced = false; // 480i/576i/1080i output
 static u32           s_display_den      = 1001;   // display refresh rate denominator
 static volatile u64  s_vsync_count      = 0;
 static volatile u64  s_last_shown_vsync = 0;
@@ -95,6 +96,8 @@ void timing_init(u32 fps_num, u32 fps_den) {
         if (videoGetState(0, 0, &vs) == 0) {
             u16 rr = vs.displayMode.refreshRates;
             rr_raw = rr;
+            s_display_interlaced =
+                (vs.displayMode.scanMode == VIDEO_SCANMODE_INTERLACE);
             if      (rr & VIDEO_REFRESH_59_94HZ) { s_display_num = 60000; s_display_den = 1001; }
             else if (rr & VIDEO_REFRESH_50HZ)    { s_display_num = 50;    s_display_den = 1;    }
             else if (rr & VIDEO_REFRESH_60HZ)    { s_display_num = 60;    s_display_den = 1;    }
@@ -105,9 +108,10 @@ void timing_init(u32 fps_num, u32 fps_den) {
             s_display_den = s_override_den;
         }
         char buf[112];
-        snprintf(buf, sizeof(buf), "timing: display=%u/%u%s (rr=0x%02x) fps=%u/%u",
+        snprintf(buf, sizeof(buf), "timing: display=%u/%u%s (rr=0x%02x) fps=%u/%u scan=%s",
                  s_display_num, s_display_den, s_override_num ? " MEASURED" : "",
-                 (unsigned)rr_raw, fps_num, fps_den);
+                 (unsigned)rr_raw, fps_num, fps_den,
+                 s_display_interlaced ? "interlaced" : "progressive");
         plog(buf);
     }
 
@@ -190,6 +194,8 @@ bool timing_is_1to1(void) {
     return s_fps_num && s_display_num &&
            (u64)s_display_num * s_fps_den == (u64)s_fps_num * s_display_den;
 }
+
+bool timing_display_interlaced(void) { return s_display_interlaced; }
 
 s64 timing_vblank_period_us(void) {
     if (s_display_num == 0) return 16683;   // defensive; never happens post-init
