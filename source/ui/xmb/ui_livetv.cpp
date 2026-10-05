@@ -940,9 +940,25 @@ void xmb_cpu_draw_livetv(void) {
 }
 
 // Text clipped to max_w with an ellipsis.
-static void clip_draw(int x, int y, const char *text, float px, u32 colour, int max_w, bool bold) {
-    char buf[160];
-    snprintf(buf, sizeof buf, "%s", text);
+//
+// Trimming one character at a time re-measures the whole string at every step,
+// and a list screen clips the same few dozen programme titles every frame: that
+// was 9-14 ms of the text phase (frames of 21-26 ms) with the guide loaded.  A
+// title's clipped form only changes when the title does, so keep the results.
+struct ClipEntry { char text[160]; char out[160]; int px100, max_w; bool bold, used; };
+
+static void clip_text(const char *text, float px, int max_w, bool bold, char *buf, size_t cap) {
+    static ClipEntry cache[128];
+    static int next = 0;
+    const int px100 = (int)(px * 100.0f + 0.5f);
+    for (int i = 0; i < 128; i++) {
+        const ClipEntry &e = cache[i];
+        if (e.used && e.px100 == px100 && e.max_w == max_w && e.bold == bold && !strcmp(e.text, text)) {
+            snprintf(buf, cap, "%s", e.out);
+            return;
+        }
+    }
+    snprintf(buf, cap, "%s", text);
     int len = (int)strlen(buf);
     if (ttf_text_width(buf, px, bold) > max_w) {
         while (len > 3 && ttf_text_width(buf, px, bold) > max_w) {
@@ -950,6 +966,16 @@ static void clip_draw(int x, int y, const char *text, float px, u32 colour, int 
             if (len > 3) { buf[len - 1] = '.'; buf[len - 2] = '.'; buf[len - 3] = '.'; }
         }
     }
+    ClipEntry &e = cache[next];
+    next = (next + 1) % 128;
+    snprintf(e.text, sizeof e.text, "%s", text);
+    snprintf(e.out, sizeof e.out, "%s", buf);
+    e.px100 = px100; e.max_w = max_w; e.bold = bold; e.used = true;
+}
+
+static void clip_draw(int x, int y, const char *text, float px, u32 colour, int max_w, bool bold) {
+    char buf[160];
+    clip_text(text, px, max_w, bold, buf, sizeof buf);
     drawTTF((u32)x, (u32)y, buf, px, colour, bold);
 }
 
