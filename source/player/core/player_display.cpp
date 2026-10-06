@@ -19,6 +19,7 @@
 #include "display_diag.h"
 #include "subfont.h"
 #include "subcolor.h"
+#include "vblend.h"
 #include <string.h>
 
 // Longest single rendered line. Cues are capped well below this in
@@ -243,11 +244,12 @@ one_to_one_done: ;
 #ifdef VID_DISABLE_BLEND
         bool b_ok  = false;   // force pure-A: no crossfade ever
 #else
-        // Interlaced output scans each flip out as alternating fields, so a
-        // per-vblank temporal blend reads as back-and-forth motion on a CRT.
-        // Present whole frames with pulldown only.
+        // Whole frames with pulldown only, unless blending is switched on
+        // (vblend.h).  Interlaced output scans each flip out as alternating
+        // fields, so a blend reads as back-and-forth motion on a CRT; and a
+        // TV that detects 3:2 pulldown sees blended frames as a broken cadence.
         bool b_ok  = (jbuf_peek_next() != NULL) && s_vid_b_present &&
-                     !timing_display_interlaced();
+                     !timing_display_interlaced() && vblend_enabled();
 #endif
 
         if (!b_ok || dur_a >= vblank_period_us) {

@@ -1,6 +1,7 @@
 #include "timing.h"
 #include "audio.h"
 #include "plog.h"
+#include "vblend.h"
 #include "player_stats.h"
 #include "../build_config.h"
 #include <stdio.h>
@@ -107,11 +108,12 @@ void timing_init(u32 fps_num, u32 fps_den) {
             s_display_num = s_override_num;
             s_display_den = s_override_den;
         }
-        char buf[112];
-        snprintf(buf, sizeof(buf), "timing: display=%u/%u%s (rr=0x%02x) fps=%u/%u scan=%s",
+        char buf[128];
+        snprintf(buf, sizeof(buf), "timing: display=%u/%u%s (rr=0x%02x) fps=%u/%u scan=%s blend=%d",
                  s_display_num, s_display_den, s_override_num ? " MEASURED" : "",
                  (unsigned)rr_raw, fps_num, fps_den,
-                 s_display_interlaced ? "interlaced" : "progressive");
+                 s_display_interlaced ? "interlaced" : "progressive",
+                 vblend_enabled() ? 1 : 0);
         plog(buf);
     }
 

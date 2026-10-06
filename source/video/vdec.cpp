@@ -535,10 +535,10 @@ static s64 dur_from_frc(int frc) {
         case 8: return 16667;   /* 60 fps     */
         default:
             // Same fallback as fps_from_frc(): the server rate beats a
-            // hardcoded 25 fps guess when VDEC reports no code.
+            // hardcoded guess when VDEC reports no code (30 fps, matching fps_from_frc).
             if (g_source_fps_milli > 1000)
                 return (s64)(1000000000LL / g_source_fps_milli);
-            return 40000;
+            return 33333;   // 30 fps: what fps_from_frc() defaults to
     }
 }
 
