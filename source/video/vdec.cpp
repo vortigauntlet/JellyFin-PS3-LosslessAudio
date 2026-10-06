@@ -646,10 +646,12 @@ bool vdec_pull_frame(void) {
         s_push_count++;
 
         if (s_push_count % 300 == 0) {
+            u32 ro = 0, late = 0;
+            jbuf_order_stats(&ro, &late);
             char buf[128];
             snprintf(buf, sizeof(buf),
-                "pts_stats: pushes=%d nonmono=%d dur=%lldus",
-                s_push_count, s_nonmono_count,
+                "pts_stats: pushes=%d nonmono=%d reordered=%u late=%u dur=%lldus",
+                s_push_count, s_nonmono_count, ro, late,
                 (long long)dur_us);
             plog(buf);
         }

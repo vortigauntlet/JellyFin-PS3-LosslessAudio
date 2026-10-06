@@ -28,6 +28,7 @@
 #include "adec_dts.h"
 #include "adec_truehd.h"
 #include "video.h"
+#include "vblend.h"
 #include "timing.h"
 #include "player.h"
 #include "player_hud.h"
@@ -731,6 +732,8 @@ void show_player(const JFItem *item, u32 resume_secs,
     // the seek path; this covers session start.
     avsync_reset();
 
+    // The upload thread stages the second slot too, but only for the blend.
+    jbuf_set_front_locked(vblend_enabled() ? 2 : 1);
     if (!jbuf_alloc(ps.req_w, ps.req_h)) {
         plog("show_player: jbuf_alloc FAILED");
         player_startup_abort();

@@ -73,6 +73,7 @@ bool video_feed_ts_audio_only(const u8 *pkt);
 
 // ---- Jitter buffer ----
 bool         jbuf_alloc(u32 fw, u32 fh);
+void         jbuf_set_front_locked(int n); // front slots never reordered (1, or 2 when blending)
 int          jbuf_cap(void);            // active ring capacity (<= JBUF_MAX_SLOTS)
 int          jbuf_prefill_target(void); // frames to prefill (<= capacity)
 // Bytes per decoded planar YUV420P frame (fw * pad16(fh) * 3/2).  All
