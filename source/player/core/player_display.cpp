@@ -255,8 +255,14 @@ one_to_one_done: ;
         if (!b_ok || dur_a >= vblank_period_us) {
             // Pure-A: consume one vblank period, pop if frame exhausted
             const u32 seq0 = jbuf_peek_seq();
+            const s64 left = jbuf_peek_dur() - vblank_period_us;
             jbuf_consume_dur(vblank_period_us);
             jbuf_advance();
+            // The part of this vblank the old frame did not use belongs to the
+            // new one.  Dropping it held every 24 fps frame for 3 vblanks on a
+            // 59.94 Hz output (20 fps), and the A/V catch-up then dropped two
+            // frames every half second: the rubber-banding.
+            if (left < 0 && jbuf_peek_seq() != seq0) jbuf_consume_dur(-left);
             // A pop here is a NEW picture and must count as one.  At 59.94 a
             // film frame always ends in the crossfade branch below, so this
             // never mattered; at a 1:1 cadence (24p output, 2026-09-27) EVERY

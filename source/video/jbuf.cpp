@@ -179,12 +179,53 @@ int  jbuf_write_idx(void) { return s_jb_wr; }
 
 void jbuf_set_dims(u32 fw, u32 fh) { s_jbuf_fw = fw; s_jbuf_fh = fh; }
 
+static int s_front_locked = 2;   // front slots the consumers may be reading
+static u32 s_reordered = 0;   // pictures moved back into timestamp order
+static u32 s_too_late  = 0;   // pictures that arrived behind a slot already in use
+
+void jbuf_set_front_locked(int n) { s_front_locked = (n < 1) ? 1 : n; }
+
+void jbuf_order_stats(u32 *reordered, u32 *too_late) {
+    if (reordered) *reordered = s_reordered;
+    if (too_late)  *too_late  = s_too_late;
+}
+
+static void jbuf_swap(int a, int b) {
+    u8 *d = s_jbuf_data[a]; s_jbuf_data[a] = s_jbuf_data[b]; s_jbuf_data[b] = d;
+    u64 p = s_jbuf_pts[a];  s_jbuf_pts[a]  = s_jbuf_pts[b];  s_jbuf_pts[b]  = p;
+    s64 u = s_jbuf_dur[a];  s_jbuf_dur[a]  = s_jbuf_dur[b];  s_jbuf_dur[b]  = u;
+    u32 q = s_jbuf_seq[a];  s_jbuf_seq[a]  = s_jbuf_seq[b];  s_jbuf_seq[b]  = q;
+}
+
+// VDEC hands pictures out in DECODE order when the stream uses a B-frame
+// pyramid (PTS 1650, 1566, 1525, 1608, ...).  Each new picture is moved back
+// past any queued picture with a later timestamp.  The front slots in use are
+// never touched (jbuf_set_front_locked): the display shows the first, and the
+// upload thread also stages the second when blending.  Slots only trade
+// buffer pointers, never pixels.
 void jbuf_push(u64 pts_us, s64 dur_us) {
     s_jbuf_pts[s_jb_wr] = pts_us;
     s_jbuf_dur[s_jb_wr] = dur_us;
     s_jbuf_seq[s_jb_wr] = ++s_seq_counter;
     sysMutexLock(s_jbuf_mtx, 0);
+    int k = s_jb_n;                                   // the new picture is front + k
     s_jb_wr = (s_jb_wr + 1) % s_jb_cap;
     s_jb_n++;
+    if (pts_us != 0) {
+        bool moved = false;
+        while (k > 0) {
+            const int cur  = (s_jb_rd + k) % s_jb_cap;
+            const int prev = (s_jb_rd + k - 1) % s_jb_cap;
+            if (s_jbuf_pts[prev] <= pts_us) break;
+            // A timestamp a second or more earlier is a discontinuity (a live
+            // stream restarting), not a B-frame: leave it in arrival order.
+            if (s_jbuf_pts[prev] - pts_us >= 1000000ULL) break;
+            if (k - 1 < s_front_locked) { s_too_late++; break; }
+            jbuf_swap(cur, prev);
+            moved = true;
+            k--;
+        }
+        if (moved) s_reordered++;
+    }
     sysMutexUnlock(s_jbuf_mtx);
 }
