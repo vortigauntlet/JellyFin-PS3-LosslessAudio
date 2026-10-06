@@ -14,9 +14,9 @@
 CC      ?= cc
 CXX     ?= c++
 CFLAGS  ?= -O2 -Wall
-CFLAGS  += -I../source/audio -I../source/audio/a52 -I../source/util
+CFLAGS  += -I../source/audio -I../source/audio/a52 -I../source/util -I../source/i18n
 CXXFLAGS ?= -O2 -Wall
-CXXFLAGS += -I../source/api -I../source/net
+CXXFLAGS += -I../source/api -I../source/net -I../source/i18n
 
 A52_DIR  = ../source/audio/a52
 A52_SRCS = $(A52_DIR)/parse.c $(A52_DIR)/bit_allocate.c $(A52_DIR)/bitstream.c \
@@ -58,7 +58,7 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_media_sources test_subtit
      test_truehd_map test_truehd_decode \
      test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
-     test_wave_audio test_wave_motion test_wave_layers test_bg_gradient test_month_bg \
+     test_wave_audio test_wave_motion test_wave_layers \
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
      test_experience test_json_unescape test_boot_seq test_wave_motes \
      test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_jbuf_order test_i18n test_line_break
@@ -263,8 +263,6 @@ check: all tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 	./test_wave_audio
 	./test_wave_motion
 	./test_wave_layers
-	./test_bg_gradient
-	./test_month_bg
 	./test_wave_cam
 	./test_wave_light
 	./test_wave_gel
@@ -465,7 +463,7 @@ test_wave_motes: test_wave_motes.c ../source/ui/render/wave_motes.h \
 # machine, the version selector's words and the ambient screensaver.
 test_experience: test_experience.c ../source/ui/render/art_colour.h \
                  ../source/ui/render/buffer_anim.h ../source/ui/render/experience.h
-	$(CC) $(CFLAGS) -Wextra -o $@ test_experience.c -lm
+	$(CC) $(CFLAGS) -Wextra -o $@ test_experience.c ../source/i18n/i18n.c ../source/i18n/i18n_tables.c -lm
 
 # JSON string decoding (source/api/json_unescape.h): \u0027 and friends.
 test_json_unescape: test_json_unescape.c ../source/api/json_unescape.h
