@@ -386,6 +386,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
     while (running) {
         if (reload) {
             reload = false;
+            cur_item.resume_secs = player_resume_for(cur_item.id, cur_item.resume_secs);
             const XMBItem *it = &cur_item;
             memset(&detail, 0, sizeof detail);
             if (facts_wanted(it->type)) facts_request(it->id);   // lands while this loads
@@ -774,10 +775,25 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         // Selectors (y=634, h=34, r=4).
         const int SY = IY(634), SH = UIS_H(34);
         int sx_[3], sw_[3];
+        // The Download button reads as a button, not a drop-down: no caption,
+        // an arrow and the live state ("Downloading 42%", "Play offline"...),
+        // sized to that text so nothing has to be squeezed.
+        char dl_lab[64] = "";
+        const int DL_ICON_W = UIS_W(22);
+        for (int i = 0; i < n1; i++)
+            if (row1[i] == F3_DOWNLOAD)
+                dl_ui_item_label(dl_have ? &dl_st : NULL, can_download, &dl_cx,
+                                 dl_lab, sizeof dl_lab);
         {
             int x = TX;
             for (int i = 0; i < n1; i++) {
-                sw_[i] = UIS_W(row1[i] == F3_VERSION ? 172 : 216);   // Quality and Download
+                if (row1[i] == F3_DOWNLOAD) {
+                    int w = DL_ICON_W + ttf_text_width(dl_lab, UIS_TF(13.0f), true) + UIS_W(44);
+                    const int wmax = UIS_W(300);
+                    sw_[i] = w < UIS_W(190) ? UIS_W(190) : (w > wmax ? wmax : w);
+                } else {
+                    sw_[i] = UIS_W(row1[i] == F3_VERSION ? 172 : 216);
+                }
                 sx_[i] = x;
                 x += sw_[i] + UIS_W(12);
                 wave_draw_rrect_outline_gpu(sx_[i], SY, sw_[i], SH, AR, 1,
@@ -966,18 +982,25 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         // Selector labels.
         for (int i = 0; i < n1; i++) {
             const int y = SY + (SH - (int)UIS_TF(12.0f)) / 2 - UIS_H(1);
-            const char *name = row1[i] == F3_VERSION ? TR("Version")
-                             : row1[i] == F3_DOWNLOAD ? TR("Offline") : TR("Quality");
+            if (row1[i] == F3_DOWNLOAD) {
+                const bool foc = (frow == 1 && fcol == i);
+                const float dpx = UIS_TF(13.0f);
+                const int tw = ttf_text_width(dl_lab, dpx, true);
+                const int gx = sx_[i] + (sw_[i] - (DL_ICON_W + tw)) / 2;
+                const u32 col = foc ? XMB_WHITE : XMB_TEXT;
+                // Down arrow: stem, stepped head, tray line.
+                const int acx = gx + UIS_W(8), ay = SY + (SH - UIS_H(14)) / 2;
+                drawRect((u32)(acx - 1), (u32)ay, 2, (u32)UIS_H(8), col);
+                for (int k = 0; k < 4; k++)
+                    drawRect((u32)(acx - 4 + k), (u32)(ay + UIS_H(5) + k), (u32)(9 - 2 * k), 1, col);
+                drawRect((u32)(acx - 5), (u32)(ay + UIS_H(13)), 11, 1, col);
+                drawTTF((u32)(gx + DL_ICON_W), (u32)(SY + (SH - (int)dpx) / 2 - UIS_H(1)),
+                        dl_lab, dpx, col, true);
+                continue;
+            }
+            const char *name = row1[i] == F3_VERSION ? TR("Version") : TR("Quality");
             drawTTF((u32)(sx_[i] + UIS_W(15)), (u32)y, name, UIS_TF(12.0f), XMB_TEXT_DIM);
             char val[64];
-            if (row1[i] == F3_DOWNLOAD) {
-                // The live state: "Download", "Downloading 42%", "Play offline"...
-                dl_ui_item_label(dl_have ? &dl_st : NULL, can_download, &dl_cx, val, sizeof val);
-                const int vx = sx_[i] + UIS_W(66);
-                info_clip_text(vx, y, val, UIS_TF(12.5f), XMB_TEXT,
-                               sx_[i] + sw_[i] - vx - UIS_W(14), true);
-                continue;                       // not a drop-down: no arrow
-            }
             if (row1[i] == F3_VERSION) {
                 snprintf(val, sizeof val, "%s", versions.source[version_sel].summary[0]
                                                   ? versions.source[version_sel].summary
@@ -1115,6 +1138,7 @@ void xmb_show_item_info(const XMBItem *root) {
     while (running) {
         if (reload) {
             reload = false;
+            cur_item.resume_secs = player_resume_for(cur_item.id, cur_item.resume_secs);
             const XMBItem *cur = &cur_item;
             detail_media_free(&hero_poster);
             memset(&detail, 0, sizeof(detail));
@@ -1725,8 +1749,12 @@ void xmb_show_item_info(const XMBItem *root) {
 //   <  0  the user cancelled — don't play.
 // Items with no meaningful resume point (< 10 s watched) skip the prompt and
 // return 0 (start from the beginning) so a fresh item plays immediately.
-int xmb_resume_choice(const XMBItem *it) {
-    if (!it || it->resume_secs < 10) return 0;
+int xmb_resume_choice(const XMBItem *it_in) {
+    if (!it_in) return 0;
+    XMBItem fresh = *it_in;
+    fresh.resume_secs = player_resume_for(fresh.id, fresh.resume_secs);
+    const XMBItem *it = &fresh;
+    if (it->resume_secs < 10) return 0;
 
     // Format the saved position as H:MM:SS / M:SS.
     char tstr[16];

@@ -274,6 +274,10 @@ extern volatile bool  s_vid_b_present;
 
 void vid_gpu_init(u32 fw, u32 fh);
 void vid_gpu_free(void);
+// Picture size (L1 + D-pad in the player).  Steps of 1% per axis; returns whether it moved.
+bool vid_gpu_adjust_scale(int dx, int dy);
+void vid_gpu_reset_scale(void);
+void vid_gpu_get_scale(int *x_permille, int *y_permille);
 void vid_gpu_draw(bool render_blend, float blend_factor, u32 fw, u32 fh);
 // The loading spinner over the video (player.cpp), GPU phase; and the seek
 // reopen's stream_open wait callback that draws it (Circle cancels).

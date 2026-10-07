@@ -744,7 +744,7 @@ bool xmb_handle_input_browse(void) {
         } else {
             // The Continue Watching row still launches straight at the saved
             // position.
-            int resume = (int)it->resume_secs;
+            int resume = (int)player_resume_for(it->id, it->resume_secs);
             if (resume >= 0) {
                 if (strcmp(it->type, "Episode") == 0)
                     xmb_play_episode_with_next(it, (u32)resume);

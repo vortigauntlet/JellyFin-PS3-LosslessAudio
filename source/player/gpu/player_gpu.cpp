@@ -50,6 +50,29 @@ volatile bool s_vid_b_present   = false;
 // stretched onto the stale full-screen quad.
 static u32 s_vid_quad_fw = 0, s_vid_quad_fh = 0;
 
+// Picture size, per axis, in permille of the aspect-correct fit.  On a CRT with
+// overscan the fitted picture runs past the bezel; shrinking each axis on its
+// own lets the whole frame be seen (Movian's video-size adjust).  Kept for the
+// life of the app, so it survives from one title to the next.
+#define VID_SCALE_MIN 700
+#define VID_SCALE_MAX 1050
+static int s_vid_scale_x = 1000, s_vid_scale_y = 1000;
+static int s_vid_quad_sx = 1000, s_vid_quad_sy = 1000;
+
+bool vid_gpu_adjust_scale(int dx, int dy) {
+    const int nx = s_vid_scale_x + dx * 10, ny = s_vid_scale_y + dy * 10;
+    const int cx = nx < VID_SCALE_MIN ? VID_SCALE_MIN : nx > VID_SCALE_MAX ? VID_SCALE_MAX : nx;
+    const int cy = ny < VID_SCALE_MIN ? VID_SCALE_MIN : ny > VID_SCALE_MAX ? VID_SCALE_MAX : ny;
+    const bool changed = cx != s_vid_scale_x || cy != s_vid_scale_y;
+    s_vid_scale_x = cx; s_vid_scale_y = cy;
+    return changed;
+}
+void vid_gpu_reset_scale(void) { s_vid_scale_x = s_vid_scale_y = 1000; }
+void vid_gpu_get_scale(int *x_permille, int *y_permille) {
+    if (x_permille) *x_permille = s_vid_scale_x;
+    if (y_permille) *y_permille = s_vid_scale_y;
+}
+
 // -------------------------------------------------------
 // vid_gpu_build_quad — aspect-correct letterbox fit of a fw×fh frame
 // -------------------------------------------------------
@@ -75,6 +98,10 @@ static void vid_gpu_build_quad(u32 fw, u32 fh) {
                    ((u64)fh * display_par_num));
         if (sw > display_width) sw = display_width;
     }
+    sw = (u32)((u64)sw * (u32)s_vid_scale_x / 1000u);
+    sh = (u32)((u64)sh * (u32)s_vid_scale_y / 1000u);
+    if (sw > display_width)  sw = display_width;
+    if (sh > display_height) sh = display_height;
     u32 ox0v = (display_width  - sw) / 2;
     u32 oy0v = (display_height - sh) / 2;
     float cx0 = (float)ox0v / display_width  * 2.0f - 1.0f;
@@ -90,6 +117,8 @@ static void vid_gpu_build_quad(u32 fw, u32 fh) {
 
     s_vid_quad_fw = fw;
     s_vid_quad_fh = fh;
+    s_vid_quad_sx = s_vid_scale_x;
+    s_vid_quad_sy = s_vid_scale_y;
 
     char buf[96];
     snprintf(buf, sizeof(buf), "vid_gpu: quad %ux%u -> %ux%u+%u+%u",
@@ -183,7 +212,10 @@ void vid_gpu_draw(bool render_blend, float blend_factor, u32 fw, u32 fh) {
     // The decoder corrects the jbuf dimensions on the first decoded frame
     // (and that happens during pre-fill, before the first draw reads the
     // quad) — refit the letterbox instead of stretching into the old one.
-    if (fw != s_vid_quad_fw || fh != s_vid_quad_fh)
+    if (fw != s_vid_quad_fw || fh != s_vid_quad_fh ||
+        s_vid_scale_x != s_vid_quad_sx || s_vid_scale_y != s_vid_quad_sy) {
+        rsxSync();      // the quad is rewritten in place: let the last draw finish
         vid_gpu_build_quad(fw, fh);
+    }
     rsx_draw_frame(render_blend, blend_factor, fw, fh);
 }

@@ -14,6 +14,7 @@
 #include "audio_bitstream.h"   // passthrough: the receiver owns the volume
 #include "ui_visuals.h"   // g_spine_on: the redesigned HUD's buttons
 #include "statsovl.h"
+#include "player_internal.h"   // vid_gpu_adjust_scale
 
 HudState g_hud;
 
@@ -115,8 +116,52 @@ int hud_menu_choice(void) { return g_hud.menu_choice; }
 static bool s_skip_offered = false;
 void hud_set_skip_offered(bool offered) { s_skip_offered = offered; }
 
+// Square put the bar away on this press; keep it away until Square is released, or the
+// "any button wakes the bar" rule below brings it straight back while the button is
+// still down (the hide only ever worked for a very quick tap).
+static bool s_square_hid = false;
+
 HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
     g_hud.seek_delta = 0;
+    if (!btn_cur.square) s_square_hid = false;
+
+    // L1 + D-pad: picture size, each axis on its own (Left/Right = width,
+    // Up/Down = height); L1 + R1 resets.  For a CRT that overscans: shrink the
+    // picture until the whole frame is on screen.
+    if (btn_cur.l1 && !g_hud.menu_visible && !g_hud.vol_active) {
+        bool changed = false;
+        if (BTN_REPEAT(left))  changed |= vid_gpu_adjust_scale(-1, 0);
+        if (BTN_REPEAT(right)) changed |= vid_gpu_adjust_scale(+1, 0);
+        if (BTN_REPEAT(up))    changed |= vid_gpu_adjust_scale(0, +1);
+        if (BTN_REPEAT(down))  changed |= vid_gpu_adjust_scale(0, -1);
+        const bool reset = BTN_PRESSED(r1);
+        if (reset) { vid_gpu_reset_scale(); changed = true; }
+        if (changed) {
+            int sx = 1000, sy = 1000;
+            vid_gpu_get_scale(&sx, &sy);
+            char l2[64];
+            snprintf(l2, sizeof l2, "Width %d%%   Height %d%%   (L1+R1 resets)",
+                     sx / 10, sy / 10);
+            hud_set_banner("Picture size", l2, timing_get_us() + 1800000ULL);
+        }
+        if (changed || btn_cur.left || btn_cur.right || btn_cur.up || btn_cur.down)
+            return HUD_ACTION_NONE;
+    }
+
+    // Stick click shows or hides the playback stats overlay.
+    if (BTN_PRESSED(l3) || BTN_PRESSED(r3)) {
+#if ENABLE_PLAYER_STATS
+        statsovl_set_enabled(!statsovl_enabled());
+#endif
+        return HUD_ACTION_NONE;
+    }
+
+    // D-pad Left/Right with the bar hidden: back / ahead 10 s, without
+    // bringing the bar up.
+    if (!g_hud.visible && !g_hud.live && !btn_cur.l1) {
+        if (BTN_PRESSED(left))  { g_hud.seek_delta = -10; return HUD_ACTION_SEEK; }
+        if (BTN_PRESSED(right)) { g_hud.seek_delta = +10; return HUD_ACTION_SEEK; }
+    }
 
     // The skip badge only shows while the bar is hidden, and then X is its
     // button -- checked before anything else so the press does not also
@@ -166,8 +211,8 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
 
     // Any button activity wakes the HUD.
     bool was_hidden = !g_hud.visible;
-    if (btn_cur.cross || btn_cur.circle || btn_cur.square || btn_cur.triangle ||
-        btn_cur.l1 || btn_cur.r1 || btn_cur.l2 || btn_cur.r2 ||
+    if (btn_cur.cross || btn_cur.circle || (btn_cur.square && !s_square_hid) ||
+        btn_cur.triangle || btn_cur.l1 || btn_cur.r1 || btn_cur.l2 || btn_cur.r2 ||
         l2_pressed || r2_pressed ||
         btn_cur.up || btn_cur.down || btn_cur.left || btn_cur.right) {
         hud_show();
@@ -225,6 +270,7 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
     if (BTN_PRESSED(square) && !was_hidden) {
         g_hud.visible = false;
         g_hud.focus   = -1;
+        s_square_hid  = true;
         return HUD_ACTION_NONE;
     }
 

@@ -480,6 +480,30 @@ static char s_live_last_id[40] = "";
 const char *player_live_last_channel(void) { return s_live_last_id; }
 
 static u32 s_last_pos_secs = 0;
+
+static struct ResumeNote { char id[64]; u32 secs; } s_resume_notes[48];
+static int s_resume_note_n = 0;
+
+static void resume_note(const char *id, u32 secs) {
+    if (!id || !id[0]) return;
+    for (int i = 0; i < s_resume_note_n; i++)
+        if (strcmp(s_resume_notes[i].id, id) == 0) { s_resume_notes[i].secs = secs; return; }
+    const int n = (int)(sizeof s_resume_notes / sizeof s_resume_notes[0]);
+    int slot = s_resume_note_n < n ? s_resume_note_n++ : 0;
+    if (slot == 0 && s_resume_note_n == n) {        // full: drop the oldest
+        memmove(&s_resume_notes[0], &s_resume_notes[1], sizeof(ResumeNote) * (n - 1));
+        slot = n - 1;
+    }
+    snprintf(s_resume_notes[slot].id, sizeof s_resume_notes[slot].id, "%s", id);
+    s_resume_notes[slot].secs = secs;
+}
+
+u32 player_resume_for(const char *item_id, u32 fallback) {
+    if (item_id)
+        for (int i = 0; i < s_resume_note_n; i++)
+            if (strcmp(s_resume_notes[i].id, item_id) == 0) return s_resume_notes[i].secs;
+    return fallback;
+}
 u32 player_last_position_secs(void) { return s_last_pos_secs; }
 
 // "5  BBC One": the number when the channel has one.
@@ -1627,6 +1651,11 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // audio clock is torn down.
     u64 final_pos_ticks = live ? 0ULL : (ps.play_base_us + audio_get_clock_us()) * 10ULL;
     s_last_pos_secs = (u32)(final_pos_ticks / 10000000ULL);
+    if (!live) {
+        // Near the end counts as finished, like the server's own rule.
+        const bool done = ps.total_secs > 0 && s_last_pos_secs + 60 >= ps.total_secs;
+        resume_note(item->id, done || s_last_pos_secs < 10 ? 0 : s_last_pos_secs);
+    }
 
     // Signal all threads to stop, join in order: decode → audio → upload
     ps.playing = false;
