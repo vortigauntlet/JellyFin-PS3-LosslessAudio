@@ -390,6 +390,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
     while (running) {
         if (reload) {
             reload = false;
+            cur_item.resume_secs = player_resume_for(cur_item.id, cur_item.resume_secs);
             const XMBItem *it = &cur_item;
             memset(&detail, 0, sizeof detail);
             if (facts_wanted(it->type)) facts_request(it->id);   // lands while this loads
@@ -997,6 +998,7 @@ void xmb_show_item_info(const XMBItem *root) {
     while (running) {
         if (reload) {
             reload = false;
+            cur_item.resume_secs = player_resume_for(cur_item.id, cur_item.resume_secs);
             const XMBItem *cur = &cur_item;
             detail_media_free(&hero_poster);
             memset(&detail, 0, sizeof(detail));
@@ -1514,8 +1516,12 @@ void xmb_show_item_info(const XMBItem *root) {
 //   <  0  the user cancelled — don't play.
 // Items with no meaningful resume point (< 10 s watched) skip the prompt and
 // return 0 (start from the beginning) so a fresh item plays immediately.
-int xmb_resume_choice(const XMBItem *it) {
-    if (!it || it->resume_secs < 10) return 0;
+int xmb_resume_choice(const XMBItem *it_in) {
+    if (!it_in) return 0;
+    XMBItem fresh = *it_in;
+    fresh.resume_secs = player_resume_for(fresh.id, fresh.resume_secs);
+    const XMBItem *it = &fresh;
+    if (it->resume_secs < 10) return 0;
 
     // Format the saved position as H:MM:SS / M:SS.
     char tstr[16];

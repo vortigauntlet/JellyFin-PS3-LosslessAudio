@@ -359,6 +359,33 @@ static bool player_stream_wait(unsigned elapsed_ms)
 // libnet pool, and both requests timed out at 5 s (`http=-1`).  Now the socket
 // is closed first, the two requests run on a thread of their own, and the
 // Returning screen is up while they and the teardown run.
+// Where each title was left, this session.  The lists the UI keeps are snapshots
+// from when they were loaded, so a title re-opened after Circle showed no resume
+// point and played from the start.
+static struct ResumeNote { char id[64]; u32 secs; } s_resume_notes[48];
+static int s_resume_note_n = 0;
+
+static void resume_note(const char *id, u32 secs) {
+    if (!id || !id[0]) return;
+    for (int i = 0; i < s_resume_note_n; i++)
+        if (strcmp(s_resume_notes[i].id, id) == 0) { s_resume_notes[i].secs = secs; return; }
+    const int n = (int)(sizeof s_resume_notes / sizeof s_resume_notes[0]);
+    int slot = s_resume_note_n < n ? s_resume_note_n++ : 0;
+    if (slot == 0 && s_resume_note_n == n) {        // full: drop the oldest
+        memmove(&s_resume_notes[0], &s_resume_notes[1], sizeof(ResumeNote) * (n - 1));
+        slot = n - 1;
+    }
+    snprintf(s_resume_notes[slot].id, sizeof s_resume_notes[slot].id, "%s", id);
+    s_resume_notes[slot].secs = secs;
+}
+
+u32 player_resume_for(const char *item_id, u32 fallback) {
+    if (item_id)
+        for (int i = 0; i < s_resume_note_n; i++)
+            if (strcmp(s_resume_notes[i].id, item_id) == 0) return s_resume_notes[i].secs;
+    return fallback;
+}
+
 static struct { char item[64]; char sess[128]; u64 ticks; } s_exit_rep;
 static volatile bool    s_exit_rep_done = true;
 static bool             s_exit_rep_live = false;    // a thread still to join
@@ -1289,6 +1316,12 @@ void show_player(const JFItem *item, u32 resume_secs,
     // Final position for the server's resume bookmark — read before the
     // audio clock is torn down.
     u64 final_pos_ticks = (ps.play_base_us + audio_get_clock_us()) * 10ULL;
+    {
+        const u32 pos = (u32)(final_pos_ticks / 10000000ULL);
+        // Near the end counts as finished, like the server's own rule.
+        const bool done = ps.total_secs > 0 && pos + 60 >= ps.total_secs;
+        resume_note(item->id, done || pos < 10 ? 0 : pos);
+    }
 
     // Signal all threads to stop, join in order: decode → audio → upload
     ps.playing = false;

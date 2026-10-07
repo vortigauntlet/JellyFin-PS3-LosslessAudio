@@ -10,6 +10,12 @@
 void show_player(const JFItem *item, u32 resume_secs = 0,
                  const char *media_source_id = NULL);
 
+// Where this session last stopped watching `item_id`, if it did; otherwise `fallback` (the
+// saved position the item list was fetched with).  The lists are snapshots from before the
+// title was played, so without this a title re-opened after Circle shows no resume point
+// and starts from the beginning -- whether or not the server has caught up yet.
+u32 player_resume_for(const char *item_id, u32 fallback);
+
 // End-of-item auto-advance.  Arm before show_player() when the item has a
 // follower: during the last 90 s of playback the player shows a popup badge
 // reading `label` (with the instruction line `hint` drawn separately below

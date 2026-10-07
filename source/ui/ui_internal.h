@@ -5,6 +5,7 @@
 
 #include "ui.h"
 #include "ui_visuals.h"
+#include "player.h"   // player_resume_for
 
 // -------------------------------------------------------
 // JSON helpers (xmb/ui_json.cpp)
