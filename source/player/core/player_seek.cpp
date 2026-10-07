@@ -250,6 +250,7 @@ bool player_execute_seek(PlayerState *ps) {
 
     // 3) Re-request the stream at the new offset.
     netClose(ps->sock);
+    ps->sock = -1;     // a failed reopen must not leave a closed fd to be closed again
     // Kill the existing transcode first, otherwise Jellyfin keeps
     // serving the in-progress job (which started at offset 0) and
     // the seek appears to reset to 0:00 instead of honouring the

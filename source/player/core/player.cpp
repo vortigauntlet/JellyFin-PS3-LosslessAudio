@@ -1315,7 +1315,7 @@ void show_player(const JFItem *item, u32 resume_secs,
     // The stream first: nothing reads it any more, and while it is open the
     // server keeps filling its receive buffer -- the two requests below then
     // starve on the network pool (see exit_reports_start).
-    netClose(ps.sock);
+    if (ps.sock >= 0) netClose(ps.sock);
 
     // Back to the mode the session started in (24p output), before any UI --
     // the Returning screen below included -- draws again.

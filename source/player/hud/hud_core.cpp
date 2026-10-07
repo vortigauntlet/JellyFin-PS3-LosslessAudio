@@ -121,9 +121,13 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
         return HUD_ACTION_NONE;
     }
 
-    // Any button activity wakes the HUD.
+    // Any button activity wakes the HUD.  Square is held off after it has put
+    // the bar away, until it is released; otherwise the held button woke the
+    // bar again on the very next frame and the hide only worked for a flick.
+    static bool s_square_hid = false;
+    if (!btn_cur.square) s_square_hid = false;
     bool was_hidden = !g_hud.visible;
-    if (btn_cur.cross || btn_cur.circle || btn_cur.square || btn_cur.triangle ||
+    if (btn_cur.cross || btn_cur.circle || (btn_cur.square && !s_square_hid) || btn_cur.triangle ||
         btn_cur.l1 || btn_cur.r1 || btn_cur.l2 || btn_cur.r2 ||
         l2_pressed || r2_pressed ||
         btn_cur.up || btn_cur.down || btn_cur.left || btn_cur.right) {
@@ -179,6 +183,7 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
     if (BTN_PRESSED(square) && !was_hidden) {
         g_hud.visible = false;
         g_hud.focus   = -1;
+        s_square_hid  = true;
         return HUD_ACTION_NONE;
     }
 
