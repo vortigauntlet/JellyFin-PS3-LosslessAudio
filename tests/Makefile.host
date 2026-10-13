@@ -374,6 +374,18 @@ test_mohasi_fs: $(MOHASI_DEP)
 # exFAT stays read-only: exfat.c must not grow a write path back (no write syscall, no raw syscall
 # trampolines, no allocator).  NTFS writes, through jf_port.h's writeStorageRaw only.
 # (Comments are stripped first; the wording of a comment is not code.)
+# The version the update check compares (APP_VERSION) must be the one the package and the
+# changelog carry: 3.2.1 shipped saying 3.2 and told everyone on it that 3.2.1 was out.
+# a.b.c -> PARAM.SFO APP_VER 0a.bc, and the changelog's first heading is "## a.b.c".
+check-app-version:
+	@v=$$(sed -n 's/^#define APP_VERSION "\(.*\)"/\1/p' ../source/net/update_check.h); \
+	sfo=$$(grep -A1 'name="APP_VER"' ../sfo.xml | tail -1 | tr -d ' \t\r'); \
+	log=$$(grep -m1 '^## ' ../CHANGELOG.md | sed 's/^## //' | tr -d '\r'); \
+	want=$$(echo $$v | awk -F. '{ printf "%02d.%d%d", $$1, $$2, $$3 }'); \
+	if [ "$$sfo" != "$$want" ] || [ "$$log" != "$$v" ]; then \
+	    echo "version mismatch: APP_VERSION=$$v (APP_VER $$want) sfo.xml=$$sfo CHANGELOG=$$log"; exit 1; fi; \
+	echo "version: $$v everywhere (APP_VER $$sfo)"
+
 check-mohasi-readonly:
 	@bad=$$(sed -e 's@//.*@@' $(MOHASI)/exfat.c | grep -n -E '\b603\b|STORAGE_WRITE|writeSectors|writeStorageRaw|allocateClusters|scCall|sys_storage_write' \
 	        | sed "s@^@$(MOHASI)/exfat.c: @"; \
@@ -585,6 +597,7 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_line_break
 	./test_clock_fmt
 	python3 ../tools/i18n.py check
+	$(MAKE) -f Makefile.host check-app-version
 	$(MAKE) -f Makefile.host check-mohasi-readonly
 	./test_mohasi_fs
 	$(MAKE) -f Makefile.host test_mohasi_fs_be
@@ -604,7 +617,7 @@ clean:
 	      test_mohasi_fs test_mohasi_fs_be test_lfs_path \
 	      tones51.ac3 tones51.dts tones51.thd tones51.thd.ref
 
-.PHONY: all check clean check-mohasi-readonly
+.PHONY: all check clean check-mohasi-readonly check-app-version
 
 # 24p output decision record (source/video/display_mode.c).  Pure C, no PS3
 # headers, fixtures taken from a real videoGetDeviceInfo dump.

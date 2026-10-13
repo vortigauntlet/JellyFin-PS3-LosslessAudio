@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.2
+
+### Fixed
+- **"Update available" on the latest version.** 3.2 and 3.2.1 still reported
+  themselves as 3.2 to the update check, so 3.2.1 announced itself as an
+  update on every launch.
+
 ## 3.2.1
 
 ### Fixed
