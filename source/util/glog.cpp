@@ -1,35 +1,24 @@
-// Diagnostic GUI / thumbnail-cache log.  Synchronous fprintf+fflush guarded
-// by a spinlock — the call sites are low frequency (per-fetch events and a
-// once-per-second heartbeat), so a background ring/thread isn't worth it.
-// Everything is a no-op unless the user has logging enabled (plog_enabled()).
+// Diagnostic GUI / thumbnail-cache log.  Lines go through plog's ring (the
+// player log's own writer thread does the file I/O), prefixed "gui:".
+//
+// It used to fprintf+fflush to GUIlog.txt itself, under a spin lock, on the
+// CALLING thread -- and thumb_request() calls it from the render thread for
+// every poster it queues.  When posters do not arrive the slots churn and are
+// queued again and again, so the menu was doing HDD writes every frame (and
+// spinning behind the low-priority fetch thread whenever that one held the
+// lock mid-write).  Everything is a no-op unless logging is on (plog_enabled()).
 
 #include <stdio.h>
 #include <stdarg.h>
-#include <time.h>
 
 #include "glog.h"
 #include "plog.h"
 
-static volatile int  s_glock      = 0;
-static FILE         *s_gfile      = NULL;
-static bool          s_gopen_done = false;   // one open attempt per boot
-
 void glog(const char *msg) {
     if (!plog_enabled()) return;
-    while (!__sync_bool_compare_and_swap(&s_glock, 0, 1))
-        ;
-    if (!s_gopen_done) {
-        s_gfile      = fopen("/dev_hdd0/tmp/GUIlog.txt", "w");
-        s_gopen_done = true;
-    }
-    if (s_gfile) {
-        time_t t = time(NULL);
-        struct tm *tm = localtime(&t);
-        fprintf(s_gfile, "[%02d:%02d:%02d] %s\n",
-                tm->tm_hour, tm->tm_min, tm->tm_sec, msg);
-        fflush(s_gfile);
-    }
-    __sync_bool_compare_and_swap(&s_glock, 1, 0);
+    char buf[200];
+    snprintf(buf, sizeof(buf), "gui: %s", msg);
+    plog(buf);
 }
 
 void glogf(const char *fmt, ...) {

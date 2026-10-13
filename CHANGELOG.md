@@ -3,9 +3,21 @@
 ## 3.2.2
 
 ### Fixed
+- **Freeze on "Preparing" when starting a film.** Starting playback freed the
+  poster memory while a poster that was still downloading could be written into
+  it, right where the video decoder was being set up. On a slow connection, or
+  whenever posters were slow to arrive, that could lock up the whole console.
+  The poster loader now stands down cleanly before the player starts.
+- **Sluggish menus when posters are slow.** The menu wrote a debug line to the
+  hard drive for every poster it asked for, on the drawing thread, and the
+  poster lock could leave the menu waiting on the lowest-priority thread. Both
+  are gone: the log is written in the background and the locks hand priority
+  to whoever holds them.
 - **"Update available" on the latest version.** 3.2 and 3.2.1 still reported
   themselves as 3.2 to the update check, so 3.2.1 announced itself as an
   update on every launch.
+- The log now says why a poster failed to load (no connection, the server's
+  answer, or an image too large), not just that it did.
 
 ## 3.2.1
 

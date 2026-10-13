@@ -28,6 +28,7 @@
 
 #include <ppu-types.h>
 #include <sys/thread.h>
+#include <sys/mutex.h>
 
 #include "thumbnail_cache.h"
 #include "lfs.h"            // artwork of a download on a USB drive
@@ -40,7 +41,7 @@
 #include "timing.h"
 #include "ui_visuals.h"
 
-// ---- Diagnostics (GUIlog.txt, only when logging is enabled) ----------------
+// ---- Diagnostics ("gui:" lines in player_log.txt, when logging is on) ----------------
 // Per-second counters, summarised + reset by the heartbeat in thumb_cache_tick.
 // Racy across the fetch thread by design — approximate volumes are all we need.
 static u32 d_req = 0, d_claim_ok = 0, d_claim_fail = 0, d_size_drop = 0,
@@ -150,9 +151,20 @@ static int read_local_file(const char *path, uint8_t *buf, int cap) {
 static ThumbSlot        s_slots[THUMB_CACHE_SIZE];
 static u32              s_frame      = 0;   // advanced by thumb_cache_tick()
 static u32              s_fetch_hold = 0;   // fetches paused until this frame
-static volatile int     s_lock       = 0;
+static volatile int     s_lock       = 0;      // fallback spin lock, until s_mtx exists
+static sys_mutex_t      s_mtx;
+static bool             s_mtx_ok     = false;
 static sys_ppu_thread_t s_thread     = 0;
-static volatile bool    s_running    = false;
+static bool             s_thread_up  = false;  // the fetch thread lives for the whole session
+// Fetches run only while the cache is active.  Playback deactivates it and frees
+// the slot pixels, so a fetch that was in flight must not touch them afterwards:
+// s_gen changes on every shutdown (a fetch begun before it is discarded), and
+// s_busy covers the one stretch where the fetch thread writes slot pixels --
+// shutdown waits that out before it frees anything.  (The thread is detached,
+// so a join cannot do this: sysThreadJoin on it returns at once.)
+static volatile bool    s_active     = false;
+static volatile u32     s_gen        = 0;
+static volatile int     s_busy       = 0;
 static size_t           s_max_px     = 0;            // pixel capacity per slot
 static size_t           s_vram_bytes = 0;            // padded capacity of a VRAM mirror
 
@@ -161,8 +173,33 @@ static size_t           s_vram_bytes = 0;            // padded capacity of a VRA
 #define VRAM_PITCH(w) ((((u32)(w) * 4u) + 63u) & ~63u)
 static uint8_t          s_fetch_buf[FETCH_BUF_SIZE];
 
-static void lock_acquire(void) { while (!__sync_bool_compare_and_swap(&s_lock, 0, 1)) ; }
-static void lock_release(void) { __sync_bool_compare_and_swap(&s_lock, 1, 0); }
+// A kernel mutex with priority inheritance, not a spin lock: the render thread
+// takes this many times a frame, the fetch thread runs at the lowest priority,
+// and lv2 schedules strictly by priority -- a spinning render thread could keep
+// a preempted fetch thread (holding the lock) off the CPU for as long as anything
+// else of higher priority was runnable.
+static void lock_acquire(void) {
+    if (s_mtx_ok) { sysMutexLock(s_mtx, 0); return; }
+    while (!__sync_bool_compare_and_swap(&s_lock, 0, 1)) sysThreadYield();
+}
+static void lock_release(void) {
+    if (s_mtx_ok) { sysMutexUnlock(s_mtx); return; }
+    __sync_bool_compare_and_swap(&s_lock, 1, 0);
+}
+static void lock_create(void) {
+    if (s_mtx_ok) return;
+    sys_mutex_attr_t attr;
+    sysMutexAttrInitialize(attr);              // lv2 rejects a zeroed attr
+    attr.attr_protocol  = SYS_MUTEX_PROTOCOL_PRIO_INHERIT;
+    attr.attr_recursive = SYS_MUTEX_ATTR_NOT_RECURSIVE;
+    s_mtx_ok = sysMutexCreate(&s_mtx, &attr) == 0;
+    if (!s_mtx_ok) {
+        attr.attr_protocol = SYS_MUTEX_PROTOCOL_PRIO;
+        s_mtx_ok = sysMutexCreate(&s_mtx, &attr) == 0;
+        plog(s_mtx_ok ? "thumb: mutex without priority inheritance"
+                      : "thumb: mutex create FAILED (spin lock kept)");
+    }
+}
 
 // Failed fetches back off for 10 s — without this the UI re-queues a
 // failing thumb every single frame, hammering the server and the log.
@@ -240,7 +277,8 @@ static void fetch_thread_fn(void *arg) {
     (void)arg;
     char item_id[64];
 
-    while (s_running) {
+    for (;;) {
+        if (!s_active) { usleep(20000); continue; }   // playback: idle, touch nothing
         // Serve the most-recently-touched QUEUED slot: that is what is on
         // screen right now.  Anything queued long ago was scrolled away and
         // will age out (thumb_cache_tick) without wasting a fetch on it.
@@ -288,6 +326,8 @@ static void fetch_thread_fn(void *arg) {
         bool got = (si >= 0);
         int tw = 0, th = 0;
         u8  img = THUMB_IMG_PRIMARY;
+        const u32 gen = s_gen;
+        if (!s_active) got = false;               // deactivated since the check above
         if (got) {
             strncpy(item_id, s_slots[si].item_id, 63);
             item_id[63] = '\0';
@@ -330,9 +370,12 @@ static void fetch_thread_fn(void *arg) {
             const u32 us = (u32)(timing_get_us() - t_net0);
             d_net_us += us; d_net_n++; if (us > d_net_max) d_net_max = us;
         }
+        // The cache was shut down (playback) while this was on the network.
+        if (!s_active || s_gen != gen) continue;
         if (bytes <= 0) {
             char msg[128];
-            snprintf(msg, sizeof(msg), "thumb: fetch failed %s (%d)", item_id, bytes);
+            snprintf(msg, sizeof(msg), "thumb: fetch failed %s (%d) after %u ms", item_id, bytes,
+                     (unsigned)((timing_get_us() - t_net0) / 1000));
             plog(msg);
             d_fetch_fail++;
             glogf("fetch FAIL %s bytes=%d url=%.120s", item_id, bytes, url);
@@ -390,11 +433,13 @@ static void fetch_thread_fn(void *arg) {
         // Slot may have been stolen for a different item while we fetched —
         // drop the result instead of scribbling stale art into it.
         lock_acquire();
-        bool still_ours = (strncmp(s_slots[si].item_id, item_id, 64) == 0 &&
+        bool still_ours = (s_active && s_gen == gen && s_slots[si].bmp.pixels &&
+                           strncmp(s_slots[si].item_id, item_id, 64) == 0 &&
                            s_slots[si].img == img &&
                            (refill ? (s_slots[si].state == SLOT_READY &&
                                       !s_slots[si].px_valid)
                                    : s_slots[si].state == SLOT_QUEUED));
+        if (still_ours) s_busy = 1;               // the pixels stay allocated until s_busy clears
         lock_release();
         if (!still_ours) {
             stbi_image_free(px);
@@ -455,12 +500,15 @@ static void fetch_thread_fn(void *arg) {
         stbi_image_free(px);
         img_arena_end();
 
+        // Stamped outside the lock (a whole bitmap is milliseconds); s_busy
+        // still holds the pixels.
+        const u32 px_sum = img_stamp(bmp->pixels, bmp->width, bmp->width, bmp->height);
         lock_acquire();
         bool published = (strncmp(s_slots[si].item_id, item_id, 64) == 0 &&
                           s_slots[si].img == img);
         if (published) {
             s_slots[si].state    = SLOT_READY;
-            s_slots[si].px_sum   = img_stamp(bmp->pixels, bmp->width, bmp->width, bmp->height);
+            s_slots[si].px_sum   = px_sum;
             s_slots[si].px_valid = true;
             // The decode just rewrote bmp; the mirror is stale until
             // thumb_gpu_texture() copies it on the render thread.  Uploading
@@ -470,6 +518,7 @@ static void fetch_thread_fn(void *arg) {
             // already holds this image (it is what brought the slot back).
             if (!refill) s_slots[si].vram_valid = false;
         }
+        s_busy = 0;
         lock_release();
 
         d_fetch_ok++;
@@ -479,11 +528,10 @@ static void fetch_thread_fn(void *arg) {
         glogf("fetch READY %s src=%dx%d slot=%d%s", item_id, w, h, si,
               published ? "" : " (but slot reused, dropped)");
     }
-
-    sysThreadExit(0);
 }
 
 void thumb_cache_init(void) {
+    lock_create();
     // Carry the pixel pointer through the reset: at boot it is NULL and gets
     // allocated below, and a plain memset here would drop (and leak) any
     // buffer that survived.  thumb_cache_shutdown frees them on the way into
@@ -630,8 +678,17 @@ void thumb_cache_init(void) {
                  vram_failed, THUMB_CACHE_SIZE);
         plog(buf);
     }
-    s_running = true;
-    int trc = sysThreadCreate(&s_thread, fetch_thread_fn, NULL, 1500, 65536, 0, "thumb_fetch");
+    lock_acquire();
+    s_active = true;
+    lock_release();
+    // One fetch thread for the session.  A second one (this used to start a new
+    // thread on every return from the player, while the old one could still be
+    // waiting on the network) would share s_fetch_buf and the decode arena.
+    int trc = 0;
+    if (!s_thread_up) {
+        trc = sysThreadCreate(&s_thread, fetch_thread_fn, NULL, 1500, 65536, 0, "thumb_fetch");
+        s_thread_up = (trc == 0);
+    }
     d_fetch_gated = false;
     // slotsFailed>0 or a low freeKB means the cache is over-provisioned for
     // this console's budget — trim THUMB_CACHE_SIZE rather than hope.
@@ -646,11 +703,18 @@ void thumb_cache_init(void) {
 void thumb_cache_shutdown(void) {
     glogf("SHUTDOWN (frame=%u hold=%u freeKB=%u)", s_frame, s_fetch_hold,
           meminfo_avail_kb());
-    s_running = false;
-    if (s_thread) {
-        u64 tret;
-        sysThreadJoin(s_thread, &tret);
-        s_thread = 0;
+    lock_acquire();
+    s_active = false;
+    s_gen++;
+    lock_release();
+    // A fetch may be writing slot pixels right now (it checked in before the
+    // flag went down).  That stretch is a scale and a stamp: milliseconds.
+    for (int i = 0; s_busy && i < 3000; i++) usleep(1000);
+    if (s_busy) {
+        // Freeing under a writer is the corruption this exists to stop.  Keep
+        // the buffers (the player may then be short of memory, and says so).
+        plog("thumb: fetch thread still writing after 3 s -- slot buffers kept");
+        return;
     }
     // Hand the pixel buffers back — this runs on the way INTO the player
     // (player.cpp), and vdecOpen needs the room.  The cache and a playing
@@ -887,7 +951,7 @@ void thumb_cache_tick(void) {
         else                                      n_ready++;
     }
     u32 frame = s_frame, hold = s_fetch_hold;
-    bool run = s_running;
+    bool run = s_active;
     lock_release();
 
     // Once-per-second heartbeat: the whole cache state on one line, plus the

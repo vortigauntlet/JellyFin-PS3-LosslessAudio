@@ -495,10 +495,15 @@ int http_init(void) {
     }
     sys_mutex_attr_t attr;
     sysMutexAttrInitialize(attr);   // a zeroed attr is rejected by lv2
-    attr.attr_protocol  = SYS_MUTEX_PROTOCOL_FIFO;
+    attr.attr_protocol  = SYS_MUTEX_PROTOCOL_PRIO_INHERIT;   // the lowest-priority taker is the poster thread
     attr.attr_recursive = SYS_MUTEX_ATTR_NOT_RECURSIVE;
     s_http_mtx_ok = (sysMutexCreate(&s_http_mtx, &attr) == 0);
-    if (!s_http_mtx_ok) plog("net: http mutex create FAILED");
+    if (!s_http_mtx_ok) {                 // never go without the lock over the protocol
+        attr.attr_protocol = SYS_MUTEX_PROTOCOL_PRIO;
+        s_http_mtx_ok = (sysMutexCreate(&s_http_mtx, &attr) == 0);
+        plog(s_http_mtx_ok ? "net: http mutex without priority inheritance"
+                           : "net: http mutex create FAILED");
+    }
     https_rt_init();
     return HTTP_SUCCESS;
 }
@@ -688,7 +693,12 @@ int http_fetch_binary(const char *url, const char *token,
     url_parse(url, host, sizeof(host), &port, path, sizeof(path));
 
     int sock = http_connect_locked(host, port);
-    if (sock < 0) return -1;
+    if (sock < 0) {
+        char b[160];
+        snprintf(b, sizeof b, "http: image connect failed %.60s:%d", host, port);
+        plog(b);
+        return -1;
+    }
 
     char req[2048];
     int  rlen = build_headers(req, sizeof(req), "GET", path, host, port,
@@ -702,11 +712,20 @@ int http_fetch_binary(const char *url, const char *token,
     // hunch: those failures were all reason=outofmem on 12-25KB images, i.e.
     // heap exhaustion — see img_arena.h.  Keeping this anyway: it's correct.)
     int body_off, body_len;
+    RespDiag dg; memset(&dg, 0, sizeof(dg));
     int status = read_response(sock, (char*)out, out_size,
-                               &body_off, &body_len, NULL);
+                               &body_off, &body_len, &dg);
     netClose(sock);
 
-    if (status != 200 || body_len <= 0) return -1;
+    // A short buffer would hand stb a truncated image; fail, and say why.
+    if (status != 200 || body_len <= 0 || dg.cap_hit) {
+        char b[200];
+        snprintf(b, sizeof b, "http: image %s status=%d body=%d read=%d clen=%ld | %.100s",
+                 dg.cap_hit ? "LARGER THAN BUFFER" : "failed", status, body_len, dg.total,
+                 dg.content_len, path);
+        plog(b);
+        return -1;
+    }
     memmove(out, out + body_off, body_len);
     return body_len;
 }
