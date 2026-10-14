@@ -583,11 +583,14 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(8)),
                          items[idx].name, UIS_TF(20), XMB_TEXT_DIM, gg->card_w,
                          false, UI_FACE_ROBOCOND);
-        // Music cards carry an artist credit under the title.
+        // Music cards carry an artist credit under the title -- the XMB's
+        // proportions for a secondary line: about 70% of the title, regular
+        // weight, muted, in Satoshi Regular (the UI's face for secondary
+        // facts) so it reads as a different line from the condensed bold title.
         if (items[idx].artist[0])
-            draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(28)),
-                             items[idx].artist, UIS_TF(13), XMB_TEXT_FAINT,
-                             gg->card_w);
+            draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(33)),
+                             items[idx].artist, UIS_TF(14), XMB_TEXT_FAINT,
+                             gg->card_w, false, UI_FACE_TAB_REG);
     }
 
     if (sel - scroll >= i0 && sel - scroll < i1 && sel >= 0 && sel < count) {
@@ -599,9 +602,9 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         draw_ttf_clipped((u32)cx, (u32)ty, it->name, UIS_TF(21),
                          XMB_WHITE, gg->card_w, false, UI_FACE_ROBOCOND);
         if (it->artist[0]) {
-            draw_ttf_clipped((u32)cx, (u32)(ty + UIS_H(27)), it->artist, UIS_TF(15),
-                             XMB_TEXT_DIM, gg->card_w);
-            ty += 22;   // meta line shifts down to make room
+            draw_ttf_clipped((u32)cx, (u32)(ty + UIS_H(28)), it->artist, UIS_TF(15),
+                             XMB_TEXT_DIM, gg->card_w, false, UI_FACE_TAB_REG);
+            ty += UIS_H(21);   // meta line shifts down to make room (was raw 22 px)
         }
         char meta[96] = "";
         if (it->year_str[0])     snprintf(meta, sizeof(meta), "%s", it->year_str);
