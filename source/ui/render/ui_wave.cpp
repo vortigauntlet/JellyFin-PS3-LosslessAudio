@@ -505,19 +505,20 @@ static inline void wave_bg_refresh(void) {
 }
 
 // The background's vertical shape (bg_profile), as fractions of the screen
-// height.  A drop to black just under the tab row (hold at the divider, black
-// BG_DROP_SPAN below) was tried on 2026-10-14 and judged too distinct on the
-// TV; the even full-height ramp is the look, now without its banding.
+// height.  2026-10-14: a drop to black just under the tab row (black 0.26 of
+// the height below the divider) was too distinct on the TV, the plain linear
+// ramp too flat; the look is a gentle S-curve -- it starts easing at 0.6 of the
+// way to the tab divider and reaches the bottom colour 0.75 of the height on.
 // hold == end means the plain linear ramp.
-#define BG_SHAPED 0
+#define BG_SHAPED 1
 static inline void wave_bg_shape(float *v_hold, float *v_end) {
 #if BG_SHAPED
     const float H = display_height ? (float)display_height : 720.0f;
-    float h = (float)(XMB_OY + UIS_H(150)) / H;
+    float h = 0.6f * (float)(XMB_OY + UIS_H(150)) / H;
     if (h < 0.0f) h = 0.0f;
-    if (h > 0.6f) h = 0.6f;
+    if (h > 0.25f) h = 0.25f;
     *v_hold = h;
-    *v_end  = h + BG_DROP_SPAN;
+    *v_end  = h + 0.75f > 1.0f ? 1.0f : h + 0.75f;
 #else
     *v_hold = 0.0f;
     *v_end  = 0.0f;
