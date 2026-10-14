@@ -94,3 +94,4 @@ tests/em_le.txt
 tests/em_be.txt
 tests/em_le.bin
 tests/em_be.bin
+tests/text_shadow_*.ppm

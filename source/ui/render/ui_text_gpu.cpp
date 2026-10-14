@@ -13,6 +13,7 @@
 #include "ui_text_gpu.h"
 #include "plog.h"
 #include "jf_paths.h"
+#include "text_shadow.h"
 
 extern void crash_log(const char *msg);
 
@@ -317,6 +318,10 @@ static bool atlas_upload(const u32 *src, int w, int h, u32 *out_off, u32 *out_pi
     return true;
 }
 
+// Light text gets a soft dark shadow baked in when it is rasterized, so titles
+// stay readable over the XMB wave -- see text_shadow.h.
+static u8 s_shadow_cov[RUN_MAX_W * RUN_MAX_H];
+
 // Face id for icon entries.  Out of band with the real faces (0..4) so the
 // existing hash and the memcmp on `key` separate icons from text with no
 // change to either.
@@ -352,6 +357,9 @@ static const RunSlot *run_get(const char *text, int len, float px, int face,
             if (!ttf_run_box(text, px, face, &box)) return NULL;
         }
         if (box.w <= 0 || box.h <= 0)            return NULL;
+        const bool shadow = icon_cp < 0 && text_shadow_wanted(colour);
+        const int  sh_px  = text_shadow_px(display_height);
+        if (shadow) { box.w += sh_px; box.h += sh_px; }
         if (box.w > RUN_MAX_W || box.h > RUN_MAX_H) return NULL;
 
         // A dense table probes badly.  begin() keeps it at most half full;
@@ -363,6 +371,7 @@ static const RunSlot *run_get(const char *text, int len, float px, int face,
 
         if (icon_cp >= 0) ttf_icon_raster(icon_cp, px, colour, s_stage, &box);
         else              ttf_run_raster(text, px, face, colour, s_stage, &box);
+        if (shadow) text_shadow_bake(s_stage, box.w, box.h, sh_px, s_shadow_cov);
 
         u32 off, pitch;
         if (!atlas_upload(s_stage, box.w, box.h, &off, &pitch)) return NULL;

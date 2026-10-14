@@ -363,6 +363,17 @@ static void player_draw_skip_badge_gpu(const char *label) {
 // user, 2026-10-14).  While it is gone X does what it does without it; leaving
 // and re-entering a segment (a seek back) shows it again.
 #define SKIP_BADGE_US 5000000ULL
+// The NEXT badge the same way: 5 s from when it first comes up, and again for
+// the last 5 s of an auto-advance countdown so the jump is never a surprise.
+// While it is hidden SELECT is the picture-size key again.
+static u64  s_next_since_us = 0;
+static bool s_next_was      = false;
+static bool next_badge_update(bool wanted, int auto_secs) {
+    if (!wanted) { s_next_was = false; return false; }
+    const u64 now = timing_get_us();
+    if (!s_next_was) { s_next_was = true; s_next_since_us = now; }
+    return now - s_next_since_us < SKIP_BADGE_US || (auto_secs >= 0 && auto_secs <= 5);
+}
 static double s_skip_seg_start = -1.0;
 static u64    s_skip_since_us  = 0;
 static bool   s_skip_badge_on  = false;
@@ -1455,6 +1466,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
                 in_auto_window = true;
             }
         }
+        next_popup = next_badge_update(next_popup, auto_secs);
         if (next_popup && BTN_PRESSED(select)) {
             plog("playing=0 reason=next_item");
             s_next_requested = true;

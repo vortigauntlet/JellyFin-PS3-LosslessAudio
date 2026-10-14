@@ -56,7 +56,7 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sourc
      test_subtitles_pgs test_trickplay_info test_media_segments \
      test_dts_map test_dts_decode test_dts_stream test_dts_exss test_track_codec \
      test_truehd_map test_truehd_decode \
-     test_dts_hd test_dts_xll_dump test_text_runs test_utf8 test_theme test_layout test_circle_blit \
+     test_dts_hd test_dts_xll_dump test_text_runs test_text_shadow test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
      test_wave_audio test_wave_motion test_wave_layers \
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
@@ -533,6 +533,7 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_trickplay_info
 	./test_media_segments
 	./test_text_runs
+	./test_text_shadow
 	./test_utf8
 	./test_circle_blit
 	./test_theme
@@ -608,7 +609,7 @@ clean:
 	      test_subtitles_pgs test_trickplay_info \
 	      test_dts_map test_dts_decode test_dts_stream test_dts_exss test_track_codec \
 	      test_truehd_map test_truehd_decode test_dts_hd test_dts_xll_dump \
-	      test_text_runs test_utf8 test_theme test_layout test_circle_blit \
+	      test_text_runs test_text_shadow test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
 	      test_wave_audio test_wave_motion test_wave_layers \
 	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq test_wave_motes test_display_mode \
@@ -638,6 +639,9 @@ TEXT_INC = -Ihoststub -I../source/ui -I../source/ui/render -I../source/ui/fonts 
            -I../source/gfx -I../source/util -I../source
 test_text_runs: test_text_runs.cpp ../source/ui/render/ui_text.cpp
 	$(CXX) $(CXXFLAGS) $(TEXT_INC) -o $@ test_text_runs.cpp -lm
+
+test_text_shadow: test_text_shadow.cpp ../source/ui/render/ui_text.cpp ../source/ui/render/text_shadow.h
+	$(CXX) $(CXXFLAGS) $(TEXT_INC) -o $@ test_text_shadow.cpp -lm
 
 # Runtime theming (Phase 1 of the XMB revamp).  Compiles the REAL theme.cpp --
 # hoststub/sys/file.h maps the three LV2 directory syscalls theme_scan() uses
