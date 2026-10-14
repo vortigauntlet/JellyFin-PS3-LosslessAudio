@@ -42,6 +42,7 @@
 #include "jellyfin_api.h"
 #include "rsxutil.h"
 #include "ui_wave.h"          // wave_draw_rrect_gpu: the loading spinner
+#include "ui_text_gpu.h"      // the NEXT / Skip prompts' text
 #include "thumbnail_cache.h"
 #include "display_24p.h"   // physical 1080p24 output
 #include "overscan.h"      // the 24p prompt stays inside Screen Size's safe area
@@ -243,7 +244,7 @@ bool player_take_next_request(void) {
 // HUD: these were fixed pixels 48 px from the edge, which a TV that crops its
 // edges cut through (2026-10-14).  The hint line is the wider of the two, so
 // the right edge is set by whichever is wider.
-static void player_draw_next_popup(int auto_secs) {
+static void player_draw_next_popup_cpu(int auto_secs) {
     const float label_px = UIS_TF(26.0f);
     const float hint_px  = UIS_TF(16.0f);
     const int   pad_x = UIS_W(26), pad_y = UIS_H(14);
@@ -275,7 +276,7 @@ static void player_draw_next_popup(int auto_secs) {
 
 // "Skip Intro" badge, bottom right, above where the control bar sits: the X
 // glyph and the label in the same panel style as the NEXT badge.
-static void player_draw_skip_badge(const char *label) {
+static void player_draw_skip_badge_cpu(const char *label) {
     const float label_px = UIS_TF(26.0f);
     const int   pad_x = UIS_W(22), pad_y = UIS_H(14), gap = UIS_W(14);
     const int   icon_h = (int)label_px;
@@ -291,6 +292,89 @@ static void player_draw_skip_badge(const char *label) {
     drawRect((u32)bx, (u32)by, 3, (u32)bh, XMB_ACCENT);
     draw_ps_button_vcentered((u32)(bx + pad_x), by + bh / 2, 'X', icon_h, 255);
     drawTTF((u32)(bx + pad_x + iw + gap), (u32)(by + pad_y), label, label_px, XMB_TEXT, true);
+}
+
+// The same two prompts on the GPU (2026-10-14): a translucent rounded panel
+// over the video, text through the run cache.  The CPU versions above draw
+// opaque rects and per-glyph blits into the framebuffer behind an rsxSync()
+// on every frame they show -- a CPU/GPU stall per frame, and blending glyphs
+// reads video memory back.  These are queued in the frame's GPU phase like the
+// spinner, so there is no fence and no read-back.  The CPU versions remain for
+// a console with the GPU text path turned off (jellyfin_gputext.txt = 0).
+#define PROMPT_FILL_A 150     /* the panel: ~60% */
+#define PROMPT_LINE_A  80     /* its accent edge */
+
+static bool prompts_on_gpu(void) { return ui_text_gpu_ready() && wave_gpu_blend_ready(); }
+
+static void player_draw_next_popup_gpu(int auto_secs) {
+    const float label_px = UIS_TF(22.0f);
+    const float hint_px  = UIS_TF(15.0f);
+    const int   pad_x = UIS_W(24), pad_y = UIS_H(14), gap = UIS_H(8);
+    const int   right = (int)display_width - XMB_OX - UIS_W(40);
+
+    char hint[96];
+    if (auto_secs >= 0)
+        snprintf(hint, sizeof(hint), TR("%s \xC2\xB7 starting in %ds"),
+                 s_next_hint, auto_secs);
+    else
+        snprintf(hint, sizeof(hint), "%s", s_next_hint);
+    const int tw = ttf_text_width(s_next_label, label_px, true);
+    const int hw = ttf_text_width(hint, hint_px);
+    const int bw = (tw > hw ? tw : hw) + 2 * pad_x;
+    const int bh = 2 * pad_y + (int)label_px + gap + (int)hint_px;
+    const int bx = right - bw, by = XMB_OY + UIS_H(36);
+
+    wave_draw_rrect_outline_gpu(bx, by, bw, bh, UIS_H(14), 1, XMB_ACCENT, PROMPT_LINE_A,
+                                XMB_PANEL, XMB_BG, PROMPT_FILL_A);
+    ui_text_gpu_begin();
+    drawTTF((u32)(bx + pad_x), (u32)(by + pad_y), s_next_label, label_px, XMB_WHITE, true);
+    drawTTF((u32)(bx + pad_x), (u32)(by + pad_y + (int)label_px + gap), hint, hint_px,
+            XMB_TEXT_DIM);
+    ui_text_gpu_flush();
+}
+
+static void player_draw_skip_badge_gpu(const char *label) {
+    const float label_px = UIS_TF(22.0f);
+    const int   pad_x = UIS_W(18), pad_y = UIS_H(12), gap = UIS_W(12);
+    const int   bh = (int)label_px + 2 * pad_y;
+    const int   d  = bh - 2 * UIS_H(9);                 // the X button's disc
+    const int   tw = ttf_text_width(label, label_px, true);
+    const int   bw = pad_x + d + gap + tw + pad_x + UIS_W(6);
+    const int   bx = (int)display_width - XMB_OX - UIS_W(40) - bw;
+    const int   by = (int)display_height - XMB_OY - bh - UIS_H(110);
+
+    wave_draw_rrect_outline_gpu(bx, by, bw, bh, bh / 2, 1, XMB_ACCENT, PROMPT_LINE_A,
+                                XMB_PANEL, XMB_BG, PROMPT_FILL_A);
+    const int dx = bx + pad_x, dy = by + (bh - d) / 2;
+    wave_draw_rrect_gpu(dx, dy, d, d, d / 2, 0x00FFFFFF, 0x00FFFFFF, 235);
+    ui_text_gpu_begin();
+    {
+        const float xp = (float)d * 0.95f;              // a cross, centred in the disc
+        const char *x = "\xC3\x97";
+        const int xw = ttf_text_width(x, xp, true);
+        drawTTF((u32)(dx + (d - xw) / 2), (u32)(dy + (d - (int)xp) / 2 - UIS_H(1)), x, xp,
+                0x00151A38, true);
+    }
+    drawTTF((u32)(dx + d + gap), (u32)(by + pad_y), label, label_px, XMB_WHITE, true);
+    ui_text_gpu_flush();
+}
+
+// Skip Intro shows for SKIP_BADGE_US after its segment starts, then goes (the
+// user, 2026-10-14).  While it is gone X does what it does without it; leaving
+// and re-entering a segment (a seek back) shows it again.
+#define SKIP_BADGE_US 5000000ULL
+static double s_skip_seg_start = -1.0;
+static u64    s_skip_since_us  = 0;
+static bool   s_skip_badge_on  = false;
+
+static bool skip_badge_update(const MediaSegment *seg) {
+    if (!seg) { s_skip_seg_start = -1.0; return s_skip_badge_on = false; }
+    const u64 now = timing_get_us();
+    if (seg->start_secs != s_skip_seg_start) {
+        s_skip_seg_start = seg->start_secs;
+        s_skip_since_us  = now;
+    }
+    return s_skip_badge_on = (now - s_skip_since_us < SKIP_BADGE_US);
 }
 
 // The loading spinner (2026-09-27): ten dots round a ring, a bright head
@@ -1388,7 +1472,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         // action to perform.
         const double seg_pos = (double)(ps.play_base_us + audio_get_clock_us()) / 1e6;
         const MediaSegment *skip_seg = (ps.paused || live) ? NULL : segments_at(seg_pos);
-        hud_set_skip_offered(skip_seg != NULL);
+        hud_set_skip_offered(skip_badge_update(skip_seg));
         // L1 opens the picture-size mode, which then owns the buttons.
         HudAction act = picture_mode_input()
                       ? HUD_ACTION_NONE
@@ -1647,17 +1731,24 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         }
 
         if (next_popup && ps.frame_count > 0) {
-            // Fence the in-flight video draw before CPU framebuffer writes,
-            // same as the HUD overlay does.
-            rsxSync();
-            player_draw_next_popup(auto_secs);
+            if (prompts_on_gpu()) player_draw_next_popup_gpu(auto_secs);
+            else {
+                // Fence the in-flight video draw before CPU framebuffer writes,
+                // same as the HUD overlay does.
+                rsxSync();
+                player_draw_next_popup_cpu(auto_secs);
+            }
         }
-        if (ps.frame_count > 0 && !hud_is_visible() && !ps.paused) {
+        if (ps.frame_count > 0 && !hud_is_visible() && !ps.paused && s_skip_badge_on) {
             const MediaSegment *seg = segments_at(
                 (double)(ps.play_base_us + audio_get_clock_us()) / 1e6);
             if (seg) {
-                if (!next_popup) rsxSync();
-                player_draw_skip_badge(media_segment_skip_label(seg->type));
+                const char *lbl = media_segment_skip_label(seg->type);
+                if (prompts_on_gpu()) player_draw_skip_badge_gpu(lbl);
+                else {
+                    if (!next_popup) rsxSync();
+                    player_draw_skip_badge_cpu(lbl);
+                }
             }
         }
 
