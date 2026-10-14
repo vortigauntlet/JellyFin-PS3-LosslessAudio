@@ -6,6 +6,7 @@
 #include <rsx/gcm_sys.h>
 #include "rsxutil.h"
 #include "wave_shaders.h"
+#include "video_shaders.h"     /* the background texture: passthrough programs */
 #include "wave_field.h"
 #include "wave_gel.h"          /* JellyWave: pulls wave_cam.h + wave_light.h */
 #include "wave_snow.h"
@@ -132,6 +133,7 @@ struct jw_look {
     // the look pass (wave_look.h)
     jw_vec3        key;          // the key light, drifting (jw_key_drift)
     bg_quad        bg;           // the sky, for the haze
+    float          bg_hold, bg_end;   // and its shape (bg_profile)
     float          px_y;         // one pixel in clip y, for the fringe
     int            look_on;      // jellyfin_jwlook.txt
     jd_pose        drop;         // JellyDrop (wave_drop.h); morph 0 = JellyWave
@@ -502,6 +504,18 @@ static inline void wave_bg_refresh(void) {
     s_bg = month_bg_current(XMB_BG_TOP, XMB_BG_BOT, XMB_ACCENT);
 }
 
+// Where the background's drop to black starts and ends, as fractions of the
+// screen height (bg_profile): just under the tab row's divider (authored y 144
+// of 720), reaching the bottom colour BG_DROP_SPAN further down.
+static inline void wave_bg_shape(float *v_hold, float *v_end) {
+    const float H = display_height ? (float)display_height : 720.0f;
+    float h = (float)(XMB_OY + UIS_H(150)) / H;
+    if (h < 0.0f) h = 0.0f;
+    if (h > 0.6f) h = 0.6f;
+    *v_hold = h;
+    *v_end  = h + BG_DROP_SPAN;
+}
+
 // Sample the background gradient at screen-space (u in [0,1], y in [0,H]),
 // returning the three 8-bit channels.  Same maths as the gradient quad and
 // tools/ui_preview/preview.c.
@@ -511,7 +525,9 @@ static inline void wave_bg_refresh(void) {
 // applied where the gradient becomes a pixel (wave_draw_cpu, or the RSX).
 static inline void grad_sample(float u, float y, float H, u8 *r, u8 *g, u8 *b) {
     float v = (H > 1.0f) ? (y / (H - 1.0f)) : 0.0f;
-    bg_sample(&s_bg, u, v, r, g, b);
+    float vh, ve;
+    wave_bg_shape(&vh, &ve);
+    bg_sample(&s_bg, u, bg_profile(v, vh, ve), r, g, b);
 }
 
 // src over dst with 8-bit alpha: result = (src*a + dst*(255-a)) / 255.
@@ -1086,7 +1102,9 @@ static int jw_generate(WaveVert *dst, int n, const float (*sy)[WF_SAMPLES],
             for (int k = 0; k < JW_VERTS; k++) {
                 jw_vert *q = &scratch[k];
                 float br, bgc, bb;
-                bg_sample_f(&look->bg, (q->x + 1.0f) * 0.5f, (1.0f - q->y) * 0.5f, &br, &bgc, &bb);
+                bg_sample_f(&look->bg, (q->x + 1.0f) * 0.5f,
+                            bg_profile((1.0f - q->y) * 0.5f, look->bg_hold, look->bg_end),
+                            &br, &bgc, &bb);
                 jwl_haze(q, br, bgc, bb, JWL_HAZE[li]);
             }
         }
@@ -1493,6 +1511,7 @@ static void jw_look_extras(jw_look *k)
     last = now;
     k->key     = s_jw_look_on ? jw_key_drift(t) : jw_key_dir();
     k->bg      = s_bg;
+    wave_bg_shape(&k->bg_hold, &k->bg_end);
     k->px_y    = display_height ? 2.0f / (float)display_height : 2.0f / 1080.0f;
     k->look_on = s_jw_look_on ? 1 : 0;
 }
@@ -1786,8 +1805,10 @@ static void wave_draw_cpu(void) {
     // band across the screen).  For a fixed row the field is affine in u, so
     // two edge samples and a running sum give three adds a pixel, plus one
     // table lookup and compare per channel for the dither.
+    float vh, ve;
+    wave_bg_shape(&vh, &ve);
     for (int y = 0; y < H; y++) {
-        const float v = (H > 1) ? ((float)y / (float)(H - 1)) : 0.0f;
+        const float v = bg_profile((H > 1) ? ((float)y / (float)(H - 1)) : 0.0f, vh, ve);
         float lr, lg, lb, rr, rg, rb, dr, dg, db;
         u32 *row = fb + (u32)y * W;
 
@@ -1895,6 +1916,224 @@ static inline void wave_vtx(float x, float y, u8 r, u8 g, u8 b) {
     rsxDrawVertex4f (context, GCM_VERTEX_ATTRIB_POS,    pos);
 }
 
+// ---------------------------------------------------------------------------
+// The background as a dithered texture (2026-10-14).
+//
+// The gradient used to be a gouraud quad with rsxSetDitherEnable on.  The
+// RSX's dither does nothing on this 8-bit-per-channel surface, so a ramp from
+// the theme's top colour to near black over the whole screen came out as ~40
+// flat bands ~25 px tall -- invisible on most sets, plain on a Kuro.  So the
+// background is rasterized on the PPU with the ordered dither the emulator path
+// already used (bg_dither_channel), into one of two VRAM textures, BGT_ROWS rows
+// a frame so it never costs a hitch, and drawn as one textured quad.  It is
+// rebuilt only when its colours, shape or size change; the build goes into the
+// texture the GPU is NOT reading and the two swap when it is complete.  The
+// music screen's dim (s_bg_dim) is a black quad over it, so the dither stays.
+//
+// The bind and the quad are ui_text_gpu.cpp's (passthrough programs, linear
+// A8R8G8B8, NEAREST), proven on this console.  jellyfin_bgtex.txt = 0, or a
+// failed VRAM allocation, keeps the old gouraud quad.
+#define BGT_ROWS     45
+#define BGTEX_FILE   "jellyfin_bgtex.txt"
+static u32     *s_bgt_mem[2]   = { NULL, NULL };
+static u32      s_bgt_off[2];
+static u32      s_bgt_pitch    = 0;
+static int      s_bgt_w = 0, s_bgt_h = 0;
+static int      s_bgt_ready    = -1;      // texture the GPU draws, or -1
+static int      s_bgt_build    = -1;      // texture being written, or -1
+static int      s_bgt_row      = 0;
+static u32      s_bgt_key_ready = 0, s_bgt_key_build = 0;
+static bg_quad  s_bgt_bg;                 // what the build is writing
+static float    s_bgt_hold = 0.0f, s_bgt_end = 0.0f;
+static int      s_bgt_state    = 0;       // 0 untried, 1 on, -1 off
+static u32     *s_bgt_fp       = NULL;
+static u32      s_bgt_fp_off   = 0;
+static u32     *s_bgt_line     = NULL;    // one row, main memory
+
+static u32 bgt_key(const bg_quad *q, float hold, float end) {
+    u32 h = 2166136261u;
+    for (int i = 0; i < 4; i++) { h ^= q->c[i]; h *= 16777619u; }
+    h ^= (u32)display_width * 31u + (u32)display_height;   h *= 16777619u;
+    h ^= (u32)(hold * 10000.0f) * 7u + (u32)(end * 10000.0f); h *= 16777619u;
+    return h | 1u;                                           // never 0
+}
+
+static bool bgt_init(void) {
+    if (s_bgt_state) return s_bgt_state > 0;
+    s_bgt_state = -1;
+    FILE *f = fopen(jf_data_path(BGTEX_FILE), "r");
+    if (f) {
+        int v = 1;
+        const bool off = fscanf(f, "%d", &v) == 1 && v == 0;
+        fclose(f);
+        if (off) { plog("bgtex: off (jellyfin_bgtex.txt = 0) -- gouraud gradient"); return false; }
+    }
+    s_bgt_w = (int)display_width; s_bgt_h = (int)display_height;
+    s_bgt_pitch = ((u32)s_bgt_w * 4u + 63u) & ~63u;
+    s_bgt_line  = (u32 *)malloc((size_t)s_bgt_pitch);
+    for (int i = 0; i < 2; i++) {
+        s_bgt_mem[i] = (u32 *)rsxMemalign(128, s_bgt_pitch * (u32)s_bgt_h);
+        if (s_bgt_mem[i]) rsxAddressToOffset(s_bgt_mem[i], &s_bgt_off[i]);
+    }
+    rsxFragmentProgram *fpo = (rsxFragmentProgram *)video_fp_data;
+    void *ucode; u32 size;
+    rsxFragmentProgramGetUCode(fpo, &ucode, &size);
+    s_bgt_fp = (u32 *)rsxMemalign(256, size);
+    if (!s_bgt_line || !s_bgt_mem[0] || !s_bgt_mem[1] || !s_bgt_fp) {
+        for (int i = 0; i < 2; i++) if (s_bgt_mem[i]) { rsxFree(s_bgt_mem[i]); s_bgt_mem[i] = NULL; }
+        if (s_bgt_fp) { rsxFree(s_bgt_fp); s_bgt_fp = NULL; }
+        free(s_bgt_line); s_bgt_line = NULL;
+        plog("bgtex: VRAM unavailable -- gouraud gradient");
+        return false;
+    }
+    memcpy(s_bgt_fp, ucode, size);
+    rsxAddressToOffset(s_bgt_fp, &s_bgt_fp_off);
+    s_bgt_state = 1;
+    char b[96];
+    snprintf(b, sizeof b, "bgtex: on, 2 x %u KB, %d rows a frame", (unsigned)(s_bgt_pitch * s_bgt_h / 1024), BGT_ROWS);
+    plog(b);
+    return true;
+}
+
+// Advance the build by BGT_ROWS rows; start one when the background changed.
+static void bgt_tick(void) {
+    if (!bgt_init()) return;
+    if ((int)display_width != s_bgt_w || (int)display_height != s_bgt_h) return;   // mode changed under us
+    float hold, end;
+    wave_bg_shape(&hold, &end);
+    const u32 key = bgt_key(&s_bg, hold, end);
+    if (s_bgt_build < 0) {
+        if (s_bgt_ready >= 0 && key == s_bgt_key_ready) return;
+        s_bgt_build = s_bgt_ready == 0 ? 1 : 0;
+        s_bgt_row = 0;
+    }
+    if (key != s_bgt_key_build) {                 // (re)start on the newest look
+        s_bgt_key_build = key;
+        s_bgt_bg = s_bg; s_bgt_hold = hold; s_bgt_end = end;
+        s_bgt_row = 0;
+    }
+    const int W = s_bgt_w, H = s_bgt_h;
+    u8 *base = (u8 *)s_bgt_mem[s_bgt_build];
+    const int stop = s_bgt_row + BGT_ROWS < H ? s_bgt_row + BGT_ROWS : H;
+    for (int y = s_bgt_row; y < stop; y++) {
+        const float v = bg_profile(H > 1 ? (float)y / (float)(H - 1) : 0.0f, s_bgt_hold, s_bgt_end);
+        float lr, lg, lb, rr, rg, rb;
+        bg_sample_f(&s_bgt_bg, 0.0f, v, &lr, &lg, &lb);
+        bg_sample_f(&s_bgt_bg, 1.0f, v, &rr, &rg, &rb);
+        const float dr = W > 1 ? (rr - lr) / (float)(W - 1) : 0.0f;
+        const float dg = W > 1 ? (rg - lg) / (float)(W - 1) : 0.0f;
+        const float db = W > 1 ? (rb - lb) / (float)(W - 1) : 0.0f;
+        for (int x = 0; x < W; x++) {
+            s_bgt_line[x] = 0xFF000000u
+                          | ((u32)bg_dither_channel(lr, x, y) << 16)
+                          | ((u32)bg_dither_channel(lg, x, y) <<  8)
+                          |  (u32)bg_dither_channel(lb, x, y);
+            lr += dr; lg += dg; lb += db;
+        }
+        // Whole aligned rows: VRAM takes sequential word writes well and
+        // nothing narrower (docs: the vertex-struct wedge).
+        memcpy(base + (size_t)y * s_bgt_pitch, s_bgt_line, (size_t)W * 4u);
+    }
+    __asm__ __volatile__ ("sync" ::: "memory");
+    s_bgt_row = stop;
+    if (s_bgt_row >= H) {
+        s_bgt_ready     = s_bgt_build;
+        s_bgt_key_ready = s_bgt_key_build;
+        s_bgt_build     = -1;
+        s_bgt_key_build = 0;
+    }
+}
+
+// The finished texture as one full-screen quad, blending off.  False (nothing
+// drawn) until the first build is complete.  Leaves the passthrough programs
+// bound: the caller loads its own afterwards.
+static bool bgt_draw(void) {
+    if (s_bgt_state <= 0 || s_bgt_ready < 0) return false;
+    if ((int)display_width != s_bgt_w || (int)display_height != s_bgt_h) return false;
+
+    rsxVertexProgram   *vpo = (rsxVertexProgram *)  video_vp_data;
+    rsxFragmentProgram *fpo = (rsxFragmentProgram *)video_fp_data;
+    void *vp_ucode; u32 vp_size;
+    rsxVertexProgramGetUCode(vpo, &vp_ucode, &vp_size);
+    rsxLoadVertexProgram(context, vpo, vp_ucode);
+    rsxSetVertexAttribOutputMask(context, vpo->output_mask);
+    rsxLoadFragmentProgramLocation(context, fpo, s_bgt_fp_off, GCM_LOCATION_RSX);
+    rsxSetDepthTestEnable(context, GCM_FALSE);
+    rsxSetDepthWriteEnable(context, GCM_FALSE);
+    rsxSetBlendEnable(context, GCM_FALSE);
+
+    gcmTexture tex;
+    memset(&tex, 0, sizeof(tex));
+    tex.format    = GCM_TEXTURE_FORMAT_A8R8G8B8 | GCM_TEXTURE_FORMAT_LIN;
+    tex.mipmap    = 1;
+    tex.dimension = GCM_TEXTURE_DIMS_2D;
+    tex.cubemap   = GCM_FALSE;
+    tex.remap     =
+        ((u32)GCM_TEXTURE_REMAP_TYPE_REMAP << GCM_TEXTURE_REMAP_TYPE_A_SHIFT)
+      | ((u32)GCM_TEXTURE_REMAP_TYPE_REMAP << GCM_TEXTURE_REMAP_TYPE_R_SHIFT)
+      | ((u32)GCM_TEXTURE_REMAP_COLOR_R    << GCM_TEXTURE_REMAP_COLOR_R_SHIFT)
+      | ((u32)GCM_TEXTURE_REMAP_TYPE_REMAP << GCM_TEXTURE_REMAP_TYPE_G_SHIFT)
+      | ((u32)GCM_TEXTURE_REMAP_COLOR_G    << GCM_TEXTURE_REMAP_COLOR_G_SHIFT)
+      | ((u32)GCM_TEXTURE_REMAP_TYPE_REMAP << GCM_TEXTURE_REMAP_TYPE_B_SHIFT)
+      | ((u32)GCM_TEXTURE_REMAP_COLOR_B    << GCM_TEXTURE_REMAP_COLOR_B_SHIFT);
+    tex.width    = (u16)s_bgt_w;
+    tex.height   = (u16)s_bgt_h;
+    tex.depth    = 1;
+    tex.location = GCM_LOCATION_RSX;
+    tex.pitch    = s_bgt_pitch;
+    tex.offset   = s_bgt_off[s_bgt_ready];
+    rsxInvalidateTextureCache(context, GCM_INVALIDATE_TEXTURE);
+    rsxLoadTexture(context, 0, &tex);
+    rsxTextureControl(context, 0, GCM_TRUE, 0, 12 << 8, GCM_TEXTURE_MAX_ANISO_1);
+    rsxTextureFilter(context, 0, 0, GCM_TEXTURE_NEAREST, GCM_TEXTURE_NEAREST,
+                     GCM_TEXTURE_CONVOLUTION_QUINCUNX);
+    rsxTextureWrapMode(context, 0, GCM_TEXTURE_CLAMP_TO_EDGE, GCM_TEXTURE_CLAMP_TO_EDGE,
+                       GCM_TEXTURE_CLAMP_TO_EDGE, 0, GCM_TEXTURE_ZFUNC_LESS, 0);
+
+    // TEX0 before POS: the POS write latches the vertex (ui_text_gpu.cpp).
+    const float uv_tl[4] = { 0.f, 0.f, 0.f, 1.f }, p_tl[4] = { -1.f,  1.f, 0.f, 1.f };
+    const float uv_tr[4] = { 1.f, 0.f, 0.f, 1.f }, p_tr[4] = {  1.f,  1.f, 0.f, 1.f };
+    const float uv_bl[4] = { 0.f, 1.f, 0.f, 1.f }, p_bl[4] = { -1.f, -1.f, 0.f, 1.f };
+    const float uv_br[4] = { 1.f, 1.f, 0.f, 1.f }, p_br[4] = {  1.f, -1.f, 0.f, 1.f };
+    rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_STRIP);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_TEX0, uv_tl);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_POS,  p_tl);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_TEX0, uv_tr);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_POS,  p_tr);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_TEX0, uv_bl);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_POS,  p_bl);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_TEX0, uv_br);
+    rsxDrawVertex4f(context, GCM_VERTEX_ATTRIB_POS,  p_br);
+    rsxDrawVertexEnd(context);
+    return true;
+}
+
+// A black quad at `alpha` over everything drawn so far, on the wave's programs
+// (which must be bound).  wave_dim_screen() without its fence; blending is
+// left OFF again for what follows.
+static void bgt_dim(u8 alpha) {
+    rsxSetBlendFunc(context, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+                    GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+    rsxSetBlendEquation(context, GCM_FUNC_ADD, GCM_FUNC_ADD);
+    rsxSetBlendEnable(context, GCM_TRUE);
+    const u8    col[4] = { 0, 0, 0, alpha };
+    const float tl[4]  = { -1.0f,  1.0f, 0.0f, 1.0f };
+    const float tr[4]  = {  1.0f,  1.0f, 0.0f, 1.0f };
+    const float bl[4]  = { -1.0f, -1.0f, 0.0f, 1.0f };
+    const float br[4]  = {  1.0f, -1.0f, 0.0f, 1.0f };
+    rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_STRIP);
+    rsxDrawVertex4ub(context, GCM_VERTEX_ATTRIB_COLOR0, col);
+    rsxDrawVertex4f (context, GCM_VERTEX_ATTRIB_POS,    tl);
+    rsxDrawVertex4ub(context, GCM_VERTEX_ATTRIB_COLOR0, col);
+    rsxDrawVertex4f (context, GCM_VERTEX_ATTRIB_POS,    tr);
+    rsxDrawVertex4ub(context, GCM_VERTEX_ATTRIB_COLOR0, col);
+    rsxDrawVertex4f (context, GCM_VERTEX_ATTRIB_POS,    bl);
+    rsxDrawVertex4ub(context, GCM_VERTEX_ATTRIB_COLOR0, col);
+    rsxDrawVertex4f (context, GCM_VERTEX_ATTRIB_POS,    br);
+    rsxDrawVertexEnd(context);
+    rsxSetBlendEnable(context, GCM_FALSE);
+}
+
 void wave_draw(void) {
     s_jw_drawn = false;
     if (ui_cpu_bg()) { wave_draw_cpu(); return; }
@@ -1927,6 +2166,18 @@ void wave_draw(void) {
 
     // The background's four corners, read fresh from the theme every frame.
     wave_bg_refresh();
+
+    // The dithered background texture (see bgt_tick): when it is drawn, the
+    // gradient quad below is skipped and the music screen's dim goes on top.
+    bgt_tick();
+    const bool bg_tex = bgt_draw();
+    if (bg_tex) {
+        rsxLoadVertexProgram(context, vpo, vp_ucode);
+        rsxSetVertexAttribOutputMask(context, vpo->output_mask);
+        rsxLoadFragmentProgramLocation(context, fpo, s_wave_fp_offset, GCM_LOCATION_RSX);
+        rsxSetBlendEnable(context, GCM_FALSE);
+        if (s_bg_dim > 0.004f) bgt_dim((u8)(s_bg_dim * 255.0f + 0.5f));
+    }
 
     // One solver step per wave_draw() call (a screen that draws the
     // background twice steps twice).  perturb / drive / dt_scale are stage B's
@@ -2228,7 +2479,7 @@ void wave_draw(void) {
             0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
 
         rsxInvalidateVertexCache(context);
-        rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, 0, 4);
+        if (!bg_tex) rsxDrawVertexArray(context, GCM_TYPE_TRIANGLE_STRIP, 0, 4);
 
         if (s_wave_blend) {
             // src*a + dst*(1-a), ribbons back to front -- algebraically the
@@ -2387,12 +2638,14 @@ void wave_draw(void) {
             vo + 16, 0, 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
     } else {
         // Background-gradient quad (XMB_BG_TOP -> XMB_BG_BOT), streamed inline.
-        rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_STRIP);
-        wave_vtx(-1.0f,  1.0f, gtlr, gtlg, gtlb);   // top-left
-        wave_vtx(-1.0f, -1.0f, gblr, gblg, gblb);   // bottom-left
-        wave_vtx( 1.0f,  1.0f, gtrr, gtrg, gtrb);   // top-right
-        wave_vtx( 1.0f, -1.0f, gbrr, gbrg, gbrb);   // bottom-right
-        rsxDrawVertexEnd(context);
+        if (!bg_tex) {
+            rsxDrawVertexBegin(context, GCM_TYPE_TRIANGLE_STRIP);
+            wave_vtx(-1.0f,  1.0f, gtlr, gtlg, gtlb);   // top-left
+            wave_vtx(-1.0f, -1.0f, gblr, gblg, gblb);   // bottom-left
+            wave_vtx( 1.0f,  1.0f, gtrr, gtrg, gtrb);   // top-right
+            wave_vtx( 1.0f, -1.0f, gbrr, gbrg, gbrb);   // bottom-right
+            rsxDrawVertexEnd(context);
+        }
 
         for (int li = 0; li < 3; li++) {
             for (int k = 0; k < WAVE_NS; k++) {

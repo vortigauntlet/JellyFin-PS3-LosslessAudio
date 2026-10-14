@@ -165,6 +165,24 @@ static inline bg_quad bg_apply_day(bg_quad q, float day, u32 accent)
 }
 
 /*
+ * The vertical shape (2026-10-14).  The top colour holds through the header
+ * and tab row (down to v_hold), then eases to the bottom colour by v_end, so
+ * the screen drops to deep black below the tabs instead of fading evenly over
+ * its whole height.  Feed the result to bg_sample_f() as v.  v_end <= v_hold
+ * gives the plain linear ramp back.
+ */
+#define BG_DROP_SPAN 0.26f   /* v_end - v_hold: how far below the tabs black is reached */
+
+static inline float bg_profile(float v, float v_hold, float v_end)
+{
+    if (!(v_end > v_hold)) return v;
+    if (v <= v_hold) return 0.0f;
+    if (v >= v_end)  return 1.0f;
+    const float t = (v - v_hold) / (v_end - v_hold);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+/*
  * Small ordered dither for the CPU/emulator raster path. The RSX path uses
  * the same four corner colours and its own interpolation, so this is only
  * a final-pixel operation and never feeds back into the ribbon compositor.

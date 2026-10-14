@@ -41,6 +41,8 @@
   answer, or an image too large), not just that it did.
 
 ### Changed
+- **Smoother background.** The gradient no longer shows bands on high-end
+  TVs, and it now drops to deep black just below the tab row.
 - **Longer titles under posters.** Titles use a condensed face, so about
   about 10 characters fit under a poster instead of 8, at a larger size.
 - **The Next Episode prompt comes up later** (in the last 75 seconds rather
