@@ -504,16 +504,24 @@ static inline void wave_bg_refresh(void) {
     s_bg = month_bg_current(XMB_BG_TOP, XMB_BG_BOT, XMB_ACCENT);
 }
 
-// Where the background's drop to black starts and ends, as fractions of the
-// screen height (bg_profile): just under the tab row's divider (authored y 144
-// of 720), reaching the bottom colour BG_DROP_SPAN further down.
+// The background's vertical shape (bg_profile), as fractions of the screen
+// height.  A drop to black just under the tab row (hold at the divider, black
+// BG_DROP_SPAN below) was tried on 2026-10-14 and judged too distinct on the
+// TV; the even full-height ramp is the look, now without its banding.
+// hold == end means the plain linear ramp.
+#define BG_SHAPED 0
 static inline void wave_bg_shape(float *v_hold, float *v_end) {
+#if BG_SHAPED
     const float H = display_height ? (float)display_height : 720.0f;
     float h = (float)(XMB_OY + UIS_H(150)) / H;
     if (h < 0.0f) h = 0.0f;
     if (h > 0.6f) h = 0.6f;
     *v_hold = h;
     *v_end  = h + BG_DROP_SPAN;
+#else
+    *v_hold = 0.0f;
+    *v_end  = 0.0f;
+#endif
 }
 
 // Sample the background gradient at screen-space (u in [0,1], y in [0,H]),
