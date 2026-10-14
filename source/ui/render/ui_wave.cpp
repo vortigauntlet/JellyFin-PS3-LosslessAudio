@@ -2004,9 +2004,35 @@ static bool bgt_init(void) {
     return true;
 }
 
+// The two textures back after wave_bgtex_release(); false keeps the gouraud quad.
+static bool bgt_realloc(void) {
+    if (s_bgt_mem[0] && s_bgt_mem[1]) return true;
+    for (int i = 0; i < 2; i++) {
+        if (!s_bgt_mem[i]) s_bgt_mem[i] = (u32 *)rsxMemalign(128, s_bgt_pitch * (u32)s_bgt_h);
+        if (s_bgt_mem[i]) rsxAddressToOffset(s_bgt_mem[i], &s_bgt_off[i]);
+    }
+    if (s_bgt_mem[0] && s_bgt_mem[1]) { plog("bgtex: textures back"); return true; }
+    for (int i = 0; i < 2; i++) if (s_bgt_mem[i]) { rsxFree(s_bgt_mem[i]); s_bgt_mem[i] = NULL; }
+    return false;
+}
+
+// Playback calls this before it allocates its video surfaces, so they get the
+// VRAM layout they had before the background texture existed.  The menu
+// rebuilds the texture (24 frames) on its first frames back.
+void wave_bgtex_release(void) {
+    if (s_bgt_state <= 0 || (!s_bgt_mem[0] && !s_bgt_mem[1])) return;
+    rsxFinish(context, 0x4247u);          // the last menu frame may still sample it
+    for (int i = 0; i < 2; i++) if (s_bgt_mem[i]) { rsxFree(s_bgt_mem[i]); s_bgt_mem[i] = NULL; }
+    s_bgt_ready = s_bgt_build = -1;
+    s_bgt_key_ready = s_bgt_key_build = 0;
+    s_bgt_row = 0;
+    plog("bgtex: released for playback");
+}
+
 // Advance the build by BGT_ROWS rows; start one when the background changed.
 static void bgt_tick(void) {
     if (!bgt_init()) return;
+    if (!bgt_realloc()) return;
     if ((int)display_width != s_bgt_w || (int)display_height != s_bgt_h) return;   // mode changed under us
     float hold, end;
     wave_bg_shape(&hold, &end);

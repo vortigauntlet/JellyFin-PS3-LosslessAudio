@@ -2,6 +2,8 @@
 #include <ppu-types.h>
 
 void wave_init(void);
+// Frees the background texture's VRAM; the menu rebuilds it on its own.
+void wave_bgtex_release(void);
 void wave_draw(void);
 
 // Call just before wave_draw() on a menu screen: with Settings > Menu

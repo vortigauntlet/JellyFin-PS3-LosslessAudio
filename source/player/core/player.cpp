@@ -1138,7 +1138,9 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         decode_ring_alloc(want);
     }
 
-    // Video GPU blit init — allocate RSX buffers once per session
+    // Video GPU blit init — allocate RSX buffers once per session.  The
+    // menu background's 16 MB goes back first.
+    wave_bgtex_release();
     if (!vid_gpu_init(jbuf_fw(), jbuf_fh())) {
         lc_logf("show_player: RETURN to UI -- VRAM allocation failed for the video surfaces");
         live_abort();

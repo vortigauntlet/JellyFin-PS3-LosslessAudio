@@ -143,13 +143,24 @@ bool vid_gpu_init(u32 fw, u32 fh) {
         for (int db = 0; db < 2; db++) {
             u32 sz[3] = { ysz, csz, csz };
             for (int p = 0; p < 3; p++) {
-                s_yuvA_buf[db][p] = (u8*)rsxMemalign(64, sz[p]);
-                s_yuvB_buf[db][p] = (u8*)rsxMemalign(64, sz[p]);
+                // 128, not 64: an RSX texture offset must be 128-byte
+                // aligned.  The heap returns exactly the alignment asked
+                // for, so 64 only worked while the layout happened to land
+                // on 128 (docs/video-black-bgtex-notes.md).
+                s_yuvA_buf[db][p] = (u8*)rsxMemalign(128, sz[p]);
+                s_yuvB_buf[db][p] = (u8*)rsxMemalign(128, sz[p]);
                 if (!s_yuvA_buf[db][p] || !s_yuvB_buf[db][p]) return vid_gpu_fail("YUV plane");
                 rsxAddressToOffset(const_cast<u8*>(s_yuvA_buf[db][p]), &s_yuvA_off[db][p]);
                 rsxAddressToOffset(const_cast<u8*>(s_yuvB_buf[db][p]), &s_yuvB_off[db][p]);
             }
         }
+    }
+    {
+        char m[160];
+        snprintf(m, sizeof m, "vid_gpu: Y/Cb/Cr off A0=%08x/%08x/%08x B0=%08x A1=%08x B1=%08x",
+                 (unsigned)s_yuvA_off[0][0], (unsigned)s_yuvA_off[0][1], (unsigned)s_yuvA_off[0][2],
+                 (unsigned)s_yuvB_off[0][0], (unsigned)s_yuvA_off[1][0], (unsigned)s_yuvB_off[1][0]);
+        plog(m);
     }
     s_vid_disp_idx    = 0;
     s_vid_frame_ready = false;
