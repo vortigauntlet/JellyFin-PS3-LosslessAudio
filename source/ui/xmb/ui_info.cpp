@@ -238,6 +238,8 @@ static int info_choose_version(const char *title,
 #include "ui_text_gpu.h"
 #include "line_break.h"
 #include "http.h"
+#include <unistd.h>          // usleep: the version search worker
+#include <sys/thread.h>
 #include "api_facts.h"
 #include "vremember.h"       // jellyfin_warm_playback()
 
@@ -340,6 +342,63 @@ static void info_load_work(void *arg) {
                                         "Backdrop", 960, 540, 0.3f, &ld->back);
 }
 
+// Versions still being found (2026-10-14).  A Gelato title opened from Search
+// for the first time has no media sources yet -- the server resolves them on
+// the first look, in a few seconds -- so the page opened with Quality and no
+// Version, and backing out and in again "fixed" it.  Now a worker asks again
+// every 2 s for up to 30 s while the page shows "Finding versions...", and the
+// selector fills in by itself.  Its own buffer (never responseBuffer, which the
+// page's own requests use); a generation number retires a worker whose page
+// has gone, and its result is ignored.
+#define VS_TRIES    15
+#define VS_GAP_MS   2000
+typedef struct { u32 gen; char id[64]; } VsJob;
+static volatile u32  s_vs_gen   = 0;
+static volatile int  s_vs_done  = 0;        // the current generation's answer is in s_vs_out
+static JFMediaSources s_vs_out;
+
+static void vs_worker(void *arg) {
+    VsJob *job = (VsJob *)arg;
+    char *buf = (char *)malloc(RESPONSE_SIZE);
+    JFMediaSources *tmp = (JFMediaSources *)malloc(sizeof(JFMediaSources));
+    bool found = false;
+    for (int t = 0; t < VS_TRIES && buf && tmp && job->gen == s_vs_gen && !found; t++) {
+        for (int w = 0; w < VS_GAP_MS / 100 && job->gen == s_vs_gen; w++) usleep(100000);
+        if (job->gen != s_vs_gen) break;
+        found = jellyfin_fetch_media_sources_buf(job->id, tmp, buf, RESPONSE_SIZE) && tmp->n_sources > 0;
+    }
+    if (job->gen == s_vs_gen) {
+        if (found) memcpy(&s_vs_out, tmp, sizeof s_vs_out);
+        else       memset(&s_vs_out, 0, sizeof s_vs_out);
+        char b[160];
+        snprintf(b, sizeof b, "versions: found %d after waiting (%s)", found ? s_vs_out.n_sources : 0, job->id);
+        plog(b);
+        __sync_synchronize();
+        s_vs_done = 1;
+    }
+    free(tmp);
+    free(buf);
+    free(job);
+    sysThreadExit(0);
+}
+
+static bool vs_start(const char *item_id) {
+    VsJob *job = (VsJob *)malloc(sizeof(VsJob));
+    if (!job) return false;
+    s_vs_done = 0;
+    job->gen = ++s_vs_gen;
+    snprintf(job->id, sizeof job->id, "%s", item_id);
+    __sync_synchronize();
+    sys_ppu_thread_t tid;
+    static char name[] = "jf_versions";
+    if (sysThreadCreate(&tid, vs_worker, job, 1500, 32 * 1024, 0, name) != 0) {
+        free(job);
+        return false;
+    }
+    return true;
+}
+static void vs_cancel(void) { s_vs_gen++; s_vs_done = 0; }
+
 static void xmb_show_item_info_v3(const XMBItem *root) {
     rsxSync();
     flip();
@@ -363,6 +422,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
     XMBItemDetail detail;
     static JFMediaSources versions;
     int  version_sel = 0;
+    bool versions_searching = false;   // vs_worker is looking (see above)
     bool reload = true, exit_armed = false, watched = false, favourite = false;
     Bitmap poster_cpu;               // CPU fallback when the upload fails
     memset(&poster_cpu, 0, sizeof poster_cpu);
@@ -403,6 +463,10 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                 if (remembered >= 0) vquality_set((vquality_t)remembered);
             }
             version_sel = 0;
+            vs_cancel();
+            versions_searching = versions.n_sources == 0 &&
+                (strcmp(it->type, "Movie") == 0 || strcmp(it->type, "Episode") == 0 ||
+                 strcmp(it->type, "Video") == 0) && vs_start(it->id);
             // Warm the server while the page is read: its first-time stream
             // lookup (Gelato, 6-8 s) then happens before Play, not after.
             if (strcmp(it->type, "Movie") == 0 || strcmp(it->type, "Episode") == 0 ||
@@ -448,7 +512,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             row0[n0++] = F3_WATCHED;
             row0[n0++] = F3_FAVOURITE;
             n1 = 0;
-            if (versions.n_sources > 1) row1[n1++] = F3_VERSION;
+            if (versions.n_sources > 1 || versions_searching) row1[n1++] = F3_VERSION;
             row1[n1++] = F3_QUALITY;
             // Download sits after Quality for the three playable types; row 0
             // stays the "watch now" row.
@@ -463,6 +527,21 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
                 arrived = true;
                 spine_clock_reset();          // step from here, not from the fetch
                 spine_set_level(SPINE_L3);
+            }
+        }
+        if (versions_searching && s_vs_done) {
+            __sync_synchronize();
+            memcpy(&versions, &s_vs_out, sizeof versions);
+            for (int v = 0; v < versions.n_sources; v++)            // emoji -> gone
+                ttf_clean_text(versions.source[v].label, (int)sizeof versions.source[v].label);
+            versions_searching = false;
+            version_sel = 0;
+            // The Version slot stays when there is a choice, goes when not; a
+            // focus on that row stays on the same control.
+            if (versions.n_sources <= 1 && n1 > 0 && row1[0] == F3_VERSION) {
+                for (int i = 1; i < n1; i++) row1[i - 1] = row1[i];
+                n1--;
+                if (frow == 1) fcol = fcol > 0 ? fcol - 1 : 0;
             }
         }
         const XMBItem *it = &cur_item;
@@ -799,6 +878,8 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             if (id == F3_DOWNLOAD) {
                 // The live state: "Download", "Downloading 42%", "Play offline"...
                 dl_ui_item_label(dl_have ? &dl_st : NULL, can_download, &dl_cx, val, n);
+            } else if (id == F3_VERSION && (versions_searching || versions.n_sources <= 0)) {
+                snprintf(val, n, "%s", TR("Finding versions..."));
             } else if (id == F3_VERSION) {
                 snprintf(val, n, "%s", versions.source[version_sel].summary[0]
                                           ? versions.source[version_sel].summary
@@ -1053,6 +1134,7 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
         flip();
     }
 
+    vs_cancel();                          // a search still running is no longer wanted
     detail_media_free(&poster_cpu);
     ui_gpu_tex_clear(GPU_TEX_POSTER);
     ui_gpu_tex_clear(GPU_TEX_BACKDROP);

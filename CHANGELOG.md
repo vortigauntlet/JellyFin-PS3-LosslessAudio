@@ -19,6 +19,10 @@
   no longer run off the edges on those TVs.
 - **The 24Hz/50Hz output prompt** is now a properly sized panel in the middle of
   the screen, instead of small text in the corner where a TV could cut it off.
+- **Version picker missing on a film opened from Search.** The first time a
+  debrid title is opened, the server is still finding its versions; the page
+  now says "Finding versions..." and fills them in when they arrive, instead
+  of showing only Quality until you back out and in again.
 - **Freeze on "Preparing" when starting a film.** Starting playback freed the
   poster memory while a poster that was still downloading could be written into
   it, right where the video decoder was being set up. On a slow connection, or

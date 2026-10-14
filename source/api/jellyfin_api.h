@@ -163,6 +163,10 @@ bool jellyfin_parse_selected_media_source(const char *json,
 // MediaSources field is preferred (it is what Jellyfin's details UI uses);
 // PlaybackInfo is retained as a compatibility fallback.
 bool jellyfin_fetch_media_sources(const char *item_id, JFMediaSources *out);
+// The same item request into the caller's buffer, for a worker thread: it never
+// touches responseBuffer, and it has no PlaybackInfo fallback (which does).
+bool jellyfin_fetch_media_sources_buf(const char *item_id, JFMediaSources *out,
+                                      char *buf, int cap);
 
 // GET the item's MediaStreams and fill out with every audio and subtitle
 // stream (index + display label).  Returns true if the fetch succeeded

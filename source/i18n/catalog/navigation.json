@@ -34,6 +34,7 @@
   "Watched": {"ja": "視聴済み", "pt-BR": "Assistido", "de": "Gesehen", "fr": "Vu", "es": "Visto"},
   "Favourited": {"ja": "お気に入り済み", "pt-BR": "Favoritado", "de": "Favorisiert", "fr": "En favori", "es": "En favoritos"},
   "Remove favourite": {"ja": "お気に入りから外す", "pt-BR": "Remover dos favoritos", "de": "Favorit entfernen", "fr": "Retirer des favoris", "es": "Quitar de favoritos"},
+  "Finding versions...": {"ja": "バージョンを検索中...", "pt-BR": "Procurando versões...", "de": "Suche Versionen...", "fr": "Recherche des versions...", "es": "Buscando versiones..."},
   "Choose version": {"ja": "バージョンを選択", "pt-BR": "Escolher versão", "de": "Version wählen", "fr": "Choisir la version", "es": "Elegir versión"},
   "Change quality": {"ja": "画質を変更", "pt-BR": "Alterar qualidade", "de": "Qualität ändern", "fr": "Changer la qualité", "es": "Cambiar calidad"},
   "Scroll": {"ja": "スクロール", "pt-BR": "Rolar", "de": "Scrollen", "fr": "Défiler", "es": "Desplazar"},

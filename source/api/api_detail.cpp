@@ -926,6 +926,18 @@ bool jellyfin_get_play_session_id(const char *item_id,
                                       out_total_secs, NULL, NULL, true);
 }
 
+bool jellyfin_fetch_media_sources_buf(const char *item_id, JFMediaSources *out,
+                                      char *buf, int cap) {
+    if (!out || !buf || cap <= 0) return false;
+    memset(out, 0, sizeof(*out));
+    if (!g_server[0] || !g_userid[0] || !g_token[0]) return false;
+    char url[768];
+    snprintf(url, sizeof(url), "%s/Users/%s/Items/%s?Fields=MediaSources,MediaStreams",
+             g_server, g_userid, item_id);
+    const int status = http_request(HTTP_GET, url, NULL, g_token, buf, cap);
+    return status == 200 && jellyfin_parse_media_sources(buf, out) > 0;
+}
+
 bool jellyfin_fetch_media_sources(const char *item_id, JFMediaSources *out) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));

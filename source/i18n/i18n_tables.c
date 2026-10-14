@@ -9,9 +9,9 @@ extern const int i18n_n;
 extern const char *const i18n_keys[];
 extern const char *const *const i18n_text[LANG__COUNT];
 
-const int i18n_n = 514;
+const int i18n_n = 515;
 
-const char *const i18n_keys[514] = {
+const char *const i18n_keys[515] = {
     "  %s  %s free",
     "  (can't be decoded yet)",
     "%.40s video (can't play on PS3)",
@@ -173,6 +173,7 @@ const char *const i18n_keys[514] = {
     "Favourites",
     "Fill",
     "Films and episodes saved on this PS3, ready to play.\nThey play without a connection to your server.",
+    "Finding versions...",
     "Fit",
     "Genres",
     "Get the new .pkg from",
@@ -528,7 +529,7 @@ const char *const i18n_keys[514] = {
     "\342\200\271 back %ds",
 };
 
-static const char *const i18n_text_ja[514] = {
+static const char *const i18n_text_ja[515] = {
     "  %s  %s \347\251\272\343\201\215",
     "  \357\274\210\343\201\276\343\201\240\343\203\207\343\202\263\343\203\274\343\203\211\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
     "%.40s \343\201\256\346\230\240\345\203\217\357\274\210PS3\343\201\247\343\201\257\345\206\215\347\224\237\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
@@ -690,6 +691,7 @@ static const char *const i18n_text_ja[514] = {
     "\343\201\212\346\260\227\343\201\253\345\205\245\343\202\212",
     "\343\203\225\343\202\243\343\203\253\357\274\210\345\210\207\343\202\212\345\217\226\343\202\212\357\274\211",
     "\343\201\223\343\201\256PS3\343\201\253\344\277\235\345\255\230\343\201\225\343\202\214\343\201\237\346\230\240\347\224\273\343\202\204\343\202\250\343\203\224\343\202\275\343\203\274\343\203\211\343\202\222\345\206\215\347\224\237\343\201\247\343\201\215\343\201\276\343\201\231\343\200\202\n\343\202\265\343\203\274\343\203\220\343\203\274\343\201\253\346\216\245\347\266\232\343\201\227\343\201\252\343\201\217\343\201\246\343\202\202\345\206\215\347\224\237\343\201\247\343\201\215\343\201\276\343\201\231\343\200\202",
+    "\343\203\220\343\203\274\343\202\270\343\203\247\343\203\263\343\202\222\346\244\234\347\264\242\344\270\255...",
     "\343\203\225\343\202\243\343\203\203\343\203\210",
     "\343\202\270\343\203\243\343\203\263\343\203\253",
     "\346\226\260\343\201\227\343\201\204.pkg\343\201\257\343\201\223\343\201\241\343\202\211\343\201\213\343\202\211",
@@ -1045,7 +1047,7 @@ static const char *const i18n_text_ja[514] = {
     "\342\200\271 %d\347\247\222\346\210\273\343\202\213",
 };
 
-static const char *const i18n_text_pt_BR[514] = {
+static const char *const i18n_text_pt_BR[515] = {
     "  %s  %s livres",
     "  (ainda n\303\243o pode ser decodificado)",
     "V\303\255deo %.40s (n\303\243o reproduz no PS3)",
@@ -1207,6 +1209,7 @@ static const char *const i18n_text_pt_BR[514] = {
     "Favoritos",
     "Preencher",
     "Filmes e epis\303\263dios salvos neste PS3, prontos para assistir.\nTocam sem conex\303\243o com o seu servidor.",
+    "Procurando vers\303\265es...",
     "Ajustar",
     "G\303\252neros",
     "Baixe o novo .pkg em",
@@ -1562,7 +1565,7 @@ static const char *const i18n_text_pt_BR[514] = {
     "\342\200\271 voltar %ds",
 };
 
-static const char *const i18n_text_de[514] = {
+static const char *const i18n_text_de[515] = {
     "  %s  %s frei",
     "  (kann noch nicht decodiert werden)",
     "%.40s-Video (auf der PS3 nicht abspielbar)",
@@ -1724,6 +1727,7 @@ static const char *const i18n_text_de[514] = {
     "Favoriten",
     "F\303\274llen",
     "Auf dieser PS3 gespeicherte Filme und Folgen, sofort abspielbar.\nSie laufen ohne Verbindung zu Ihrem Server.",
+    "Suche Versionen...",
     "Einpassen",
     "Genres",
     "Das neue .pkg gibt es unter",
@@ -2079,7 +2083,7 @@ static const char *const i18n_text_de[514] = {
     "\342\200\271 %ds zur\303\274ck",
 };
 
-static const char *const i18n_text_fr[514] = {
+static const char *const i18n_text_fr[515] = {
     "  %s  %s libres",
     "  (ne peut pas encore \303\252tre d\303\251cod\303\251)",
     "Vid\303\251o %.40s (non lisible sur PS3)",
@@ -2241,6 +2245,7 @@ static const char *const i18n_text_fr[514] = {
     "Favoris",
     "Remplir",
     "Films et \303\251pisodes enregistr\303\251s sur cette PS3, pr\303\252ts \303\240 lire.\nIls se lisent sans connexion \303\240 votre serveur.",
+    "Recherche des versions...",
     "Ajuster",
     "Genres",
     "R\303\251cup\303\251rez le nouveau .pkg sur",
@@ -2596,7 +2601,7 @@ static const char *const i18n_text_fr[514] = {
     "\342\200\271 reculer de %ds",
 };
 
-static const char *const i18n_text_es[514] = {
+static const char *const i18n_text_es[515] = {
     "  %s  %s libres",
     "  (a\303\272n no se puede decodificar)",
     "V\303\255deo %.40s (no se puede reproducir en la PS3)",
@@ -2758,6 +2763,7 @@ static const char *const i18n_text_es[514] = {
     "Favoritos",
     "Rellenar",
     "Pel\303\255culas y episodios guardados en esta PS3, listos para ver.\nSe reproducen sin conexi\303\263n con tu servidor.",
+    "Buscando versiones...",
     "Ajustar",
     "G\303\251neros",
     "Consigue el nuevo .pkg en",
