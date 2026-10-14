@@ -572,10 +572,15 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         if (idx == sel) continue;
         int cx, cy;
         grid_cell_pos_m(gg, i, y0, &cx, &cy);
-        // Media title -- section 3.0 gives these to the display face.
+        // Media title, in the condensed face (2026-10-14).  Section 3.0 gave
+        // these to the display face, GT America EXPANDED: about 8 characters
+        // fit under a poster before the "..".  Roboto Condensed Bold at the same
+        // size fits 11 (measured: the widest of ten real 11-character titles is
+        // 103 px against a 122 px card at 1080 lines; card and type both scale
+        // with the screen height, so 720p and 4:3 fit the same).
         draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(8)),
                          items[idx].name, UIS_TF(16), XMB_TEXT_DIM, gg->card_w,
-                         false, UI_FACE_DISPLAY);
+                         false, UI_FACE_ROBOCOND);
         // Music cards carry an artist credit under the title.
         if (items[idx].artist[0])
             draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(28)),
@@ -588,8 +593,9 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         int cx, cy;
         grid_cell_pos_m(gg, sel - scroll, y0, &cx, &cy);
         int ty = cy + gg->card_h + UIS_H(7);
-        draw_ttf_clipped((u32)cx, (u32)ty, it->name, UIS_TF(20),
-                         XMB_WHITE, gg->card_w, false, UI_FACE_DISPLAY);
+        // 18, not 20: at 20 the widest 11-character titles overrun the card.
+        draw_ttf_clipped((u32)cx, (u32)ty, it->name, UIS_TF(18),
+                         XMB_WHITE, gg->card_w, false, UI_FACE_ROBOCOND);
         if (it->artist[0]) {
             draw_ttf_clipped((u32)cx, (u32)(ty + UIS_H(27)), it->artist, UIS_TF(15),
                              XMB_TEXT_DIM, gg->card_w);
@@ -611,7 +617,7 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         }
         if (meta[0])
             draw_ttf_clipped((u32)cx, (u32)(ty + UIS_H(27)), meta, UIS_TF(14),
-                             XMB_TEXT_DIM, gg->card_w);
+                             XMB_TEXT_DIM, gg->card_w, false, UI_FACE_ROBOCOND);
     }
 
     // Scrollbar beside the grid: thumb size/position track the visible

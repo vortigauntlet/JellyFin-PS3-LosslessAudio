@@ -536,15 +536,19 @@ static void clamp_col(void) {
 // Rendering
 // -------------------------------------------------------
 
+// Card titles in the condensed face, like the library grids (ui_lists.cpp):
+// the system face fitted about 8 characters under a portrait card.
 static void home_clip_text(int x, int y, const char *s, float px, u32 color,
                            int max_w, bool bold = false) {
-    if (ttf_text_width(s, px, bold) <= max_w) { drawTTF((u32)x, (u32)y, s, px, color, bold); return; }
+    (void)bold;                                  // Roboto Condensed is the bold cut
+    const int face = UI_FACE_ROBOCOND;
+    if (ttf_text_width_face(s, px, face) <= max_w) { drawTTF_face((u32)x, (u32)y, s, px, color, face); return; }
     char buf[160]; snprintf(buf, sizeof(buf), "%s", s);
     int len = (int)strlen(buf);
     while (len > 1) {
         buf[--len] = '\0';
         char t[164]; snprintf(t, sizeof(t), "%s..", buf);
-        if (ttf_text_width(t, px, bold) <= max_w) { drawTTF((u32)x, (u32)y, t, px, color, bold); return; }
+        if (ttf_text_width_face(t, px, face) <= max_w) { drawTTF_face((u32)x, (u32)y, t, px, color, face); return; }
     }
 }
 
