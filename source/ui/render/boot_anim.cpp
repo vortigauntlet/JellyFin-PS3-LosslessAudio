@@ -80,6 +80,23 @@ static bool      s_flipped = false;   // a boot frame has been flipped
 static BootSeq   s_seq;
 static BootFrame s_frame;
 static u64       s_last_us = 0;
+// Black held before the sequence clock starts, for a TV that takes a while to
+// show the picture after an app launches (a Pioneer Kuro needs a few seconds;
+// the whole animation used to play to a screen that was not showing yet).
+// jellyfin_tvwake.txt, milliseconds; absent or 0 = none.
+#define TVWAKE_FILE   "jellyfin_tvwake.txt"
+#define TVWAKE_MAX_MS 6000
+static float     s_tv_wait_ms = 0.0f;
+
+static int tvwake_ms(void)
+{
+    FILE *f = fopen(jf_data_path(TVWAKE_FILE), "r");
+    if (!f) return 0;
+    int v = 0;
+    if (fscanf(f, "%d", &v) != 1) v = 0;
+    fclose(f);
+    return v < 0 ? 0 : (v > TVWAKE_MAX_MS ? TVWAKE_MAX_MS : v);
+}
 
 // Where the mark is this frame, and who draws it.
 static float s_mcx, s_mcy, s_mbell;
@@ -578,8 +595,9 @@ static void cpu_status(float cx, float mark_bottom, float alpha)
 static void step(void)
 {
     const u64 now = timing_get_us();
-    const float dt = (float)(now - s_last_us) / 1000.0f;
+    float dt = (float)(now - s_last_us) / 1000.0f;
     s_last_us = now;
+    if (s_tv_wait_ms > 0.0f) { s_tv_wait_ms -= dt; dt = 0.0f; }   // still black: the TV is waking
     boot_seq_step(&s_seq, dt);
     boot_seq_frame(&s_seq, &s_frame);
 }
@@ -733,6 +751,7 @@ bool boot_anim_begin(void)
     flip();
     s_flipped = true;
     s_last_us = timing_get_us();
+    s_tv_wait_ms = (float)tvwake_ms();
 
     if (!load_mark()) {
         plog("boot: mark decode FAILED -- old splash");
@@ -764,9 +783,9 @@ bool boot_anim_begin(void)
     s_on = true;
 
     char b[128];
-    snprintf(b, sizeof b, "boot: animation ON, %s mark (%s), %ux%u",
+    snprintf(b, sizeof b, "boot: animation ON, %s mark (%s), %ux%u, tv wake %d ms",
              s_gpu ? "RSX" : "CPU", xmb_mark_variant() ? "gold" : "cool",
-             display_width, display_height);
+             display_width, display_height, (int)s_tv_wait_ms);
     plog(b);
     crash_log(s_gpu ? "boot: ON (RSX mark)" : "boot: ON (CPU mark)");
     return true;
