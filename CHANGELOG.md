@@ -32,10 +32,19 @@
 - **"Update available" on the latest version.** 3.2 and 3.2.1 still reported
   themselves as 3.2 to the update check, so 3.2.1 announced itself as an
   update on every launch.
+- **ffwrap is now a one-click install** for Windows servers that stall on
+  debrid streams: `ffwrap-for-jellyfin.zip` on the release has
+  `install-ffwrap.bat` and `uninstall-ffwrap.bat`, which say SUCCESS or FAILED
+  when they finish. It now downloads at 1.75× the film's bitrate instead of
+  1.25×, so the PS3 builds a buffer and stops micro-stuttering.
 - The log now says why a poster failed to load (no connection, the server's
   answer, or an image too large), not just that it did.
 
 ### Changed
+- **The Next Episode prompt comes up later** (in the last 75 seconds rather
+  than 90, or when the credits start), so it no longer gives away that a scene
+  is the episode's last. Skip Intro now goes away after 5 seconds, and both
+  prompts are translucent.
 - **Posters lose the white outline.** The selected poster is marked by a soft
   purple glow that fades outward instead. Buttons keep their outline.
 
@@ -127,8 +136,8 @@ over and over even though everything is on a fast network. Two ways out:
   such as Moonlight.
 - **Make the server download at film speed.** This release includes
   `ffwrap`, a small stand-in for Jellyfin's ffmpeg that limits how fast it
-  reads from the internet (to 1.25× the film's own bitrate). See
-  [`tools/ffwrap/README.md`](tools/ffwrap/README.md).
+  reads from the internet (1.75× the film's own bitrate since 3.2.2). See
+  [`tools/ffwrap/README.txt`](tools/ffwrap/README.txt).
 
 The app also notices when a stream arrives in bursts with long gaps and
 reconnects by itself.

@@ -310,7 +310,8 @@ signs in with a username and password.
 films buffer and stall over and over, your router may be choking on the
 server's internet download. See
 [Buffering on a wired server PC](CHANGELOG.md#buffering-on-a-wired-server-pc-check-your-router)
-and [`tools/ffwrap`](tools/ffwrap/README.md).
+and [`tools/ffwrap`](tools/ffwrap/README.txt) -- download `ffwrap-for-jellyfin.zip`
+from the release and double-click `install-ffwrap.bat` on the server PC.
 
 ## Build from source
 

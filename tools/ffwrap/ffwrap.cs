@@ -27,8 +27,10 @@
 // exit code is returned, and ffmpeg runs in a job object so it dies with this
 // process when Jellyfin kills it.
 //
-// The real ffmpeg is the one next to Jellyfin: C:\Program Files\Jellyfin\Server\ffmpeg.exe
-// (override with FFWRAP_REAL).  ffwrap.log next to this exe records each rewrite.
+// The real ffmpeg: FFWRAP_REAL if set, else "ffmpeg=" in ffwrap.ini (the
+// installer writes the path Jellyfin was using), else the one next to Jellyfin,
+// C:\Program Files\Jellyfin\Server\ffmpeg.exe.  ffwrap.log next to this exe
+// records each rewrite.
 
 using System;
 using System.Diagnostics;
@@ -39,25 +41,32 @@ static class FfWrap
 {
     const double DefaultRate = 1.75;
 
-    static string Inject()
+    // One "key=value" from ffwrap.ini next to this exe, or null.
+    static string IniValue(string key)
     {
-        double rate = DefaultRate;
         try
         {
             string ini = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffwrap.ini");
-            if (File.Exists(ini))
-                foreach (string line in File.ReadAllLines(ini))
-                {
-                    string l = line.Trim();
-                    if (!l.StartsWith("readrate=", StringComparison.OrdinalIgnoreCase)) continue;
-                    double v;
-                    if (double.TryParse(l.Substring(9).Trim(), System.Globalization.NumberStyles.Float,
-                                        System.Globalization.CultureInfo.InvariantCulture, out v)
-                        && v >= 1.1 && v <= 4.0)
-                        rate = v;
-                }
+            if (!File.Exists(ini)) return null;
+            foreach (string line in File.ReadAllLines(ini))
+            {
+                string l = line.Trim();
+                if (l.StartsWith(key + "=", StringComparison.OrdinalIgnoreCase))
+                    return l.Substring(key.Length + 1).Trim();
+            }
         }
         catch { }
+        return null;
+    }
+
+    static string Inject()
+    {
+        double rate = DefaultRate, v;
+        string s = IniValue("readrate");
+        if (s != null && double.TryParse(s, System.Globalization.NumberStyles.Float,
+                                         System.Globalization.CultureInfo.InvariantCulture, out v)
+            && v >= 1.1 && v <= 4.0)
+            rate = v;
         return "-readrate " + rate.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture)
              + " -readrate_initial_burst 20 ";
     }
@@ -99,6 +108,7 @@ static class FfWrap
     static int Main()
     {
         string real = Environment.GetEnvironmentVariable("FFWRAP_REAL");
+        if (string.IsNullOrEmpty(real)) real = IniValue("ffmpeg");
         if (string.IsNullOrEmpty(real)) real = @"C:\Program Files\Jellyfin\Server\ffmpeg.exe";
         string args = ArgsOf(Environment.CommandLine);
         string outArgs = Rewrite(args);
