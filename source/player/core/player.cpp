@@ -211,7 +211,7 @@ static void d24_lifecycle(const char *phase) {
 // End-of-item auto-advance ("Next Episode")
 // -------------------------------------------------------
 // The UI arms this before show_player when the played item has a follower.
-// In the last 90 s of playback the player shows the popup badge (just the
+// In the last 75 s of playback the player shows the popup badge (just the
 // label) with the instruction line drawn separately below it; SELECT ends
 // playback with the next-request flag set, which the UI reads via
 // player_take_next_request() to start the next item.  For episodes the
@@ -1429,7 +1429,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
             ps.playing = false;
         }
 
-        // End-of-item auto-advance: within the last 90 s of a followed item
+        // End-of-item auto-advance: within the last 75 s of a followed item
         // (or once its credits start), show the NEXT popup; SELECT ends this
         // session with the next-request flag set so the UI starts the
         // follower.  Episodes also count down 25 s -- from the start of the
@@ -1445,7 +1445,9 @@ void show_player_run(const JFItem *item, u32 resume_secs,
             s64 cd_start = total - 25;
             if (outro > 0.0 && (s64)outro < cd_start && (s64)outro + 600 >= total)
                 cd_start = (s64)outro;
-            next_popup = (pos + 90 >= total) || pos >= cd_start;
+            // 75, not 90 (2026-10-14): at 90 the badge came up while the story was
+            // still running and gave away that the episode was ending.
+            next_popup = (pos + 75 >= total) || pos >= cd_start;
             if (next_popup && auto_next && pos >= cd_start) {
                 s64 rem = cd_start + 25 - pos;
                 if (total - pos < rem) rem = total - pos;
