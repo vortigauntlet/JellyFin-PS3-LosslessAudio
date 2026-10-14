@@ -12,6 +12,9 @@
   clock and the button hints. The app now keeps a small margin by default, like
   the PS3's own menus. Settings → Display → Screen Size still adjusts it (or
   turns it off).
+- **"Back to Season" froze the screen for seconds.** Leaving an episode's
+  details page waited up to 2 seconds per request behind the page's background
+  stream lookup before even asking the server. It no longer waits.
 - **Music player inside that margin too.** The album art and the Up Next list
   no longer run off the edges on those TVs.
 - **The 24Hz/50Hz output prompt** is now a properly sized panel in the middle of

@@ -45,11 +45,14 @@ static volatile int s_raw_busy = 0;
 static char *raw_claim(void) {
     // Another request is reading into the static buffer.  Wait for it, briefly,
     // rather than ask a nearly full heap for 388 KB in the middle of playback
-    // (the usual overlap is a poster or a progress report: milliseconds).  Only a
-    // long request (a search, a Live TV open) makes this fall through to the heap.
-    for (int i = 0; i < 400; i++) {
+    // (the overlap there is a progress report or a segment lookup: milliseconds).
+    // A long holder -- the details page's background PlaybackInfo, 13-15 s on a
+    // debrid server, or a search -- is not worth waiting for: this used to wait
+    // 2 s, so "Back to Season" (two requests on the render thread) froze for 4 s
+    // before either request was even sent.
+    for (int i = 0; i < 10; i++) {
         if (__sync_lock_test_and_set(&s_raw_busy, 1) == 0) return s_raw_buf;
-        usleep(5000);
+        usleep(2000);
     }
     return (char *)malloc(RAW_CAP);
 }
