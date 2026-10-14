@@ -644,7 +644,7 @@ void xmb_home_gpu_phase(void) {
                          ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
             xmb_card_gpu_one(row->items[c].id, cx, card_y, cw, ch, img);
             if (r == s_focus_row && c == s_focus_col)   // glides (spine gate)
-                spine_focus_ring_gpu(cx, card_y, cw, ch);
+                spine_focus_poster_gpu(cx, card_y, cw, ch);
         }
     }
 

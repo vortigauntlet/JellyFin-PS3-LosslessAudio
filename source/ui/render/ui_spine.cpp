@@ -540,8 +540,19 @@ static spine_approach s_ring[4];
 static int            s_ring_ctx   = -1;
 static unsigned       s_ring_frame = 0;    // frame it was last drawn
 
-void spine_focus_ring_gpu(int x, int y, int w, int h) {
-    if (!g_spine_on) { ui_card_gpu_selection(x, y, w, h); return; }
+static void focus_glide_gpu(int x, int y, int w, int h, bool poster);
+
+void spine_focus_ring_gpu(int x, int y, int w, int h)   { focus_glide_gpu(x, y, w, h, false); }
+// Posters get the accent bands instead of the white ring.
+void spine_focus_poster_gpu(int x, int y, int w, int h) { focus_glide_gpu(x, y, w, h, true); }
+
+static void focus_draw(int x, int y, int w, int h, bool poster) {
+    if (poster) depth_focus_bands_gpu(x, y, w, h);
+    else        ui_card_gpu_selection(x, y, w, h);
+}
+
+static void focus_glide_gpu(int x, int y, int w, int h, bool poster) {
+    if (!g_spine_on) { focus_draw(x, y, w, h, poster); return; }
     depth_note_focus_rect(x, y, w, h);     // item detail flies out of it
 
     const float tgt[4] = { (float)x, (float)y, (float)w, (float)h };
@@ -556,8 +567,8 @@ void spine_focus_ring_gpu(int x, int y, int w, int h) {
     }
     s_ring_ctx   = ctx;
     s_ring_frame = s_frame_id;
-    ui_card_gpu_selection((int)(s_ring[0].value + 0.5f), (int)(s_ring[1].value + 0.5f),
-                          (int)(s_ring[2].value + 0.5f), (int)(s_ring[3].value + 0.5f));
+    focus_draw((int)(s_ring[0].value + 0.5f), (int)(s_ring[1].value + 0.5f),
+               (int)(s_ring[2].value + 0.5f), (int)(s_ring[3].value + 0.5f), poster);
 }
 
 static spine_approach s_grid;

@@ -508,7 +508,7 @@ void xmb_grid_gpu(const GridGeom *gg, const XMBItem *items, int count,
                      ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
         xmb_card_gpu_one(items[idx].id, cx, cy, gg->card_w, gg->card_h, img);
         if (idx == sel)   // glides between cards (inert with the gate off)
-            spine_focus_ring_gpu(cx, cy, gg->card_w, gg->card_h);
+            spine_focus_poster_gpu(cx, cy, gg->card_w, gg->card_h);
     }
 }
 

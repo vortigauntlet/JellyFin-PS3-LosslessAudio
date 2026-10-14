@@ -141,8 +141,8 @@ static void card_rect(const DepthCard *c, int *x, int *y, int *w, int *h)
 // --- GPU ------------------------------------------------------------------------------
 
 // The canvas's focus treatment: a soft accent glow behind (drawn first), then
-// three accent bands fading outward, a faint white line and the 2 px white
-// frame.  `a` scales all of it.
+// three accent bands fading outward.  No white frame on artwork (the user's
+// call, 2026-10-14).  `a` scales all of it.
 static void halo_glow(int x, int y, int w, int h, float a)
 {
     if (!wave_gpu_blend_ready() || a <= 0.02f) return;
@@ -172,8 +172,11 @@ static void halo_bands(int x, int y, int w, int h, float a)
     ring(x, y, w, h, UIS_W(24), UIS_W(8), acc, 0.07f * a);
     ring(x, y, w, h, UIS_W(16), UIS_W(6), acc, 0.14f * a);
     ring(x, y, w, h, UIS_W(9),  UIS_W(6), acc, 0.24f * a);
-    ring(x, y, w, h, UIS_W(3),  1,        XMB_WHITE, 0.27f * a);
-    ring(x, y, w, h, 0,         UIS_W(2) > 2 ? UIS_W(2) : 2, XMB_WHITE, a);
+}
+
+void depth_focus_bands_gpu(int x, int y, int w, int h)
+{
+    halo_bands(x, y, w, h, 1.0f);
 }
 
 // One card: the image at its opacity (or the dim placeholder while it loads),

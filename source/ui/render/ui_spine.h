@@ -100,6 +100,8 @@ int spine_content_dy(void);
 // toward (x, y, w, h).  It snaps instead when the screen changed (tab, sub-
 // screen) or no ring was drawn last frame.  GPU phase only.
 void spine_focus_ring_gpu(int x, int y, int w, int h);
+// The same glide for a poster: accent bands, no white frame.
+void spine_focus_poster_gpu(int x, int y, int w, int h);
 
 // Grid scroll easing.  Given the grid's logical `scroll` (first visible
 // index), returns the window to DRAW: rows relative to scroll's row (row0 may

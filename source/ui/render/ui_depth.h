@@ -63,6 +63,8 @@ int depth_floor_y(void);
 
 // GPU phase (before the frame's rsxSync).  The caller owns the clip band.
 void depth_stage_gpu(const DepthStage *s);
+// The focused poster's accent bands, outside the rect (GPU phase).
+void depth_focus_bands_gpu(int x, int y, int w, int h);
 
 // CPU phase: the opaque fallback when the RSX card path is not up -- only
 // cards at least `min_op` opaque and wholly on screen.  A no-op otherwise.
