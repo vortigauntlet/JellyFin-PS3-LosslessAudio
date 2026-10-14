@@ -168,17 +168,14 @@ bool xmb_cpu_blit_thumb(const char *item_id, int x, int y, int w, int h) {
 // this tree is UTF-8 now; the fallback is there for what the server sends.
 #define META_SEP " \xC2\xB7 "
 
-// Draw the meta string "year · duration · genre" at (x, y).
+// Draw the meta string "year · duration" at (x, y).  No genre (the user,
+// 2026-10-14): the grids, the library label and search show year and runtime.
 void xmb_draw_meta(u32 x, u32 y, const XMBItem *it, float px) {
     char meta[64] = "";
     if (it->year_str[0])     { snprintf(meta, sizeof(meta), "%s", it->year_str); }
     if (it->duration_str[0]) {
         if (meta[0]) strncat(meta, META_SEP, sizeof(meta)-strlen(meta)-1);
         strncat(meta, it->duration_str, sizeof(meta)-strlen(meta)-1);
-    }
-    if (it->genre[0]) {
-        if (meta[0]) strncat(meta, META_SEP, sizeof(meta)-strlen(meta)-1);
-        strncat(meta, it->genre, sizeof(meta)-strlen(meta)-1);
     }
     if (meta[0]) drawTTF(x, y, meta, px, XMB_TEXT_DIM);
 }
@@ -612,14 +609,9 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
             if (meta[0]) strncat(meta, META_SEP, sizeof(meta)-strlen(meta)-1);
             strncat(meta, it->duration_str, sizeof(meta)-strlen(meta)-1);
         }
-        if (it->genre[0]) {
-            if (meta[0]) strncat(meta, META_SEP, sizeof(meta)-strlen(meta)-1);
-            strncat(meta, it->genre, sizeof(meta)-strlen(meta)-1);
-        }
-        if (it->codec[0]) {
-            if (meta[0]) strncat(meta, META_SEP, sizeof(meta)-strlen(meta)-1);
-            strncat(meta, it->codec, sizeof(meta)-strlen(meta)-1);
-        }
+        // Year and runtime only (the user, 2026-10-14): genre and codec made
+        // the line long enough to be cut off under a poster, and the details
+        // page shows both.
         if (meta[0])
             draw_ttf_clipped((u32)cx, (u32)(ty + UIS_H(27)), meta, UIS_TF(14),
                              XMB_TEXT_DIM, gg->card_w, false, UI_FACE_ROBOCOND);
