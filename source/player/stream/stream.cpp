@@ -181,8 +181,12 @@ static void file_close_stream(void) {
     if (s_file_h >= 0) { lfs_close(s_file_h); s_file_h = -1; }
 }
 
-// Receive window (see stream_open): the run starts at WIN_KB_FAST and falls
-// back to WIN_KB_SAFE for good once a connection shows sender backoff.
+// Receive window (see stream_open): each title starts at WIN_KB_FAST and falls
+// back to WIN_KB_SAFE once a connection shows sender backoff, for the rest of
+// that title (its seeks and reopens).  It used to stay for the rest of the
+// run: one network outage during a pause (2026-10-14: 25 s of nothing, read as
+// backoff) left every later episode on 128 KB, which carries ~22 Mbps here --
+// less than the episodes needed, so each one starved for its first minutes.
 #define WIN_KB_FAST 512
 #define WIN_KB_SAFE 128
 static int          s_win_kb          = 0;      // what the open socket asked for
@@ -212,6 +216,10 @@ static void gap_note(u64 t0, u64 t1, int n) {
 }
 
 bool stream_window_reopen_pending(void) { return s_win_reopen != 0; }
+void stream_window_new_title(void) {
+    if (s_win_fallback_kb) lc_logf("stream: new title -- back to a %d KB window", WIN_KB_FAST);
+    s_win_fallback_kb = 0;
+}
 bool stream_window_reopen_take(void) {
     if (!s_win_reopen) return false;
     s_win_reopen = 0;
@@ -420,11 +428,12 @@ int stream_open(const char *url) {
         //    queued behind the hole use up the pool, the retransmission that
         //    would fill it is dropped too, and the stream sits through the
         //    sender's doubling backoff: ~1.7 MB bursts every 6-9 s.
-        // So every run starts at 512 and, the first time a connection shows
+        // So every title starts at 512 and, the first time a connection shows
         // that backoff (rx_gap.h), drops to 128 -- Movian's value on this
-        // console -- for the rest of the run, and the player reopens at the
-        // same position.  A new run tries 512 again, so a server that moves
-        // between Wi-Fi and Ethernet gets the right one either way.
+        // console -- for the rest of that title, and the player reopens at the
+        // same position.  The next title tries 512 again, so a server that
+        // moves between Wi-Fi and Ethernet, or one outage misread as backoff,
+        // costs one title at most.
         //
         // getsockopt reports the request rather than what is funded, so this
         // cannot be settled by reading it back.  jellyfin_rcvbuf.txt (KB)

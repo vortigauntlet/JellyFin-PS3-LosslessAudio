@@ -51,6 +51,8 @@ bool stream_readable(int sock, int timeout_ms);
 // current position.  _take clears it; stream_open() clears it too.
 bool stream_window_reopen_pending(void);
 bool stream_window_reopen_take(void);
+// A new title is starting: forget a fallback the previous one triggered.
+void stream_window_new_title(void);
 
 // Cumulative receive stats since process start: bytes delivered by netRecv,
 // microseconds spent blocked inside it, and how many times it was called.

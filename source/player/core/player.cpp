@@ -238,23 +238,16 @@ bool player_take_next_request(void) {
 // Popup badge top-right; the instruction line is drawn separately below
 // the badge, outside the box.  auto_secs >= 0 appends the auto-advance
 // countdown to the instruction line.
+//
+// Sized through the UI scale and placed inside the Screen Size inset, like the
+// HUD: these were fixed pixels 48 px from the edge, which a TV that crops its
+// edges cut through (2026-10-14).  The hint line is the wider of the two, so
+// the right edge is set by whichever is wider.
 static void player_draw_next_popup(int auto_secs) {
-    const float label_px = 26.0f;
-    const float hint_px  = 16.0f;
-    const int   pad_x = 26, pad_y = 14, margin = 48;
-
-    int tw = ttf_text_width(s_next_label, label_px);
-    int bw = tw + 2 * pad_x;
-    int bh = (int)label_px + 2 * pad_y;
-    int bx = (int)display_width - bw - margin;
-    int by = margin;
-
-    drawRect((u32)(bx - 1), (u32)(by - 1), (u32)(bw + 2), (u32)(bh + 2),
-             XMB_HAIRLINE);
-    drawRect((u32)bx, (u32)by, (u32)bw, (u32)bh, XMB_PANEL);
-    drawRect((u32)bx, (u32)by, 3, (u32)bh, XMB_ACCENT);
-    drawTTF((u32)(bx + pad_x), (u32)(by + pad_y), s_next_label, label_px,
-            XMB_TEXT, true);
+    const float label_px = UIS_TF(26.0f);
+    const float hint_px  = UIS_TF(16.0f);
+    const int   pad_x = UIS_W(26), pad_y = UIS_H(14);
+    const int   right = (int)display_width - XMB_OX - UIS_W(40);
 
     char hint[96];
     if (auto_secs >= 0)
@@ -262,23 +255,36 @@ static void player_draw_next_popup(int auto_secs) {
                  s_next_hint, auto_secs);
     else
         snprintf(hint, sizeof(hint), "%s", s_next_hint);
-    int hw = ttf_text_width(hint, hint_px);
-    drawTTF((u32)(bx + bw - hw), (u32)(by + bh + 14), hint, hint_px,
+    const int hw = ttf_text_width(hint, hint_px);
+
+    int tw = ttf_text_width(s_next_label, label_px);
+    int bw = tw + 2 * pad_x;
+    int bh = (int)label_px + 2 * pad_y;
+    int bx = right - bw;
+    int by = XMB_OY + UIS_H(36);
+
+    drawRect((u32)(bx - 1), (u32)(by - 1), (u32)(bw + 2), (u32)(bh + 2),
+             XMB_HAIRLINE);
+    drawRect((u32)bx, (u32)by, (u32)bw, (u32)bh, XMB_PANEL);
+    drawRect((u32)bx, (u32)by, 3, (u32)bh, XMB_ACCENT);
+    drawTTF((u32)(bx + pad_x), (u32)(by + pad_y), s_next_label, label_px,
+            XMB_TEXT, true);
+    drawTTF((u32)(right - hw), (u32)(by + bh + UIS_H(14)), hint, hint_px,
             XMB_TEXT_DIM);
 }
 
 // "Skip Intro" badge, bottom right, above where the control bar sits: the X
 // glyph and the label in the same panel style as the NEXT badge.
 static void player_draw_skip_badge(const char *label) {
-    const float label_px = 26.0f;
-    const int   pad_x = 22, pad_y = 14, margin = 48, gap = 14;
+    const float label_px = UIS_TF(26.0f);
+    const int   pad_x = UIS_W(22), pad_y = UIS_H(14), gap = UIS_W(14);
     const int   icon_h = (int)label_px;
     const int   iw = ps_btn_width('X', icon_h);
     const int   tw = ttf_text_width(label, label_px);
     const int   bw = pad_x + iw + gap + tw + pad_x;
     const int   bh = (int)label_px + 2 * pad_y;
-    const int   bx = (int)display_width - bw - margin;
-    const int   by = (int)display_height - bh - margin * 3;
+    const int   bx = (int)display_width - XMB_OX - UIS_W(40) - bw;
+    const int   by = (int)display_height - XMB_OY - bh - UIS_H(110);
 
     drawRect((u32)(bx - 1), (u32)(by - 1), (u32)(bw + 2), (u32)(bh + 2), XMB_HAIRLINE);
     drawRect((u32)bx, (u32)by, (u32)bw, (u32)bh, XMB_PANEL);
@@ -757,6 +763,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     }
     lc_logf("play-session CREATED psid=%s item=%s resume=%us",
             ps.session_id[0] ? ps.session_id : "(none)", item->id, resume_secs);
+    stream_window_new_title();
 
     if (live && !ps.source.id[0]) {
         plog("live: the server opened no stream for this channel");
