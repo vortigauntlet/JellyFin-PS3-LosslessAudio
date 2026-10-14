@@ -577,9 +577,11 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         // fit under a poster before the "..".  Roboto Condensed Bold at the same
         // size fits 11 (measured: the widest of ten real 11-character titles is
         // 103 px against a 122 px card at 1080 lines; card and type both scale
-        // with the screen height, so 720p and 4:3 fit the same).
+        // with the screen height, so 720p and 4:3 fit the same).  At 16 that
+        // read small, so 20: at least 11 characters of every sample title,
+        // about 10 plus ".." on a long one.
         draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(8)),
-                         items[idx].name, UIS_TF(16), XMB_TEXT_DIM, gg->card_w,
+                         items[idx].name, UIS_TF(20), XMB_TEXT_DIM, gg->card_w,
                          false, UI_FACE_ROBOCOND);
         // Music cards carry an artist credit under the title.
         if (items[idx].artist[0])
@@ -593,8 +595,8 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         int cx, cy;
         grid_cell_pos_m(gg, sel - scroll, y0, &cx, &cy);
         int ty = cy + gg->card_h + UIS_H(7);
-        // 18, not 20: at 20 the widest 11-character titles overrun the card.
-        draw_ttf_clipped((u32)cx, (u32)ty, it->name, UIS_TF(18),
+        // One step above the others; about 10 characters.
+        draw_ttf_clipped((u32)cx, (u32)ty, it->name, UIS_TF(21),
                          XMB_WHITE, gg->card_w, false, UI_FACE_ROBOCOND);
         if (it->artist[0]) {
             draw_ttf_clipped((u32)cx, (u32)(ty + UIS_H(27)), it->artist, UIS_TF(15),

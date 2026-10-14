@@ -42,7 +42,7 @@
 
 ### Changed
 - **Longer titles under posters.** Titles use a condensed face, so about
-  11 to 15 characters fit under a poster instead of 8.
+  about 10 characters fit under a poster instead of 8, at a larger size.
 - **The Next Episode prompt comes up later** (in the last 75 seconds rather
   than 90, or when the credits start), so it no longer gives away that a scene
   is the episode's last. Skip Intro now goes away after 5 seconds, and both

@@ -759,10 +759,10 @@ void xmb_home_text_phase(void) {
             if (cx < 0 || cx + cw > (int)display_width) continue;
             int ty = card_y + ch + UIS_H(5);
             bool sel = (row_focused && c == s_focus_col);
-            home_clip_text(cx, ty, row->items[c].name, UIS_TF(15),
+            home_clip_text(cx, ty, row->items[c].name, UIS_TF(19),
                            sel ? XMB_WHITE : XMB_TEXT_DIM, cw, sel);
             if (sel && row->items[c].year_str[0])
-                drawTTF((u32)cx, (u32)(ty + UIS_H(19)), row->items[c].year_str, UIS_TF(13), XMB_TEXT_FAINT);
+                drawTTF((u32)cx, (u32)(ty + UIS_H(23)), row->items[c].year_str, UIS_TF(13), XMB_TEXT_FAINT);
         }
 
     }
