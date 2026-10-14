@@ -7,7 +7,7 @@
 
 #define OVERSCAN_FILE "jellyfin_overscan.txt"
 
-static float s_frac = 0.0f;
+static float s_frac = OVERSCAN_DEFAULT_FRAC;
 
 float overscan_frac(void) { return s_frac; }
 
@@ -23,7 +23,7 @@ int overscan_x(void) { return (int)(s_frac * (float)display_width  + 0.5f); }
 int overscan_y(void) { return (int)(s_frac * (float)display_height + 0.5f); }
 
 // Persisted as integer permille (e.g. 35 = 3.5%) in the app data dir, next to
-// the login/settings files.  Missing file => 0 (no inset), the safe default.
+// the login/settings files.  Missing file => OVERSCAN_DEFAULT_FRAC.
 void overscan_load(void) {
     FILE *f = fopen(jf_data_path(OVERSCAN_FILE), "r");
     if (!f) return;

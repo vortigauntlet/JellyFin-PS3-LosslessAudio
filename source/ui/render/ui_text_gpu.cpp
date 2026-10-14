@@ -36,6 +36,17 @@ extern void crash_log(const char *msg);
 // on screen (tm=293 tkb=3567 in one second), a visible hitch every time.
 // VRAM is not what is short on this console; if 12 MB cannot be had, the old
 // 4 MB is used instead (losing the GPU text path would be far worse).
+//
+// 2026-10-14: still flushing every few seconds while flicking between tabs (13
+// whole-cache flushes in two minutes, each a visible hitch), because the table
+// fills at 70% of RUN_SLOTS long before the atlas does.  So nothing is flushed
+// whole any more.  The atlas is ATLAS_SEGS segments filled in turn; when the
+// current one fills, or the table gets dense, the OLDEST segment's runs are
+// dropped and the rest -- including everything still on screen that was drawn
+// recently -- stay.  That happens only in ui_text_gpu_begin(), when no draw is
+// queued, so no queued draw can lose its texture or its slot.  A run that
+// cannot be placed mid-frame takes the CPU path for that frame, as before.
+#define ATLAS_SEGS       8
 #define ATLAS_BYTES_WANT (12u * 1024u * 1024u)
 #define ATLAS_BYTES_MIN  (4u * 1024u * 1024u)
 #define RUN_SLOTS     1024           // power of two, open-addressed
@@ -76,8 +87,11 @@ static u32      s_run_count = 0;
 
 static u8      *s_atlas      = NULL;   // rsxMemalign'd VRAM
 static u32      s_atlas_off  = 0;
-static u32      s_atlas_used = 0;
 static u32      s_atlas_bytes = 0;     // what was allocated: WANT, else MIN
+static u32      s_seg_bytes  = 0;      // s_atlas_bytes / ATLAS_SEGS, 128-aligned
+static u32      s_seg_cur    = 0;      // segment new runs go into
+static u32      s_seg_used   = 0;      // bytes used in it
+static bool     s_seg_full   = false;  // a run did not fit this frame: move on
 // A queued draw holds only a RunSlot index, and that slot's texture points
 // into this atlas.  Resetting either while a frame still has queued draws
 // would make an earlier label disappear or (worse) draw a later label at its
@@ -142,6 +156,7 @@ void ui_text_gpu_init(void)
         return;
     }
     rsxAddressToOffset(s_atlas, &s_atlas_off);
+    s_seg_bytes = (s_atlas_bytes / ATLAS_SEGS) & ~127u;
 
     // Private copy of the passthrough fragment program, so this does not
     // depend on when the video path happens to have uploaded its own.
@@ -203,9 +218,69 @@ static void runs_flush_all(void)
 {
     memset(s_runs, 0, sizeof(s_runs));
     s_run_count  = 0;
-    s_atlas_used = 0;
+    s_seg_cur    = 0;
+    s_seg_used   = 0;
+    s_seg_full   = false;
     s_reset_pending = false;
-    plog("text_gpu: run cache flushed (atlas full)");
+    plog("text_gpu: run cache flushed");
+}
+
+static inline u32 run_seg(const RunSlot *s) { return (s->off - s_atlas_off) / s_seg_bytes; }
+
+// Put every live run back into a clean table.  Slots move, so this runs only
+// with nothing queued (ui_text_gpu_begin).
+static void table_rebuild(void)
+{
+    static RunSlot keep[RUN_SLOTS];
+    u32 n = 0;
+    for (u32 i = 0; i < RUN_SLOTS; i++)
+        if (s_runs[i].used) keep[n++] = s_runs[i];
+    memset(s_runs, 0, sizeof(s_runs));
+    const u32 mask = RUN_SLOTS - 1;
+    for (u32 k = 0; k < n; k++) {
+        u32 i = keep[k].hash & mask;
+        while (s_runs[i].used) i = (i + 1) & mask;
+        s_runs[i] = keep[k];
+    }
+    s_run_count = n;
+}
+
+static u32 seg_drop(u32 seg)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < RUN_SLOTS; i++)
+        if (s_runs[i].used && run_seg(&s_runs[i]) == seg) { s_runs[i].used = false; n++; }
+    return n;
+}
+
+// Called with an empty queue.  Moves to the next segment when the current one
+// is mostly used (or a run did not fit), dropping what that segment held --
+// the oldest runs -- and keeps the table at most half full by dropping the
+// next-oldest segments.
+static void runs_maintain(void)
+{
+    u32 dropped = 0;
+    bool changed = false;
+    if (s_seg_full || s_seg_used > s_seg_bytes / 4u * 3u) {
+        s_seg_cur  = (s_seg_cur + 1) % ATLAS_SEGS;
+        s_seg_used = 0;
+        dropped += seg_drop(s_seg_cur);
+        changed = true;
+    }
+    s_seg_full = false;
+    for (u32 d = 1; d < ATLAS_SEGS && (s_run_count - dropped) * 2 > RUN_SLOTS; d++) {
+        dropped += seg_drop((s_seg_cur + d) % ATLAS_SEGS);
+        changed = true;
+    }
+    if (changed) {
+        table_rebuild();
+        if (dropped) {
+            char b[80];
+            snprintf(b, sizeof b, "text_gpu: aged out %u runs (%u kept)", (unsigned)dropped,
+                     (unsigned)s_run_count);
+            plog(b);
+        }
+    }
 }
 
 // Copy a rasterized run from main-memory staging into the VRAM atlas.
@@ -222,25 +297,22 @@ static bool atlas_upload(const u32 *src, int w, int h, u32 *out_off, u32 *out_pi
     const u32 need  = pitch * (u32)h;
     const u32 padded_need = (need + 127u) & ~127u;
 
-    if (padded_need > s_atlas_bytes) return false;      // absurd: use the CPU path
-    if (s_atlas_used + padded_need > s_atlas_bytes) {
-        if (s_queued) {
-            // The queue still references this generation of the atlas.  Let
-            // this one run use the established CPU fallback and reset before
-            // the next frame instead of invalidating earlier queued draws.
-            s_reset_pending = true;
-            return false;
-        }
-        runs_flush_all();
+    if (padded_need > s_seg_bytes) return false;        // absurd: use the CPU path
+    if (s_seg_used + padded_need > s_seg_bytes) {
+        // The segment is full.  This run takes the CPU path for this frame;
+        // the next frame's begin() moves to the next segment.
+        s_seg_full = true;
+        return false;
     }
 
-    u8 *dst = s_atlas + s_atlas_used;
+    const u32 at = s_seg_cur * s_seg_bytes + s_seg_used;
+    u8 *dst = s_atlas + at;
     for (int row = 0; row < h; row++)
         memcpy(dst + (size_t)row * pitch, src + (size_t)row * w, (size_t)w * 4u);
 
-    *out_off   = s_atlas_off + s_atlas_used;
+    *out_off   = s_atlas_off + at;
     *out_pitch = pitch;
-    s_atlas_used += padded_need;                        // keep offsets aligned
+    s_seg_used += padded_need;                          // keep offsets aligned
     s_st_bytes   += need;
     return true;
 }
@@ -282,18 +354,11 @@ static const RunSlot *run_get(const char *text, int len, float px, int face,
         if (box.w <= 0 || box.h <= 0)            return NULL;
         if (box.w > RUN_MAX_W || box.h > RUN_MAX_H) return NULL;
 
-        // A dense table probes badly; drop it before it gets there, the same
-        // way the glyph cache does.
+        // A dense table probes badly.  begin() keeps it at most half full;
+        // a frame that adds this many runs draws the rest on the CPU.
         if ((s_run_count + 1) * 10 > RUN_SLOTS * 7) {
-            if (s_queued) {
-                // See atlas_upload(): table and atlas form one cache
-                // generation, so neither may be reset mid-queue.
-                s_reset_pending = true;
-                return NULL;
-            }
-            runs_flush_all();
-            i = hash & mask;
-            s = &s_runs[i];
+            s_seg_full = true;
+            return NULL;
         }
 
         if (icon_cp >= 0) ttf_icon_raster(icon_cp, px, colour, s_stage, &box);
@@ -302,8 +367,6 @@ static const RunSlot *run_get(const char *text, int len, float px, int face,
         u32 off, pitch;
         if (!atlas_upload(s_stage, box.w, box.h, &off, &pitch)) return NULL;
 
-        // runs_flush_all() inside atlas_upload() may have just emptied the
-        // table, so re-derive the slot rather than trusting the one above.
         i = hash & mask;
         while (s_runs[i].used) i = (i + 1) & mask;
         s = &s_runs[i];
@@ -337,6 +400,7 @@ void ui_text_gpu_begin(void)
     // waitflip() plus rsxSync() have both been through since.
     s_queued = 0;
     if (s_reset_pending) runs_flush_all();
+    else                 runs_maintain();
     s_window = true;
 }
 
@@ -468,7 +532,7 @@ static void submit_queue(void)
     for (u32 q = 0; q < s_queued; q++) {
         const RunDraw *d = &s_queue[q];
         const RunSlot *r = &s_runs[d->slot];
-        if (!r->used) continue;          // cache was flushed mid-frame
+        if (!r->used) continue;          // defensive: slots change only in begin()
 
         // The vertical scissor the CPU primitives honour through
         // cpu_row_clipped() has to mean the same thing here, or a Home shelf

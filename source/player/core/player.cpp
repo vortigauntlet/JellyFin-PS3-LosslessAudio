@@ -44,6 +44,7 @@
 #include "ui_wave.h"          // wave_draw_rrect_gpu: the loading spinner
 #include "thumbnail_cache.h"
 #include "display_24p.h"   // physical 1080p24 output
+#include "overscan.h"      // the 24p prompt stays inside Screen Size's safe area
 #include "display_diag.h"
 #include "meminfo.h"   // read-ahead ring sizing
 #include "slog.h"
@@ -131,16 +132,39 @@ static void player_startup_abort(void) {
 // -------------------------------------------------------
 static const char *s_d24_title = "";
 
+// One centred line, shrunk to fit `maxw` if it has to be.
+static int d24_line(const char *s, float px, int cx, int y, int maxw, u32 colour, bool bold) {
+    int w = ttf_text_width(s, px, bold);
+    if (w > maxw && w > 0) { px = px * (float)maxw / (float)w; w = ttf_text_width(s, px, bold); }
+    drawTTF((u32)(cx - w / 2), (u32)y, s, px, colour, bold);
+    return (int)(px * 1.6f);
+}
+
 static bool d24_draw_prompt(const char *line1, const char *line2) {
 #if !BUILD_FOR_RPCS3
     // Cleared each time: the prompt is redrawn every pass of the 24p confirm
     // wait with a changing countdown, which would otherwise smear.
     clearScreen(0x00000000);
     rsxSync();
-    drawHeader();
-    drawTextf(40, 100, "%.70s", s_d24_title);
-    drawText(40, 130, line1);
-    if (line2 && line2[0]) drawText(40, 160, line2);
+    // A centred panel, sized from the mode that is up NOW (the switch can change
+    // it) and kept inside the Screen Size inset, so a TV that crops its edges
+    // still shows all of it.  It used to be fixed 40/100 px text in the top-left
+    // corner: small on a 1080 output and cut off by an overscanning set.
+    const float s  = (float)display_height / 720.0f;
+    const int   ox = overscan_x(), oy = overscan_y();
+    const int   cx = (int)display_width / 2;
+    const int   pw = (int)display_width - 2 * ox - (int)(80 * s);
+    const int   pad = (int)(28 * s);
+    const int   tw = pw < (int)(900 * s) ? pw : (int)(900 * s);
+    const float t_px = 24.0f * s, l_px = 20.0f * s;
+    const int   ph = pad * 2 + (int)(t_px * 1.6f) + (int)(l_px * 1.6f) * (line2 && line2[0] ? 2 : 1)
+                   + (int)(8 * s);
+    const int   py = ((int)display_height - ph) / 2 + oy / 4;
+    drawRect((u32)(cx - tw / 2), (u32)py, (u32)tw, (u32)ph, XMB_PANEL);
+    int y = py + pad;
+    y += d24_line(s_d24_title, t_px, cx, y, tw - 2 * pad, XMB_TEXT, true) + (int)(8 * s);
+    y += d24_line(line1, l_px, cx, y, tw - 2 * pad, XMB_TEXT, false);
+    if (line2 && line2[0]) d24_line(line2, l_px, cx, y, tw - 2 * pad, XMB_TEXT_DIM, false);
 #else
     (void)line1; (void)line2;
 #endif

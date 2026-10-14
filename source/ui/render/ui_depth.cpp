@@ -169,9 +169,9 @@ static void halo_bands(int x, int y, int w, int h, float a)
 {
     if (a <= 0.02f) return;
     const u32 acc = XMB_ACCENT;
-    ring(x, y, w, h, UIS_W(24), UIS_W(8), acc, 0.07f * a);
-    ring(x, y, w, h, UIS_W(16), UIS_W(6), acc, 0.14f * a);
-    ring(x, y, w, h, UIS_W(9),  UIS_W(6), acc, 0.24f * a);
+    ring(x, y, w, h, UIS_W(24), UIS_W(8), acc, 0.02f * a);
+    ring(x, y, w, h, UIS_W(16), UIS_W(6), acc, 0.05f * a);
+    ring(x, y, w, h, UIS_W(9),  UIS_W(6), acc, 0.10f * a);
 }
 
 void depth_focus_bands_gpu(int x, int y, int w, int h)

@@ -130,8 +130,10 @@ static inline u8 aa_blend(u8 a, u8 fg, u8 bg) {
 // repeated "glyph cache flushed" lines in the log if this ever needs raising.
 // 2026-09-24: 640 KB / 4096 slots (were 384 KB / 2048): the log showed a
 // flush every few seconds under the spine, each one a burst of re-rasterising.
-#define GC_ARENA_BYTES  (640 * 1024)   // ~1.5% of free heap; ~1800 glyphs
-#define GC_SLOTS        4096           // power of two, open-addressed
+// 2026-10-14: 1 MB / 8192 (were 640 KB / 4096): still "glyph cache flushed"
+// every 2-6 s while flicking between tabs.
+#define GC_ARENA_BYTES  (1024 * 1024)  // ~4% of the menu's free heap; ~2900 glyphs
+#define GC_SLOTS        8192           // power of two, open-addressed
 #define GC_FONT_REG     0
 #define GC_FONT_BOLD    1
 #define GC_FONT_ICONS   2

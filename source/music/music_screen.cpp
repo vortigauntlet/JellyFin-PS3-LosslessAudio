@@ -267,26 +267,36 @@ static void music_fades_tick(bool focus_ok) {
     s_scr_a *= s_swap_a;                // the Canyon dip
 }
 
+// The screen is laid out in fractions of the overscan-SAFE rect (Settings >
+// Screen Size), like the rest of the UI (ui_visuals.h, THE SAFE AREA): a
+// position is the inset plus a fraction of the safe size, a size is a fraction
+// of the safe size.  It used to take fractions of the whole framebuffer, so a TV
+// that crops its edges cut off the cover and the Up Next list.
+static inline int msx(float f) { return XMB_OX + (int)((float)uis_safe_w() * f); }
+static inline int msy(float f) { return XMB_OY + (int)((float)uis_safe_h() * f); }
+static inline int msw(float f) { return (int)((float)uis_safe_w() * f); }
+static inline int msh(float f) { return (int)((float)uis_safe_h() * f); }
+static inline int m_right(void) { return (int)display_width - XMB_OX; }
+
 // The cover's place when settled.  cover_A1_full() is the size the TEXTURE
 // and the palette are requested at -- never the animated size, or the
 // thumbnail cache would be asked for a new size every frame of the shrink.
-static inline int cover_A1_full(void) { return (int)(display_height * 0.42f); }
-static inline int cover_A1_mini(void) { return (int)(display_height * 0.17f); }
+static inline int cover_A1_full(void) { return msh(0.42f); }
+static inline int cover_A1_mini(void) { return msh(0.17f); }
 static inline int cover_A1(void) {
     const float f = (float)cover_A1_full(), m = (float)cover_A1_mini();
     return (int)(f + (m - f) * s_mini_e + 0.5f);
 }
-static inline int cover_x1(void) { return UIS_W(40); }
+static inline int cover_x1(void) { return XMB_OX + UIS_W(40); }
 static inline int cover_y1(void) {
     // mini: its bottom edge above the transport (centred at 0.815 H)
-    const float f = display_height * 0.225f;
-    const float m = display_height * 0.735f - (float)cover_A1_mini();
+    const float f = (float)msy(0.225f);
+    const float m = (float)msy(0.735f) - (float)cover_A1_mini();
     return (int)(f + (m - f) * s_mini_e + 0.5f);
 }
 
 // Where the cover is this frame, and how opaque (the choreography).
 static void cover_geom(int *x, int *y, int *A, float *alpha) {
-    const int W = (int)display_width, H = (int)display_height;
     const float A1 = (float)cover_A1(), x1 = (float)cover_x1(), y1 = (float)cover_y1();
     const float e = s_e_cover;
     const bool from_tile = s_have_origin && !s_outro;
@@ -294,8 +304,8 @@ static void cover_geom(int *x, int *y, int *A, float *alpha) {
     if (from_tile) { oA = (float)s_os; ox = (float)s_ox; oy = (float)s_oy; }
     else {                                   // out of (or back into) depth
         oA = A1 * 0.64f;
-        ox = (float)W * 0.46f - oA * 0.5f;
-        oy = (float)H * 0.36f;
+        ox = (float)msx(0.46f) - oA * 0.5f;
+        oy = (float)msy(0.36f);
     }
     *A = (int)(oA + (A1 - oA) * e + 0.5f);
     *x = (int)(ox + (x1 - ox) * e + 0.5f);
@@ -555,8 +565,8 @@ static bool s_swallow_left = false;   // eat the held LEFT that exited QUEUE
 // Rows that fit the Up Next list (MQ_ROW_H per entry, stopping above the
 // seek bar's time labels).
 static int uq_vis_rows(void) {
-    int ey0 = (int)(display_height * 0.18f) + UIS_H(34);
-    int bot = (int)(display_height * 0.895f) - UIS_H(16);
+    int ey0 = msy(0.18f) + UIS_H(34);
+    int bot = msy(0.895f) - UIS_H(16);
     int n   = (bot - ey0) / MQ_ROW_H;
     return n < 1 ? 1 : n;
 }
@@ -749,9 +759,8 @@ static bool s_up_gpu[UQ_ROWS_MAX];
 static void music_upnext_gpu(const MusicTrack *tracks, int count, float a) {
     for (int i = 0; i < UQ_ROWS_MAX; i++) s_up_gpu[i] = false;
     if (a <= 0.01f || !ui_card_gpu_ready()) return;
-    const int W = (int)display_width, H = (int)display_height;
-    const int up_x  = W - (int)(W * 0.27f);
-    const int ey0   = (int)(H * 0.18f) + UIS_H(34);
+    const int up_x  = m_right() - msw(0.27f);
+    const int ey0   = msy(0.18f) + UIS_H(34);
     const int n_vis = uq_vis_rows();
     const int first = music_current_pos() + 1;
     if (count - first <= 0) return;
@@ -780,7 +789,6 @@ static void music_upnext_gpu(const MusicTrack *tracks, int count, float a) {
 static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                              int count) {
     int W = (int)display_width;
-    int H = (int)display_height;
 
     // No breadcrumb (Music > Albums > ... > Now Playing): everything it said
     // is on the screen already.  The lockup stays -- it is the XMB's too.
@@ -829,7 +837,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     // cover and is clipped at its right edge until it is clear of it.
     const int tx1       = cover_x1() + A1 + UIS_W(56);
     ua = s_e_panel * s_up_a * (1.0f - s_mini_e);                                   // fades with the screen and focus mode
-    const int up_x      = W - (int)(W * 0.27f);
+    const int up_x      = m_right() - msw(0.27f);
     const int col_w     = up_x - UIS_W(30) - tx1;
     const int tuck      = (ax + A / 2) - tx1;                  // < 0: how far behind the cover it starts
     const int tx        = tx1 + (int)((1.0f - ta) * (float)tuck);
@@ -843,7 +851,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     g_text_clip_left = clip_x;
 
     if (s_mini_e < 0.999f)   // the bars step aside for the canyon
-        draw_visualizer(tx, title_top - 18, (int)(W * 0.265f), (int)(H * 0.11f),
+        draw_visualizer(tx, title_top - 18, msw(0.265f), msh(0.11f),
                         ta * (1.0f - s_mini_e), clip_x);
 
     draw_clipped((u32)tx, (u32)title_top, t->name, UIS_TF(32) * k, fa(XMB_WHITE, ta), col_w, true);
@@ -900,7 +908,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     //      tile while loading), d-pad navigable, scrollbar when it
     //      outruns the window ----
     if (ua > 0.01f) {
-        int uy    = (int)(H * 0.18f);
+        int uy    = msy(0.18f);
         int ey0   = uy + UIS_H(34);
         int n_vis = uq_vis_rows();
         int pos   = music_current_pos();
@@ -917,7 +925,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
             if (scroll > count - n_vis) scroll = count - n_vis;
             if (scroll < first)         scroll = first;
 
-            int text_w = W - UIS_W(46) - (up_x + UIS_W(56));
+            int text_w = m_right() - UIS_W(46) - (up_x + UIS_W(56));
             int ey     = ey0;
             int row    = 0;
             for (int p = scroll; p < count && p < scroll + n_vis; p++, row++) {
@@ -932,7 +940,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                     // the cover and it vanished whenever the row was selected.
                     const u32 hc = fa(XMB_PANEL_HI, ua);
                     const int x0 = up_x - UIS_W(8), y0 = ey - MQ_ROW_GAP / 2;
-                    const int x1 = W - UIS_W(34), y1 = y0 + MQ_ROW_H;
+                    const int x1 = m_right() - UIS_W(34), y1 = y0 + MQ_ROW_H;
                     if (on_gpu) {
                         drawRect((u32)x0, (u32)y0, (u32)(up_x - x0), (u32)(y1 - y0), hc);
                         drawRect((u32)(up_x + MQ_ART), (u32)y0, (u32)(x1 - up_x - MQ_ART), (u32)(y1 - y0), hc);
@@ -955,7 +963,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
             }
 
             if (n_up > n_vis) {
-                int bar_x   = W - UIS_W(26);
+                int bar_x   = m_right() - UIS_W(26);
                 int track_h = n_vis * MQ_ROW_H - MQ_ROW_GAP;
                 drawRect((u32)bar_x, (u32)ey0, UIS_W(3), (u32)track_h, fa(XMB_TRACK, ua));
                 int th = track_h * n_vis / n_up;
@@ -977,7 +985,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     //      the wave.  Faded out means not drawn at all. ----
     if (fade_q(ca) > 0.0f) {
         int cx = W / 2;
-        int cy = (int)(H * 0.815f) + rise;
+        int cy = msy(0.815f) + rise;
         bool paused = music_is_paused();
 
         static const int T_OFF[5] = { -130, -72, 0, 72, 130 };
@@ -1053,7 +1061,7 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         int rx1 = (int)W - XMB_ITEM_PAD;
         int bx0 = rx0 + tw + gap16;
         int bx1 = rx1 - (td[0] ? dw + gap16 : 0);
-        int by  = (int)(H * 0.895f) + rise;
+        int by  = msy(0.895f) + rise;
         int bw  = bx1 - bx0;
         if (bw < UIS_W(40)) bw = UIS_W(40);          // degenerate width guard
 
@@ -1314,7 +1322,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             // (wave_snow.h): the cover, EACH text line (tight to its glyphs,
             // so particles drift through the gaps between them), and each
             // transport control.
-            const int W = (int)display_width, H = (int)display_height;
+            const int W = (int)display_width;
             int ob[4 * 12], n = 0;
             #define OB(x_, y_, w_, h_) do { if (n < 12) { ob[4*n] = (x_); ob[4*n+1] = (y_); \
                                              ob[4*n+2] = (w_); ob[4*n+3] = (h_); n++; } } while (0)
@@ -1325,7 +1333,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             if (s_ctl_a * s_e_ctl > 0.5f) {
                 static const int T_OFF[6] = { -130, -72, 0, 72, 130, 182 };
                 static const int T_HALF[6] = { 12, 14, 30, 14, 12, 11 };
-                const int cx = W / 2, cy = (int)(H * 0.815f);
+                const int cx = W / 2, cy = msy(0.815f);
                 for (int i = 0; i < 6; i++) {
                     const int hx = i == 2 ? T_HALF[i] : UIS_W(T_HALF[i]);
                     const int hy = i == 2 ? T_HALF[i] : UIS_H(T_HALF[i]);
@@ -1420,7 +1428,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
                 snprintf(vb, sizeof vb, TR("Visualizer: Canyon - %s"), canyon_preset_name());
             else
                 snprintf(vb, sizeof vb, TR("Visualizer: %s"), tr(MVIS_NAME[music_vis_cur()]));
-            draw_clipped((u32)UIS_W(40), (u32)(display_height * 0.12f), vb, UIS_TF(16),
+            draw_clipped((u32)(XMB_OX + UIS_W(40)), (u32)msy(0.12f), vb, UIS_TF(16),
                          fa(XMB_WHITE, s_scr_a), (int)(display_width * 0.5f));
         }
         if (s_q_open) {

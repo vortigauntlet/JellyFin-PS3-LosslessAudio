@@ -15,6 +15,10 @@
 
 #define OVERSCAN_MAX_FRAC   0.08f    // clamp: up to 8% inset per edge
 #define OVERSCAN_STEP_FRAC  0.005f   // d-pad calibration step (0.5%)
+// Before the user has calibrated anything: about the safe area the XMB and games
+// keep, so a TV that crops its edges (most do outside a "PC" / "Just Scan" mode)
+// still shows the logo, the clock and the hints.  A saved 0 ("Off") stays 0.
+#define OVERSCAN_DEFAULT_FRAC 0.035f
 
 void  overscan_load(void);           // read the persisted value (once, at startup)
 void  overscan_save(void);           // persist the current value
