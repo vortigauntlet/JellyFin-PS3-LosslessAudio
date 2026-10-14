@@ -3,6 +3,19 @@
 ## 3.2.2
 
 ### Fixed
+- **Menus no longer stutter while you flick between tabs.** The cache of
+  drawn text was being thrown away completely every few seconds, and each time
+  every label on screen had to be drawn again from scratch. Now only the oldest
+  text is dropped and what is on screen stays ready.
+- **Fits TVs that crop the picture's edges.** Most TVs outside a "PC" or
+  "Just Scan" mode cut off the edges of the picture, which hid the logo, the
+  clock and the button hints. The app now keeps a small margin by default, like
+  the PS3's own menus. Settings → Display → Screen Size still adjusts it (or
+  turns it off).
+- **Music player inside that margin too.** The album art and the Up Next list
+  no longer run off the edges on those TVs.
+- **The 24Hz/50Hz output prompt** is now a properly sized panel in the middle of
+  the screen, instead of small text in the corner where a TV could cut it off.
 - **Freeze on "Preparing" when starting a film.** Starting playback freed the
   poster memory while a poster that was still downloading could be written into
   it, right where the video decoder was being set up. On a slow connection, or
@@ -18,6 +31,10 @@
   update on every launch.
 - The log now says why a poster failed to load (no connection, the server's
   answer, or an image too large), not just that it did.
+
+### Changed
+- **Posters lose the white outline.** The selected poster is marked by a soft
+  purple glow that fades outward instead. Buttons keep their outline.
 
 ## 3.2.1
 
