@@ -10,10 +10,20 @@
 // ffmpeg pulling.
 //
 // What it does: for an http(s) input it inserts
-//     -readrate 1.25 -readrate_initial_burst 20
-// before that -i, so ffmpeg reads at 1.25x the media's own rate after a 20 s
-// head start.  Everything else is passed through untouched: the command line
-// is forwarded verbatim (no re-quoting), the std handles are inherited, the
+//     -readrate 1.75 -readrate_initial_burst 20
+// before that -i, so ffmpeg reads at 1.75x the media's own rate after a 20 s
+// head start.  ffwrap.ini next to this exe can set another rate
+// ("readrate=1.5"; 1.1 .. 4).
+//
+// Why 1.75 (2026-10-14; it was 1.25): the server can only stay that far ahead
+// of playback, so at 1.25 a 21 Mbps episode arrived at ~26 Mbps and the PS3
+// could never build a buffer -- every bitrate peak or network blip was a
+// visible hitch.  The PS3 takes ~30 Mbps, so 1.75 lets it fill its buffer on
+// typical episodes, while a 40 Mbps remux still pulls only ~70 Mbps, clear of
+// the ~110 Mbps that choked the router.
+//
+// Everything else is passed through untouched: the command line is forwarded
+// verbatim (no re-quoting), the std handles are inherited, the
 // exit code is returned, and ffmpeg runs in a job object so it dies with this
 // process when Jellyfin kills it.
 //
@@ -27,7 +37,30 @@ using System.Runtime.InteropServices;
 
 static class FfWrap
 {
-    const string Inject = "-readrate 1.25 -readrate_initial_burst 20 ";
+    const double DefaultRate = 1.75;
+
+    static string Inject()
+    {
+        double rate = DefaultRate;
+        try
+        {
+            string ini = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffwrap.ini");
+            if (File.Exists(ini))
+                foreach (string line in File.ReadAllLines(ini))
+                {
+                    string l = line.Trim();
+                    if (!l.StartsWith("readrate=", StringComparison.OrdinalIgnoreCase)) continue;
+                    double v;
+                    if (double.TryParse(l.Substring(9).Trim(), System.Globalization.NumberStyles.Float,
+                                        System.Globalization.CultureInfo.InvariantCulture, out v)
+                        && v >= 1.1 && v <= 4.0)
+                        rate = v;
+                }
+        }
+        catch { }
+        return "-readrate " + rate.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture)
+             + " -readrate_initial_burst 20 ";
+    }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr CreateJobObject(IntPtr a, string name);
@@ -58,7 +91,7 @@ static class FfWrap
         foreach (var pat in new[] { "-i \"http", "-i http" })
         {
             int k = args.IndexOf(pat, StringComparison.OrdinalIgnoreCase);
-            if (k >= 0 && (k == 0 || args[k - 1] == ' ')) return args.Substring(0, k) + Inject + args.Substring(k);
+            if (k >= 0 && (k == 0 || args[k - 1] == ' ')) return args.Substring(0, k) + Inject() + args.Substring(k);
         }
         return args;
     }
@@ -74,7 +107,7 @@ static class FfWrap
             try
             {
                 string log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffwrap.log");
-                File.AppendAllText(log, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " readrate injected\r\n");
+                File.AppendAllText(log, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " injected: " + Inject() + "\r\n");
             }
             catch { }
         }

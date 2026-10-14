@@ -11,8 +11,11 @@ for seconds at a time. (A gigabit switch between the router, PC and PS3 fixes
 it too, and also protects Moonlight.)
 
 **What ffwrap does:** it stands in for Jellyfin's `ffmpeg.exe`. When the input
-is an internet address it adds `-readrate 1.25 -readrate_initial_burst 20`, so
-ffmpeg reads at 1.25× the film's own bitrate after a 20-second head start.
+is an internet address it adds `-readrate 1.75 -readrate_initial_burst 20`, so
+ffmpeg reads at 1.75× the film's own bitrate after a 20-second head start —
+enough ahead of playback for the PS3 to build a buffer, without flooding the
+router. To change the rate, put `readrate=1.5` (any value from 1.1 to 4) in a
+file called `ffwrap.ini` next to `ffmpeg.exe`.
 Everything else goes to the real ffmpeg untouched. Windows only.
 
 ## Install (Windows)
