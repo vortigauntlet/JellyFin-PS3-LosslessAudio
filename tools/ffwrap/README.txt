@@ -17,7 +17,7 @@ When a film starts, Jellyfin's ffmpeg downloads it from the internet as fast
 as your connection allows. Many home routers cannot do that and still pass
 traffic between the PC and the PS3, so the PS3's stream stalls.
 
-ffwrap sits in front of Jellyfin's ffmpeg and makes it download at 1.75 times
+ffwrap sits in front of Jellyfin's ffmpeg and makes it download at 1.4 times
 the film's own bitrate instead (after a 4-second head start). That is far
 enough ahead of playback for the PS3 to keep a buffer, without flooding the
 router. Nothing else about Jellyfin changes.

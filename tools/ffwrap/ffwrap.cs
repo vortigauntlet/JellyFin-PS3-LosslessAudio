@@ -10,8 +10,8 @@
 // ffmpeg pulling.
 //
 // What it does: for an http(s) input it inserts
-//     -readrate 1.75 -readrate_initial_burst 4
-// before that -i, so ffmpeg reads at 1.75x the media's own rate after a 4 s
+//     -readrate 1.4 -readrate_initial_burst 4
+// before that -i, so ffmpeg reads at 1.4x the media's own rate after a 4 s
 // head start.  ffwrap.ini next to this exe can set another rate
 // ("readrate=1.5"; 1.1 .. 4) and head start ("burst=6"; 1 .. 60 s).
 //
@@ -30,6 +30,14 @@
 // (2 s and a 1.5 rate measured the same way; the PS3 still gets >= 44 Mbps from
 // the start.)
 //
+// Why 1.4, not 1.75 (2026-10-17): with the burst fixed the PS3 still lagged.  A
+// 60 MB upload PC -> PS3 ran at 17.5 Mbps with ffmpeg idle and 4.2 Mbps while
+// ffmpeg pulled a 24 Mbps remux at 1.75x (42 Mbps): the router loses PC -> PS3
+// traffic in proportion to the internet pull going through it at the same time.
+// 1.4 pulls 34 Mbps, which is what the server's old Wi-Fi link allowed when 3.1
+// played smoothly, and still stays ahead of a 24 Mbps stream.  An unmanaged
+// gigabit switch between router, PC and PS3 removes the problem for good.
+//
 // Everything else is passed through untouched: the command line is forwarded
 // verbatim (no re-quoting), the std handles are inherited, the
 // exit code is returned, and ffmpeg runs in a job object so it dies with this
@@ -47,7 +55,7 @@ using System.Runtime.InteropServices;
 
 static class FfWrap
 {
-    const double DefaultRate = 1.75;
+    const double DefaultRate = 1.4;
     const int    DefaultBurst = 4;
 
     // One "key=value" from ffwrap.ini next to this exe, or null.
