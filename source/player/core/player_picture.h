@@ -11,8 +11,8 @@ void    picture_load(void);              // once at startup; missing file = 100 
 PicSize picture_get(void);               // what the video quad should use
 
 // One call per player-loop frame.  L1 enters the mode; inside it the d-pad
-// resizes (Left/Right = width, Up/Down = height, held = repeat), Triangle
-// resets, L1 / X / O leave.  Returns true while the mode owns the input, in
+// resizes (Left/Right = width, Up/Down = height, held = repeat), R1 switches
+// the d-pad to moving the picture, Triangle resets both, L1 / X / O leave.  Returns true while the mode owns the input, in
 // which case the HUD must not see this frame's buttons.
 bool    picture_mode_input(void);
 

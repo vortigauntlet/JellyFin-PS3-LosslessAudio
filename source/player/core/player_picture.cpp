@@ -18,6 +18,7 @@
 
 static PicSize s_pic = { PIC_DEFAULT, PIC_DEFAULT, PIC_FIT };
 static bool    s_active = false;
+static bool    s_shift = false;           // the d-pad moves the picture instead of sizing it
 static u64     s_next_us = 0;             // 0 = no direction held
 static bool    s_dirty = false;           // changed since the last save
 
@@ -65,16 +66,35 @@ static void picture_save(void) {
     fclose(f);
 }
 
+// "Right 1.5%" / "Left 0.5%" / "Centred" for one axis, units of half a percent.
+static void shift_text(char *out, size_t cap, int v, const char *pos, const char *neg) {
+    if (v == 0) { snprintf(out, cap, "%s", TR("Centred")); return; }
+    const int a = v < 0 ? -v : v;
+    snprintf(out, cap, "%s %d.%d%%", v > 0 ? pos : neg, a / 2, (a % 2) * 5);
+}
+
 static void show_readout(void) {
-    char l1[96], l2[96];
-    snprintf(l1, sizeof l1, "%s  %s %d%%   %s %d%%   %s", TR("Picture size"),
-             TR("Width"), s_pic.w, TR("Height"), s_pic.h, aspect_label(s_pic.aspect));
-    snprintf(l2, sizeof l2, "%s", TR("D-pad adjust  Square fit / fill / stretch  Triangle reset  O done"));
+    char l1[160], l2[160];
+    if (s_shift) {
+        char hx[40], hy[40];
+        shift_text(hx, sizeof hx, s_pic.x, TR("Right"), TR("Left"));
+        shift_text(hy, sizeof hy, s_pic.y, TR("Up"), TR("Down"));
+        snprintf(l1, sizeof l1, "%s  %s   %s   %s", TR("Picture position"), hx, hy,
+                 aspect_label(s_pic.aspect));
+        snprintf(l2, sizeof l2, "%s",
+                 TR("D-pad move  R1 size  Square fit / fill / stretch  Triangle reset  O done"));
+    } else {
+        snprintf(l1, sizeof l1, "%s  %s %d%%   %s %d%%   %s", TR("Picture size"),
+                 TR("Width"), s_pic.w, TR("Height"), s_pic.h, aspect_label(s_pic.aspect));
+        snprintf(l2, sizeof l2, "%s",
+                 TR("D-pad size  R1 move  Square fit / fill / stretch  Triangle reset  O done"));
+    }
     hud_set_picture_banner(l1, l2);
 }
 
 static void leave(void) {
     s_active = false;
+    s_shift = false;
     s_next_us = 0;
     hud_clear_picture_banner();
     picture_save();
@@ -93,6 +113,7 @@ void picture_cycle_aspect(void) {
 
 void picture_session_end(void) {
     s_active = false;
+    s_shift = false;
     s_next_us = 0;
     picture_save();
 }
@@ -101,6 +122,7 @@ bool picture_mode_input(void) {
     if (!s_active) {
         if (!BTN_PRESSED(l1)) return false;
         s_active = true;
+        s_shift = false;
         s_next_us = 0;
         hud_hide();
         show_readout();
@@ -116,14 +138,22 @@ bool picture_mode_input(void) {
         show_readout();
         return true;
     }
+    if (BTN_PRESSED(r1)) {
+        s_shift = !s_shift;
+        s_next_us = 0;
+        show_readout();
+        return true;
+    }
     if (BTN_PRESSED(triangle)) {
         s_pic.w = s_pic.h = PIC_DEFAULT;
+        s_pic.x = s_pic.y = 0;
         s_dirty = true;
         show_readout();
         return true;
     }
 
-    // Right/Up grow, Left/Down shrink.  One step on the press, then repeat.
+    // Size: Right/Up grow, Left/Down shrink.  Position: the picture goes where
+    // the d-pad points.  One step on the press, then repeat.
     const int dw = (int)(btn_cur.right != 0) - (int)(btn_cur.left != 0);
     const int dh = (int)(btn_cur.up != 0)    - (int)(btn_cur.down != 0);
     if (!dw && !dh) { s_next_us = 0; return true; }
@@ -132,8 +162,8 @@ bool picture_mode_input(void) {
     else if (now >= s_next_us) s_next_us = now + PIC_REPEAT_US;         // a repeat
     else                       return true;
     const PicSize before = s_pic;
-    s_pic = pic_step(s_pic, dw, dh);
-    if (s_pic.w != before.w || s_pic.h != before.h) {
+    s_pic = s_shift ? pic_shift(s_pic, dw, dh) : pic_step(s_pic, dw, dh);
+    if (s_pic.w != before.w || s_pic.h != before.h || s_pic.x != before.x || s_pic.y != before.y) {
         s_dirty = true;
         show_readout();
     }

@@ -91,8 +91,8 @@ struct HudState {
     char live_times[24];
     int  live_permille;     // -1 = unknown
     u32  live_epoch;        // bumped when any live text changes (the compose key)
-    char banner[96];
-    char banner_sub[96];
+    char banner[160];
+    char banner_sub[160];
     u64  banner_until_us;
     bool banner_solo;       // the banner alone, no bar (hud_set_picture_banner)
 

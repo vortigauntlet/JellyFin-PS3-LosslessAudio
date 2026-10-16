@@ -18,7 +18,12 @@
 #include <stdint.h>
 
 #define RX_GAP_MIN_BYTES  (1024u * 1024u)   // past the transcode's start-up
-#define RX_GAP_SILENCE_US 3000000ull        // one unbroken wait this long trips it
+// One unbroken wait this long trips it.  3 s was the first value, and it fired on
+// ordinary sender backoff (0.6 + 1.2 + 2.4 s of retransmit timers) that the
+// connection would have recovered from by itself; the reopen it triggers costs
+// the whole transcode start-up again (18 s on the 2026-10-17 log), so only
+// silence that outlasts a full backoff round counts as stuck.
+#define RX_GAP_SILENCE_US 10000000ull
 #define RX_GAP_JOIN_US    250000ull
 
 typedef struct {

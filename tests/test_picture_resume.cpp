@@ -39,6 +39,20 @@ static void picture(void) {
     CHECK(!pic_parse("garbage", &keep) && keep.w == 77);
     CHECK(!pic_parse("90", &keep) && keep.w == 77 && keep.h == 66);
     CHECK(!pic_parse(NULL, &keep));
+
+    // The shift: right/up positive, clamped, saved with the size, reset with it.
+    PicSize m = { PIC_DEFAULT, PIC_DEFAULT };
+    m = pic_shift(m, 3, -2);
+    CHECK(m.x == 3 && m.y == -2 && m.w == PIC_DEFAULT && !pic_is_default(&m));
+    for (int i = 0; i < 200; i++) m = pic_shift(m, 1, -1);
+    CHECK(m.x == PIC_SHIFT_MAX && m.y == -PIC_SHIFT_MAX);
+    PicSize sv = { 95, 94, PIC_FIT, 4, 2 }, ld = { 100, 100 };
+    pic_format(&sv, buf, sizeof buf);
+    CHECK(pic_parse(buf, &ld) && ld.w == 95 && ld.h == 94 && ld.x == 4 && ld.y == 2);
+    // A file from before the shift existed means no shift, even over an old value.
+    ld.x = 7; ld.y = 7;
+    CHECK(pic_parse("95 94\n", &ld) && ld.x == 0 && ld.y == 0);
+    CHECK(pic_parse("95 94 900 -900\n", &ld) && ld.x == PIC_SHIFT_MAX && ld.y == -PIC_SHIFT_MAX);
 }
 
 static void aspect(void) {

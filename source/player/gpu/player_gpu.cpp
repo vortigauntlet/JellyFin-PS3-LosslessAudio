@@ -100,6 +100,10 @@ static void vid_gpu_build_quad(u32 fw, u32 fh) {
     const float kx = (float)pic.w / 100.0f, ky = (float)pic.h / 100.0f;
     cx0 *= kx; cx1 *= kx;
     cy0 *= ky; cy1 *= ky;
+    // ... then moved: 1 unit = half a percent of the screen = 0.01 of the
+    // -1..1 clip range.  Right and up are positive.
+    cx0 += pic.x * 0.01f; cx1 += pic.x * 0.01f;
+    cy0 += pic.y * 0.01f; cy1 += pic.y * 0.01f;
     s_vid_quad_pic = pic;
 
     float *v = (float*)s_vid_vbuf;
@@ -234,6 +238,7 @@ void vid_gpu_draw(bool render_blend, float blend_factor, u32 fw, u32 fh) {
     const PicSize pic = picture_get();
     if (fw != s_vid_quad_fw || fh != s_vid_quad_fh ||
         pic.w != s_vid_quad_pic.w || pic.h != s_vid_quad_pic.h ||
+        pic.x != s_vid_quad_pic.x || pic.y != s_vid_quad_pic.y ||
         pic.aspect != s_vid_quad_pic.aspect)
         vid_gpu_build_quad(fw, fh);
     rsx_draw_frame(render_blend, blend_factor, fw, fh);

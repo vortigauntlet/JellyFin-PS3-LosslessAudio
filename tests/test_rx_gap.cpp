@@ -27,7 +27,8 @@ int main() {
     // The 2026-10-12 log: a 1.7 MB burst, then 6-9 s of nothing.
     rx_gap_reset(&g); t = 1000000;
     for (int i = 0; i < 7; i++) { rx_gap_note(&g, t, t + 1000, 256 * 1024); t += 2000; }
-    CHECK(!wait_polls(&g, &t, 2900000));
+    // (the 10-17 log: a 3 s gap is ordinary backoff; only a full round counts)
+    CHECK(!wait_polls(&g, &t, RX_GAP_SILENCE_US - 100000));
     CHECK(wait_polls(&g, &t, 200000));
 
     // Before the first megabyte the server may still be starting its transcode.
@@ -59,7 +60,7 @@ int main() {
     // One long blocking receive counts the same as many short polls.
     rx_gap_reset(&g); t = 1000000;
     rx_gap_note(&g, t, t + 1000, 2 * 1024 * 1024); t += 2000;
-    CHECK(rx_gap_note(&g, t, t + 3000000, 0));
+    CHECK(rx_gap_note(&g, t, t + RX_GAP_SILENCE_US, 0));
 
     // A clock that steps backwards starts a new wait instead of a huge one.
     rx_gap_reset(&g); t = 5000000;

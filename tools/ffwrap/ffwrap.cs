@@ -10,10 +10,10 @@
 // ffmpeg pulling.
 //
 // What it does: for an http(s) input it inserts
-//     -readrate 1.75 -readrate_initial_burst 20
-// before that -i, so ffmpeg reads at 1.75x the media's own rate after a 20 s
+//     -readrate 1.75 -readrate_initial_burst 4
+// before that -i, so ffmpeg reads at 1.75x the media's own rate after a 4 s
 // head start.  ffwrap.ini next to this exe can set another rate
-// ("readrate=1.5"; 1.1 .. 4).
+// ("readrate=1.5"; 1.1 .. 4) and head start ("burst=6"; 1 .. 60 s).
 //
 // Why 1.75 (2026-10-14; it was 1.25): the server can only stay that far ahead
 // of playback, so at 1.25 a 21 Mbps episode arrived at ~26 Mbps and the PS3
@@ -21,6 +21,14 @@
 // visible hitch.  The PS3 takes ~30 Mbps, so 1.75 lets it fill its buffer on
 // typical episodes, while a 40 Mbps remux still pulls only ~70 Mbps, clear of
 // the ~110 Mbps that choked the router.
+//
+// Why a 4 s head start, not 20 (2026-10-16): the burst is read at full internet
+// speed, and 20 s of a 24 Mbps remux is ~60 MB, ~5 s of ~110 Mbps.  Pings to the
+// console while a stream started: 150 ms average, up to 890 ms, with losses, for
+// ~20 s -- the PS3 saw its stream collapse a few seconds in, then the app's
+// reopen made it worse.  With 4 s: no losses, worst 340 ms once, ~10 ms after.
+// (2 s and a 1.5 rate measured the same way; the PS3 still gets >= 44 Mbps from
+// the start.)
 //
 // Everything else is passed through untouched: the command line is forwarded
 // verbatim (no re-quoting), the std handles are inherited, the
@@ -40,6 +48,7 @@ using System.Runtime.InteropServices;
 static class FfWrap
 {
     const double DefaultRate = 1.75;
+    const int    DefaultBurst = 4;
 
     // One "key=value" from ffwrap.ini next to this exe, or null.
     static string IniValue(string key)
@@ -62,13 +71,16 @@ static class FfWrap
     static string Inject()
     {
         double rate = DefaultRate, v;
+        int burst = DefaultBurst, b;
         string s = IniValue("readrate");
         if (s != null && double.TryParse(s, System.Globalization.NumberStyles.Float,
                                          System.Globalization.CultureInfo.InvariantCulture, out v)
             && v >= 1.1 && v <= 4.0)
             rate = v;
+        string sb = IniValue("burst");
+        if (sb != null && int.TryParse(sb, out b) && b >= 1 && b <= 60) burst = b;
         return "-readrate " + rate.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture)
-             + " -readrate_initial_burst 20 ";
+             + " -readrate_initial_burst " + burst + " ";
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
