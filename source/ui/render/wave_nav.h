@@ -29,7 +29,7 @@
 #define WAVE_NAV_H
 
 #define WNV_PUSHES      3
-#define WNV_PUSH_A      0.045f    // dip depth, solver units (a beat warp is 0.050, upward)
+#define WNV_PUSH_A      0.016f    // dip depth, solver units (a beat warp is 0.050, upward)
 #define WNV_PUSH_LIFE   1.40f     // s
 #define WNV_PUSH_SPEED  0.45f     // band fractions per second
 #define WNV_PUSH_W0     0.09f     // half-width at birth, band fractions ...
@@ -37,24 +37,24 @@
 #define WNV_LAYER_LAG   0.09f     // s, near -> mid -> far
 #define WNV_DIP_MAX     0.060f    // deepest total dip, x layer weight (== WDF_NEG_MAX)
 
-#define WNV_BOB_KICK    0.55f     // world units/s of downward velocity per step
+#define WNV_BOB_KICK    0.20f     // world units/s of downward velocity per step
 #define WNV_BOB_K       40.0f     // spring, 1/s^2 (~1 Hz)
 #define WNV_BOB_C       9.0f      // damping, 1/s (~0.7 critical)
-#define WNV_BOB_MAX     0.10f     // deepest press, world units (~27 px at 1080p)
+#define WNV_BOB_MAX     0.04f     // deepest press, world units (~27 px at 1080p)
 
 #define WNV_GUST_TAU    0.45f     // s
 #define WNV_GUST_MAX    1.5f      // stacked steps
-#define WNV_WIND_X      0.10f     // clip units/s at one fresh step
-#define WNV_WIND_Y      0.08f
-#define WNV_JOSTLE      1.67f     // extra brownian at full activity (2.67x the ambient)
+#define WNV_WIND_X      0.04f     // clip units/s at one fresh step
+#define WNV_WIND_Y      0.03f
+#define WNV_JOSTLE      0.60f     // extra brownian at full activity (2.67x the ambient)
 
 #define WNV_RATE_TAU    0.60f     // s, the step-rate estimate's memory
 #define WNV_SHAKE_ON    4.5f      // steps/s where the shake begins ...
 #define WNV_SHAKE_FULL  6.5f      // ... and where it is full (auto-repeat is ~7.1)
 #define WNV_SHAKE_UP    0.15f     // s
 #define WNV_SHAKE_DOWN  0.50f     // s
-#define WNV_SHAKE_PERT  2.0f      // perturbation x (1 + this) at full shake
-#define WNV_SHIVER_A    0.014f    // the shiver's depth at full shake, solver units
+#define WNV_SHAKE_PERT  0.7f      // perturbation x (1 + this) at full shake
+#define WNV_SHIVER_A    0.005f    // the shiver's depth at full shake, solver units
 #define WNV_SHIVER_K    9.0f      // its cycles along the band
 #define WNV_SHIVER_HZ   2.6f      // and how fast it runs
 

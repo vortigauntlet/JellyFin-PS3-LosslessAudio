@@ -61,7 +61,7 @@ int main(void)
     run(&st, 0.25f, &fx);
     measure(&st, &deep, &rose, &c0);
     CHECK(rose == 0);
-    CHECK(deep < -0.03f);                       // visible: most of WNV_PUSH_A
+    CHECK(deep < -0.5f * WNV_PUSH_A);              // visible: most of WNV_PUSH_A
     CHECK(deep >= -WNV_DIP_MAX - 1e-6f);
     CHECK(fx.wind_x < 0.0f);                    // the particles blow left too
     run(&st, 0.5f, &fx);
@@ -104,7 +104,7 @@ int main(void)
         if (st.bob < lowest) lowest = st.bob;
         if (st.bob > highest) highest = st.bob;
     }
-    CHECK(lowest < -0.02f);                     // ~5 px or more at 1080p
+    CHECK(lowest < -0.5f * WNV_BOB_KICK / 10.0f);                     // ~3 px or more at 1080p
     CHECK(highest <= 0.0f);                     // never above rest
     run(&st, 2.0f, &fx);
     CHECK(st.bob == 0.0f && st.bob_v == 0.0f);
@@ -124,11 +124,11 @@ int main(void)
     wnv_init(&st);
     for (int i = 0; i < 28; i++) { wnv_event(&st, 0, 1); run(&st, 1.0f / 7.1f, &fx); }
     CHECK(st.shake > 0.8f);
-    CHECK(fx.perturb > 2.5f);
-    CHECK(fx.jostle > 1.3f);
+    CHECK(fx.perturb > 1.0f + 0.8f * WNV_SHAKE_PERT);
+    CHECK(fx.jostle > 0.8f * WNV_JOSTLE);
     measure(&st, &deep, &rose, NULL);
     CHECK(rose == 0);                           // the shiver dips too
-    CHECK(deep < -0.005f);
+    CHECK(deep < -0.3f * WNV_SHIVER_A);
     run(&st, 3.0f, &fx);
     CHECK(st.shake == 0.0f);
     CHECK(fx.perturb == 1.0f);
