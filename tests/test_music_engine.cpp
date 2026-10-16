@@ -46,6 +46,7 @@ char g_userid[64] = "";
 char responseBuffer[4096];
 
 void crash_log(const char *) {}
+unsigned meminfo_avail_kb(void) { return 0; }
 static bool s_verbose = false;
 void plog(const char *msg) { if (s_verbose) printf("    plog: %s\n", msg); }
 u64 timing_get_us(void) { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (u64)t.tv_sec * 1000000ULL + (u64)t.tv_nsec / 1000ULL; }

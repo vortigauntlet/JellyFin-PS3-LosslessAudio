@@ -40,6 +40,7 @@ extern void crash_log(const char *msg);   // survives a death plog does not
 #include "sc_dec.h"            // SoundCloud tracks: a pull decoder over HLS segments
 #include "sc_source.h"
 #include "sc_svc.h"
+#include "meminfo.h"          // the free-memory figure in the SoundCloud track log line
 
 extern u32 running;
 
@@ -661,8 +662,8 @@ static int play_sc_track(const MusicTrack *t, u32 start_secs, bool gapless) {
         sscanf(t->id, "sc:%*[0-9]:%d", &kbps);
         if (kbps > 0) snprintf(line, sizeof line, "%d kbps AAC", kbps);
         else snprintf(line, sizeof line, "AAC");
-        snprintf(b, sizeof b, "music: track %d/%d start=%us soundcloud %d segments, %d Hz [%s]%s", s_pos + 1, s_count, start_secs,
-                 s_sc.ss.nseg, scdec_source_hz(s_sc.dec), line, gapless ? " (gapless)" : "");
+        snprintf(b, sizeof b, "music: track %d/%d start=%us soundcloud %d segments, %d Hz [%s]%s free=%uKB", s_pos + 1, s_count, start_secs,
+                 s_sc.ss.nseg, scdec_source_hz(s_sc.dec), line, gapless ? " (gapless)" : "", meminfo_avail_kb());
         plog(b);
         const u32 secs = s_sc.ss.total_ms ? (s_sc.ss.total_ms + 500) / 1000 : t->duration_secs;
         publish_track_info(secs, line);
