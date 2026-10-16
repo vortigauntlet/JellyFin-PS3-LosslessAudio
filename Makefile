@@ -94,6 +94,8 @@ adec_dts.o:    CFLAGS += -O3
 adec_aac.o:    CXXFLAGS += -I$(PORTLIBS)/include
 # mbedTLS 2.28 from the portlibs, for the music-services network layer (source/net/sx_*).
 sx_tls.o:      CFLAGS += -I$(PORTLIBS)/include
+# -lfaad for the SoundCloud tab's AAC (source/svc/sc_aac.c, raw frames from the init segment's config).
+sc_aac.o:      CFLAGS += -I$(PORTLIBS)/include
 
 # -lsysfs: sysFsGetFreeSize, so offline downloads can check HDD space before
 # and during a transfer (source/offline/dl_ps3.cpp).  Nothing else in the

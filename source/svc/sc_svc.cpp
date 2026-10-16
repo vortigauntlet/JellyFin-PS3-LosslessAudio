@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "jf_paths.h"
 #include "local_music_fs.h"      // lm_art_bytes
@@ -114,21 +115,65 @@ void sc_svc_net_end(sc_net *n) {
     memset(n->cid, 0, sizeof n->cid);
 }
 
+// The thumbnail thread has a 64 KB stack, which is little for a TLS handshake, so the fetch runs on a worker of its
+// own (192 KB) and the provider waits for it.  One request at a time: only the thumbnail thread asks.
+static struct {
+    volatile int state;                  // 0 idle, 1 asked, 2 answered
+    char         url[200];
+    int          cap;
+    int          rc;                     // sc_net_get's code
+    char        *body;                   // the picture, to free()
+    size_t       len;
+} s_art;
+static bool s_art_started;
+
+static void art_worker(void *) {
+    static sc_net net;
+    for (;;) {
+        if (s_art.state != 1) { usleep(15000); continue; }
+        __sync_synchronize();
+        sc_svc_net_begin(&net);
+        net.connect_ms = 6000; net.handshake_ms = 8000; net.first_byte_ms = 10000; net.idle_ms = 6000;
+        s_art.body = NULL;
+        s_art.len = 0;
+        s_art.rc = sc_net_get(&net, s_art.url, (size_t)s_art.cap, &s_art.body, &s_art.len);
+        sc_svc_net_end(&net);
+        memset(s_art.url, 0, sizeof s_art.url);
+        __sync_synchronize();
+        s_art.state = 2;
+    }
+}
+
 int sc_art_bytes(const char *key, unsigned char *buf, int cap) {
     if (!sc_is_art_key(key)) return 0;
     char url[200];
     if (!sc_art_key_url(key, 500, url, sizeof url)) return -1;
-    static sc_net net;                                   // the thumbnail thread's alone
-    sc_svc_net_begin(&net);
-    net.connect_ms = 6000; net.handshake_ms = 8000; net.first_byte_ms = 10000; net.idle_ms = 6000;
-    char *body = NULL;
-    size_t len = 0;
-    const int rc = sc_net_get(&net, url, (size_t)cap, &body, &len);
-    sc_svc_net_end(&net);
-    if (rc != SC_NET_OK || !body) { free(body); return -1; }
-    memcpy(buf, body, len);
-    free(body);
-    return (int)len;
+    if (!s_art_started) {
+        s_art_started = true;
+        if (!sx_thread_spawn(art_worker, NULL, 1500, 192, "sc_art")) { s_art_started = false; return -1; }
+    }
+    // An earlier request may still be running, or have finished after its caller gave up: settle it first.
+    for (int t = 0; t < 1500 && s_art.state != 0; t++) {
+        if (s_art.state == 2) { free(s_art.body); s_art.body = NULL; s_art.state = 0; break; }
+        usleep(10000);
+    }
+    if (s_art.state != 0) return -1;
+    snprintf(s_art.url, sizeof s_art.url, "%s", url);
+    s_art.cap = cap;
+    __sync_synchronize();
+    s_art.state = 1;
+    for (int t = 0; t < 1300 && s_art.state != 2; t++) usleep(10000);
+    if (s_art.state != 2) return -1;                     // still busy: the next call settles it
+    __sync_synchronize();
+    int r = -1;
+    if (s_art.rc == SC_NET_OK && s_art.body && s_art.len > 0 && s_art.len <= (size_t)cap) {
+        memcpy(buf, s_art.body, s_art.len);
+        r = (int)s_art.len;
+    }
+    free(s_art.body);
+    s_art.body = NULL;
+    s_art.state = 0;
+    return r;
 }
 
 int music_art_bytes(const char *key, unsigned char *buf, int cap) {
