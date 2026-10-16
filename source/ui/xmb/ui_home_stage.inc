@@ -62,6 +62,8 @@ static void q_clamp_cols(void) {
     s_focus_col = s_row_col[s_focus_row];
 }
 
+#define Q_REST_SNAP 0.02f   // slots (~4 px at 1080p)
+
 static void q_tick(void) {
     const unsigned id = spine_frame_id();
     if (id == s_q_frame) return;
@@ -78,6 +80,11 @@ static void q_tick(void) {
     depth_follow(&s_qrow, (float)s_focus_row, snap, SPINE_CATEGORY_MS, dt);
     for (int r = 0; r < HOME_ROWS_N; r++)
         depth_follow(&s_qpos[r], (float)s_row_col[r], snap, SPINE_CATEGORY_MS, dt);
+    // The approach is exponential and its last stretch moves under a pixel a
+    // frame; Home lands it inside Q_REST_SNAP of the slot (the same distance
+    // depth_queue_settle treats as at rest).
+    for (int r = 0; r < HOME_ROWS_N; r++)
+        if (fabsf(s_qpos[r].value - s_qpos[r].target) < Q_REST_SNAP) s_qpos[r].value = s_qpos[r].target;
     s_q_frame = id;
     s_q_fresh = false;
 }
