@@ -37,6 +37,8 @@
 #include "surround.h"
 #include "centermix.h"
 #include "net_selftest.h"
+#include "sx_tls.h"
+#include "sc_diag.h"
 #include "subfont.h"
 #include "subcolor.h"
 #include "statsovl.h"
@@ -223,6 +225,10 @@ int main(int argc, const char *argv[]) {
     // Opt-in diagnostic, before anything else touches the network.  Does
     // nothing unless jellyfin_nettest.txt exists -- see net_selftest.h.
     net_selftest_run();
+    // TLS for the music-services tabs (mbedTLS; the firmware's SSL is too old for SoundCloud's
+    // hosts).  Builds the RNG and parses the CA bundle once, here, because it allocates and the
+    // reservations below leave little room after them.  A failure only disables those tabs.
+    if (!sx_tls_init()) plog("main: TLS did not start; the SoundCloud and Spotify tabs will not connect");
     // Opt-in SPU pool check (jellyfin_sputest.txt).  Runs here, while the heap
     // is still pristine and before vdec_reserve_mem() takes its 96MB -- and
     // crucially before anything could want the SPUs cellVdec will claim.
@@ -305,6 +311,7 @@ int main(int argc, const char *argv[]) {
     crash_log("10b dl_service_start");
     dl_service_start();
     lfs_start();             // local media: the internal disk, and USB drives as they are plugged in
+    sc_diag_start();         // opt-in SoundCloud chain check (jellyfin_sc_test.txt); a no-op otherwise
     {
         char buf[128];
         snprintf(buf, sizeof(buf), "10 server=%s token_len=%d userid=%s",

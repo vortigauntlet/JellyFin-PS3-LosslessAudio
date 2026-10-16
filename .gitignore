@@ -95,3 +95,10 @@ tests/em_be.txt
 tests/em_le.bin
 tests/em_be.bin
 tests/text_shadow_*.ppm
+
+# Music-services host tests (tests/Makefile.music)
+tests/live_sc
+tests/test_sc
+tests/test_sc_be
+tests/test_sx_net
+tests/sx_certs/

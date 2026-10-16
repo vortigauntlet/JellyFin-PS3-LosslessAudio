@@ -22,7 +22,7 @@ SOURCES     := source source/audio source/audio/a52 source/audio/dca \
                source/player/threads source/player/stream \
                source/ui source/ui/input source/ui/osk source/ui/xmb source/ui/render \
                source/util source/cache source/video source/music source/spu \
-               source/offline source/local third_party/mohasi_fs source/i18n
+               source/offline source/local third_party/mohasi_fs source/i18n source/svc
 DATA        := data
 INCLUDES    := source/audio source/audio/dcahd \
                source/audio/mlp/ff source/audio/mlp/ff/libavcodec \
@@ -30,7 +30,7 @@ INCLUDES    := source/audio source/audio/dcahd \
                source/player source/player/hud source/player/gpu source/player/stream \
                source/ui source/ui/render source/ui/fonts \
                source/util source/cache source/video source/music source/spu \
-               source/offline source/local third_party/mohasi_fs source/i18n
+               source/offline source/local third_party/mohasi_fs source/i18n source/svc
 
 TITLE       := Jellyfin PS3
 APPID       := JFPS30000
@@ -92,13 +92,16 @@ adec.o:        CFLAGS += -O3
 adec_truehd.o: CFLAGS += -O3
 adec_dts.o:    CFLAGS += -O3
 adec_aac.o:    CXXFLAGS += -I$(PORTLIBS)/include
+# mbedTLS 2.28 from the portlibs, for the music-services network layer (source/net/sx_*).
+sx_tls.o:      CFLAGS += -I$(PORTLIBS)/include
 
 # -lsysfs: sysFsGetFreeSize, so offline downloads can check HDD space before
 # and during a transfer (source/offline/dl_ps3.cpp).  Nothing else in the
 # app calls into libsysfs; its file I/O is lv2 syscalls.
 # -lfaad: AAC in files from a drive (source/audio/adec_aac.cpp), from the portlibs.
 LIBS        := -L$(PORTLIBS)/lib -lfaad -lvdec -laudio -lrsx -lgcm_sys -lio -lsysutil -lrt -llv2 -lm \
-               -lnet -lsysmodule -lssl -lhttp -lhttputil -lsysfs
+               -lnet -lsysmodule -lssl -lhttp -lhttputil -lsysfs \
+               -lmbedtls -lmbedx509 -lmbedcrypto
 
 LIBDIRS     :=
 

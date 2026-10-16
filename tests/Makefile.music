@@ -1,0 +1,54 @@
+# Host tests for the music-services tabs (SoundCloud now, Spotify later).
+#
+#   make -f Makefile.music check      # everything that runs offline (fixtures + local TLS server)
+#   make -f Makefile.music live       # the real SoundCloud hosts (needs internet; prints no secrets)
+#
+# mbedTLS must be the 2.28.10 the PS3 build uses, built with the PS3's config.h.
+# The TLS/HTTP layer under test is the one copied from the Stremio port
+# (source/net/sx_*); see docs/music-services-notes.md.
+
+CC       ?= cc
+MBEDTLS  ?= /home/ethan/st-tools/mbedtls-2.28.10
+NET       = ../source/net
+SX_PORTABLE = $(NET)/sx_httpparse.c $(NET)/sx_conn.c $(NET)/sx_http.c $(NET)/sx_tls.c $(NET)/sx_nettest.c \
+              $(NET)/sx_cacert.c hoststub/sx_plat_posix.c
+CFLAGS   ?= -O1 -g -Wall -Wextra -Wno-unused-parameter
+CFLAGS   += -I$(NET) -I$(MBEDTLS)/include -DSX_TEST_HOOKS
+SAN       = -fsanitize=address,undefined -fno-sanitize-recover=undefined
+LIBS      = -L$(MBEDTLS)/library -lmbedtls -lmbedx509 -lmbedcrypto -lpthread
+
+SVC    = ../source/svc
+SC_SRC = $(SVC)/sx_json.c $(SVC)/sc_scan.c $(SVC)/sc_hls.c $(SVC)/sc_api.c
+FIX    = fixtures/sc
+
+all: test_sx_net test_sc
+
+SC_NET = $(NET)/sx_httpparse.c $(NET)/sx_conn.c $(NET)/sx_http.c $(NET)/sx_tls.c $(NET)/sx_cacert.c hoststub/sx_plat_posix.c $(SVC)/sc_net.c
+
+live_sc: svc/live_sc.c $(SC_SRC) $(SC_NET) $(wildcard $(SVC)/*.h)
+	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -o $@ svc/live_sc.c $(SC_SRC) $(SC_NET) $(LIBS)
+
+test_sx_net: sx_net/test_sx_net.c $(SX_PORTABLE) $(wildcard $(NET)/sx_*.h)
+	$(CC) $(CFLAGS) $(SAN) -o $@ sx_net/test_sx_net.c $(SX_PORTABLE) $(LIBS)
+
+test_sc: svc/test_sc.c $(SC_SRC) $(wildcard $(SVC)/*.h)
+	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -o $@ svc/test_sc.c $(SC_SRC)
+
+# Big-endian: the same pure layer built for powerpc64 and run under qemu.
+test_sc_be: svc/test_sc.c $(SC_SRC) $(wildcard $(SVC)/*.h)
+	powerpc64-linux-gnu-gcc -O2 -Wall -static -I$(SVC) -o $@ svc/test_sc.c $(SC_SRC)
+
+certs:
+	rm -rf sx_certs && bash sx_net/sx_net_certs.sh sx_certs
+
+check: all test_sc_be certs
+	./test_sc $(FIX)
+	qemu-ppc64 ./test_sc_be $(FIX)
+	bash sx_net/sx_net_run.sh ./test_sx_net sx_certs
+
+live: test_sx_net live_sc
+	./test_sx_net --live
+	./live_sc
+
+clean:
+	rm -rf live_sc test_sx_net test_sc test_sc_be sx_certs
