@@ -156,7 +156,8 @@ static int add_sample(fmp4_seg *o, int *cap, uint32_t off, uint32_t size, uint32
     return 0;
 }
 
-int fmp4_parse_segment(const uint8_t *b, size_t len, const fmp4_init *init, fmp4_seg *out) {
+// `limit` is how far a sample may reach: the buffer's length for a whole segment, the end of the address space for a head.
+static int parse_impl(const uint8_t *b, size_t len, uint64_t limit, const fmp4_init *init, fmp4_seg *out) {
     memset(out, 0, sizeof(*out));
     box moof;
     if (!find_child(b, 0, len, FOURCC('m', 'o', 'o', 'f'), &moof)) return FMP4_E_NOMOOF;
@@ -215,7 +216,7 @@ int fmp4_parse_segment(const uint8_t *b, size_t len, const fmp4_init *init, fmp4
                 if (tf & 0x200) { size = u32(b + q); q += 4; }
                 if (tf & 0x400) q += 4;
                 if (tf & 0x800) q += 4;
-                if (data > len || size > len - data) { rc = FMP4_E_RANGE; break; }
+                if (data > limit || size > limit - data) { rc = FMP4_E_RANGE; break; }
                 rc = add_sample(out, &cap, (uint32_t)data, size, dur);
                 if (rc) break;
                 data += size;
@@ -229,4 +230,36 @@ int fmp4_parse_segment(const uint8_t *b, size_t len, const fmp4_init *init, fmp4
     if (rc == 0 && out->n == 0) rc = FMP4_E_NOSAMPLES;
     if (rc) { fmp4_seg_free(out); return rc; }
     return out->n;
+}
+
+int fmp4_parse_segment(const uint8_t *b, size_t len, const fmp4_init *init, fmp4_seg *out) {
+    return parse_impl(b, len, (uint64_t)len, init, out);
+}
+
+int fmp4_parse_head(const uint8_t *b, size_t avail, const fmp4_init *init, fmp4_seg *out, size_t *need) {
+    *need = 0;
+    memset(out, 0, sizeof(*out));
+    size_t pos = 0;
+    for (int guard = 0; guard < 16; guard++) {                // styp, sidx and the like come before the moof
+        if (avail - pos < 8) { *need = pos + 8; return FMP4_E_SHORT; }
+        uint64_t size = u32(b + pos);
+        size_t hdr = 8;
+        if (size == 1) {
+            if (avail - pos < 16) { *need = pos + 16; return FMP4_E_SHORT; }
+            size = u64(b + pos + 8);
+            hdr = 16;
+        }
+        if (size < hdr) return FMP4_E_SHORT;                   // malformed (a box that runs "to the end" cannot precede the moof)
+        if (u32(b + pos + 4) == FOURCC('m', 'o', 'o', 'f')) {
+            if (size > avail - pos) {
+                *need = size > 0xFFFFFFu ? 0xFFFFFFu : pos + (size_t)size;      // an absurd moof asks for an absurd head: the caller refuses
+                return FMP4_E_SHORT;
+            }
+            return parse_impl(b, avail, 0xFFFFFFFFULL, init, out);
+        }
+        if (size > 0xFFFFFFu) return FMP4_E_NOMOOF;
+        pos += (size_t)size;
+        if (pos > avail) { *need = pos + 8; return FMP4_E_SHORT; }
+    }
+    return FMP4_E_NOMOOF;
 }

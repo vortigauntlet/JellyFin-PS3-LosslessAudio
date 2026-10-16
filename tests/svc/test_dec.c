@@ -50,29 +50,55 @@ typedef struct {
     int corrupt;                // flip bytes in every segment (fuzz)
     unsigned seed;
     int fetches;
+    size_t chunk;               // bytes per read
+    int die_seg;                // this segment's reads fail after die_at bytes (-1 never)
+    size_t die_at;
 } FileSrc;
 
 static uint32_t f_ms(void *c, int i) { return ((FileSrc *)c)->ms[i]; }
 static int f_init(void *c, uint8_t **b, size_t *l) { *b = slurp(((FileSrc *)c)->dir, "init.mp4", l); return 0; }
-static int f_seg(void *c, int i, uint8_t **b, size_t *l) {
+typedef struct { uint8_t *b; size_t len, pos; int seg; } SegH;
+static int f_open(void *c, int i, void **h) {
     FileSrc *f = (FileSrc *)c;
     f->fetches++;
     if (f->fail_at >= 0 && i >= f->fail_at) return -1;
     char name[32];
     snprintf(name, sizeof(name), "data%03d.m4s", i + 1);
-    *b = slurp(f->dir, name, l);
+    SegH *s = (SegH *)calloc(1, sizeof(*s));
+    s->b = slurp(f->dir, name, &s->len);
+    s->seg = i;
     if (f->corrupt) {
         for (int k = 0; k < f->corrupt; k++) {
             f->seed = f->seed * 1103515245u + 12345u;
-            (*b)[(f->seed >> 8) % *l] ^= (uint8_t)(f->seed >> 20);
+            s->b[(f->seed >> 8) % s->len] ^= (uint8_t)(f->seed >> 20);
         }
     }
+    *h = s;
     return 0;
+}
+// Hands the segment out `chunk` bytes at a time (so the decoder's window logic meets every boundary), and can die mid-segment.
+static int f_read(void *c, void *h, uint8_t *buf, int n) {
+    FileSrc *f = (FileSrc *)c;
+    SegH *s = (SegH *)h;
+    if (f->die_seg == s->seg && s->pos >= f->die_at) return -1;
+    size_t k = s->len - s->pos;
+    if (k > (size_t)n) k = (size_t)n;
+    if (k > f->chunk) k = f->chunk;
+    if (f->die_seg == s->seg && s->pos + k > f->die_at) k = f->die_at - s->pos;
+    memcpy(buf, s->b + s->pos, k);
+    s->pos += k;
+    return (int)k;
+}
+static void f_close(void *c, void *h) {
+    (void)c;
+    SegH *s = (SegH *)h;
+    free(s->b);
+    free(s);
 }
 
 static void src_init(FileSrc *f, ScSegSource *s, const char *dir, int nseg) {
     memset(f, 0, sizeof(*f));
-    f->dir = dir; f->nseg = nseg; f->fail_at = -1;
+    f->dir = dir; f->nseg = nseg; f->fail_at = -1; f->chunk = 1460; f->die_seg = -1;
     size_t il;
     uint8_t *ib = slurp(dir, "init.mp4", &il);
     fmp4_init in;
@@ -92,7 +118,7 @@ static void src_init(FileSrc *f, ScSegSource *s, const char *dir, int nseg) {
         free(sb);
     }
     s->ctx = f; s->nseg = nseg; s->total_ms = total;
-    s->seg_ms = f_ms; s->fetch_init = f_init; s->fetch_seg = f_seg;
+    s->seg_ms = f_ms; s->fetch_init = f_init; s->seg_open = f_open; s->seg_read = f_read; s->seg_close = f_close;
 }
 
 static float *decode_all(ScDec *d, size_t *pairs) {
@@ -251,6 +277,53 @@ static void test_stereo44(const char *synth) {
     scdec_close(d);
 }
 
+static void test_chunks(const char *synth) {
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s/stereo44", synth);
+    // The same audio however the bytes arrive: one at a time, odd sizes, whole segments.
+    size_t ref_n = 0;
+    float *ref = NULL;
+    static const size_t chunks[] = { 1460, 1, 7, 333, 4096, 100000 };
+    for (size_t k = 0; k < sizeof(chunks) / sizeof(chunks[0]); k++) {
+        FileSrc fs;
+        ScSegSource ss;
+        src_init(&fs, &ss, dir, 3);
+        fs.chunk = chunks[k];
+        ScDec *d = scdec_open(&ss);
+        CHECK(d != NULL);
+        if (!d) continue;
+        size_t n;
+        float *all = decode_all(d, &n);
+        if (!ref) { ref = all; ref_n = n; }
+        else {
+            CHECK_MSG(n == ref_n && memcmp(all, ref, n * 2 * sizeof(float)) == 0, "chunk %zu: output differs", chunks[k]);
+            free(all);
+        }
+        // seeking the same whatever the chunk size
+        CHECK(scdec_seek(d, 13));
+        float buf[1000 * 2];
+        CHECK(scdec_decode(d, buf, 1000) == 1000);
+        scdec_close(d);
+    }
+    free(ref);
+    // A connection that dies partway through the second segment: the first one and part of the second are delivered, then an error.
+    {
+        FileSrc fs;
+        ScSegSource ss;
+        src_init(&fs, &ss, dir, 3);
+        fs.die_seg = 1;
+        fs.die_at = 90000;
+        ScDec *d = scdec_open(&ss);
+        size_t n;
+        float *all = decode_all(d, &n);
+        CHECK_MSG(n > 48000 * 14 && n < 48000 * 19, "decoded %zu pairs before the stream died", n);
+        float b[64];
+        CHECK(scdec_decode(d, b, 32) < 0);
+        free(all);
+        scdec_close(d);
+    }
+}
+
 static void test_failures(const char *synth) {
     char dir[512];
     snprintf(dir, sizeof(dir), "%s/stereo44", synth);
@@ -300,6 +373,7 @@ int main(int argc, char **argv) {
     if (argc < 2) { printf("usage: test_dec <sc_synth-dir>\n"); return 2; }
     test_mono48(argv[1]);
     test_stereo44(argv[1]);
+    test_chunks(argv[1]);
     test_failures(argv[1]);
     printf("test_dec: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

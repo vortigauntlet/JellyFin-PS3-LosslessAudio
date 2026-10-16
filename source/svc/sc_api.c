@@ -111,10 +111,13 @@ static bool track_from(sx_jv t, int pref, sc_track *o) {
     if (sx_j_get(t, "user", &user) && sx_j_type(user) == SXJ_OBJ) {
         sx_j_get_str(user, "username", o->artist, sizeof(o->artist));
     }
-    sx_jv v;
-    if (sx_j_get(t, "artwork_url", &v) && sx_j_type(v) == SXJ_STR) sx_j_str(v, o->art, sizeof(o->art));
-    if (!o->art[0] && sx_j_type(user) == SXJ_OBJ) sx_j_get_str(user, "avatar_url", o->art, sizeof(o->art));
-    sx_j_get_str(t, "permalink_url", o->permalink, sizeof(o->permalink));
+    {
+        char art[200] = "";
+        sx_jv v;
+        if (sx_j_get(t, "artwork_url", &v) && sx_j_type(v) == SXJ_STR) sx_j_str(v, art, sizeof(art));
+        if (!art[0] && sx_j_type(user) == SXJ_OBJ) sx_j_get_str(user, "avatar_url", art, sizeof(art));
+        if (!art[0] || !sc_art_key(art, o->art, sizeof(o->art))) o->art[0] = 0;
+    }
 
     sx_jv media;
     if (!sx_j_get(t, "media", &media) || sx_j_type(media) != SXJ_OBJ) {
@@ -131,7 +134,7 @@ static bool track_from(sx_jv t, int pref, sc_track *o) {
         sx_jv ev;
         while (sx_j_next(&it, NULL, &ev)) {
             if (sx_j_type(ev) != SXJ_OBJ) continue;
-            char preset[24] = "", url[sizeof(o->tc_url)] = "", proto[40] = "", mime[64] = "";
+            char preset[24] = "", url[208] = "", proto[40] = "", mime[64] = "";
             sx_j_get_str(ev, "preset", preset, sizeof(preset));
             sx_jv f;
             if (sx_j_get(ev, "format", &f) && sx_j_type(f) == SXJ_OBJ) {
@@ -141,16 +144,23 @@ static bool track_from(sx_jv t, int pref, sc_track *o) {
             if (!sx_j_get_str(ev, "url", url, sizeof(url))) continue;
             const bool snipped = sx_j_get_bool(ev, "snipped", false);
             int kind = 0, kbps = 0;
-            const int s = score_tc(preset, proto, mime, snipped, url, pref, &kind, &kbps, &enc, &snip);
+            int s = score_tc(preset, proto, mime, snipped, url, pref, &kind, &kbps, &enc, &snip);
+            // Only a URL on the API host that fits is usable: it is stored without its constant start.
+            if (s > 0 && (strncmp(url, SC_TC_PREFIX, sizeof(SC_TC_PREFIX) - 1) != 0 || strlen(url) - (sizeof(SC_TC_PREFIX) - 1) >= sizeof(o->tc))) s = 0;
             if (s > best) {
                 best = s;
-                o->tc_kind = kind; o->tc_kbps = kbps;
-                cpy(o->tc_url, sizeof(o->tc_url), url);
+                o->tc_kind = (uint8_t)kind; o->tc_kbps = (uint16_t)kbps;
+                cpy(o->tc, sizeof(o->tc), url + sizeof(SC_TC_PREFIX) - 1);
             }
         }
     }
     if (best == 0) o->hidden = enc ? SC_HID_ENCRYPTED : snip ? SC_HID_PREVIEW : SC_HID_UNSUPPORTED;
     return true;
+}
+
+bool sc_track_url(const sc_track *t, char *out, size_t cap) {
+    if (!t->tc[0] || t->hidden != SC_HID_NONE) return false;
+    return put(out, cap, SC_TC_PREFIX "%s", t->tc);
 }
 
 bool sc_parse_track(const char *json, size_t len, int pref, sc_track *out) {
@@ -175,11 +185,15 @@ static bool playlist_from(sx_jv o, sc_playlist *pl) {
     if (pl->id <= 0) return false;
     sx_j_get_str(o, "title", pl->title, sizeof(pl->title));
     pl->track_count = (int)sx_j_get_int(o, "track_count", 0);
-    sx_jv u;
+    sx_jv u = {NULL, NULL};
     if (sx_j_get(o, "user", &u) && sx_j_type(u) == SXJ_OBJ) sx_j_get_str(u, "username", pl->owner, sizeof(pl->owner));
-    sx_jv v;
-    if (sx_j_get(o, "artwork_url", &v) && sx_j_type(v) == SXJ_STR) sx_j_str(v, pl->art, sizeof(pl->art));
-    sx_j_get_str(o, "permalink_url", pl->permalink, sizeof(pl->permalink));
+    {
+        char art[200] = "";
+        sx_jv v;
+        if (sx_j_get(o, "artwork_url", &v) && sx_j_type(v) == SXJ_STR) sx_j_str(v, art, sizeof(art));
+        if (!art[0] && sx_j_type(u) == SXJ_OBJ) sx_j_get_str(u, "avatar_url", art, sizeof(art));
+        if (!art[0] || !sc_art_key(art, pl->art, sizeof(pl->art))) pl->art[0] = 0;
+    }
     return true;
 }
 
@@ -235,6 +249,73 @@ bool sc_parse_playlist(const char *json, size_t len, int pref, sc_playlist *meta
         while (sx_j_next(&it, NULL, &ev)) add_track(out, ev, pref);
     }
     return true;
+}
+
+// ---- streaming forms ---------------------------------------------------------------------------------------
+
+#define JS_WORK (32 * 1024)          // the largest track object kept; bigger ones are skipped
+
+typedef struct {
+    sc_page     *p;
+    int          pref;
+    int          n;
+    sc_playlist *meta;
+    bool         is_playlist;
+    int          limit;
+} PCtx;
+
+static bool page_elem(void *ud, const char *key, const char *json, size_t len) {
+    PCtx *c = (PCtx *)ud;
+    const sx_jv v = sx_j_root(json, len);
+    if (c->is_playlist) {
+        if (!strcmp(key, "tracks")) { add_track(c->p, v, c->pref); c->n++; }
+        if (c->limit > 0 && c->n >= c->limit) return false;
+    } else {
+        c->n += take_item(c->p, v, c->pref);
+    }
+    return c->limit <= 0 || c->n < c->limit;
+}
+
+static void page_member(void *ud, const char *key, const char *json, size_t len) {
+    PCtx *c = (PCtx *)ud;
+    const sx_jv v = sx_j_root(json, len);
+    if (!c->is_playlist) {
+        if (!strcmp(key, "next_href") && sx_j_type(v) == SXJ_STR) sx_j_str(v, c->p->next_href, sizeof(c->p->next_href));
+        return;
+    }
+    sc_playlist *m = c->meta;
+    if (!strcmp(key, "id")) { int64_t id; if (sx_j_int(v, &id)) m->id = id; }
+    else if (!strcmp(key, "title")) sx_j_str(v, m->title, sizeof(m->title));
+    else if (!strcmp(key, "track_count")) { int64_t t; if (sx_j_int(v, &t)) m->track_count = (int)t; }
+    else if (!strcmp(key, "artwork_url") && sx_j_type(v) == SXJ_STR) {
+        char art[200] = "";
+        sx_j_str(v, art, sizeof(art));
+        if (!art[0] || !sc_art_key(art, m->art, sizeof(m->art))) m->art[0] = 0;
+    }
+    else if (!strcmp(key, "user") && sx_j_type(v) == SXJ_OBJ) sx_j_get_str(v, "username", m->owner, sizeof(m->owner));
+}
+
+int sc_page_stream(sc_jread rd, void *ctx, int pref, int max_items, sc_page *out) {
+    PCtx c = { out, pref, 0, NULL, false, max_items };
+    sc_jcb cb = { page_elem, page_member, &c };
+    const int rc = sc_jstream_run(rd, ctx, &cb, JS_WORK, NULL);
+    return rc == SC_J_OK ? c.n : rc;
+}
+
+int sc_playlist_stream(sc_jread rd, void *ctx, int pref, int max_items, sc_playlist *meta, sc_page *out) {
+    memset(meta, 0, sizeof(*meta));
+    PCtx c = { out, pref, 0, meta, true, max_items };
+    sc_jcb cb = { page_elem, page_member, &c };
+    const int rc = sc_jstream_run(rd, ctx, &cb, JS_WORK, NULL);
+    if (rc != SC_J_OK) return rc;
+    return meta->id > 0 ? c.n : SC_J_E_SYNTAX;
+}
+
+int sc_tracks_stream(sc_jread rd, void *ctx, int pref, int max_items, sc_page *out) {
+    PCtx c = { out, pref, 0, NULL, false, max_items };
+    sc_jcb cb = { page_elem, NULL, &c };
+    const int rc = sc_jstream_run(rd, ctx, &cb, JS_WORK, NULL);
+    return rc == SC_J_OK ? c.n : rc;
 }
 
 int sc_fill_stubs(sc_page *p, const sc_page *full) {

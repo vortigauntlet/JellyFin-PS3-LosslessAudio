@@ -151,7 +151,7 @@ void profile_work(void *arg) {
     if (!sc_profile_url(j->name, purl, sizeof purl) || !sc_url_resolve(purl, SC_CID_PLACEHOLDER, j->url, sizeof j->url)) {
         j->rc = SC_NET_E_ARG;
     } else {
-        j->rc = sc_net_api(&j->net, j->url, 256 * 1024, &body, &len);
+        j->rc = sc_net_api(&j->net, j->url, 64 * 1024, &body, &len);
         sc_user u;
         if (j->rc == SC_NET_OK) {
             if (sc_parse_user(body, len, &u)) {
@@ -202,8 +202,15 @@ bool ask_profile(void) {
 // ---------------------------------------------------------------------------
 //  A list of tracks (or playlists), loaded a page at a time
 // ---------------------------------------------------------------------------
+//  The console has well under 200 KB of free memory while it plays, so nothing here holds a whole reply: a page of 50
+//  tracks is read one track at a time (sc_jstream) into a record of 330 bytes, and the listing keeps a window of the
+//  newest TRACK_CAP of them; paging forward drops the oldest TRACK_DROP.
 
 enum Kind { K_LIKES, K_REPOSTS, K_UPLOADS, K_SEARCH, K_PLAYLIST, K_PLAYLISTS };
+
+const int TRACK_CAP  = 150;          // tracks kept (50 KB)
+const int TRACK_DROP = 50;           // dropped from the front when the window is full
+const int PL_CAP     = 80;           // playlists kept (about 15 KB)
 
 struct Listing {
     Kind      kind;
@@ -211,6 +218,8 @@ struct Listing {
     char      query[96];
     char      title[128];
     sc_track *tr;  int ntr, cap_tr;
+    int       base;                  // tracks dropped from the front so far (the position shown is base + the index)
+    int       shift;                 // dropped by the last load: the screen moves its cursor by this much
     sc_playlist *pl; int npl, cap_pl;
     int       hidden[SC_HID_COUNT];
     char      next[320];
@@ -225,28 +234,23 @@ struct PageJob {
     bool     first;
     char     url[SC_URL_MAX];
     int      rc;
-    bool     failed_fatal;
     int      quality;
     char     profile[96];
 };
 
-bool grow_tracks(Listing *ls, int need) {
-    if (ls->ntr + need <= ls->cap_tr) return true;
-    int nc = ls->cap_tr ? ls->cap_tr * 2 : 64;
-    while (nc < ls->ntr + need) nc *= 2;
-    sc_track *g = (sc_track *)realloc(ls->tr, sizeof(sc_track) * (size_t)nc);
-    if (!g) return false;
-    ls->tr = g; ls->cap_tr = nc;
+bool ensure_tracks(Listing *ls) {
+    if (ls->tr) return true;
+    ls->tr = (sc_track *)malloc(sizeof(sc_track) * (size_t)TRACK_CAP);
+    if (!ls->tr) return false;
+    ls->cap_tr = TRACK_CAP;
     return true;
 }
 
-bool grow_playlists(Listing *ls, int need) {
-    if (ls->npl + need <= ls->cap_pl) return true;
-    int nc = ls->cap_pl ? ls->cap_pl * 2 : 32;
-    while (nc < ls->npl + need) nc *= 2;
-    sc_playlist *g = (sc_playlist *)realloc(ls->pl, sizeof(sc_playlist) * (size_t)nc);
-    if (!g) return false;
-    ls->pl = g; ls->cap_pl = nc;
+bool ensure_playlists(Listing *ls) {
+    if (ls->pl) return true;
+    ls->pl = (sc_playlist *)malloc(sizeof(sc_playlist) * (size_t)PL_CAP);
+    if (!ls->pl) return false;
+    ls->cap_pl = PL_CAP;
     return true;
 }
 
@@ -258,27 +262,34 @@ void listing_free(Listing *ls) {
 // Takes the playable tracks (and the playlists) of a parsed page into the listing.
 void absorb(Listing *ls, sc_page *p) {
     for (int i = 0; i < SC_HID_COUNT; i++) ls->hidden[i] += p->hidden[i];
-    if (grow_tracks(ls, p->ntr)) {
+    if (p->ntr > 0 && ensure_tracks(ls)) {
         for (int i = 0; i < p->ntr; i++) {
             if (p->tr[i].hidden != SC_HID_NONE) continue;
             // a track appears once however many times a page repeats it
             bool dup = false;
             for (int k = 0; k < ls->ntr && !dup; k++) dup = ls->tr[k].id == p->tr[i].id;
-            if (!dup) ls->tr[ls->ntr++] = p->tr[i];
+            if (dup) continue;
+            if (ls->ntr >= ls->cap_tr) {                           // the window is full: forget the oldest
+                const int drop = TRACK_DROP < ls->ntr ? TRACK_DROP : ls->ntr;
+                memmove(ls->tr, ls->tr + drop, sizeof(sc_track) * (size_t)(ls->ntr - drop));
+                ls->ntr -= drop; ls->base += drop; ls->shift += drop;
+            }
+            ls->tr[ls->ntr++] = p->tr[i];
         }
     }
-    if (grow_playlists(ls, p->npl)) {
-        for (int i = 0; i < p->npl; i++) ls->pl[ls->npl++] = p->pl[i];
+    if (p->npl > 0 && ensure_playlists(ls)) {
+        for (int i = 0; i < p->npl && ls->npl < ls->cap_pl; i++) ls->pl[ls->npl++] = p->pl[i];
+        if (ls->npl >= ls->cap_pl) ls->done = true;                // that many playlists is the end of what is useful
     }
 }
 
 bool resolve_uid(PageJob *j) {
     if (s_uid > 0 && !strcmp(s_uid_for, j->profile)) return true;
-    char purl[200], url[SC_URL_MAX];
+    char purl[200];
     char *body = NULL;
     size_t len = 0;
-    if (!sc_profile_url(j->profile, purl, sizeof purl) || !sc_url_resolve(purl, SC_CID_PLACEHOLDER, url, sizeof url)) { j->rc = SC_NET_E_ARG; return false; }
-    j->rc = sc_net_api(&j->net, url, 256 * 1024, &body, &len);
+    if (!sc_profile_url(j->profile, purl, sizeof purl) || !sc_url_resolve(purl, SC_CID_PLACEHOLDER, j->url, sizeof j->url)) { j->rc = SC_NET_E_ARG; return false; }
+    j->rc = sc_net_api(&j->net, j->url, 64 * 1024, &body, &len);
     sc_user u;
     const bool ok = j->rc == SC_NET_OK && sc_parse_user(body, len, &u);
     free(body);
@@ -306,6 +317,7 @@ void page_work(void *arg) {
     Listing *ls = j->ls;
     sc_svc_net_begin(&j->net);
     ls->status = 0;
+    ls->shift = 0;
     bool ok = true;
     if (j->first) {
         if (ls->kind != K_SEARCH) ok = resolve_uid(j);
@@ -316,26 +328,26 @@ void page_work(void *arg) {
         if (!ok) j->rc = SC_NET_E_ARG;
     }
     if (ok) {
-        char *body = NULL;
-        size_t len = 0;
-        j->rc = sc_net_api(&j->net, j->url, 3 * 1024 * 1024, &body, &len);
+        sc_stream *st = NULL;
+        j->rc = sc_net_open_api(&j->net, j->url, &st);
         if (j->rc == SC_NET_OK) {
             sc_page page;
             sc_page_init(&page);
-            const int n = sc_parse_page(body, len, j->quality, &page);
-            if (n < 0) j->rc = SC_NET_E_HTTP;
-            else {
+            const int n = sc_page_stream(sc_stream_jread, st, j->quality, 0, &page);
+            sc_stream_close(st);
+            if (n < 0 && page.ntr == 0 && page.npl == 0) j->rc = SC_NET_E_HTTP;      // not a listing, or nothing arrived
+            else {                                                                   // what arrived before a break is kept
                 absorb(ls, &page);
-                snprintf(ls->next, sizeof ls->next, "%s", page.next_href);
-                if (n == 0 || !ls->next[0]) ls->done = true;
+                snprintf(ls->next, sizeof ls->next, "%s", n < 0 ? "" : page.next_href);
+                if (n <= 0 || !ls->next[0]) ls->done = true;
             }
             sc_page_free(&page);
         }
-        free(body);
     }
     ls->status = j->rc;
     if (j->rc != SC_NET_OK) error_text(j->net, j->rc, ls->error, sizeof ls->error);
     memset(j->url, 0, sizeof j->url);
+    sc_net_flush(&j->net);
     sc_svc_net_end(&j->net);
 }
 
@@ -371,35 +383,36 @@ void playlist_work(void *arg) {
     PlaylistJob *j = (PlaylistJob *)arg;
     Listing *ls = j->ls;
     sc_svc_net_begin(&j->net);
-    char *body = NULL;
-    size_t len = 0;
     ls->status = 0;
     sc_playlist meta;
     sc_page page;
     sc_page_init(&page);
     sc_url_playlist(ls->id, SC_CID_PLACEHOLDER, j->url, sizeof j->url);
-    j->rc = sc_net_api(&j->net, j->url, 4 * 1024 * 1024, &body, &len);
-    if (j->rc == SC_NET_OK && !sc_parse_playlist(body, len, j->quality, &meta, &page)) j->rc = SC_NET_E_HTTP;
-    free(body);
+    sc_stream *st = NULL;
+    j->rc = sc_net_open_api(&j->net, j->url, &st);
     if (j->rc == SC_NET_OK) {
-        // The first 200 tracks; the ones the document only names are fetched 30 ids at a time.
-        if (page.ntr > 200) page.ntr = 200;
-        int64_t ids[200];
+        // The first TRACK_CAP tracks of the playlist; the ones the document only names are fetched 30 ids at a time.
+        const int n = sc_playlist_stream(sc_stream_jread, st, j->quality, TRACK_CAP, &meta, &page);
+        sc_stream_close(st);
+        if (n < 0 && page.ntr == 0) j->rc = SC_NET_E_HTTP;
+    }
+    if (j->rc == SC_NET_OK) {
+        int64_t ids[TRACK_CAP];
         int nid = 0;
-        for (int i = 0; i < page.ntr; i++) if (page.tr[i].hidden == SC_HID_STUB) ids[nid++] = page.tr[i].id;
+        for (int i = 0; i < page.ntr && nid < TRACK_CAP; i++) if (page.tr[i].hidden == SC_HID_STUB) ids[nid++] = page.tr[i].id;
         for (int b = 0; b < nid && j->rc == SC_NET_OK; b += 30) {
             const int n = nid - b < 30 ? nid - b : 30;
             sc_url_tracks_ids(ids + b, n, SC_CID_PLACEHOLDER, j->url, sizeof j->url);
-            body = NULL;
-            j->rc = sc_net_api(&j->net, j->url, 2 * 1024 * 1024, &body, &len);
+            st = NULL;
+            j->rc = sc_net_open_api(&j->net, j->url, &st);
             if (j->rc == SC_NET_OK) {
                 sc_page full;
                 sc_page_init(&full);
-                sc_parse_tracks_array(body, len, j->quality, &full);
+                sc_tracks_stream(sc_stream_jread, st, j->quality, 0, &full);
+                sc_stream_close(st);
                 sc_fill_stubs(&page, &full);
                 sc_page_free(&full);
             }
-            free(body);
         }
         // Whatever is still a bare id (deleted or private) is not shown.
         for (int i = 0; i < page.ntr; i++) {
@@ -416,6 +429,7 @@ void playlist_work(void *arg) {
     ls->status = j->rc;
     if (j->rc != SC_NET_OK) error_text(j->net, j->rc, ls->error, sizeof ls->error);
     memset(j->url, 0, sizeof j->url);
+    sc_net_flush(&j->net);
     sc_svc_net_end(&j->net);
 }
 
@@ -439,24 +453,29 @@ void play_from(const Listing *ls, int sel, const char *title) {
     int first = sel - 10;
     if (first + MUSIC_QUEUE_MAX > ls->ntr) first = ls->ntr - MUSIC_QUEUE_MAX;
     if (first < 0) first = 0;
-    int n = ls->ntr - first;
-    if (n > MUSIC_QUEUE_MAX) n = MUSIC_QUEUE_MAX;
-    for (int i = 0; i < n; i++) {
+    int total = ls->ntr - first;
+    if (total > MUSIC_QUEUE_MAX) total = MUSIC_QUEUE_MAX;
+    int n = 0, start = 0;
+    for (int i = 0; i < total; i++) {
         const sc_track &t = ls->tr[first + i];
-        MusicTrack &m = q[i];
+        char url[160];
+        if (!sc_track_url(&t, url, sizeof url)) continue;       // (never: only playable tracks are listed)
+        if (first + i == sel) start = n;
+        MusicTrack &m = q[n++];
         memset(&m, 0, sizeof m);
         snprintf(m.id, sizeof m.id, "sc:%lld:%d", (long long)t.id, t.tc_kbps);
         snprintf(m.name, sizeof m.name, "%s", t.title);
         snprintf(m.artist, sizeof m.artist, "%s", t.artist);
-        if (t.art[0]) sc_art_key(t.art, m.art_id, sizeof m.art_id);
+        snprintf(m.art_id, sizeof m.art_id, "%s", t.art);
         m.duration_secs = (t.dur_ms + 500) / 1000;
-        m.track_num = first + i + 1;
-        snprintf(m.path, sizeof m.path, "sc:%s", t.tc_url);
+        m.track_num = ls->base + first + i + 1;
+        snprintf(m.path, sizeof m.path, "sc:%s", url);
     }
+    if (n == 0) return;
     char msg[120];
-    snprintf(msg, sizeof msg, "sc: playing %d queued tracks from %d", n, sel - first);
+    snprintf(msg, sizeof msg, "sc: playing %d queued tracks from %d", n, start);
     plog(msg);
-    music_screen_open_service(q, n, sel - first, "SoundCloud", title);
+    music_screen_open_service(q, n, start, "SoundCloud", title);
     init_btns();
 }
 
@@ -471,10 +490,9 @@ void hidden_note(const Listing *ls, char *out, int cap) {
     if (h > 0) snprintf(out, (size_t)cap, h == 1 ? TR("%d track left out (protected or unavailable)") : TR("%d tracks left out (protected or unavailable)"), h);
 }
 
-void draw_art(const char *art_url, int x, int y, int s, bool sel) {
-    char key[72];
+void draw_art(const char *key, int x, int y, int s, bool sel) {
     bool drawn = false;
-    if (art_url[0] && sc_art_key(art_url, key, sizeof key)) drawn = xmb_cpu_blit_thumb(key, x, y, s, s);
+    if (key[0]) drawn = xmb_cpu_blit_thumb(key, x, y, s, s);
     if (!drawn) {
         drawRect((u32)x, (u32)y, (u32)s, (u32)s, XMB_PANEL_HI);
         drawIcon((u32)(x + (s - UIS_H(22)) / 2), (u32)(y + (s - UIS_H(22)) / 2), ICON_MUSIC, UIS_TF(22.0f), sel ? XMB_ACCENT_ALT : XMB_TEXT_FAINT);
@@ -523,6 +541,9 @@ void show_tracks(Listing *ls, const char *crumb) {
                     ls->done = true;                           // stop asking; what is loaded stays
                     xmb_dl_notice("SoundCloud", ls->error);
                 }
+                sel -= ls->shift; top -= ls->shift;            // the oldest tracks may have been dropped
+                if (sel < 0) sel = 0;
+                if (top < 0) top = 0;
                 arm.armed = false;
                 continue;
             }
@@ -555,7 +576,7 @@ void show_tracks(Listing *ls, const char *crumb) {
         }
         if (ls->ntr > vis) {
             char pos[48];
-            snprintf(pos, sizeof pos, ls->done ? "%d / %d" : "%d / %d+", sel + 1, ls->ntr);
+            snprintf(pos, sizeof pos, ls->done ? "%d / %d" : "%d / %d+", ls->base + sel + 1, ls->base + ls->ntr);
             const int pw = ttf_text_width(pos, UIS_TF(14));
             drawTTF((u32)(x + w - pw), (u32)(XMB_OY + UIS_H(70)), pos, UIS_TF(14), XMB_TEXT_FAINT);
         }

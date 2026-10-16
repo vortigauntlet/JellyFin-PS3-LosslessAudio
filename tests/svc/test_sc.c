@@ -35,6 +35,46 @@ static char *slurp(const char *name, size_t *len) {
 
 // ---- scanner -----------------------------------------------------------------------------------
 
+static void test_html(void) {
+    const char *page =
+        "<!doctype html><html><head><script>var x=\"<script src=\\\"https://evil/\\\">\";</script>"
+        "<scripts src=\"https://no/\"></scripts><script async crossorigin src=\"https://a-v2.sndcdn.com/assets/0-aa.js\"></script>"
+        "<script data-src=\"https://no2/\" src=\"https://a-v2.sndcdn.com/assets/1-bb.js\"></script>"
+        "<script\nsrc=\"https://a-v2.sndcdn.com/assets/2-cc.js\" defer></script><link rel=\"x\" src=\"https://no3/\">"
+        "<SCRIPT src=\"https://upper/\"></SCRIPT><script src=\"\"></script><script src='https://single/'></script>"
+        "<script src=\"https://a-v2.sndcdn.com/assets/last.js\"></script></head></html>";
+    const size_t n = strlen(page);
+    char out[24][SC_HTML_URL_MAX];
+    for (size_t step = 1; step <= n; step += (step < 8 ? 1 : 29)) {
+        sc_html f;
+        sc_html_init(&f, out, 24);
+        for (size_t p = 0; p < n; p += step) sc_html_feed(&f, page + p, n - p < step ? n - p : step);
+        CHECK_MSG(f.n == 4, "step %zu: %d scripts", step, f.n);
+        if (f.n == 4) {
+            CHECK(!strcmp(out[0], "https://a-v2.sndcdn.com/assets/0-aa.js") && !strcmp(out[1], "https://a-v2.sndcdn.com/assets/1-bb.js"));
+            CHECK(!strcmp(out[2], "https://a-v2.sndcdn.com/assets/2-cc.js") && !strcmp(out[3], "https://a-v2.sndcdn.com/assets/last.js"));
+        }
+    }
+    // The real page is read in 2 KB chunks.
+    size_t len;
+    char *home = (size_t)0 ? NULL : NULL;
+    (void)home; (void)len;
+    // A list longer than the room, and a src longer than a URL buffer.
+    sc_html f;
+    char two[2][SC_HTML_URL_MAX];
+    sc_html_init(&f, two, 2);
+    const char *many = "<script src=\"a\"></script><script src=\"b\"></script><script src=\"c\"></script>";
+    sc_html_feed(&f, many, strlen(many));
+    CHECK(f.n == 2 && !strcmp(two[1], "b"));
+    char longpage[600];
+    strcpy(longpage, "<script src=\"");
+    for (int i = 0; i < 300; i++) strcat(longpage, "x");
+    strcat(longpage, "\"></script><script src=\"ok\"></script>");
+    sc_html_init(&f, two, 2);
+    sc_html_feed(&f, longpage, strlen(longpage));
+    CHECK(f.n == 1 && !strcmp(two[0], "ok"));
+}
+
 static void test_scan(void) {
     const char *id = "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE";
     char js[1024];
@@ -86,9 +126,10 @@ static void test_hls(void) {
     CHECK_MSG(h.total_ms > 213000 && h.total_ms < 214500, "total %u", h.total_ms);
     CHECK(h.target_ms == 10000);
     CHECK(h.ended);
-    CHECK(h.map_len > 0);
-    CHECK(h.seg[0].dur_ms == 10008);                         // 10.007800 rounded down to the millisecond
-    CHECK(h.seg[2].dur_ms == 9985);
+    CHECK(h.map_uri != NULL);
+    CHECK(h.arena == NULL && h.tmpl_pre != NULL);            // SoundCloud's URIs follow one template: nothing but durations is kept per segment
+    CHECK(h.dur_ms[0] == 10008);                             // 10.007800 rounded to the millisecond
+    CHECK(h.dur_ms[2] == 9985);
 
     char url[512];
     CHECK(sc_hls_seg_url(&h, -1, "https://playback.media-streaming.soundcloud.cloud/x/y.m3u8", url, sizeof(url)));
@@ -106,8 +147,63 @@ static void test_hls(void) {
     CHECK(sc_hls_seek(&h, 10008, &into) == 1 && into == 0);
     CHECK(sc_hls_seek(&h, 25000, &into) == 2 && into == 25000 - 20016);
     CHECK(sc_hls_seek(&h, 9999999, &into) == 21);
+    // Every URL the template makes is the line the playlist has.
+    {
+        sc_hls h2;
+        CHECK(sc_hls_parse(pl, len, &h2) == SC_HLS_OK);
+        int k = 0;
+        for (const char *p = pl; *p;) {
+            const char *e = strchr(p, '\n');
+            if (!e) e = p + strlen(p);
+            if (*p && *p != '#') {
+                char want[2200];
+                size_t wl = (size_t)(e - p);
+                if (wl && p[wl - 1] == '\r') wl--;
+                memcpy(want, p, wl); want[wl] = 0;
+                char got[2200];
+                CHECK(sc_hls_seg_url(&h2, k, NULL, got, sizeof(got)));
+                CHECK_MSG(strcmp(got, want) == 0, "segment %d: template made a different URL", k);
+                k++;
+            }
+            p = *e ? e + 1 : e;
+        }
+        CHECK(k == 22);
+        sc_hls_free(&h2);
+    }
     sc_hls_free(&h);
     free(pl);
+
+    // A long mix: 360 segments cost durations only. One that breaks the pattern keeps every URI, and one that cannot fit is refused.
+    {
+        char *big = (char *)malloc(400 * 400);
+        size_t o = (size_t)sprintf(big, "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXT-X-MAP:URI=\"https://c.example/m/init.mp4?q=1\"\n");
+        for (int i = 0; i < 360; i++) o += (size_t)sprintf(big + o, "#EXTINF:10.0,\nhttps://c.example/m/data%03d.m4s?sig=abcdef\n", i);
+        o += (size_t)sprintf(big + o, "#EXT-X-ENDLIST\n");
+        sc_hls hb;
+        CHECK(sc_hls_parse(big, o, &hb) == SC_HLS_OK && hb.nseg == 360 && hb.total_ms == 3600000 && hb.arena == NULL);
+        char u[200];
+        CHECK(sc_hls_seg_url(&hb, 359, NULL, u, sizeof(u)) && strcmp(u, "https://c.example/m/data359.m4s?sig=abcdef") == 0);
+        CHECK(sc_hls_seg_url(&hb, 1, NULL, u, sizeof(u)) && strcmp(u, "https://c.example/m/data001.m4s?sig=abcdef") == 0);
+        sc_hls_free(&hb);
+
+        // the counter skips one: the first 3 are rebuilt from the template, the rest kept
+        const char *irr = "#EXTM3U\n#EXTINF:1,\nhttps://c/d000.m4s?a\n#EXTINF:1,\nhttps://c/d001.m4s?a\n#EXTINF:1,\nhttps://c/d002.m4s?a\n#EXTINF:1,\nhttps://c/d007.m4s?a\n#EXTINF:1,\nhttps://c/zzz\n";
+        CHECK(sc_hls_parse(irr, strlen(irr), &hb) == SC_HLS_OK && hb.nseg == 5 && hb.arena != NULL);
+        CHECK(sc_hls_seg_url(&hb, 2, NULL, u, sizeof(u)) && strcmp(u, "https://c/d002.m4s?a") == 0);
+        CHECK(sc_hls_seg_url(&hb, 3, NULL, u, sizeof(u)) && strcmp(u, "https://c/d007.m4s?a") == 0);
+        CHECK(sc_hls_seg_url(&hb, 4, NULL, u, sizeof(u)) && strcmp(u, "https://c/zzz") == 0);
+        sc_hls_free(&hb);
+        // no counter at all
+        const char *nc = "#EXTM3U\n#EXTINF:1,\nhttps://c/aaa.m4s\n#EXTINF:1,\nhttps://c/bbb.m4s\n";
+        CHECK(sc_hls_parse(nc, strlen(nc), &hb) == SC_HLS_OK && hb.nseg == 2 && hb.arena != NULL);
+        CHECK(sc_hls_seg_url(&hb, 1, NULL, u, sizeof(u)) && strcmp(u, "https://c/bbb.m4s") == 0);
+        sc_hls_free(&hb);
+        // irregular URIs past the arena limit
+        o = (size_t)sprintf(big, "#EXTM3U\n");
+        for (int i = 0; i < 360; i++) o += (size_t)sprintf(big + o, "#EXTINF:1,\nhttps://c.example/%d/%0*d_%d.m4s?%0300d\n", i * 7, 1, i % 3, i * 31, i);
+        CHECK(sc_hls_parse(big, o, &hb) == SC_HLS_E_TOOMANY);
+        free(big);
+    }
 
     // Refusals: encryption of every spelling, master, byte ranges, junk.
     static const char *enc[] = {
@@ -149,7 +245,13 @@ static void test_track(void) {
     CHECK(sc_parse_track(j, len, 160, &t));
     CHECK(t.id == 293 && t.hidden == SC_HID_NONE);
     CHECK(t.tc_kind == SC_TC_AAC_HLS && t.tc_kbps == 160);
-    CHECK(strstr(t.tc_url, "/stream/hls") != NULL && strchr(t.tc_url, '?') == NULL);
+    CHECK(strstr(t.tc, "/stream/hls") != NULL && strchr(t.tc, '?') == NULL && strncmp(t.tc, "media/", 6) == 0);
+    {
+        char full[300];
+        CHECK(sc_track_url(&t, full, sizeof(full)) && strncmp(full, "https://api-v2.soundcloud.com/media/soundcloud:tracks:293/", 56) == 0);
+        CHECK(!sc_track_url(&t, full, 20));
+    }
+    CHECK(sizeof(sc_track) <= 340);
     CHECK(strcmp(t.title, "Flickermood") == 0 || t.title[0]);
     CHECK(t.dur_ms > 210000 && t.dur_ms < 216000);
     CHECK(t.artist[0] != 0);
@@ -159,7 +261,7 @@ static void test_track(void) {
     j = slurp("track_encrypted.json", &len);
     CHECK(sc_parse_track(j, len, 160, &t));
     CHECK_MSG(t.hidden == SC_HID_ENCRYPTED, "hidden %d", t.hidden);
-    CHECK(t.tc_url[0] == 0 && t.tc_kind == SC_TC_NONE);          // a hidden track carries no URL to fetch
+    CHECK(t.tc[0] == 0 && t.tc_kind == SC_TC_NONE);          // a hidden track carries no URL to fetch
     free(j);
 
     // Hand-made transcoding sets.
@@ -199,8 +301,8 @@ static void test_track(void) {
         CHECK_MSG(sc_parse_track(doc, strlen(doc), 160, &t), "case %zu parse", i);
         CHECK_MSG(t.hidden == cases[i].hidden, "case %zu hidden %d want %d", i, t.hidden, cases[i].hidden);
         CHECK_MSG(t.tc_kind == cases[i].kind && t.tc_kbps == cases[i].kbps, "case %zu kind %d/%d", i, t.tc_kind, t.tc_kbps);
-        if (t.hidden != SC_HID_NONE) CHECK_MSG(t.tc_url[0] == 0, "case %zu kept a url", i);
-        if (i == 6) CHECK(strstr(t.tc_url, "/m/8") != NULL);
+        if (t.hidden != SC_HID_NONE) CHECK_MSG(t.tc[0] == 0, "case %zu kept a url", i);
+        if (i == 6) CHECK(strcmp(t.tc, "m/8") == 0);
     }
     // Not streamable, stub, avatar fallback.
     const char *ns = "{\"id\":9,\"kind\":\"track\",\"streamable\":false,\"media\":{\"transcodings\":[]}}";
@@ -209,7 +311,17 @@ static void test_track(void) {
     CHECK(sc_parse_track(stub, strlen(stub), 160, &t) && t.hidden == SC_HID_STUB && t.id == 10);
     char doc[2048];
     snprintf(doc, sizeof(doc), mk, "");
-    CHECK(sc_parse_track(doc, strlen(doc), 160, &t) && strcmp(t.art, "https://i/a-large.jpg") == 0);
+    CHECK(sc_parse_track(doc, strlen(doc), 160, &t) && t.art[0] == 0);          // an avatar that is not on sndcdn.com gets no picture
+    {
+        char d2[2048];
+        snprintf(d2, sizeof(d2), "{\"id\":8,\"kind\":\"track\",\"user\":{\"username\":\"u\",\"avatar_url\":\"https://i1.sndcdn.com/avatars-AbC-xyz-large.jpg\"},\"media\":{\"transcodings\":[]}}");
+        CHECK(sc_parse_track(d2, strlen(d2), 160, &t) && !strcmp(t.art, "sca:i1:s:jpg:avatars-AbC-xyz"));      // the uploader's avatar stands in for missing artwork
+        snprintf(d2, sizeof(d2), "{\"id\":9,\"kind\":\"track\",\"artwork_url\":\"https://i1.sndcdn.com/artworks-Q-r-large.jpg\",\"user\":{\"avatar_url\":\"https://i1.sndcdn.com/avatars-AbC-xyz-large.jpg\"},\"media\":{\"transcodings\":[]}}");
+        CHECK(sc_parse_track(d2, strlen(d2), 160, &t) && !strcmp(t.art, "sca:i1:s:jpg:artworks-Q-r"));
+        // a transcoding on another host is not usable
+        snprintf(d2, sizeof(d2), "{\"id\":10,\"kind\":\"track\",\"media\":{\"transcodings\":[{\"url\":\"https://evil.example/m/1\",\"preset\":\"aac_160k\",\"snipped\":false,\"format\":{\"protocol\":\"hls\",\"mime_type\":\"audio/mp4; codecs=\\\"mp4a.40.2\\\"\"}}]}}");
+        CHECK(sc_parse_track(d2, strlen(d2), 160, &t) && t.hidden == SC_HID_UNSUPPORTED && t.tc[0] == 0);
+    }
     CHECK(!sc_parse_track("[]", 2, 160, &t));
     CHECK(!sc_parse_track("{\"id\":0}", 8, 160, &t));
     CHECK(!sc_parse_track("{\"id\":", 6, 160, &t));
@@ -258,6 +370,94 @@ static void test_pages(void) {
     CHECK(sc_parse_page("[1,2]", 5, 160, &p) == -1);
     CHECK(sc_parse_page("{\"collection\":[1,null,{\"kind\":\"x\"}]}", 35, 160, &p) == 0);
     sc_page_free(&p);
+}
+
+// The streaming forms give what the whole-document forms give, whatever the chunking.
+typedef struct { const char *p; size_t n, pos, step; } SRd;
+static int srd_read(void *c, void *buf, int n) {
+    SRd *r = (SRd *)c;
+    size_t k = r->n - r->pos;
+    if (k > r->step) k = r->step;
+    if (k > (size_t)n) k = (size_t)n;
+    memcpy(buf, r->p + r->pos, k);
+    r->pos += k;
+    return (int)k;
+}
+
+static void test_streaming(void) {
+    static const char *files[] = { "user_likes.json", "user_tracks.json", "search_tracks.json", "user_playlists.json" };
+    static const size_t steps[] = { 1, 5, 1000, 100000 };
+    for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); f++) {
+        size_t len;
+        char *j = slurp(files[f], &len);
+        sc_page whole;
+        sc_page_init(&whole);
+        const int nw = sc_parse_page(j, len, 160, &whole);
+        for (size_t s = 0; s < sizeof(steps) / sizeof(steps[0]); s++) {
+            sc_page st;
+            sc_page_init(&st);
+            SRd r = { j, len, 0, steps[s] };
+            const int ns = sc_page_stream(srd_read, &r, 160, 0, &st);
+            CHECK_MSG(ns == nw, "%s step %zu: %d items, whole %d", files[f], steps[s], ns, nw);
+            CHECK(st.ntr == whole.ntr && st.npl == whole.npl && !strcmp(st.next_href, whole.next_href));
+            for (int i = 0; i < st.ntr && i < whole.ntr; i++)
+                CHECK(st.tr[i].id == whole.tr[i].id && st.tr[i].hidden == whole.tr[i].hidden && !strcmp(st.tr[i].tc, whole.tr[i].tc) &&
+                      !strcmp(st.tr[i].title, whole.tr[i].title));
+            for (int i = 0; i < SC_HID_COUNT; i++) CHECK(st.hidden[i] == whole.hidden[i]);
+            sc_page_free(&st);
+        }
+        sc_page_free(&whole);
+        free(j);
+    }
+    {   // a playlist document, with its bare ids
+        size_t len;
+        char *j = slurp("playlist.json", &len);
+        sc_page whole, st;
+        sc_playlist mw, ms;
+        sc_page_init(&whole); sc_page_init(&st);
+        CHECK(sc_parse_playlist(j, len, 160, &mw, &whole));
+        SRd r = { j, len, 0, 7 };
+        const int n = sc_playlist_stream(srd_read, &r, 160, 0, &ms, &st);
+        CHECK_MSG(n == whole.ntr, "playlist stream %d", n);
+        CHECK(ms.id == mw.id && !strcmp(ms.title, mw.title) && ms.track_count == mw.track_count && !strcmp(ms.owner, mw.owner));
+        CHECK(st.ntr == whole.ntr && st.hidden[SC_HID_STUB] == whole.hidden[SC_HID_STUB]);
+        sc_page_free(&whole); sc_page_free(&st);
+        free(j);
+    }
+    {   // the bare array of tracks?ids=
+        size_t len;
+        char *j = slurp("tracks_by_ids.json", &len);
+        sc_page whole, st;
+        sc_page_init(&whole); sc_page_init(&st);
+        const int nw = sc_parse_tracks_array(j, len, 160, &whole);
+        SRd r = { j, len, 0, 13 };
+        CHECK(sc_tracks_stream(srd_read, &r, 160, 0, &st) == nw && st.ntr == whole.ntr);
+        sc_page_free(&whole); sc_page_free(&st);
+        free(j);
+    }
+    {   // a limit stops the read early
+        size_t len;
+        char *j = slurp("user_likes.json", &len);
+        sc_page st;
+        sc_page_init(&st);
+        SRd r = { j, len, 0, 100 };
+        CHECK(sc_page_stream(srd_read, &r, 160, 2, &st) == 2 && st.ntr + st.npl == 2);
+        sc_page_free(&st);
+        free(j);
+    }
+    {   // not a listing, and a truncated one
+        sc_page st;
+        sc_page_init(&st);
+        SRd r1 = { "{\"error\":1}", 11, 0, 4 };
+        CHECK(sc_page_stream(srd_read, &r1, 160, 0, &st) == 0);          // an object with no collection: no items (the caller treats 0 items with no next_href as the end)
+        size_t len;
+        char *j = slurp("user_likes.json", &len);
+        SRd r2 = { j, len / 2, 0, 100 };
+        CHECK(sc_page_stream(srd_read, &r2, 160, 0, &st) < 0);
+        CHECK(st.ntr > 0);                                            // what arrived before the break is kept
+        sc_page_free(&st);
+        free(j);
+    }
 }
 
 static void test_playlist(void) {
@@ -413,10 +613,12 @@ int main(int argc, char **argv) {
     if (argc < 2) { printf("usage: test_sc <fixture-dir>\n"); return 2; }
     FIX = argv[1];
     test_scan();
+    test_html();
     test_hls();
     test_track();
     test_pages();
     test_playlist();
+    test_streaming();
     test_user_and_stream();
     test_urls();
     test_store();

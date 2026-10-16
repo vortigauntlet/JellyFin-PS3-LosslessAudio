@@ -110,3 +110,5 @@ tests/test_dec
 tests/test_dec_be
 tests/live_play
 tests/spotify_be/*.o
+tests/test_jstream
+tests/test_jstream_be

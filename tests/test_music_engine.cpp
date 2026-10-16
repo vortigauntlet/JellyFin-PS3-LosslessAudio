@@ -180,12 +180,30 @@ static int sc_fetch(const ScSource *s, const std::string &name, uint8_t **buf, s
     return 0;
 }
 static int sc_fetch_init(void *c, uint8_t **b, size_t *l) { return sc_fetch((ScSource *)c, "init.mp4", b, l); }
-static int sc_fetch_seg(void *c, int i, uint8_t **b, size_t *l) {
+struct ScSegH { uint8_t *b; size_t len, pos; };
+static int sc_seg_open(void *c, int i, void **h) {
     ScSource *s = (ScSource *)c;
     if (s->fail_at >= 0 && i >= s->fail_at) return -1;
     char name[32];
     snprintf(name, sizeof name, "data%03d.m4s", i + 1);
-    return sc_fetch(s, name, b, l);
+    ScSegH *g = new ScSegH{ NULL, 0, 0 };
+    if (sc_fetch(s, name, &g->b, &g->len) < 0) { delete g; return -1; }
+    *h = g;
+    return 0;
+}
+static int sc_seg_read(void *, void *h, uint8_t *buf, int n) {
+    ScSegH *g = (ScSegH *)h;
+    size_t k = g->len - g->pos;
+    if (k > (size_t)n) k = (size_t)n;
+    if (k > 1460) k = 1460;
+    memcpy(buf, g->b + g->pos, k);
+    g->pos += k;
+    return (int)k;
+}
+static void sc_seg_close(void *, void *h) {
+    ScSegH *g = (ScSegH *)h;
+    free(g->b);
+    delete g;
 }
 ScSource *scsrc_open(sc_net *, const char *url, ScSegSource *out, int *err) {
     s_sc_opens++;
@@ -216,7 +234,8 @@ ScSource *scsrc_open(sc_net *, const char *url, ScSegSource *out, int *err) {
         free(ib); free(sb);
     }
     out->ctx = s; out->nseg = nseg; out->total_ms = total;
-    out->seg_ms = sc_seg_ms; out->fetch_init = sc_fetch_init; out->fetch_seg = sc_fetch_seg;
+    out->seg_ms = sc_seg_ms; out->fetch_init = sc_fetch_init;
+    out->seg_open = sc_seg_open; out->seg_read = sc_seg_read; out->seg_close = sc_seg_close;
     return s;
 }
 void scsrc_close(ScSource *s) { delete s; }

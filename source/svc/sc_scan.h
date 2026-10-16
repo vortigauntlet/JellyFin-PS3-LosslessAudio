@@ -33,6 +33,28 @@ bool sc_scan_feed(sc_scan *s, const char *buf, size_t n);
 // The id, or NULL until it is found.  Never log it.
 const char *sc_scan_id(const sc_scan *s);
 
+// ---- the page's script list -------------------------------------------------------------------------------------
+// soundcloud.com's home page is 70 KB and lists its scripts as <script ... src="https://..."></script>.  This reads them
+// out as the page streams in (any split of the bytes gives the same list): the src of every <script> tag, double-quoted,
+// in order, at most `max` of them, each at most SC_HTML_URL_MAX-1 characters (longer ones are skipped).
+
+#define SC_HTML_URL_MAX 200
+
+typedef struct {
+    int           st;            // 0 text, 1 after "<script", 2 inside the tag, 3 reading the src value
+    int           m;             // progress through "<script" or "src=\""
+    bool          prev_ws;
+    unsigned char prev;
+    char          url[SC_HTML_URL_MAX];
+    int           ul;
+    bool          overlong;
+    char        (*out)[SC_HTML_URL_MAX];
+    int           n, max;
+} sc_html;
+
+void sc_html_init(sc_html *f, char (*out)[SC_HTML_URL_MAX], int max);
+void sc_html_feed(sc_html *f, const char *buf, size_t n);
+
 #ifdef __cplusplus
 }
 #endif

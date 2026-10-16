@@ -55,7 +55,12 @@ void sc_net_set_cid(sc_net *n, const char *cid) {
     if (valid_cid(cid)) { memcpy(n->cid, cid, SC_CID_LEN + 1); n->cid_dirty = false; }
 }
 
-// ---- generic GET -----------------------------------------------------------------------------
+void sc_net_flush(sc_net *n) {
+    (void)n;
+    sx_http_pool_flush();
+}
+
+// ---- generic GET, whole body (for the small documents) -----------------------------------------------------
 
 static int do_get(sc_net *n, const char *url, size_t max_body, char **body, size_t *len) {
     sx_http_req rq;
@@ -84,72 +89,87 @@ int sc_net_get(sc_net *n, const char *url, size_t max_body, char **body, size_t 
     return do_get(n, url, max_body, body, len);
 }
 
-// ---- client_id -----------------------------------------------------------------------------------
+// ---- streams -----------------------------------------------------------------------------------------------------
 
-static const char *find_mem(const char *h, size_t hl, const char *nd, size_t nl) {
-    if (nl == 0 || hl < nl) return NULL;
-    for (size_t i = 0; i + nl <= hl; i++) if (h[i] == nd[0] && memcmp(h + i, nd, nl) == 0) return h + i;
-    return NULL;
-}
+struct sc_stream { sx_http *h; };
 
-// Pulls the src of each <script ... src="..."> out of the page, in order.
-static int script_srcs(const char *html, size_t len, char out[][200], int max) {
-    int n = 0;
-    const char *p = html, *end = html + len;
-    while (n < max) {
-        const char *s = find_mem(p, (size_t)(end - p), "<script", 7);
-        if (!s) break;
-        const char *gt = (const char *)memchr(s, '>', (size_t)(end - s));
-        if (!gt) break;
-        p = gt + 1;
-        const char *src = find_mem(s, (size_t)(gt - s), " src=\"", 6);
-        if (!src) continue;
-        src += 6;
-        const char *q = (const char *)memchr(src, '"', (size_t)(gt - src));
-        if (!q || (size_t)(q - src) >= 200) continue;
-        memcpy(out[n], src, (size_t)(q - src));
-        out[n][q - src] = 0;
-        n++;
-    }
-    return n;
-}
-
-static bool scan_script(sc_net *n, const char *url, sc_scan *sc) {
+static int do_open(sc_net *n, const char *url, int64_t range_start, bool no_pool, sc_stream **out) {
     sx_http_req rq;
     memset(&rq, 0, sizeof(rq));
     rq.url = url;
     rq.headers = "Accept: */*\r\n";
-    rq.range_start = -1; rq.range_end = -1;
-    rq.no_pool = true;                                 // we may drop this one mid-body
+    rq.range_start = range_start >= 0 ? range_start : -1;
+    rq.range_end = -1;
+    rq.has_range = range_start > 0;                    // a range from 0 is just the whole body
+    rq.connect_ms = n->connect_ms; rq.handshake_ms = n->handshake_ms;
+    rq.first_byte_ms = n->first_byte_ms; rq.idle_ms = n->idle_ms;
+    rq.no_pool = no_pool;
     sx_http_info info;
     memset(&info, 0, sizeof(info));
     sx_http *h = sx_http_open(&rq, &info);
     n->last_status = info.status;
-    if (!h) { n->last_err = info.err.code; return false; }
+    n->last_err = info.err.code;
+    if (!h) return SC_NET_E_NET;
+    const int want = rq.has_range ? 206 : 200;
+    if (info.status != want) { sx_http_close(h); return SC_NET_E_HTTP; }
+    sc_stream *s = (sc_stream *)malloc(sizeof(*s));
+    if (!s) { sx_http_close(h); return SC_NET_E_NET; }
+    s->h = h;
+    *out = s;
+    return SC_NET_OK;
+}
+
+int sc_net_open(sc_net *n, const char *url, int64_t range_start, sc_stream **out) {
+    if (!sc_net_host_ok(url)) return SC_NET_E_ARG;
+    return do_open(n, url, range_start, false, out);
+}
+
+int sc_stream_read(sc_stream *s, void *buf, int n) {
+    const int r = sx_http_read(s->h, buf, n);
+    return r < 0 ? -1 : r;
+}
+
+void sc_stream_close(sc_stream *s) {
+    if (!s) return;
+    sx_http_close(s->h);
+    free(s);
+}
+
+int sc_stream_jread(void *ctx, void *buf, int n) { return sc_stream_read((sc_stream *)ctx, buf, n); }
+
+// ---- client_id -----------------------------------------------------------------------------------
+
+static bool scan_script(sc_net *n, const char *url, sc_scan *sc) {
+    sc_stream *s = NULL;
+    if (do_open(n, url, -1, true, &s) != SC_NET_OK) return false;     // no_pool: we may drop it mid-body
     bool found = false;
-    if (info.status == 200) {
-        char buf[4096];
-        int r;
-        while ((r = sx_http_read(h, buf, sizeof(buf))) > 0) {
-            if (sc_scan_feed(sc, buf, (size_t)r)) { found = true; break; }
-        }
+    char buf[4096];
+    int r;
+    while ((r = sc_stream_read(s, buf, sizeof(buf))) > 0) {
+        if (sc_scan_feed(sc, buf, (size_t)r)) { found = true; break; }
     }
-    sx_http_close(h);                                  // closing early drops the rest of the body
+    sc_stream_close(s);                                 // closing early drops the rest of the body
     return found;
 }
 
 int sc_net_scrape_cid(sc_net *n) {
-    char *page = NULL;
-    size_t pl = 0;
-    int rc = do_get(n, HOME_URL, 1024 * 1024, &page, &pl);
+    // The home page streams through the script finder: its 70 KB are never held.
+    sc_stream *page = NULL;
+    int rc = do_open(n, HOME_URL, -1, false, &page);
     if (rc != SC_NET_OK) { logf_("sc: home page failed rc=%d status=%d", rc, n->last_status); return rc; }
-    char (*srcs)[200] = (char (*)[200])malloc(sizeof(char[200]) * MAX_SCRIPTS);
-    if (!srcs) { free(page); return SC_NET_E_NET; }
-    const int ns = script_srcs(page, pl, srcs, MAX_SCRIPTS);
-    free(page);
+    char (*srcs)[SC_HTML_URL_MAX] = (char (*)[SC_HTML_URL_MAX])malloc(sizeof(char[SC_HTML_URL_MAX]) * MAX_SCRIPTS);
+    if (!srcs) { sc_stream_close(page); return SC_NET_E_NET; }
+    sc_html f;
+    sc_html_init(&f, srcs, MAX_SCRIPTS);
+    char buf[2048];
+    int r;
+    while ((r = sc_stream_read(page, buf, sizeof(buf))) > 0) sc_html_feed(&f, buf, (size_t)r);
+    sc_stream_close(page);
+    sc_net_flush(n);                                    // the page's connection is not wanted again: free its TLS state
+
     int result = SC_NET_E_CID;
     bool net_failed = false;
-    for (int i = ns - 1; i >= 0 && result != SC_NET_OK; i--) {       // the id lives in the last script
+    for (int i = f.n - 1; i >= 0 && result != SC_NET_OK; i--) {       // the id lives in the last script
         if (!sc_net_host_ok(srcs[i])) continue;
         sc_scan sc;
         sc_scan_init(&sc);
@@ -161,13 +181,15 @@ int sc_net_scrape_cid(sc_net *n) {
             net_failed = true;
         }
     }
+    const int ns = f.n;
     free(srcs);
+    sc_net_flush(n);
     if (result != SC_NET_OK && net_failed) result = SC_NET_E_NET;
     logf_("sc: client id %s (%d scripts)", result == SC_NET_OK ? "found" : "NOT found", ns);
     return result;
 }
 
-// ---- API ---------------------------------------------------------------------------------------
+// ---- API -----------------------------------------------------------------------------------------------
 
 // Swaps the placeholder for the real id in a copy of the URL.
 static bool with_cid(const char *url, const char *cid, char *out, size_t cap) {
@@ -202,12 +224,33 @@ int sc_net_api(sc_net *n, const char *url, size_t max_body, char **body, size_t 
     return SC_NET_E_HTTP;
 }
 
+int sc_net_open_api(sc_net *n, const char *url, sc_stream **out) {
+    if (!sc_net_host_ok(url) || !strstr(url, SC_CID_PLACEHOLDER)) return SC_NET_E_ARG;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (!n->cid[0]) {
+            const int r = sc_net_scrape_cid(n);
+            if (r != SC_NET_OK) return r;
+        }
+        char real[SC_URL_MAX];
+        if (!with_cid(url, n->cid, real, sizeof(real))) return SC_NET_E_ARG;
+        const int rc = do_open(n, real, -1, false, out);
+        memset(real, 0, sizeof(real));
+        if (rc == SC_NET_E_HTTP && (n->last_status == 401 || n->last_status == 403) && attempt == 0) {
+            logf_("sc: api %d, refreshing the client id", n->last_status);
+            n->cid[0] = 0;
+            continue;
+        }
+        return rc;
+    }
+    return SC_NET_E_HTTP;
+}
+
 int sc_net_stream_url(sc_net *n, const char *tc_url, char *out, size_t cap) {
     char url[512];
     if (!sc_url_with_cid(tc_url, SC_CID_PLACEHOLDER, url, sizeof(url))) return SC_NET_E_ARG;
     char *body = NULL;
     size_t bl = 0;
-    const int rc = sc_net_api(n, url, 64 * 1024, &body, &bl);
+    const int rc = sc_net_api(n, url, 16 * 1024, &body, &bl);
     if (rc != SC_NET_OK) return rc;
     const bool ok = sc_parse_stream_url(body, bl, out, cap) && sc_net_host_ok(out);
     free(body);

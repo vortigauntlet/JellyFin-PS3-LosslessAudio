@@ -45,8 +45,10 @@ static int decode_for(ScDec *d, double secs, Stat *st, uint64_t *first_ms, uint6
 static int play_track(sc_net *net, const sc_track *t, double secs) {
     ScSegSource ss;
     int err = 0;
+    char tcu[300];
+    sc_track_url(t, tcu, sizeof(tcu));
     const uint64_t t0 = sx_now_ms();
-    ScSource *src = scsrc_open(net, t->tc_url, &ss, &err);
+    ScSource *src = scsrc_open(net, tcu, &ss, &err);
     if (!src) { printf("  open failed: %d (status %d)\n", err, net->last_status); return -1; }
     ScDec *d = scdec_open(&ss);
     if (!d) { printf("  decoder open failed\n"); scsrc_close(src); return -1; }
@@ -99,8 +101,10 @@ int main(int argc, char **argv) {
 
     ScSegSource ss;
     int err = 0;
+    char tcu[300];
+    sc_track_url(&t, tcu, sizeof(tcu));
     uint64_t t0 = sx_now_ms();
-    ScSource *src = scsrc_open(&net, t.tc_url, &ss, &err);
+    ScSource *src = scsrc_open(&net, tcu, &ss, &err);
     CHECK(src != NULL);
     if (!src) return 1;
     printf("playlist: %d segments, %u ms, opened in %llu ms\n", ss.nseg, ss.total_ms, (unsigned long long)(sx_now_ms() - t0));

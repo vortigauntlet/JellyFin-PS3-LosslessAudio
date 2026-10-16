@@ -1,4 +1,5 @@
 // Pull decoder for a SoundCloud stream: segments of fragmented MP4 in, 48 kHz stereo float pairs out.
+// A segment is read as a stream through a 20 KB window; only the head (styp, sidx, moof) and one frame are held.
 //
 // It has the shape of local/local_audio's la_open / la_decode / la_seek, so the music engine drives a
 // SoundCloud track the way it drives a file.  Where the bytes come from is a ScSegSource: the network
@@ -20,10 +21,16 @@ typedef struct ScSegSource {
     uint32_t total_ms;                  // from the playlist
     // Segment i's duration (the playlist's EXTINF), used to find a seek target.
     uint32_t (*seg_ms)(void *ctx, int i);
-    // The init segment / media segment i as a heap buffer the decoder frees.  0 on success, < 0 on failure
+    // The init segment as a heap buffer the decoder frees (it is under a kilobyte).  0 on success, < 0 on failure
     // (after the source's own retries).
     int (*fetch_init)(void *ctx, uint8_t **buf, size_t *len);
-    int (*fetch_seg)(void *ctx, int i, uint8_t **buf, size_t *len);
+    // Media segment i as a stream: the console has well under 200 KB free while it plays and a segment is 200 KB, so
+    // the decoder reads it a few kilobytes at a time and never holds more than one frame.  seg_open starts it (0 on
+    // success), seg_read gives > 0 bytes, 0 at its end, < 0 when it failed for good (the source has already retried,
+    // resuming from where it was), seg_close ends it, early or not.
+    int  (*seg_open)(void *ctx, int i, void **h);
+    int  (*seg_read)(void *ctx, void *h, uint8_t *buf, int n);
+    void (*seg_close)(void *ctx, void *h);
 } ScSegSource;
 
 typedef struct ScDec ScDec;

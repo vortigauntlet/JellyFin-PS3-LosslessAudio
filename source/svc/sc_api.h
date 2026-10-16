@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "sc_jstream.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,26 +34,30 @@ enum {
 
 enum { SC_TC_NONE = 0, SC_TC_AAC_HLS = 1, SC_TC_MP3_PROGRESSIVE = 2 };
 
+// A listing holds up to 200 of these (the console has well under 200 KB free), so a track is 330 bytes: the artwork is
+// kept as its thumbnail key (sc_art_key) and the transcoding URL without its constant start.
+#define SC_TC_PREFIX "https://" SC_API_HOST "/"
 typedef struct {
     int64_t  id;
     uint32_t dur_ms;
-    int      tc_kind;            // SC_TC_*
-    int      tc_kbps;            // 160 / 96 / 128 (mp3)
-    int      hidden;             // SC_HID_*
-    char     title[144];
-    char     artist[80];
-    char     art[168];           // artwork_url, else the uploader's avatar_url, as sent
-    char     permalink[168];     // permalink_url
-    char     tc_url[208];        // the chosen transcoding's URL (no query)
+    uint16_t tc_kbps;            // 160 / 96 / 128 (mp3)
+    uint8_t  tc_kind;            // SC_TC_*
+    uint8_t  hidden;             // SC_HID_*
+    char     title[96];
+    char     artist[48];
+    char     art[64];            // sc_art_key() of the artwork, else of the uploader's avatar; "" when there is none
+    char     tc[112];            // the chosen transcoding's URL after SC_TC_PREFIX (no query)
 } sc_track;
+
+// The transcoding URL, whole.  False for a hidden track or when out is too small.
+bool sc_track_url(const sc_track *t, char *out, size_t cap);
 
 typedef struct {
     int64_t id;
     int     track_count;
-    char    title[128];
-    char    owner[80];
-    char    art[168];
-    char    permalink[168];
+    char    title[96];
+    char    owner[48];
+    char    art[64];             // sc_art_key()
 } sc_playlist;
 
 typedef struct {
@@ -90,6 +95,14 @@ bool sc_parse_playlist(const char *json, size_t len, int quality_pref, sc_playli
 int  sc_parse_tracks_array(const char *json, size_t len, int quality_pref, sc_page *out);
 
 bool sc_parse_user(const char *json, size_t len, sc_user *out);
+
+// The same parsers over a stream (see sc_jstream.h): a page of 50 tracks is 200 KB of JSON and the console has less
+// than that free, so the console reads it one track at a time. Each returns what the whole-document form returns,
+// or a negative SC_J_E_* when the stream failed before the document ended (items already taken stay in `out`).
+// max_items > 0 stops after that many items (a playlist of 2,000 tracks is not read to its end).
+int  sc_page_stream(sc_jread rd, void *ctx, int quality_pref, int max_items, sc_page *out);
+int  sc_playlist_stream(sc_jread rd, void *ctx, int quality_pref, int max_items, sc_playlist *meta, sc_page *out);
+int  sc_tracks_stream(sc_jread rd, void *ctx, int quality_pref, int max_items, sc_page *out);
 
 // {"url":"<m3u8 or mp3>"} from a transcoding URL.
 bool sc_parse_stream_url(const char *json, size_t len, char *out, size_t cap);

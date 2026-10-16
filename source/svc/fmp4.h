@@ -49,6 +49,12 @@ typedef struct {
 
 // Number of samples, or a negative code.  Every sample lies inside buf.
 int  fmp4_parse_segment(const uint8_t *buf, size_t len, const fmp4_init *init, fmp4_seg *out);
+
+// The same for a segment that is still arriving: buf holds the first `avail` bytes, which must reach the end of the
+// moof box.  The sample offsets are relative to the start of the segment and may lie beyond what has arrived (the
+// player reads the media data as a stream).  FMP4_E_SHORT with *need set when more of the head is wanted: read until
+// at least *need bytes are in hand and call again.
+int  fmp4_parse_head(const uint8_t *buf, size_t avail, const fmp4_init *init, fmp4_seg *out, size_t *need);
 void fmp4_seg_free(fmp4_seg *s);
 
 enum {

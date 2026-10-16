@@ -19,11 +19,11 @@ SAN       = -fsanitize=address,undefined -fno-sanitize-recover=undefined
 LIBS      = -L$(MBEDTLS)/library -lmbedtls -lmbedx509 -lmbedcrypto -lpthread
 
 SVC    = ../source/svc
-SC_SRC = $(SVC)/sx_json.c $(SVC)/sc_scan.c $(SVC)/sc_hls.c $(SVC)/sc_api.c $(SVC)/sc_store.c
+SC_SRC = $(SVC)/sx_json.c $(SVC)/sc_scan.c $(SVC)/sc_hls.c $(SVC)/sc_api.c $(SVC)/sc_store.c $(SVC)/sc_jstream.c
 FIX    = fixtures/sc
 SYNTH  = fixtures/sc_synth
 
-all: test_sx_net test_sc test_fmp4 test_dec
+all: test_sx_net test_sc test_fmp4 test_dec test_jstream
 
 SC_NET = $(NET)/sx_httpparse.c $(NET)/sx_conn.c $(NET)/sx_http.c $(NET)/sx_tls.c $(NET)/sx_cacert.c hoststub/sx_plat_posix.c $(SVC)/sc_net.c
 
@@ -35,6 +35,12 @@ live_play: svc/live_play.c $(SC_SRC) $(SC_NET) $(DEC_SRC) $(SVC)/sc_source.c $(w
 
 test_sx_net: sx_net/test_sx_net.c $(SX_PORTABLE) $(wildcard $(NET)/sx_*.h)
 	$(CC) $(CFLAGS) $(SAN) -o $@ sx_net/test_sx_net.c $(SX_PORTABLE) $(LIBS)
+
+test_jstream: svc/test_jstream.c $(SVC)/sc_jstream.c $(SVC)/sc_jstream.h $(SVC)/sx_json.c
+	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -o $@ svc/test_jstream.c $(SVC)/sc_jstream.c $(SVC)/sx_json.c
+
+test_jstream_be: svc/test_jstream.c $(SVC)/sc_jstream.c $(SVC)/sc_jstream.h $(SVC)/sx_json.c
+	powerpc64-linux-gnu-gcc -O2 -Wall -static -I$(SVC) -o $@ svc/test_jstream.c $(SVC)/sc_jstream.c $(SVC)/sx_json.c
 
 test_sc: svc/test_sc.c $(SC_SRC) $(wildcard $(SVC)/*.h)
 	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -o $@ svc/test_sc.c $(SC_SRC)
@@ -67,9 +73,11 @@ test_dec_be: svc/test_dec.c $(DEC_SRC) $(wildcard $(SVC)/*.h)
 certs:
 	rm -rf sx_certs && bash sx_net/sx_net_certs.sh sx_certs
 
-check: $(SYNTH)/stereo44/init.mp4 all test_sc_be test_fmp4_be test_dec_be certs $(SYNTH)/stereo44/init.mp4
+check: $(SYNTH)/stereo44/init.mp4 all test_sc_be test_fmp4_be test_dec_be test_jstream_be certs $(SYNTH)/stereo44/init.mp4
 	./test_sc $(FIX)
 	qemu-ppc64 ./test_sc_be $(FIX)
+	./test_jstream $(FIX)
+	qemu-ppc64 ./test_jstream_be $(FIX)
 	./test_fmp4 $(FIX) $(SYNTH)
 	./test_dec $(SYNTH)
 	qemu-ppc64 ./test_dec_be $(SYNTH)
@@ -82,4 +90,4 @@ live: test_sx_net live_sc live_play
 	./live_play
 
 clean:
-	rm -rf live_play live_sc test_sx_net test_sc test_sc_be test_fmp4 test_fmp4_be test_dec test_dec_be sx_certs $(SYNTH)/stereo44 $(SYNTH)/mono48
+	rm -rf live_play live_sc test_sx_net test_sc test_sc_be test_fmp4 test_fmp4_be test_dec test_dec_be test_jstream test_jstream_be sx_certs $(SYNTH)/stereo44 $(SYNTH)/mono48

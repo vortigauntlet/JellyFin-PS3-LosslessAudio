@@ -58,6 +58,22 @@ int  sc_net_get(sc_net *n, const char *url, size_t max_body, char **body, size_t
 // Resolves a transcoding URL to the media playlist / MP3 URL.
 int  sc_net_stream_url(sc_net *n, const char *tc_url, char *out, size_t cap);
 
+// ---- streams: the console has well under 200 KB free while it plays, so a page of 50 tracks (200 KB of JSON), a
+// segment (200 KB) and a long playlist are read as streams and never held whole ----
+
+typedef struct sc_stream sc_stream;
+
+// Opens a GET on a SoundCloud host and returns once the response head is in (status 200, or 206 when range_start > 0).
+int  sc_net_open(sc_net *n, const char *url, int64_t range_start, sc_stream **out);
+// The same for an API URL that carries SC_CID_PLACEHOLDER (client id substituted; one refresh-and-retry on 401/403).
+int  sc_net_open_api(sc_net *n, const char *url, sc_stream **out);
+int  sc_stream_read(sc_stream *s, void *buf, int n);       // > 0 bytes, 0 at the end, < 0 on a failure
+void sc_stream_close(sc_stream *s);                        // pools the connection when the body was read to its end
+int  sc_stream_jread(void *ctx, void *buf, int n);         // sc_jread / sc_hls_read_fn adaptor: ctx is an sc_stream *
+
+// Drops every idle pooled connection (each holds about 40 KB of TLS state).
+void sc_net_flush(sc_net *n);
+
 // Which hosts a media URL may name.  The playback CDN and API are SoundCloud's; anything else in a
 // playlist is refused.
 bool sc_net_host_ok(const char *url);

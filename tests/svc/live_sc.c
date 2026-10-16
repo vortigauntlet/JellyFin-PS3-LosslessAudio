@@ -77,8 +77,10 @@ int main(int argc, char **argv) {
     CHECK(t.hidden == SC_HID_NONE && t.tc_kind == SC_TC_AAC_HLS);
 
     char m3u8[SC_URL_MAX];
+    char tcu[300];
+    sc_track_url(&t, tcu, sizeof(tcu));
     t0 = sx_now_ms();
-    rc = sc_net_stream_url(&n, t.tc_url, m3u8, sizeof(m3u8));
+    rc = sc_net_stream_url(&n, tcu, m3u8, sizeof(m3u8));
     printf("stream url: rc=%d status=%d len=%zu in %llu ms\n", rc, n.last_status, strlen(m3u8), (unsigned long long)(sx_now_ms() - t0));
     CHECK(rc == SC_NET_OK);
     if (rc) return 1;

@@ -5,8 +5,11 @@
 // before any URL is looked at: the player never fetches a key and never decrypts.  A master playlist
 // and byte-range segments are refused too, because the player does not use them.
 //
-// Segment and init-segment URIs are returned as views into the caller's text (the text must outlive
-// the parse result), so a 350-segment mix costs 12 bytes a segment.
+// The playlist is read as a stream and only what playing needs is kept, because a one-hour mix has 360 segments whose
+// URIs are 820 characters each (about 300 KB) and the console has well under 200 KB free while it plays.  SoundCloud's
+// segment URIs differ only in a counter (".../data000.m4s?<one long query>"), so the first is kept as a template and
+// each later one is checked against it; a playlist that does not follow the pattern falls back to keeping every URI
+// (up to 96 KB), and one that does not fit is refused.  Either way a segment costs 4 bytes.
 //
 // Pure C with no platform includes: the host suite runs this file as it is.
 #pragma once
@@ -26,30 +29,36 @@ enum {
     SC_HLS_E_BYTERANGE = -4,
     SC_HLS_E_EMPTY     = -5,   // no segments
     SC_HLS_E_MEM       = -6,
-    SC_HLS_E_TOOMANY   = -7    // more segments than SC_HLS_MAX_SEGS
+    SC_HLS_E_TOOMANY   = -7,   // more segments than SC_HLS_MAX_SEGS, or irregular URIs that do not fit
+    SC_HLS_E_READ      = -8    // the reader failed
 };
 
-#define SC_HLS_MAX_SEGS 4000
+#define SC_HLS_MAX_SEGS  4000
+#define SC_HLS_ARENA_MAX (96 * 1024)
 
 typedef struct {
-    uint32_t off;              // URI start in the playlist text
-    uint16_t len;              // URI length
-    uint16_t pad;
-    uint32_t dur_ms;           // EXTINF
-} sc_hls_seg;
-
-typedef struct {
-    const char *text;          // the caller's playlist text; must outlive this struct
-    uint32_t    map_off, map_len;     // EXT-X-MAP URI (0 length when the stream has no init segment)
-    int         nseg;
-    sc_hls_seg *seg;           // heap, sc_hls_free()
-    uint32_t    total_ms;
-    uint32_t    target_ms;     // EXT-X-TARGETDURATION
-    bool        ended;         // EXT-X-ENDLIST was present (VOD)
+    int       nseg;
+    uint32_t *dur_ms;            // EXTINF of each segment, heap
+    uint32_t  total_ms;
+    uint32_t  target_ms;         // EXT-X-TARGETDURATION
+    bool      ended;             // EXT-X-ENDLIST was present (VOD)
+    char     *map_uri;           // the EXT-X-MAP URI, heap; NULL when the stream has no init segment
+    // segment i = tmpl_pre + number(first_no + i, zero-padded to tmpl_width) + tmpl_suf   (regular playlists)
+    char     *tmpl_pre, *tmpl_suf;
+    int       tmpl_width;
+    long      first_no;
+    // otherwise every URI, NUL-separated, with the offset of each
+    char     *arena;
+    size_t    arena_len, arena_cap;
+    uint32_t *arena_off;
 } sc_hls;
 
+// Reads up to n bytes: > 0 bytes, 0 at the end, < 0 on a failure.
+typedef int (*sc_hls_read_fn)(void *ctx, void *buf, int n);
+
 // 0 or an SC_HLS_E_*.  On failure nothing is allocated.
-int  sc_hls_parse(const char *text, size_t len, sc_hls *out);
+int  sc_hls_read(sc_hls_read_fn rd, void *ctx, sc_hls *out);
+int  sc_hls_parse(const char *text, size_t len, sc_hls *out);       // the same over a buffer
 void sc_hls_free(sc_hls *h);
 
 // Copies segment i's (or the init segment's, i < 0) URI, resolved against base, into out.

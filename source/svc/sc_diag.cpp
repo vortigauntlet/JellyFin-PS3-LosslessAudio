@@ -1,20 +1,20 @@
 // Console check for the SoundCloud network chain -- see sc_diag.h.
 #include "sc_diag.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "jf_paths.h"
+#include "meminfo.h"
 #include "plog.h"
 #include "sc_api.h"
 #include "sc_dec.h"
 #include "sc_hls.h"
-#include "sc_source.h"
-#include "meminfo.h"
-#include <math.h>
 #include "sc_net.h"
+#include "sc_source.h"
 #include "sx_http.h"
 #include "sx_plat.h"
 #include "sx_tls.h"
@@ -24,13 +24,16 @@
 
 static FILE *s_out;
 
+// Every line also says how much memory the process still has, so the step that eats it shows.
 static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void say(const char *fmt, ...) {
-    char line[200];
+    char line[240];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
+    const size_t l = strlen(line);
+    snprintf(line + l, sizeof(line) - l, "  [free %u KB]", meminfo_avail_kb());
     plog(line);
     if (s_out) { fputs(line, s_out); fputc('\n', s_out); fflush(s_out); }
 }
@@ -44,14 +47,15 @@ static void play_check(sc_net *net, const sc_track *t) {
     static float pcm[2048 * 2];
     ScSegSource ss;
     int err = 0;
+    char tcu[300];
+    sc_track_url(t, tcu, sizeof(tcu));
     const uint64_t t0 = sx_now_ms();
-    const unsigned heap0 = meminfo_avail_kb();
-    ScSource *src = scsrc_open(net, t->tc_url, &ss, &err);
+    ScSource *src = scsrc_open(net, tcu, &ss, &err);
     if (!src) { say("sctest: play open failed %d (http %d)", err, net->last_status); return; }
     ScDec *d = scdec_open(&ss);
     if (!d) { say("sctest: play decoder did not open"); scsrc_close(src); return; }
-    say("sctest: play opened in %llu ms, %d segments, %u ms, source %d Hz, heap %u KB free (was %u)",
-        (unsigned long long)since(t0), ss.nseg, ss.total_ms, scdec_source_hz(d), meminfo_avail_kb(), heap0);
+    say("sctest: play opened in %llu ms, %d segments, %u ms, source %d Hz", (unsigned long long)since(t0), ss.nseg, ss.total_ms,
+        scdec_source_hz(d));
 
     uint64_t first = 0, dec_us = 0;
     long pairs = 0;
@@ -61,7 +65,7 @@ static void play_check(sc_net *net, const sc_track *t) {
         const uint64_t a = sx_now_us();
         const int r = scdec_decode(d, pcm, 2048);
         dec_us += sx_now_us() - a;
-        if (r <= 0) { say("sctest: play stopped at %ld pairs (result %d)", pairs, r); break; }
+        if (r <= 0) { say("sctest: play stopped at %ld pairs (result %d, http %d)", pairs, r, net->last_status); break; }
         if (!first) first = since(t0);
         for (int i = 0; i < r; i++) {
             const double v = pcm[i * 2];
@@ -70,8 +74,8 @@ static void play_check(sc_net *net, const sc_track *t) {
         }
         pairs += r;
     }
-    // dec_us includes the segment fetches (the second segment is fetched inside this loop), so it is a floor for the speed.
-    say("sctest: play first sound %llu ms; %ld pairs in %llu ms (%.1fx real time, fetches included); peak %.2f rms %.3f; bad frames %d",
+    // dec_us includes the segment fetches (the second segment is opened inside this loop), so it is a floor for the speed.
+    say("sctest: play first sound %llu ms; %ld pairs in %llu ms (%.1fx real time, network included); peak %.2f rms %.3f; bad frames %d",
         (unsigned long long)first, pairs, (unsigned long long)(dec_us / 1000), dec_us ? (double)pairs / 48000.0 / ((double)dec_us / 1e6) : 0.0,
         peak, pairs ? sqrt(sum / (double)pairs) : 0.0, scdec_bad_frames(d));
 
@@ -88,7 +92,16 @@ static void play_check(sc_net *net, const sc_track *t) {
         (unsigned long long)since(e0), scsrc_refreshes(src), scsrc_retries(src), r);
     scdec_close(d);
     scsrc_close(src);
-    say("sctest: heap %u KB free after (was %u)", meminfo_avail_kb(), heap0);
+    sc_net_flush(net);
+}
+
+// Reads a response body to its end without keeping it; returns the bytes, or -1.
+static long drain(sc_stream *s) {
+    char buf[2048];
+    long n = 0;
+    int r;
+    while ((r = sc_stream_read(s, buf, sizeof(buf))) > 0) n += r;
+    return r < 0 ? -1 : n;
 }
 
 static void run(void *) {
@@ -96,13 +109,14 @@ static void run(void *) {
     say("sctest: start");
     sc_net n;
     sc_net_init(&n);
-    char *b = NULL, *pl = NULL, *x = NULL;
-    size_t bl = 0, pll = 0, xl = 0;
+    char *b = NULL;
+    size_t bl = 0;
     char *m3u8 = (char *)malloc(SC_URL_MAX);
     char *su = (char *)malloc(SC_URL_MAX);
     char *url = (char *)malloc(SC_URL_MAX);
     sc_hls h;
     bool hls_ok = false;
+    sc_track t;
     if (!m3u8 || !su || !url) { say("sctest: out of memory"); goto done; }
 
     {
@@ -114,47 +128,56 @@ static void run(void *) {
     {
         sc_url_resolve("https://soundcloud.com/forss/flickermood", SC_CID_PLACEHOLDER, url, SC_URL_MAX);
         const uint64_t t0 = sx_now_ms();
-        const int rc = sc_net_api(&n, url, 256 * 1024, &b, &bl);
-        say("sctest: resolve rc=%d status=%d err=%d %zu bytes %llu ms", rc, n.last_status, n.last_err, bl, (unsigned long long)since(t0));
+        const int rc = sc_net_api(&n, url, 64 * 1024, &b, &bl);
+        say("sctest: resolve rc=%d status=%d err=%d %lu bytes %llu ms", rc, n.last_status, n.last_err, (unsigned long)bl, (unsigned long long)since(t0));
         if (rc != SC_NET_OK) goto done;
     }
-    sc_track t;
     if (!sc_parse_track(b, bl, 160, &t) || t.hidden != SC_HID_NONE) { say("sctest: track not playable (hidden=%d)", t.hidden); goto done; }
     say("sctest: track ok kind=%d kbps=%d dur=%u ms", t.tc_kind, t.tc_kbps, t.dur_ms);
     {
+        char tcu[300];
+        sc_track_url(&t, tcu, sizeof(tcu));
         const uint64_t t0 = sx_now_ms();
-        const int rc = sc_net_stream_url(&n, t.tc_url, m3u8, SC_URL_MAX);
+        const int rc = sc_net_stream_url(&n, tcu, m3u8, SC_URL_MAX);
         say("sctest: stream url rc=%d status=%d %llu ms", rc, n.last_status, (unsigned long long)since(t0));
         if (rc != SC_NET_OK) goto done;
     }
     {
+        sc_net_flush(&n);
         const uint64_t t0 = sx_now_ms();
-        const int rc = sc_net_get(&n, m3u8, 2 * 1024 * 1024, &pl, &pll);
-        say("sctest: playlist rc=%d status=%d %zu bytes %llu ms", rc, n.last_status, pll, (unsigned long long)since(t0));
-        if (rc != SC_NET_OK) goto done;
-    }
-    {
-        const int rc = sc_hls_parse(pl, pll, &h);
-        say("sctest: hls rc=%d segments=%d total=%u ms", rc, rc == 0 ? h.nseg : 0, rc == 0 ? h.total_ms : 0);
-        if (rc != SC_HLS_OK) goto done;
-        hls_ok = true;
+        sc_stream *st = NULL;
+        int rc = sc_net_open(&n, m3u8, -1, &st);
+        if (rc == SC_NET_OK) {
+            rc = sc_hls_read(sc_stream_jread, st, &h);
+            sc_stream_close(st);
+            hls_ok = rc == SC_HLS_OK;
+        }
+        say("sctest: playlist rc=%d status=%d segments=%d total=%u ms %llu ms", rc, n.last_status, hls_ok ? h.nseg : 0, hls_ok ? h.total_ms : 0,
+            (unsigned long long)since(t0));
+        if (!hls_ok) goto done;
     }
     if (sc_hls_seg_url(&h, -1, m3u8, su, SC_URL_MAX)) {
-        const int rc = sc_net_get(&n, su, 64 * 1024, &x, &xl);
-        say("sctest: init segment rc=%d status=%d %zu bytes", rc, n.last_status, xl);
-        free(x); x = NULL;
+        sc_stream *st = NULL;
+        const int rc = sc_net_open(&n, su, -1, &st);
+        long got = -1;
+        if (rc == SC_NET_OK) { got = drain(st); sc_stream_close(st); }
+        say("sctest: init segment rc=%d status=%d %ld bytes", rc, n.last_status, got);
     }
     if (sc_hls_seg_url(&h, 0, m3u8, su, SC_URL_MAX)) {
         const uint64_t t0 = sx_now_ms();
-        const int rc = sc_net_get(&n, su, 1024 * 1024, &x, &xl);
+        sc_stream *st = NULL;
+        const int rc = sc_net_open(&n, su, -1, &st);
+        long got = -1;
+        if (rc == SC_NET_OK) { got = drain(st); sc_stream_close(st); }
         const uint64_t ms = since(t0);
-        say("sctest: segment 0 rc=%d status=%d %zu bytes %llu ms (%.1f kbit/s)", rc, n.last_status, xl, (unsigned long long)ms,
-            ms ? (double)xl * 8.0 / (double)ms : 0.0);
+        say("sctest: segment 0 streamed rc=%d status=%d %ld bytes %llu ms (%.1f kbit/s)", rc, n.last_status, got, (unsigned long long)ms,
+            ms && got > 0 ? (double)got * 8.0 / (double)ms : 0.0);
     }
     play_check(&n, &t);
 done:
     if (hls_ok) sc_hls_free(&h);
-    free(b); free(pl); free(x); free(m3u8); free(su); free(url);
+    free(b); free(m3u8); free(su); free(url);
+    sc_net_flush(&n);
     say("sctest: done");
     if (s_out) { fclose(s_out); s_out = NULL; }
 }
@@ -165,5 +188,5 @@ extern "C" void sc_diag_start(void) {
     if (!f) return;
     fclose(f);
     remove(gate);
-    sx_thread_spawn(run, NULL, 1500, 256, "sc_diag");
+    sx_thread_spawn(run, NULL, 1500, 128, "sc_diag");
 }

@@ -380,7 +380,7 @@ two pages of your own in front: **My Channels** (everything you starred, from al
 categories) and **Recently watched**. `Start` (**Customise**) hides the categories
 you never watch, and the tab reopens on the page you left it on.
 
-**SoundCloud.** Choose *Profile* and type a profile's name (or paste its link); *Likes*, *Playlists*, *Reposts* and *Tracks* then list that profile. `X` plays from the highlighted track; the music screen's usual buttons skip and seek. *Audio quality* switches between 160 and 96 kbps.
+**SoundCloud.** Choose *Profile* and type a profile's name (or its link); *Likes*, *Playlists*, *Reposts* and *Tracks* then list that profile. `X` plays from the highlighted track; the music screen's usual buttons skip and seek. *Audio quality* switches between 160 and 96 kbps.
 
 **Media.** `X` opens a drive or folder and then a file's page, where `X` plays or
 resumes it; `O` goes up a folder, `L2`/`R2` page through a long one.

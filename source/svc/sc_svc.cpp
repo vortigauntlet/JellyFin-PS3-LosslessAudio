@@ -116,7 +116,7 @@ void sc_svc_net_end(sc_net *n) {
 }
 
 // The thumbnail thread has a 64 KB stack, which is little for a TLS handshake, so the fetch runs on a worker of its
-// own (192 KB) and the provider waits for it.  One request at a time: only the thumbnail thread asks.
+// own (128 KB) and the provider waits for it.  One request at a time: only the thumbnail thread asks.
 static struct {
     volatile int state;                  // 0 idle, 1 asked, 2 answered
     char         url[200];
@@ -150,7 +150,7 @@ int sc_art_bytes(const char *key, unsigned char *buf, int cap) {
     if (!sc_art_key_url(key, 500, url, sizeof url)) return -1;
     if (!s_art_started) {
         s_art_started = true;
-        if (!sx_thread_spawn(art_worker, NULL, 1500, 192, "sc_art")) { s_art_started = false; return -1; }
+        if (!sx_thread_spawn(art_worker, NULL, 1500, 128, "sc_art")) { s_art_started = false; return -1; }
     }
     // An earlier request may still be running, or have finished after its caller gave up: settle it first.
     for (int t = 0; t < 1500 && s_art.state != 0; t++) {
