@@ -9,7 +9,11 @@
 #include "jf_paths.h"
 #include "plog.h"
 #include "sc_api.h"
+#include "sc_dec.h"
 #include "sc_hls.h"
+#include "sc_source.h"
+#include "meminfo.h"
+#include <math.h>
 #include "sc_net.h"
 #include "sx_http.h"
 #include "sx_plat.h"
@@ -32,6 +36,60 @@ static void say(const char *fmt, ...) {
 }
 
 static uint64_t since(uint64_t t0) { return sx_now_ms() - t0; }
+
+// Plays ten seconds through the whole chain (sc_source -> sc_dec -> libfaad -> resampler) and measures it: the time to
+// the first sound, how many times faster than real time the PPU decodes, the level of the audio, a seek, and a forced
+// refresh of the signed URLs.  The audio is dropped as it is made.
+static void play_check(sc_net *net, const sc_track *t) {
+    static float pcm[2048 * 2];
+    ScSegSource ss;
+    int err = 0;
+    const uint64_t t0 = sx_now_ms();
+    const unsigned heap0 = meminfo_avail_kb();
+    ScSource *src = scsrc_open(net, t->tc_url, &ss, &err);
+    if (!src) { say("sctest: play open failed %d (http %d)", err, net->last_status); return; }
+    ScDec *d = scdec_open(&ss);
+    if (!d) { say("sctest: play decoder did not open"); scsrc_close(src); return; }
+    say("sctest: play opened in %llu ms, %d segments, %u ms, source %d Hz, heap %u KB free (was %u)",
+        (unsigned long long)since(t0), ss.nseg, ss.total_ms, scdec_source_hz(d), meminfo_avail_kb(), heap0);
+
+    uint64_t first = 0, dec_us = 0;
+    long pairs = 0;
+    double peak = 0, sum = 0;
+    const long want = 10L * 48000;
+    while (pairs < want) {
+        const uint64_t a = sx_now_us();
+        const int r = scdec_decode(d, pcm, 2048);
+        dec_us += sx_now_us() - a;
+        if (r <= 0) { say("sctest: play stopped at %ld pairs (result %d)", pairs, r); break; }
+        if (!first) first = since(t0);
+        for (int i = 0; i < r; i++) {
+            const double v = pcm[i * 2];
+            if (fabs(v) > peak) peak = fabs(v);
+            sum += v * v;
+        }
+        pairs += r;
+    }
+    // dec_us includes the segment fetches (the second segment is fetched inside this loop), so it is a floor for the speed.
+    say("sctest: play first sound %llu ms; %ld pairs in %llu ms (%.1fx real time, fetches included); peak %.2f rms %.3f; bad frames %d",
+        (unsigned long long)first, pairs, (unsigned long long)(dec_us / 1000), dec_us ? (double)pairs / 48000.0 / ((double)dec_us / 1e6) : 0.0,
+        peak, pairs ? sqrt(sum / (double)pairs) : 0.0, scdec_bad_frames(d));
+
+    const uint64_t s0 = sx_now_ms();
+    const bool ok = scdec_seek(d, 120);
+    int r = ok ? scdec_decode(d, pcm, 2048) : -1;
+    say("sctest: seek to 120 s %s, first audio after %llu ms (%d pairs)", ok ? "ok" : "FAILED", (unsigned long long)since(s0), r);
+
+    scsrc_expire(src);                                      // what a pause past the URLs' two hours does
+    const uint64_t e0 = sx_now_ms();
+    const bool ok2 = scdec_seek(d, 60);
+    r = ok2 ? scdec_decode(d, pcm, 2048) : -1;
+    say("sctest: refresh after expiry %s in %llu ms (refreshes %d, retries %d, %d pairs)", r > 0 ? "ok" : "FAILED",
+        (unsigned long long)since(e0), scsrc_refreshes(src), scsrc_retries(src), r);
+    scdec_close(d);
+    scsrc_close(src);
+    say("sctest: heap %u KB free after (was %u)", meminfo_avail_kb(), heap0);
+}
 
 static void run(void *) {
     s_out = fopen(jf_data_path(RESULT_FILE), "w");
@@ -93,6 +151,7 @@ static void run(void *) {
         say("sctest: segment 0 rc=%d status=%d %zu bytes %llu ms (%.1f kbit/s)", rc, n.last_status, xl, (unsigned long long)ms,
             ms ? (double)xl * 8.0 / (double)ms : 0.0);
     }
+    play_check(&n, &t);
 done:
     if (hls_ok) sc_hls_free(&h);
     free(b); free(pl); free(x); free(m3u8); free(su); free(url);
