@@ -202,3 +202,15 @@ So the whole chain runs on PS3 code: mbedTLS handshakes against `soundcloud.com`
 emulator's, not the console's: the PPU of a real PS3 is in-order and will not match 9x; **the user's console check
 gives the real figure**. Not exercised: the tab's screens (the emulator needs a keyboard-driven session and the app's
 menus are only legible in the emulator build), the Now Playing screen, audio output, thumbnails.
+
+### What the tab costs the rest of the app (measured in the emulator, same reservations)
+
+Free memory right after the video reservations (`7f reserve done`, the number `main.cpp` logs), same machine and
+settings: **baseline fix/3.2.2 5,880 KB; with the music-services code 4,536 KB**. The 1,344 KB is static: the ELF grew
+by `.text` +745 KB (mbedTLS x509/ssl/crypto, the new modules), `.rodata` +354 KB (the CA bundle 170 KB, tables) and
+`.bss` +186 KB. `sx_tls_init()` itself (354 KB of heap for the 121 parsed roots) takes nothing from that figure because it
+runs after the reservations and out of the existing arena; an earlier placement before the update check, as the
+Stremio port has it, cost another 1 MB through fragmentation (3,512 KB) and was moved. The thumbnail cache then takes
+whatever is left, as before, so the Jellyfin side has about 1.3 MB less to cache with: **worth a look on the TV
+(poster-heavy tabs, and playing a film after browsing)**. Host measurement of the TLS layer: one open HTTPS request is
+84 KB, a pooled idle one 65 KB, and `sx_http_pool_flush()` leaves 28 KB.

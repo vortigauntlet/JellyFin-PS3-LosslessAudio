@@ -112,3 +112,4 @@ tests/live_play
 tests/spotify_be/*.o
 tests/test_jstream
 tests/test_jstream_be
+tests/svc/mem_tls

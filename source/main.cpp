@@ -226,11 +226,6 @@ int main(int argc, const char *argv[]) {
     // Opt-in diagnostic, before anything else touches the network.  Does
     // nothing unless jellyfin_nettest.txt exists -- see net_selftest.h.
     net_selftest_run();
-    // TLS for the music-services tabs (mbedTLS; the firmware's SSL is too old for SoundCloud's
-    // hosts).  Builds the RNG and parses the CA bundle once, here, because it allocates and the
-    // reservations below leave little room after them.  A failure only disables those tabs.
-    if (!sx_tls_init()) plog("main: TLS did not start; the SoundCloud and Spotify tabs will not connect");
-    sc_svc_init();     // the SoundCloud profile, quality and cached client id (the files are tiny)
     // Opt-in SPU pool check (jellyfin_sputest.txt).  Runs here, while the heap
     // is still pristine and before vdec_reserve_mem() takes its 96MB -- and
     // crucially before anything could want the SPUs cellVdec will claim.
@@ -297,6 +292,17 @@ int main(int argc, const char *argv[]) {
             snprintf(buf, sizeof(buf), "7f reserve done (meminfo unavailable)");
         crash_log(buf);
         plog(buf);
+    }
+
+    // TLS for the music-services tabs (mbedTLS; the firmware's SSL is too old for SoundCloud's hosts).  It parses the CA
+    // bundle once (about 350 KB), so it runs here: after the reservations, which want a clean heap, and before the
+    // thumbnail cache, which takes whatever is left.  A failure only disables those tabs.
+    if (!sx_tls_init()) plog("main: TLS did not start; the SoundCloud and Spotify tabs will not connect");
+    sc_svc_init();     // the SoundCloud profile, quality and cached client id (the files are tiny)
+    {
+        char buf[64];
+        snprintf(buf, sizeof buf, "7g tls ready: free=%uKB", meminfo_avail_kb());
+        crash_log(buf);
     }
 
     thumb_cache_init();
