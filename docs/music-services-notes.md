@@ -90,3 +90,74 @@ track the way it drives a file.
   transparent (`refreshes=1`).
 * 23 real liked tracks from two profiles (160 and 96 kbit/s AAC, all 44.1 kHz): all decode, 0 bad frames.
 * Not measured: console CPU and heap, TLS speed on the PS3, how long a segment takes there. That is the user's SC0/SC-TV step.
+
+## Spotify: SP1 and SP2 done, SP0 not runnable here, and a premise of the handoff is wrong
+
+**Status: stopped before any PS3 code (SP3/SP4) was written.** Reasons in order of weight:
+
+### 1. cspot's playback chain uses Spotify's own web-player client id (handoff rule 1.3)
+
+The handoff says cspot's Connect flow (zeroconf or a stored blob) is "the only auth". Reading the code says that is not
+the whole flow. After the access-point login (which needs no client id), cspot asks for a bearer token from
+`https://login5.spotify.com/v3/login` with a **hard-coded client id, `65b708073fc0480ea92a077233ca87bd`, commented in
+the source as "Spotify web client's client id"** (`cspot/src/AccessKeyFetcher.cpp:31` in upstream, 2024-07;
+Switify's modified cspot, 2026-08, moves it to `app/src/spotify_engine.cpp:63` and hands the token to cspot through
+`accessTokenProvider`). That token is what the next step sends to
+`https://api.spotify.com/v1/storage-resolve/files/audio/interactive/<file id>` (`TrackQueue.cpp:284`) to get the CDN
+address of the audio, and for metadata. Without it there is no audio URL, so no playback;
+cspot has no other route to the CDN address (its only `hm://` calls are metadata and the Connect remote channel).
+librespot and go-librespot do the same.
+
+That id is a public constant of Spotify's web player, not a secret and not a developer app, and it is the same kind of
+thing as the SoundCloud web client id the SoundCloud tab scrapes (which the handoff plans on purpose). But rule 1.3 says
+"Spotify's own client IDs taken from binaries", and this is Spotify's own id taken from a client. I did not decide
+whether the rule's intent covers it; that is the user's call.
+
+Other Spotify-defined values every Connect receiver sends (all in the AP handshake, none is a credential): the client
+`BuildInfo` (product CLIENT, platform, version 112800721), a device id, and Spotify's published access-point public keys.
+
+### 2. SP0 cannot run from WSL as it stands
+
+SP0 needs the phone (or the PC's Spotify app) to discover a `_spotify-connect._tcp` device on the LAN. This WSL is in
+NAT mode (`eth0` 172.23.28.12, no `.wslconfig`), so mDNS from WSL never reaches the LAN. Fixing that means changing the
+networking mode and `wsl --shutdown`, which would stop every other session's WSL work, so it was not done.
+Options for the pairing: (a) pair with the PS3 itself once the port exists (the PS3 answers mDNS on the LAN directly),
+(b) switch WSL to mirrored networking at a moment the user chooses, (c) run `cspotcli -u <name> -p <password>
+-c creds.json` in the user's own terminal (their password, typed by them; not zeroconf, so it needs the user's OK too).
+The upstream cspot CLI built and linked on the host (`~/sp/build-host`, g++ 15, mbedTLS 3.6, NamedPipe sink); it was
+not run against Spotify.
+
+### 3. SP1: does cspot compile with GCC 7.2? Yes, with a small shim (no C++20, no mbedTLS 3)
+
+`ppu-g++` 7.2, `-std=gnu++17`, mbedTLS 2.28 headers from the portlibs, over every cspot and bell source except the
+platform layer and the MP3/Opus codecs (Spotify uses Vorbis): 54 files.
+
+* C++20 features in code we need: `std::endian` only (one header, `BinaryStream.h`, six uses). `string::starts_with` appears
+  once, in `BellTar.cpp`, which is not needed. A host g++ -std=gnu++17 pass over all 60 C++ files finds nothing else
+  (two missing `#include`s and the Linux mDNS file's unqualified `make_unique`).
+* mbedTLS: bell guards its one 3.x call (`mbedtls_pkcs5_pbkdf2_hmac_ext`) with `MBEDTLS_VERSION_NUMBER < 0x03030000`, so
+  2.28 works. bell's TLSSocket needs `mbedtls_net_*`, which the PS3 config does not build; the sx_tls layer replaces it.
+* The real gaps are in the PS3's libstdc++, built without threads: no `<mutex>`, `<condition_variable>`, `std::lock_guard`
+  and friends (about 70 uses), no `std::to_string` / `std::stoi` (7), and no `std::snprintf` / `std::strtoull` / `std::strtof`
+  in namespace std (nlohmann json, `Utils.h`). A 40-line stand-in header set removes every error in cspot's own 17 sources;
+  what is left is `netinet/tcp.h` (PSL1GHT has no such header) and the MP3 codec. The real replacements (mutex, condition
+  variable and semaphore over lv2 with `sysMutexAttrInitialize`, sockets, the TLS socket over sx_tls, an mDNS responder,
+  a small HTTP server for the `addUser` endpoint instead of civetweb, a PCM sink) are the SP3 work, about 1,500 lines.
+* The `pregen/protobuf` nanopb output of Switify's tree avoids needing `protoc` in the build.
+
+### 4. SP2: big-endian proof of the parts that do not need the network (done)
+
+`tests/spotify_be/run.sh` builds the cspot core for x86 and for powerpc64 (static, `qemu-ppc64`) and compares: the
+Shannon cipher and MAC over odd-sized chunks (and its decrypt round trip), `Utils` (`hton64`, `pack`, `extract`,
+`bigNumAdd`, hex), nanopb encode and decode of a keyexchange `ClientHello` and a mercury `Header`, and Tremor (bell's
+integer Vorbis decoder) over a 2 s stereo Ogg: every line is identical on both machines apart from `hton64`, which is
+the byte swap on x86 and the identity on the PS3, as intended. The audit found no bug. Not covered because it needs a
+logged-in session: the AP handshake, AES-CTR decryption of real audio, and the CDN reader.
+
+### 5. What a decision unblocks
+
+* If the user accepts the web-player client id as part of cspot's standard flow (as for SoundCloud's), SP3 and SP4 are
+  buildable; pairing then happens on the PS3 itself (SP3 includes the mDNS responder), and the first log line of SP0 is
+  whether audio keys are granted. Prior art says some newer accounts are denied; that is the gate.
+* If not, the Spotify tab cannot work through cspot, and Spotify stops here (the server-plugin fallback uses go-librespot,
+  which has the same client id, so it does not get round this either).

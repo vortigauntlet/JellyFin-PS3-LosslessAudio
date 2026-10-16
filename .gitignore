@@ -109,3 +109,4 @@ tests/fixtures/sc_synth/mono48/
 tests/test_dec
 tests/test_dec_be
 tests/live_play
+tests/spotify_be/*.o
