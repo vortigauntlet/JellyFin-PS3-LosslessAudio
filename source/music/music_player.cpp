@@ -37,6 +37,9 @@ extern void crash_log(const char *msg);   // survives a death plog does not
 #include "lfs.h"                // files on a drive
 #include "lfs_path.h"
 #include "local_audio.h"
+#include "sc_dec.h"            // SoundCloud tracks: a pull decoder over HLS segments
+#include "sc_source.h"
+#include "sc_svc.h"
 
 extern u32 running;
 
@@ -570,12 +573,149 @@ static int play_local_track(const MusicTrack *t, u32 start_secs, bool gapless) {
     return ret;
 }
 
+// ---- a SoundCloud track ----
+//
+// MusicTrack::path is "sc:" + the transcoding URL (sc_track.tc_url) and MusicTrack::id is "sc:<id>:<kbps>".  The
+// track is fetched a segment at a time as it plays and nothing is written to disk.  The decoder of the track last
+// played is kept open (the "warm" slot) so a seek inside it costs a segment fetch, not a new playlist.
+
+#define SC_PATH_PREFIX "sc:"
+
+static bool is_sc_track(const MusicTrack *t) { return strncmp(t->path, SC_PATH_PREFIX, 3) == 0; }
+
+static struct {
+    char       key[sizeof(((MusicTrack *)0)->path)];
+    sc_net     net;
+    ScSegSource ss;
+    ScSource  *src;
+    ScDec     *dec;
+    bool       net_open;
+} s_sc;
+static int s_sc_fails = 0;                // tracks in a row that could not be opened
+
+static void sc_warm_close(void) {
+    if (s_sc.dec) scdec_close(s_sc.dec);
+    if (s_sc.src) scsrc_close(s_sc.src);
+    if (s_sc.net_open) sc_svc_net_end(&s_sc.net);
+    memset(&s_sc, 0, sizeof s_sc);
+}
+
+// The decoder for the track, reusing the warm one when it is the same track. False when it cannot be opened.
+static bool sc_open_track(const MusicTrack *t, bool *reused) {
+    *reused = false;
+    if (s_sc.dec && strcmp(s_sc.key, t->path) == 0) { *reused = true; return true; }
+    sc_warm_close();
+    sc_svc_net_begin(&s_sc.net);
+    s_sc.net_open = true;
+    int err = 0;
+    s_sc.src = scsrc_open(&s_sc.net, t->path + 3, &s_sc.ss, &err);
+    if (!s_sc.src) {
+        char b[96];
+        snprintf(b, sizeof b, "music: soundcloud playlist failed (%d, http %d)", err, s_sc.net.last_status);
+        plog(b);
+        sc_warm_close();
+        return false;
+    }
+    s_sc.dec = scdec_open(&s_sc.ss);
+    if (!s_sc.dec) {
+        plog("music: soundcloud stream could not be opened (init segment or decoder)");
+        sc_warm_close();
+        return false;
+    }
+    snprintf(s_sc.key, sizeof s_sc.key, "%s", t->path);
+    return true;
+}
+
+static int play_sc_track(const MusicTrack *t, u32 start_secs, bool gapless) {
+    bool reused = false;
+    if (gapless) {
+        // As for a file: one boundary at a time, and the track before it is still in the ring.
+        while (s_bnd_pending && running && s_run && s_cmd == MCMD_NONE) usleep(5000);
+        if (!s_run) return MCMD_STOP;
+        const int c = take_cmd();
+        if (c != MCMD_NONE) return c;
+        if (!sc_open_track(t, &reused)) {
+            s_natural_end = true;
+            const bool end_of_queue = ++s_sc_fails >= 3 || s_pos + 1 >= s_count;
+            while (end_of_queue && s_n >= 256 && running && s_run && s_cmd == MCMD_NONE) usleep(10000);
+            return s_sc_fails >= 3 ? MCMD_STOP : MCMD_NEXT;
+        }
+        track_begin(t, start_secs, true, true);
+    } else {
+        track_begin(t, start_secs, false, true);
+        if (!sc_open_track(t, &reused)) {
+            usleep(300000);
+            return (++s_sc_fails >= 3) ? MCMD_STOP : MCMD_NEXT;
+        }
+        s_prev_pads = true;
+    }
+    if ((start_secs > 0 || reused) && !scdec_seek(s_sc.dec, start_secs)) {
+        plog("music: soundcloud seek failed");
+        sc_warm_close();
+        return (++s_sc_fails >= 3) ? MCMD_STOP : MCMD_NEXT;
+    }
+    s_sc_fails = 0;
+    {
+        char b[160], line[40];
+        int kbps = 0;
+        sscanf(t->id, "sc:%*[0-9]:%d", &kbps);
+        if (kbps > 0) snprintf(line, sizeof line, "%d kbps AAC", kbps);
+        else snprintf(line, sizeof line, "AAC");
+        snprintf(b, sizeof b, "music: track %d/%d start=%us soundcloud %d segments, %d Hz [%s]%s", s_pos + 1, s_count, start_secs,
+                 s_sc.ss.nseg, scdec_source_hz(s_sc.dec), line, gapless ? " (gapless)" : "");
+        plog(b);
+        const u32 secs = s_sc.ss.total_ms ? (s_sc.ss.total_ms + 500) / 1000 : t->duration_secs;
+        publish_track_info(secs, line);
+    }
+
+    static float pcm[2048 * 2];                // the stream thread's alone
+    bool eof = false, failed = false;
+    int ret = MCMD_NONE;
+    while (running && s_run) {
+        const int c = take_cmd();
+        if (c != MCMD_NONE) { ret = c; break; }
+        bool progressed = false;
+        if (!eof && mring_space() >= 2048) {
+            const int n = scdec_decode(s_sc.dec, pcm, 2048);
+            if (n > 0) {
+                mring_push(pcm, n);
+                progressed = true;
+            } else {
+                eof = true;
+                failed = n < 0;
+                if (failed) {
+                    char b[96];
+                    snprintf(b, sizeof b, "music: soundcloud stream lost (http %d, %d retries)", s_sc.net.last_status,
+                             scsrc_retries(s_sc.src));
+                    plog(b);
+                }
+            }
+        }
+        if (s_hold && (s_n >= 9600 || eof)) s_hold = false;               // ~200 ms pre-roll
+
+        if (eof && !failed && s_pos + 1 < s_count) {
+            s_natural_end = true;                                         // hand over now, while the ring plays this one out
+            ret = MCMD_NEXT;
+            break;
+        }
+        if (eof) {
+            if (s_n < 256) { ret = MCMD_NEXT; break; }                    // drained
+            usleep(10000);
+        } else if (!progressed) {
+            usleep(10000);                                                // the ring is full: let the DMA drain
+        }
+    }
+    if (ret == MCMD_NONE) ret = MCMD_STOP;
+    if (failed && ret == MCMD_NEXT) { s_sc_fails++; sc_warm_close(); }     // a broken stream is not reused
+    return ret;
+}
+
 static int play_one_track(u32 start_secs, bool gapless) {
     if (!s_run) return MCMD_STOP;
     crash_log("m0 track start");
     const MusicTrack *t = &s_queue[s_order[s_pos]];
     s_natural_end = false;
-    if (t->path[0]) return play_local_track(t, start_secs, gapless);
+    if (t->path[0]) return is_sc_track(t) ? play_sc_track(t, start_secs, gapless) : play_local_track(t, start_secs, gapless);
 
     mp3dec_init(&s_dec);
     track_begin(t, start_secs, gapless, true);
@@ -801,6 +941,7 @@ static void music_stream_thread(void *arg) {
             s_pos = pos;
         }
     }
+    sc_warm_close();                           // a SoundCloud track's playlist and decoder go with the session
     s_active = false;
     // A stop's cancel flag was for THIS thread's stream_open; nothing else
     // may inherit it (the video player's stream_open reads the same flag).

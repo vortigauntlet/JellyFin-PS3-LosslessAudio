@@ -39,6 +39,7 @@
 #include "net_selftest.h"
 #include "sx_tls.h"
 #include "sc_diag.h"
+#include "sc_svc.h"
 #include "subfont.h"
 #include "subcolor.h"
 #include "statsovl.h"
@@ -229,6 +230,7 @@ int main(int argc, const char *argv[]) {
     // hosts).  Builds the RNG and parses the CA bundle once, here, because it allocates and the
     // reservations below leave little room after them.  A failure only disables those tabs.
     if (!sx_tls_init()) plog("main: TLS did not start; the SoundCloud and Spotify tabs will not connect");
+    sc_svc_init();     // the SoundCloud profile, quality and cached client id (the files are tiny)
     // Opt-in SPU pool check (jellyfin_sputest.txt).  Runs here, while the heap
     // is still pristine and before vdec_reserve_mem() takes its 96MB -- and
     // crucially before anything could want the SPUs cellVdec will claim.
@@ -298,7 +300,7 @@ int main(int argc, const char *argv[]) {
     }
 
     thumb_cache_init();
-    thumb_set_local_bytes(lm_art_bytes);        // covers of music files on a drive
+    thumb_set_local_bytes(music_art_bytes);     // covers of music files on a drive, then SoundCloud's artwork
     boot_anim_pump();
 
     crash_log("10 load_config");

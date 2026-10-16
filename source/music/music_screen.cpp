@@ -1514,6 +1514,20 @@ void music_screen_open_songs(const XMBItem *items, int count, int start_idx) {
     music_screen_run(&ctx, count, start_idx);
 }
 
+void music_screen_open_service(const MusicTrack *tracks, int count, int start_idx, const char *parent, const char *title) {
+    s_origin_pending = false; take_origin();
+    if (count > MUSIC_QUEUE_MAX) count = MUSIC_QUEUE_MAX;
+    if (count <= 0) return;
+    if (start_idx < 0 || start_idx >= count) start_idx = 0;
+    memcpy(s_tracks, tracks, (size_t)count * sizeof(MusicTrack));
+    MusicCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    snprintf(ctx.parent, sizeof(ctx.parent), "%s", parent ? parent : "");
+    snprintf(ctx.title,  sizeof(ctx.title),  "%s", title ? title : "");
+    s_entry_flipped = true;
+    music_screen_run(&ctx, count, start_idx);
+}
+
 void music_screen_open_local(const MusicTrack *tracks, int count, int start_idx, const char *album) {
     s_origin_pending = false; take_origin();
     if (count > MUSIC_QUEUE_MAX) count = MUSIC_QUEUE_MAX;

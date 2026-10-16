@@ -25,6 +25,10 @@
 #include "lfs.h"
 #include "local_audio.h"
 #include "stream.h"
+#include "sc_dec.h"
+#include "sc_source.h"
+#include "sc_svc.h"
+#include "fmp4.h"
 
 static int s_checks = 0, s_failed = 0;
 #define CHECK(cond) do { s_checks++; if (!(cond)) { s_failed++; \
@@ -142,6 +146,83 @@ static int open_handles() {
     for (const HFile &f : s_handles) if (f.f) n++;
     return n;
 }
+
+// ---- SoundCloud: the network source replaced by one over the ffmpeg-made fixtures ----
+// A track's "transcoding URL" is "synth:<dir>:<segments>[:fail<N>]": segment fetches read
+// fixtures/sc_synth/<dir>/dataNNN.m4s, and from segment N on they fail when ":fail<N>" is given.
+struct ScSource {
+    std::string dir;
+    int nseg = 0, fail_at = -1;
+    std::vector<uint32_t> ms;
+};
+static std::atomic<int> s_sc_opens(0);
+void sc_svc_net_begin(sc_net *n) { memset(n, 0, sizeof *n); }
+void sc_svc_net_end(sc_net *) {}
+static std::vector<uint8_t> read_all(const std::string &p, bool *ok) {
+    std::vector<uint8_t> d;
+    FILE *f = fopen(p.c_str(), "rb");
+    *ok = f != NULL;
+    if (!f) return d;
+    uint8_t b[65536];
+    size_t n;
+    while ((n = fread(b, 1, sizeof b, f)) > 0) d.insert(d.end(), b, b + n);
+    fclose(f);
+    return d;
+}
+static uint32_t sc_seg_ms(void *c, int i) { return ((ScSource *)c)->ms[(size_t)i]; }
+static int sc_fetch(const ScSource *s, const std::string &name, uint8_t **buf, size_t *len) {
+    bool ok;
+    std::vector<uint8_t> d = read_all("fixtures/sc_synth/" + s->dir + "/" + name, &ok);
+    if (!ok) return -1;
+    *buf = (uint8_t *)malloc(d.size());
+    memcpy(*buf, d.data(), d.size());
+    *len = d.size();
+    return 0;
+}
+static int sc_fetch_init(void *c, uint8_t **b, size_t *l) { return sc_fetch((ScSource *)c, "init.mp4", b, l); }
+static int sc_fetch_seg(void *c, int i, uint8_t **b, size_t *l) {
+    ScSource *s = (ScSource *)c;
+    if (s->fail_at >= 0 && i >= s->fail_at) return -1;
+    char name[32];
+    snprintf(name, sizeof name, "data%03d.m4s", i + 1);
+    return sc_fetch(s, name, b, l);
+}
+ScSource *scsrc_open(sc_net *, const char *url, ScSegSource *out, int *err) {
+    s_sc_opens++;
+    if (err) *err = 0;
+    char dir[64] = "";
+    int nseg = 0, fail = -1;
+    if (strncmp(url, "synth:", 6) != 0 || sscanf(url + 6, "%63[^:]:%d:fail%d", dir, &nseg, &fail) < 2) { if (err) *err = -1; return NULL; }
+    bool ok;
+    read_all(std::string("fixtures/sc_synth/") + dir + "/init.mp4", &ok);
+    if (!ok) { if (err) *err = -2; return NULL; }
+    ScSource *s = new ScSource;
+    s->dir = dir; s->nseg = nseg; s->fail_at = fail;
+    uint32_t total = 0;
+    for (int i = 0; i < nseg; i++) {
+        uint8_t *ib, *sb;
+        size_t il, sl;
+        sc_fetch(s, "init.mp4", &ib, &il);
+        char name[32];
+        snprintf(name, sizeof name, "data%03d.m4s", i + 1);
+        sc_fetch(s, name, &sb, &sl);
+        fmp4_init in;
+        fmp4_seg sg;
+        fmp4_parse_init(ib, il, &in);
+        fmp4_parse_segment(sb, sl, &in, &sg);
+        s->ms.push_back((uint32_t)(sg.total_ticks * 1000 / in.timescale));
+        total += s->ms.back();
+        fmp4_seg_free(&sg);
+        free(ib); free(sb);
+    }
+    out->ctx = s; out->nseg = nseg; out->total_ms = total;
+    out->seg_ms = sc_seg_ms; out->fetch_init = sc_fetch_init; out->fetch_seg = sc_fetch_seg;
+    return s;
+}
+void scsrc_close(ScSource *s) { delete s; }
+void scsrc_expire(ScSource *) {}
+int scsrc_refreshes(const ScSource *) { return 0; }
+int scsrc_retries(const ScSource *) { return 0; }
 
 // ---------------------------------------------------------------------------
 //  Helpers
@@ -549,6 +630,102 @@ static void test_pause() {
     CHECK(s_server_calls == 0);
 }
 
+// ---- SoundCloud tracks ----
+
+static std::vector<MusicTrack> sc_queue(const std::vector<std::string> &urls) {
+    std::vector<MusicTrack> q;
+    int i = 0;
+    for (const std::string &u : urls) {
+        MusicTrack t;
+        memset(&t, 0, sizeof t);
+        snprintf(t.id, sizeof t.id, "sc:%d:160", 1000 + i);
+        snprintf(t.name, sizeof t.name, "SoundCloud track %d", i);
+        snprintf(t.path, sizeof t.path, "sc:%s", u.c_str());
+        t.duration_secs = 25;
+        q.push_back(t);
+        i++;
+    }
+    return q;
+}
+
+// What the decoder makes of a fixture, read straight through: the reference for what the pump should hear.
+static Floats sc_reference(const char *dir, int nseg) {
+    Floats out;
+    char url[96];
+    snprintf(url, sizeof url, "synth:%s:%d", dir, nseg);
+    ScSegSource ss;
+    ScSource *src = scsrc_open(NULL, url, &ss, NULL);
+    ScDec *d = scdec_open(&ss);
+    if (!d) { CHECK(false); return out; }
+    float buf[2048 * 2];
+    int n;
+    while ((n = scdec_decode(d, buf, 2048)) > 0) out.insert(out.end(), buf, buf + n * 2);
+    scdec_close(d);
+    scsrc_close(src);
+    return out;
+}
+
+static void test_soundcloud() {
+    printf("- SoundCloud tracks: segments in, the same ring, queue and gapless handover as a file\n");
+    const Floats st = sc_reference("stereo44", 3);
+    const Floats mo = sc_reference("mono48", 2);
+    CHECK(st.size() > 48000 * 24 * 2 && mo.size() > 48000 * 11 * 2);
+
+    // one track to its end, bit for bit what the decoder makes
+    s_sc_opens = 0;
+    Floats heard = play_through(sc_queue({ "synth:stereo44:3" }), 0, 30000);
+    CHECK(is_whole_prefix(heard, st));
+    CHECK(s_sc_opens == 1);
+
+    // two tracks: the join trims only what is quiet, and the first is intact up to there
+    s_pace_us = 1500;
+    heard = play_through(sc_queue({ "synth:mono48:2", "synth:stereo44:3" }), 0, 40000);
+    s_pace_us = 0;
+    const long lost = (long)(mo.size() + st.size() - heard.size()) / 2;
+    CHECK(lost >= 0 && lost <= 2 * 2400 + 256);
+    CHECK(heard.size() > mo.size() && memcmp(heard.data(), mo.data(), (mo.size() / 2 - 2400 - 300) * 2 * sizeof(float)) == 0);
+    CHECK(open_handles() == 0);
+
+    // the source line: what the id says
+    take_captured();
+    s_card_open = false;
+    {
+        const std::vector<MusicTrack> q = sc_queue({ "synth:stereo44:3" });
+        CHECK(music_start(q.data(), 1, 0));
+        sleep_ms(250);
+        CHECK(!strcmp(music_source_info(), "160 kbps AAC"));
+        CHECK(music_duration_secs() >= 24 && music_duration_secs() <= 26);          // the playlist's length, not the queue's
+        // a seek inside the open track reuses its decoder (no second open) and goes on from there
+        const int opens_before = s_sc_opens;
+        music_seek(+10);
+        sleep_ms(300);
+        CHECK(music_elapsed_secs() == 10);
+        CHECK(s_sc_opens == opens_before);
+        s_card_open = true;
+        CHECK(wait_until(queue_done, 20000));
+        sleep_ms(20);
+        music_stop();
+        const Floats rest = take_captured();
+        const long want = (long)(st.size() / 2) - 10 * 48000;
+        CHECK(labs((long)(rest.size() / 2) - want) < 4096);
+    }
+
+    // a track that cannot be opened is skipped; the next one plays
+    heard = play_through(sc_queue({ "synth:nowhere:2", "synth:mono48:2" }), 0, 30000);
+    CHECK(is_whole_prefix(heard, mo));
+
+    // a stream that dies partway ends that track and the engine goes on to the next without hanging
+    heard = play_through(sc_queue({ "synth:stereo44:3:fail1", "synth:mono48:2" }), 0, 40000);
+    CHECK(heard.size() > 48000 * 9 * 2);
+    CHECK(open_handles() == 0);
+
+    // three that cannot open end the queue
+    play_through(sc_queue({ "synth:a:1", "synth:b:1", "synth:c:1", "synth:mono48:2" }), 0, 15000);
+    // and a drive file after a SoundCloud track still plays through the file path
+    CHECK(is_whole_prefix(play_through(queue_of({ "chirp48.flac" })), decode_file("chirp48.flac")));
+    CHECK(s_server_calls == 0);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "-v")) s_verbose = true;
     test_gapless_exact();
@@ -559,6 +736,7 @@ int main(int argc, char **argv) {
     test_failures();
     test_stop_and_restart();
     test_pause();
+    test_soundcloud();
     printf("music engine: %d checks, %d failed\n", s_checks, s_failed);
     return s_failed ? 1 : 0;
 }

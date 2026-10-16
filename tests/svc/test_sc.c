@@ -9,6 +9,7 @@
 #include "sc_scan.h"
 #include "sc_hls.h"
 #include "sc_api.h"
+#include "sc_store.h"
 
 static int g_checks, g_fail;
 #define CHECK(c) do { g_checks++; if (!(c)) { g_fail++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -338,6 +339,74 @@ static void test_urls(void) {
     CHECK(sc_art_url("https://i1.sndcdn.com/artworks-000-abc-large.jpg", 500, u, sizeof(u)) && strcmp(u, "https://i1.sndcdn.com/artworks-000-abc-t500x500.jpg") == 0);
     CHECK(sc_art_url("https://i1.sndcdn.com/avatars-000-abc-large.jpg?x=1", 300, u, sizeof(u)) || 1);
     CHECK(sc_art_url("https://i1.sndcdn.com/noext", 500, u, sizeof(u)) && strcmp(u, "https://i1.sndcdn.com/noext") == 0);
+
+    // Artwork keys fold a URL into the thumbnail cache's 63 characters and unfold only to sndcdn.com.
+    char key[96];
+    CHECK(sc_art_key("https://i1.sndcdn.com/artworks-000123456789-abcdef-large.jpg", key, sizeof(key)));
+    CHECK(strcmp(key, "sca:i1:s:jpg:artworks-000123456789-abcdef") == 0);
+    CHECK(sc_art_key_url(key, 500, u, sizeof(u)) && strcmp(u, "https://i1.sndcdn.com/artworks-000123456789-abcdef-t500x500.jpg") == 0);
+    CHECK(sc_art_key_url(key, 300, u, sizeof(u)) && strstr(u, "-t300x300.jpg") != NULL);
+    CHECK(sc_art_key_url(key, 77, u, sizeof(u)) && strstr(u, "-t500x500.jpg") != NULL);
+    CHECK(sc_is_art_key(key) && !sc_is_art_key("12345") && !sc_is_art_key(""));
+    CHECK(sc_art_key("https://a1.sndcdn.com/images/default_avatar_large.png", key, sizeof(key)));
+    CHECK(strcmp(key, "sca:a1:u:png:images/default_avatar_large") == 0);
+    CHECK(sc_art_key_url(key, 500, u, sizeof(u)) && strcmp(u, "https://a1.sndcdn.com/images/default_avatar_large.png") == 0);
+    CHECK(sc_art_key("https://i1.sndcdn.com/avatars-AbC123-xYz-large.jpg?x=1", key, sizeof(key)) && strcmp(key, "sca:i1:s:jpg:avatars-AbC123-xYz") == 0);
+    CHECK(!sc_art_key("http://i1.sndcdn.com/artworks-1-large.jpg", key, sizeof(key)));            // plain http
+    CHECK(!sc_art_key("https://evil.example/artworks-1-large.jpg", key, sizeof(key)));
+    CHECK(!sc_art_key("https://sndcdn.com.evil.example/artworks-1-large.jpg", key, sizeof(key)));
+    CHECK(!sc_art_key("https://i1.sndcdn.com/../etc-large.jpg", key, sizeof(key)));
+    CHECK(!sc_art_key("https://i1.sndcdn.com/artworks-1-large", key, sizeof(key)));               // no extension
+    CHECK(!sc_art_key("https://i1.sndcdn.com/artworks-1-large.jpg", key, 20));                    // too small
+    // A key from anywhere else never unfolds to a foreign host or a path trick.
+    CHECK(!sc_art_key_url("sca:i1.evil.example:s:jpg:x", 500, u, sizeof(u)));
+    CHECK(!sc_art_key_url("sca:i1:s:jpg:../x", 500, u, sizeof(u)));
+    CHECK(!sc_art_key_url("sca:i1:s:jp/g:x", 500, u, sizeof(u)));
+    CHECK(!sc_art_key_url("sca:i1:x:jpg:x", 500, u, sizeof(u)));
+    CHECK(!sc_art_key_url("sca:i1:s:jpg:", 500, u, sizeof(u)));
+}
+
+static void test_store(void) {
+    ScCidFile c;
+    sc_cidfile_parse("cid aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE\nat 1792000000\n", &c);
+    CHECK(strcmp(c.cid, "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE") == 0 && c.at == 1792000000L);
+    sc_cidfile_parse("cid short\nat 5\n", &c);
+    CHECK(c.cid[0] == 0 && c.at == 5);
+    sc_cidfile_parse("cid aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1d!\n", &c);          // 32 characters, one not alphanumeric
+    CHECK(c.cid[0] == 0);
+    sc_cidfile_parse("\xEF\xBB\xBF" "cid aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE\r\nat 7\r\n", &c);
+    CHECK(c.cid[0] != 0 && c.at == 7);
+    sc_cidfile_parse("", &c);
+    CHECK(c.cid[0] == 0 && c.at == 0);
+    sc_cidfile_parse(NULL, &c);
+    CHECK(c.cid[0] == 0);
+    char buf[128];
+    ScCidFile w = { "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE", 42 };
+    const int n = sc_cidfile_format(&w, buf, sizeof(buf));
+    CHECK(n > 0);
+    sc_cidfile_parse(buf, &c);
+    CHECK(strcmp(c.cid, w.cid) == 0 && c.at == 42);
+    ScCidFile bad = { "x", 1 };
+    CHECK(sc_cidfile_format(&bad, buf, sizeof(buf)) < 0);
+    CHECK(sc_cidfile_format(&w, buf, 10) < 0);
+
+    ScSettings s;
+    sc_settings_parse("profile forss\nquality 96\n", &s);
+    CHECK(strcmp(s.profile, "forss") == 0 && s.quality == 96);
+    sc_settings_parse("", &s);
+    CHECK(s.profile[0] == 0 && s.quality == 160);
+    sc_settings_parse("quality 128\nprofile a/b\n", &s);                   // not a choice we offer, not a profile name
+    CHECK(s.profile[0] == 0 && s.quality == 160);
+    sc_settings_parse("profile  my-name_1 \r\nquality 160\r\n", &s);
+    CHECK(strcmp(s.profile, "my-name_1") == 0 && s.quality == 160);
+    sc_settings_parse("profile two words\n", &s);
+    CHECK(s.profile[0] == 0);
+    s.quality = 96;
+    snprintf(s.profile, sizeof(s.profile), "%s", "forss");
+    CHECK(sc_settings_format(&s, buf, sizeof(buf)) > 0);
+    ScSettings r;
+    sc_settings_parse(buf, &r);
+    CHECK(strcmp(r.profile, "forss") == 0 && r.quality == 96);
 }
 
 int main(int argc, char **argv) {
@@ -350,6 +419,7 @@ int main(int argc, char **argv) {
     test_playlist();
     test_user_and_stream();
     test_urls();
+    test_store();
     printf("test_sc: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

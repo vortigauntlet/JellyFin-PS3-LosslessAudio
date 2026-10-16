@@ -293,12 +293,13 @@ test_local_music: test_local_music.cpp ../source/local/local_music.c ../source/l
 	$(CXX) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/local -o $@ test_local_music.cpp local_music_t.o lfs_path_m.o ../source/i18n/i18n.c ../source/i18n/i18n_tables.c -lpthread
 
 # The music engine on files from a drive: music/music_player.cpp itself, with pthreads and a recording sound card for the console's services (hoststub_music/).
-MENG_SRC = ../source/local/local_audio.c ../source/local/local_tags.c ../source/audio/flac_dec.c ../source/audio/chan_map.c ../source/audio/resample.c minimp3_impl.c
-MENG_INC = -Ihoststub_music -Ihoststub -I../source/music -I../source/audio -I../source/local -I../source/util -I../source/player/stream -I../source/video -I../source/ui/render
-test_music_engine: test_music_engine.cpp ../source/music/music_player.cpp ../source/music/music_player.h $(MENG_SRC) ../source/local/lfs_path.cpp $(wildcard fixtures/music/*) $(wildcard hoststub_music/*) $(wildcard hoststub_music/*/*)
-	for f in $(MENG_SRC); do $(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/audio -I../source/local -c -o me_$$(basename $$f .c).o $$f || exit 1; done
+MENG_SRC = ../source/local/local_audio.c ../source/local/local_tags.c ../source/audio/flac_dec.c ../source/audio/chan_map.c ../source/audio/resample.c minimp3_impl.c \
+           ../source/svc/fmp4.c ../source/svc/sc_aac.c ../source/svc/sc_dec.c
+MENG_INC = -I../source/svc -Ihoststub_music -Ihoststub -I../source/music -I../source/audio -I../source/local -I../source/util -I../source/player/stream -I../source/video -I../source/ui/render
+test_music_engine: test_music_engine.cpp ../source/music/music_player.cpp ../source/music/music_player.h $(MENG_SRC) ../source/local/lfs_path.cpp $(wildcard fixtures/music/*) $(wildcard hoststub_music/*) $(wildcard hoststub_music/*/*) fixtures/sc_synth/stereo44/init.mp4
+	for f in $(MENG_SRC); do $(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -I../source/audio -I../source/local -I../source/svc -c -o me_$$(basename $$f .c).o $$f || exit 1; done
 	$(CXX) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(MENG_INC) -c -o me_lfs_path.o ../source/local/lfs_path.cpp
-	$(CXX) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(MENG_INC) -o $@ test_music_engine.cpp ../source/music/music_player.cpp me_*.o -lpthread -lm
+	$(CXX) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(MENG_INC) -o $@ test_music_engine.cpp ../source/music/music_player.cpp me_*.o -lpthread -lfaad -lm
 
 # The music decoders built little-endian (the host) and big-endian (the PS3's byte order, run under qemu-ppc64) and compared:
 # tags and properties exactly, samples to a hair (see cmp_floats.c).  Skipped when the cross compiler is missing.
@@ -980,3 +981,7 @@ test_clock_fmt: test_clock_fmt.c ../source/ui/render/clock_fmt.h
 ntfs-write-check:
 	bash fixtures/fs/ntfs_write_check.sh $(or $(NTFS_MODE),quick)
 	bash fixtures/fs/ntfs_write_check.sh quick be
+
+# ffmpeg-made fragmented-MP4 fixtures for the SoundCloud decoder and the engine's SoundCloud path (own tones).
+fixtures/sc_synth/stereo44/init.mp4: fixtures/sc_synth/make.sh
+	bash fixtures/sc_synth/make.sh

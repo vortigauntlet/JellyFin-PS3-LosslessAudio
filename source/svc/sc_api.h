@@ -124,6 +124,15 @@ bool sc_url_with_cid(const char *url, const char *client_id, char *out, size_t c
 // suffix SoundCloud serves; a URL without one is copied unchanged.
 bool sc_art_url(const char *art, int px, char *out, size_t cap);
 
+// ---- artwork keys --------------------------------------------------------------------------------
+// The thumbnail cache identifies a picture by a string of at most 63 characters, so an artwork URL is folded into a key
+// that sc_art_key_url() unfolds into the fetch URL at the size wanted:
+//   "sca:<host prefix>:<s|u>:<ext>:<stem>"   s = the file name carries a size suffix ("-large"), u = it does not
+// Only https://<prefix>.sndcdn.com/ pictures qualify, so a key can never point the console at another host.
+bool sc_art_key(const char *art_url, char *key, size_t cap);
+bool sc_art_key_url(const char *key, int px, char *url, size_t cap);
+bool sc_is_art_key(const char *key);
+
 #ifdef __cplusplus
 }
 #endif

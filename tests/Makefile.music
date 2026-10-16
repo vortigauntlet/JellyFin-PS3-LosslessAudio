@@ -19,7 +19,7 @@ SAN       = -fsanitize=address,undefined -fno-sanitize-recover=undefined
 LIBS      = -L$(MBEDTLS)/library -lmbedtls -lmbedx509 -lmbedcrypto -lpthread
 
 SVC    = ../source/svc
-SC_SRC = $(SVC)/sx_json.c $(SVC)/sc_scan.c $(SVC)/sc_hls.c $(SVC)/sc_api.c
+SC_SRC = $(SVC)/sx_json.c $(SVC)/sc_scan.c $(SVC)/sc_hls.c $(SVC)/sc_api.c $(SVC)/sc_store.c
 FIX    = fixtures/sc
 SYNTH  = fixtures/sc_synth
 

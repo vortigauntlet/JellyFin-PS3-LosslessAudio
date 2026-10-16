@@ -370,3 +370,78 @@ bool sc_art_url(const char *art, int px, char *out, size_t cap) {
     if (!dot || !dash || dash > dot || (slash && dash < slash) || dot - dash > 12 || dot - dash < 3) return put(out, cap, "%s", art);
     return put(out, cap, "%.*s-t%dx%d%s", (int)(dash - art), art, px, px, dot);
 }
+
+// ---- artwork keys --------------------------------------------------------------------------------
+
+#define ART_PREFIX "sca:"
+
+bool sc_is_art_key(const char *key) { return strncmp(key, ART_PREFIX, sizeof(ART_PREFIX) - 1) == 0; }
+
+static bool word_ok(const char *s, size_t n, size_t max) {
+    if (n == 0 || n > max) return false;
+    for (size_t i = 0; i < n; i++) {
+        const char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return false;
+    }
+    return true;
+}
+
+static bool path_ok(const char *s, size_t n) {
+    if (n == 0 || n > 120) return false;
+    for (size_t i = 0; i < n; i++) {
+        const char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '/')) return false;
+    }
+    return s[0] != '/' && strstr(s, "//") == NULL;
+}
+
+bool sc_art_key(const char *art, char *key, size_t cap) {
+    if (strncmp(art, "https://", 8) != 0) return false;
+    const char *host = art + 8;
+    const char *slash = strchr(host, '/');
+    if (!slash) return false;
+    const size_t hl = (size_t)(slash - host);
+    static const char dom[] = ".sndcdn.com";
+    if (hl <= sizeof(dom) - 1 || memcmp(host + hl - (sizeof(dom) - 1), dom, sizeof(dom) - 1) != 0) return false;
+    const size_t pl = hl - (sizeof(dom) - 1);                          // the "i1" of i1.sndcdn.com
+    if (!word_ok(host, pl, 6)) return false;
+    const char *path = slash + 1;
+    size_t n = strlen(path);
+    const char *q = strchr(path, '?');                                 // a cache-busting query is not part of the picture's identity
+    if (q) n = (size_t)(q - path);
+    const char *dot = NULL;
+    for (size_t i = 0; i < n; i++) if (path[i] == '.') dot = path + i;
+    if (!dot) return false;
+    const size_t el = (size_t)(path + n - dot - 1);
+    if (!word_ok(dot + 1, el, 4)) return false;
+    size_t sl = (size_t)(dot - path);                                   // the stem, with its size suffix if it has one
+    bool sized = false;
+    if (strncmp(path, "artworks-", 9) == 0 || strncmp(path, "avatars-", 8) == 0 || strncmp(path, "visuals-", 8) == 0) {
+        const char *dash = NULL;
+        for (size_t i = 0; i < sl; i++) if (path[i] == '-') dash = path + i;
+        if (dash && dash > path && word_ok(dash + 1, (size_t)(path + sl - dash - 1), 10)) { sized = true; sl = (size_t)(dash - path); }
+    }
+    if (!path_ok(path, sl)) return false;
+    const int w = snprintf(key, cap, ART_PREFIX "%.*s:%c:%.*s:%.*s", (int)pl, host, sized ? 's' : 'u', (int)el, dot + 1, (int)sl, path);
+    return w > 0 && (size_t)w < cap && (size_t)w <= 63;
+}
+
+bool sc_art_key_url(const char *key, int px, char *url, size_t cap) {
+    if (!sc_is_art_key(key)) return false;
+    const char *p = key + sizeof(ART_PREFIX) - 1;
+    const char *c1 = strchr(p, ':');
+    if (!c1) return false;
+    const char *c2 = strchr(c1 + 1, ':');
+    if (!c2 || c2 != c1 + 2) return false;
+    const char sized = c1[1];
+    const char *c3 = strchr(c2 + 1, ':');
+    if (!c3 || (sized != 's' && sized != 'u')) return false;
+    const size_t pl = (size_t)(c1 - p), el = (size_t)(c3 - c2 - 1);
+    const char *stem = c3 + 1;
+    if (!word_ok(p, pl, 6) || !word_ok(c2 + 1, el, 4) || !path_ok(stem, strlen(stem))) return false;
+    if (sized == 's') {
+        if (px != 300 && px != 500) px = 500;
+        return put(url, cap, "https://%.*s.sndcdn.com/%s-t%dx%d.%.*s", (int)pl, p, stem, px, px, (int)el, c2 + 1);
+    }
+    return put(url, cap, "https://%.*s.sndcdn.com/%s.%.*s", (int)pl, p, stem, (int)el, c2 + 1);
+}

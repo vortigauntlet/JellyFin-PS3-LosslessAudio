@@ -25,3 +25,7 @@ void music_screen_open_playlist(const XMBItem *playlist);
 // Files on a drive (MusicTrack::path set), starting at start_idx; `album` is the name shown under the track.  The
 // caller has finished its frame and issued the flip (as after loading_run): this does not.
 void music_screen_open_local(const MusicTrack *tracks, int count, int start_idx, const char *album);
+
+// The same for a queue from a streaming service (MusicTrack::path "sc:..."): `parent` is the breadcrumb segment
+// before the name ("SoundCloud"), `title` the playlist or list being played.
+void music_screen_open_service(const MusicTrack *tracks, int count, int start_idx, const char *parent, const char *title);
