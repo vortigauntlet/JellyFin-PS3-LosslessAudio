@@ -161,3 +161,44 @@ logged-in session: the AP handshake, AES-CTR decryption of real audio, and the C
   whether audio keys are granted. Prior art says some newer accounts are denied; that is the gate.
 * If not, the Spotify tab cannot work through cspot, and Spotify stops here (the server-plugin fallback uses go-librespot,
   which has the same client id, so it does not get round this either).
+
+## Memory: why nothing is held whole (this supersedes the buffering described under SC1/SC2 above)
+
+The first run of the console check in the emulator (RPCS3, `BUILD_FOR_RPCS3=1`, the real PPU code with the app's own
+reservations) found that **the process has about 120 KB of main memory left after boot** (`sys_memory_get_user_memory_size`
+via `meminfo`; the log line `7f reserve done: free=3512KB` is the figure just after the video reservations, and the
+disk, USB and download threads take most of the rest). A 128 KB thread stack is fine; a 256 KB one failed with ENOMEM, and
+reading a 200 KB segment into a buffer failed in `realloc`. The host tests had never shown it. So:
+
+* `sc_jstream`: the listings (50 tracks = 150-250 KB of JSON) and playlist documents are parsed one element at a time
+  (work buffer 32 KB, any element larger is skipped and counted).
+* `sc_hls`: durations (4 bytes a segment) plus one URI template; SoundCloud's 360-segment mix costs 1.5 KB instead of 300 KB.
+  A playlist that breaks the "counter in the file name" pattern keeps every URI (up to 96 KB), else is refused.
+* `fmp4_parse_head` + `sc_dec`: a segment is read as a stream through a 20 KB window: the head (styp/sidx/moof) is parsed,
+  then each frame is read and decoded in turn; `sc_source` resumes a dropped connection with a Range request.
+* `sc_html`: the 70 KB home page streams through a script finder.
+* A track record is 330 bytes (artwork kept as its thumbnail key, transcoding URL without its constant start); a listing
+  keeps a window of 150 tracks and forgets the oldest 50 when paging on.
+* Idle TLS connections (about 40 KB each) are flushed after the API calls so only the media connection stays open.
+* The new threads use 128 KB stacks (the artwork provider runs its TLS on a worker because the thumbnail thread has 64 KB).
+
+Tests: `test_jstream` (every fixture at every chunk size, truncations, malformed input), `test_sc` (templates, irregular
+playlists, limits, the streaming parsers against the whole-document ones), `test_dec` (identical output at chunk sizes
+1 to 100000, and a connection that dies mid-segment), `test_fmp4` (the incremental head parse). All also run big-endian.
+
+## What the emulator run showed (RPCS3, 2026-10-17, the real PPU code, host network)
+
+`jellyfin_sc_test_result.txt` from the console check, unedited apart from the free-memory suffix:
+
+```
+client id 1216 ms | resolve 536 ms | stream url 128 ms | playlist (22 segments) 670 ms | init segment 761 bytes
+segment 0 streamed: 202,572 bytes in 426 ms | play opened in 1394 ms, first sound 1568 ms
+10 s of audio in 1098 ms = 9.1x real time (network included), peak 0.99, 0 bad frames
+seek to 120 s: first audio after 2296 ms | refresh after forced URL expiry: ok in 1833 ms
+```
+
+So the whole chain runs on PS3 code: mbedTLS handshakes against `soundcloud.com`, `api-v2.soundcloud.com`,
+`a-v2.sndcdn.com` and the media CDN with the bundled roots, AAC decode on big-endian, the resampler. The speed is the
+emulator's, not the console's: the PPU of a real PS3 is in-order and will not match 9x; **the user's console check
+gives the real figure**. Not exercised: the tab's screens (the emulator needs a keyboard-driven session and the app's
+menus are only legible in the emulator build), the Now Playing screen, audio output, thumbnails.

@@ -117,6 +117,31 @@ static void test_dir(const char *dir, int want_ch, int want_rate, int nseg) {
             }
             sb[pos] = keep;
         }
+        // The head of a segment that is still arriving: asks for more until the moof is whole, then agrees with the whole parse.
+        {
+            fmp4_seg whole, head;
+            const int nw = fmp4_parse_segment(sb, sl, &in, &whole);
+            size_t first_ok = 0;
+            for (size_t avail = 0; avail <= sl && avail < 20000; avail++) {
+                size_t need = 0;
+                const int r = fmp4_parse_head(sb, avail, &in, &head, &need);
+                if (r > 0) { first_ok = avail; fmp4_seg_free(&head); break; }
+                CHECK_MSG(r == FMP4_E_SHORT && need > avail, "%s avail %zu: rc %d need %zu", name, avail, r, need);
+                if (r == FMP4_E_SHORT) CHECK(need <= first_ok + 1 || first_ok == 0);
+            }
+            CHECK_MSG(first_ok > 100 && first_ok < 20000, "%s: head complete at %zu", name, first_ok);
+            if (first_ok) {
+                size_t need = 0;
+                CHECK(fmp4_parse_head(sb, first_ok, &in, &head, &need) == nw);
+                CHECK(head.n == whole.n && head.base_time == whole.base_time && head.total_ticks == whole.total_ticks);
+                for (int i = 0; i < head.n && i < whole.n; i++) CHECK(head.s[i].off == whole.s[i].off && head.s[i].size == whole.s[i].size);
+                fmp4_seg_free(&head);
+                // the same with only the head in hand (the media data has not arrived)
+                CHECK(fmp4_parse_head(sb, first_ok + 3, &in, &head, &need) == nw);
+                fmp4_seg_free(&head);
+            }
+            if (nw > 0) fmp4_seg_free(&whole);
+        }
         if (n > 0) fmp4_seg_free(&seg);
         free(sb);
     }
