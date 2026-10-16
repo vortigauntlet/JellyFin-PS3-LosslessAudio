@@ -49,6 +49,7 @@ typedef enum {
     TABKIND_SETTINGS,
     TABKIND_LIVETV,     // Jellyfin's "livetv" view: its own channel list and guide
     TABKIND_LOCAL,      // "Media": the internal disk's folders and USB drives, no server needed
+    TABKIND_SOUNDCLOUD, // "SoundCloud": a public profile's music, no server needed (xmb/ui_soundcloud.cpp)
 } XMBTabKind;
 
 typedef struct {

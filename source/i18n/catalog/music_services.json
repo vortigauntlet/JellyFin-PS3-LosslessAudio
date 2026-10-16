@@ -1,0 +1,219 @@
+{
+  "%d kbps  -  X to switch": {
+    "ja": "%d kbps  -  Xで切り替え",
+    "pt-BR": "%d kbps  -  X para alternar",
+    "de": "%d kbps  -  X zum Wechseln",
+    "fr": "%d kbps  -  X pour changer",
+    "es": "%d kbps  -  X para cambiar"
+  },
+  "%d track": {
+    "ja": "%d曲",
+    "pt-BR": "%d faixa",
+    "de": "%d Titel",
+    "fr": "%d titre",
+    "es": "%d canción"
+  },
+  "%d tracks": {
+    "ja": "%d曲",
+    "pt-BR": "%d faixas",
+    "de": "%d Titel",
+    "fr": "%d titres",
+    "es": "%d canciones"
+  },
+  "%d track left out (protected or unavailable)": {
+    "ja": "保護または利用不可のため%d曲を除外",
+    "pt-BR": "%d faixa omitida (protegida ou indisponível)",
+    "de": "%d Titel ausgelassen (geschützt oder nicht verfügbar)",
+    "fr": "%d titre exclu (protégé ou indisponible)",
+    "es": "%d canción omitida (protegida o no disponible)"
+  },
+  "%d tracks left out (protected or unavailable)": {
+    "ja": "保護または利用不可のため%d曲を除外",
+    "pt-BR": "%d faixas omitidas (protegidas ou indisponíveis)",
+    "de": "%d Titel ausgelassen (geschützt oder nicht verfügbar)",
+    "fr": "%d titres exclus (protégés ou indisponibles)",
+    "es": "%d canciones omitidas (protegidas o no disponibles)"
+  },
+  "%s  -  X to change": {
+    "ja": "%s  -  Xで変更",
+    "pt-BR": "%s  -  X para mudar",
+    "de": "%s  -  X zum Ändern",
+    "fr": "%s  -  X pour modifier",
+    "es": "%s  -  X para cambiar"
+  },
+  "A secure connection was refused. Check the console's date and time.": {
+    "ja": "安全な接続が拒否されました。本体の日付と時刻を確認してください。",
+    "pt-BR": "Uma conexão segura foi recusada. Verifique a data e a hora do console.",
+    "de": "Eine sichere Verbindung wurde abgelehnt. Prüfe Datum und Uhrzeit der Konsole.",
+    "fr": "Une connexion sécurisée a été refusée. Vérifiez la date et l'heure de la console.",
+    "es": "Se rechazó una conexión segura. Comprueba la fecha y la hora de la consola."
+  },
+  "Audio quality": {
+    "ja": "音質",
+    "pt-BR": "Qualidade do áudio",
+    "de": "Audioqualität",
+    "fr": "Qualité audio",
+    "es": "Calidad de audio"
+  },
+  "Choose a profile first": {
+    "ja": "先にプロフィールを選んでください",
+    "pt-BR": "Escolha um perfil primeiro",
+    "de": "Wähle zuerst ein Profil",
+    "fr": "Choisissez d'abord un profil",
+    "es": "Elige primero un perfil"
+  },
+  "Could not connect to SoundCloud. Its web player may have changed; this tab may need an update.": {
+    "ja": "SoundCloudに接続できませんでした。ウェブプレーヤーが変更された可能性があり、このタブの更新が必要かもしれません。",
+    "pt-BR": "Não foi possível conectar ao SoundCloud. O player da web pode ter mudado; esta aba pode precisar de uma atualização.",
+    "de": "Verbindung zu SoundCloud fehlgeschlagen. Der Web-Player hat sich möglicherweise geändert; dieser Tab braucht eventuell ein Update.",
+    "fr": "Impossible de se connecter à SoundCloud. Son lecteur web a peut-être changé ; cet onglet a peut-être besoin d'une mise à jour.",
+    "es": "No se pudo conectar con SoundCloud. Puede que su reproductor web haya cambiado; esta pestaña podría necesitar una actualización."
+  },
+  "Could not load this list.": {
+    "ja": "このリストを読み込めませんでした。",
+    "pt-BR": "Não foi possível carregar esta lista.",
+    "de": "Diese Liste konnte nicht geladen werden.",
+    "fr": "Impossible de charger cette liste.",
+    "es": "No se pudo cargar esta lista."
+  },
+  "Could not reach SoundCloud. Check the console's network connection.": {
+    "ja": "SoundCloudに接続できません。本体のネットワーク接続を確認してください。",
+    "pt-BR": "Não foi possível acessar o SoundCloud. Verifique a conexão de rede do console.",
+    "de": "SoundCloud ist nicht erreichbar. Prüfe die Netzwerkverbindung der Konsole.",
+    "fr": "Impossible de joindre SoundCloud. Vérifiez la connexion réseau de la console.",
+    "es": "No se pudo acceder a SoundCloud. Comprueba la conexión de red de la consola."
+  },
+  "Find tracks on SoundCloud": {
+    "ja": "SoundCloudで曲を探す",
+    "pt-BR": "Encontrar faixas no SoundCloud",
+    "de": "Titel auf SoundCloud suchen",
+    "fr": "Trouver des titres sur SoundCloud",
+    "es": "Buscar canciones en SoundCloud"
+  },
+  "From %s": {
+    "ja": "%sから",
+    "pt-BR": "De %s",
+    "de": "Von %s",
+    "fr": "De %s",
+    "es": "De %s"
+  },
+  "Likes": {
+    "ja": "いいね",
+    "pt-BR": "Curtidas",
+    "de": "Likes",
+    "fr": "J'aime",
+    "es": "Me gusta"
+  },
+  "No playable tracks found": {
+    "ja": "再生できる曲が見つかりません",
+    "pt-BR": "Nenhuma faixa reproduzível encontrada",
+    "de": "Keine abspielbaren Titel gefunden",
+    "fr": "Aucun titre lisible trouvé",
+    "es": "No se encontraron canciones reproducibles"
+  },
+  "No playable tracks here": {
+    "ja": "ここには再生できる曲がありません",
+    "pt-BR": "Nenhuma faixa reproduzível aqui",
+    "de": "Hier gibt es keine abspielbaren Titel",
+    "fr": "Aucun titre lisible ici",
+    "es": "Aquí no hay canciones reproducibles"
+  },
+  "No playlists here": {
+    "ja": "ここにはプレイリストがありません",
+    "pt-BR": "Nenhuma playlist aqui",
+    "de": "Hier gibt es keine Playlists",
+    "fr": "Aucune playlist ici",
+    "es": "Aquí no hay listas de reproducción"
+  },
+  "Not a SoundCloud profile": {
+    "ja": "SoundCloudのプロフィールではありません",
+    "pt-BR": "Não é um perfil do SoundCloud",
+    "de": "Kein SoundCloud-Profil",
+    "fr": "Ce n'est pas un profil SoundCloud",
+    "es": "No es un perfil de SoundCloud"
+  },
+  "Not set. X to enter the name of a public profile": {
+    "ja": "未設定。Xで公開プロフィールの名前を入力",
+    "pt-BR": "Não definido. X para digitar o nome de um perfil público",
+    "de": "Nicht festgelegt. X, um den Namen eines öffentlichen Profils einzugeben",
+    "fr": "Non défini. X pour saisir le nom d'un profil public",
+    "es": "Sin definir. X para escribir el nombre de un perfil público"
+  },
+  "Profile": {
+    "ja": "プロフィール",
+    "pt-BR": "Perfil",
+    "de": "Profil",
+    "fr": "Profil",
+    "es": "Perfil"
+  },
+  "Profile not found": {
+    "ja": "プロフィールが見つかりません",
+    "pt-BR": "Perfil não encontrado",
+    "de": "Profil nicht gefunden",
+    "fr": "Profil introuvable",
+    "es": "Perfil no encontrado"
+  },
+  "Reposts": {
+    "ja": "リポスト",
+    "pt-BR": "Reposts",
+    "de": "Reposts",
+    "fr": "Reposts",
+    "es": "Reposts"
+  },
+  "Search SoundCloud": {
+    "ja": "SoundCloudを検索",
+    "pt-BR": "Pesquisar no SoundCloud",
+    "de": "SoundCloud durchsuchen",
+    "fr": "Rechercher sur SoundCloud",
+    "es": "Buscar en SoundCloud"
+  },
+  "SoundCloud answered with an error (%d).": {
+    "ja": "SoundCloudがエラー(%d)を返しました。",
+    "pt-BR": "O SoundCloud respondeu com um erro (%d).",
+    "de": "SoundCloud hat mit einem Fehler geantwortet (%d).",
+    "fr": "SoundCloud a répondu par une erreur (%d).",
+    "es": "SoundCloud respondió con un error (%d)."
+  },
+  "SoundCloud has no profile with that name.": {
+    "ja": "その名前のSoundCloudプロフィールはありません。",
+    "pt-BR": "O SoundCloud não tem perfil com esse nome.",
+    "de": "SoundCloud hat kein Profil mit diesem Namen.",
+    "fr": "SoundCloud n'a aucun profil portant ce nom.",
+    "es": "SoundCloud no tiene ningún perfil con ese nombre."
+  },
+  "SoundCloud has nothing at that address.": {
+    "ja": "そのアドレスにはSoundCloudの内容がありません。",
+    "pt-BR": "O SoundCloud não tem nada nesse endereço.",
+    "de": "Unter dieser Adresse gibt es bei SoundCloud nichts.",
+    "fr": "SoundCloud n'a rien à cette adresse.",
+    "es": "SoundCloud no tiene nada en esa dirección."
+  },
+  "SoundCloud is busy. Wait a moment and try again.": {
+    "ja": "SoundCloudが混み合っています。しばらくしてからもう一度お試しください。",
+    "pt-BR": "O SoundCloud está ocupado. Aguarde um momento e tente novamente.",
+    "de": "SoundCloud ist ausgelastet. Warte einen Moment und versuche es erneut.",
+    "fr": "SoundCloud est occupé. Patientez un instant et réessayez.",
+    "es": "SoundCloud está ocupado. Espera un momento e inténtalo de nuevo."
+  },
+  "SoundCloud profile name (like forss) or its link": {
+    "ja": "SoundCloudのプロフィール名(例: forss)またはそのリンク",
+    "pt-BR": "Nome do perfil do SoundCloud (como forss) ou o link dele",
+    "de": "SoundCloud-Profilname (z. B. forss) oder sein Link",
+    "fr": "Nom du profil SoundCloud (comme forss) ou son lien",
+    "es": "Nombre del perfil de SoundCloud (como forss) o su enlace"
+  },
+  "The search failed.": {
+    "ja": "検索に失敗しました。",
+    "pt-BR": "A pesquisa falhou.",
+    "de": "Die Suche ist fehlgeschlagen.",
+    "fr": "La recherche a échoué.",
+    "es": "La búsqueda falló."
+  },
+  "Type the name from the profile's address, like forss.": {
+    "ja": "プロフィールのアドレスにある名前(例: forss)を入力してください。",
+    "pt-BR": "Digite o nome que aparece no endereço do perfil, como forss.",
+    "de": "Gib den Namen aus der Adresse des Profils ein, z. B. forss.",
+    "fr": "Saisissez le nom figurant dans l'adresse du profil, comme forss.",
+    "es": "Escribe el nombre que aparece en la dirección del perfil, como forss."
+  }
+}

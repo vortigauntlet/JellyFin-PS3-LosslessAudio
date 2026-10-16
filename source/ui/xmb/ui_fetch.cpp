@@ -46,6 +46,15 @@ static void add_media_tab(int next) {
     tb->icon    = "#";
     tb->kind    = TABKIND_LOCAL;
     tb->enabled = true;
+    // The streaming-service tabs follow it, for the same reason: neither needs a Jellyfin server.
+    if (next + 1 < XMB_TAB_COUNT) {
+        XMBTab *sc = &g_tabs[next + 1];
+        memset(sc, 0, sizeof(*sc));
+        snprintf(sc->label, sizeof(sc->label), "%s", "SoundCloud");
+        sc->icon    = "#";
+        sc->kind    = TABKIND_SOUNDCLOUD;
+        sc->enabled = true;
+    }
 }
 
 // The last Views request's HTTP status: below 0 means nothing answered at
@@ -119,7 +128,7 @@ static bool detect_tabs_parse(int status, const char *buf) {
         xmb_json_str_range(obj, olen, "Name",           name, sizeof(name));
         if (!id[0]) continue;
 
-        if (next >= XMB_TAB_COUNT - 1) {        // (the last slot is the Media tab's)
+        if (next >= XMB_TAB_COUNT - 2) {        // (the last two slots are the Media and SoundCloud tabs')
             // More libraries than the tab bar can hold.  Say so rather than
             // dropping them silently — silent dropping is the bug this whole
             // change exists to fix.
@@ -264,7 +273,7 @@ int xmb_detect_tabs_poll(void) {
 
 bool xmb_have_server_tabs(void) {
     for (int t = XMB_TAB_LIB0; t < XMB_TAB_COUNT; t++)
-        if (g_tabs[t].enabled && g_tabs[t].kind != TABKIND_LOCAL) return true;
+        if (g_tabs[t].enabled && g_tabs[t].kind != TABKIND_LOCAL && g_tabs[t].kind != TABKIND_SOUNDCLOUD) return true;
     return false;
 }
 

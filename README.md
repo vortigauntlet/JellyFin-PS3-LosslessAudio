@@ -164,6 +164,15 @@ All taken on a real PS3 at 1920×1080. More in the
   and no gap between tracks; the music screen and its visualisers work as for
   server music.
 
+- **A SoundCloud tab, with no server and no developer account**: type the name
+  of a public SoundCloud profile and play its Likes, Playlists, Reposts and
+  uploads, or search SoundCloud, through the same music screen and visualisers.
+  Streaming only: nothing is saved to the console. Tracks that SoundCloud
+  copy-protects (mostly label releases) and 30-second previews are left out and
+  the list says how many. It reads SoundCloud's public web interface, so it is
+  unofficial and can stop working whenever SoundCloud changes that; it never
+  signs in, so a profile's private likes are out of reach.
+
 **Playback**
 - **Hardware H.264 through the PS3's VDEC**, up to **1080p at 25 Mbps**.
 - **True 24 Hz output.** 23.976 and 24 fps films switch the HDMI output to
@@ -370,6 +379,8 @@ change channel. A big channel list is shown a category at a time (`L2`/`R2`), wi
 two pages of your own in front: **My Channels** (everything you starred, from all
 categories) and **Recently watched**. `Start` (**Customise**) hides the categories
 you never watch, and the tab reopens on the page you left it on.
+
+**SoundCloud.** Choose *Profile* and type a profile's name (or paste its link); *Likes*, *Playlists*, *Reposts* and *Tracks* then list that profile. `X` plays from the highlighted track; the music screen's usual buttons skip and seek. *Audio quality* switches between 160 and 96 kbps.
 
 **Media.** `X` opens a drive or folder and then a file's page, where `X` plays or
 resumes it; `O` goes up a folder, `L2`/`R2` page through a long one.
@@ -587,7 +598,9 @@ source/
 |-- local/    Drives and files with no server: one file layer over the hard drive
 |             and USB (FAT32, NTFS, exFAT; writes only on NTFS, for downloads),
 |             file probing, names, resume points
-|-- net/      HTTP and HTTPS clients, server discovery, GitHub update check
+|-- net/      HTTP and HTTPS clients, server discovery, GitHub update check;
+|             sx_*: TLS 1.2 (mbedTLS) and HTTP/1.1 for the streaming services
+|-- svc/      SoundCloud: web client, playlists, fragmented-MP4 and AAC decode
 |-- offline/  Downloads: queue, store, library, free-space rules
 |-- player/   Core loop, HUD, GPU draw, decode/upload/audio threads, TS stream
 |-- ui/       XMB UI: input, OSK, home shelf, browse, search, settings, rendering
@@ -627,6 +640,13 @@ its own trace in `/dev_hdd0/tmp/update_detection.txt`.
   [`third_party/mohasi_fs`](third_party/mohasi_fs) so the app can play files from
   USB drives and save downloads to NTFS ones. What was changed is listed in that
   directory's README.
+- **[mbedTLS](https://github.com/Mbed-TLS/mbedtls)** (Apache-2.0) from the PS3
+  portlibs, and the **Mozilla root certificate set** (MPL-2.0) bundled in
+  `source/net/sx_cacert.c`, which keep the SoundCloud tab's HTTPS connections
+  verified. **[FAAD2](https://github.com/knik0/faad2)** decodes its AAC.
+- The SoundCloud tab's fragmented-MP4 handling follows the approach of the
+  **[Yo! Player PSL1GHT port](https://github.com/openlewa/yo-player-psl1ght)**
+  (Apache-2.0); the code is written for this app.
 - The authors of the embedded libraries (minimp3, stb_image, stb_truetype), and the
   Jellyfin project itself.
 

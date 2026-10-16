@@ -196,6 +196,13 @@ void xmb_cpu_draw_media(void);        // CPU phase: the rows' panels
 void xmb_draw_media(void);            // text phase
 bool xmb_media_at_top(void);          // the first row (Up there leaves the tab)
 void xmb_media_hints(void);           // the tab's hint bar
+// The SoundCloud tab (xmb/ui_soundcloud.cpp): the same five hooks the Media tab has.
+void xmb_sc_on_enter(void);
+bool xmb_input_sc(void);              // the tab's input (it never exits the XMB)
+void xmb_cpu_draw_sc(void);
+void xmb_draw_sc(void);
+bool xmb_sc_at_top(void);
+void xmb_sc_hints(void);
 // The channel list in display order, for the player's channel up/down.
 #include "livetv_list.h"
 // X and Left/Right on a Settings row, by its position in the displayed order

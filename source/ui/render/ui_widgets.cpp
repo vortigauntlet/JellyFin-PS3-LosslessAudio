@@ -40,6 +40,7 @@ static int tab_icon(int tab) {
     case TABKIND_SETTINGS: return ICON_SETTINGS;
     case TABKIND_LIVETV:   return ICON_ANTENNA;
     case TABKIND_LOCAL:    return ICON_COLLECTIONS;
+    case TABKIND_SOUNDCLOUD: return ICON_MUSIC;
     // Every custom / untyped library shares ONE icon, so they read as a
     // family rather than masquerading as a Collections library.
     //

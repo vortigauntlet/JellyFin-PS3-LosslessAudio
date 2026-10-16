@@ -218,7 +218,7 @@ static void xmb_draw_gpu_phase(int tab) {
         xmb_home_gpu_phase();
     } else if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_livetv_gpu();
-    } else if (xmb_kind(tab) == TABKIND_LOCAL) {
+    } else if (xmb_kind(tab) == TABKIND_LOCAL || xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
         // nothing on the GPU: the list is panels and text
     } else if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS) {
         GridGeom gg; const XMBItem *items;
@@ -259,6 +259,8 @@ static void xmb_draw_cpu_phase(int tab) {
         xmb_cpu_draw_livetv();
     } else if (xmb_kind(tab) == TABKIND_LOCAL) {
         xmb_cpu_draw_media();
+    } else if (xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
+        xmb_cpu_draw_sc();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_cpu_phase();
     } else {
@@ -290,6 +292,8 @@ static void xmb_draw_text_phase(int tab) {
         xmb_draw_livetv();
     } else if (xmb_kind(tab) == TABKIND_LOCAL) {
         xmb_draw_media();
+    } else if (xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
+        xmb_draw_sc();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_text_phase();
     } else {
@@ -460,6 +464,8 @@ static void xmb_draw_hints(int tab) {
         xmb_livetv_hints();
     } else if (xmb_kind(tab) == TABKIND_LOCAL) {
         xmb_media_hints();
+    } else if (xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
+        xmb_sc_hints();
     } else if (tab == XMB_TAB_SETTINGS) {
         if (g_settings_confirm) {
             static const Hint h[] = {{'X',TRN("Confirm")},{'C',TRN("Cancel")}};
@@ -641,7 +647,7 @@ void ui_run_xmb(void) {
         int tab = g_active_tab;
         if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS
             && tab != XMB_TAB_HOME && xmb_kind(tab) != TABKIND_LIVETV
-            && xmb_kind(tab) != TABKIND_LOCAL)
+            && xmb_kind(tab) != TABKIND_LOCAL && xmb_kind(tab) != TABKIND_SOUNDCLOUD)
             if (!g_items_loaded[tab]) {
                 if (first_iter) crash_log("13.7 fetch_tab_items");
                 xmb_fetch_tab_items(tab);

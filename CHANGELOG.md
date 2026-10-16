@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **SoundCloud tab.** Play a public SoundCloud profile's Likes, Playlists,
+  Reposts and uploads, or search SoundCloud, with no Jellyfin server and no
+  developer account. It streams AAC from SoundCloud's web interface through the
+  normal music screen (visualisers, skip, seek, pause, gapless) and saves
+  nothing to the console. Copy-protected tracks and previews are left out. It is
+  unofficial and can break whenever SoundCloud changes its site. Needs working
+  date and time on the console (HTTPS is verified against bundled roots).
+- A small network check for it: create `/dev_hdd0/tmp/jellyfin_sc_test.txt` and
+  start the app; `jellyfin_sc_test_result.txt` lists each step and its time.
+
 ## 3.2.2
 
 ### Fixed
