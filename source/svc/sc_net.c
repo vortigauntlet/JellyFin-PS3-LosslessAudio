@@ -63,6 +63,8 @@ static int do_get(sc_net *n, const char *url, size_t max_body, char **body, size
     rq.url = url;
     rq.headers = "Accept: */*\r\n";
     rq.range_start = -1; rq.range_end = -1;
+    rq.connect_ms = n->connect_ms; rq.handshake_ms = n->handshake_ms;
+    rq.first_byte_ms = n->first_byte_ms; rq.idle_ms = n->idle_ms;
     sx_http_info info;
     memset(&info, 0, sizeof(info));
     char *b = NULL;

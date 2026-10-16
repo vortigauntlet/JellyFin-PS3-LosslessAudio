@@ -6,6 +6,7 @@
 # mbedTLS must be the 2.28.10 the PS3 build uses, built with the PS3's config.h.
 # The TLS/HTTP layer under test is the one copied from the Stremio port
 # (source/net/sx_*); see docs/music-services-notes.md.
+# ffmpeg builds the synthetic fMP4 fixtures and is the reference decoder (fixtures/sc_synth/make.sh).
 
 CC       ?= cc
 MBEDTLS  ?= /home/ethan/st-tools/mbedtls-2.28.10
@@ -20,13 +21,17 @@ LIBS      = -L$(MBEDTLS)/library -lmbedtls -lmbedx509 -lmbedcrypto -lpthread
 SVC    = ../source/svc
 SC_SRC = $(SVC)/sx_json.c $(SVC)/sc_scan.c $(SVC)/sc_hls.c $(SVC)/sc_api.c
 FIX    = fixtures/sc
+SYNTH  = fixtures/sc_synth
 
-all: test_sx_net test_sc
+all: test_sx_net test_sc test_fmp4 test_dec
 
 SC_NET = $(NET)/sx_httpparse.c $(NET)/sx_conn.c $(NET)/sx_http.c $(NET)/sx_tls.c $(NET)/sx_cacert.c hoststub/sx_plat_posix.c $(SVC)/sc_net.c
 
 live_sc: svc/live_sc.c $(SC_SRC) $(SC_NET) $(wildcard $(SVC)/*.h)
 	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -o $@ svc/live_sc.c $(SC_SRC) $(SC_NET) $(LIBS)
+
+live_play: svc/live_play.c $(SC_SRC) $(SC_NET) $(DEC_SRC) $(SVC)/sc_source.c $(wildcard $(SVC)/*.h)
+	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -I../source/audio -o $@ svc/live_play.c $(SC_SRC) $(SC_NET) $(DEC_SRC) $(SVC)/sc_source.c $(LIBS) -lfaad -lm
 
 test_sx_net: sx_net/test_sx_net.c $(SX_PORTABLE) $(wildcard $(NET)/sx_*.h)
 	$(CC) $(CFLAGS) $(SAN) -o $@ sx_net/test_sx_net.c $(SX_PORTABLE) $(LIBS)
@@ -38,17 +43,43 @@ test_sc: svc/test_sc.c $(SC_SRC) $(wildcard $(SVC)/*.h)
 test_sc_be: svc/test_sc.c $(SC_SRC) $(wildcard $(SVC)/*.h)
 	powerpc64-linux-gnu-gcc -O2 -Wall -static -I$(SVC) -o $@ svc/test_sc.c $(SC_SRC)
 
+# ffmpeg-made fragmented-MP4 fixtures (own tones): rebuilt when the generator changes.
+$(SYNTH)/stereo44/init.mp4: $(SYNTH)/make.sh
+	bash $(SYNTH)/make.sh
+
+test_fmp4: svc/test_fmp4.c $(SVC)/fmp4.c $(SVC)/fmp4.h
+	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -o $@ svc/test_fmp4.c $(SVC)/fmp4.c
+
+test_fmp4_be: svc/test_fmp4.c $(SVC)/fmp4.c $(SVC)/fmp4.h
+	powerpc64-linux-gnu-gcc -O2 -Wall -static -I$(SVC) -o $@ svc/test_fmp4.c $(SVC)/fmp4.c
+
+DEC_SRC = $(SVC)/fmp4.c $(SVC)/sc_aac.c $(SVC)/sc_dec.c ../source/audio/resample.c
+
+# Needs libfaad (apt: libfaad-dev); the console build uses the portlibs' 2.7.
+test_dec: svc/test_dec.c $(DEC_SRC) $(wildcard $(SVC)/*.h)
+	$(CC) $(CFLAGS) $(SAN) -I$(SVC) -I../source/audio -o $@ svc/test_dec.c $(DEC_SRC) -lfaad -lm
+
+# Big-endian: libfaad 2.7 (the portlibs' version) built for powerpc64 by st-tools/faad-be/build.sh, run under qemu.
+FAAD_BE = /home/ethan/st-tools/faad-be/inst
+test_dec_be: svc/test_dec.c $(DEC_SRC) $(wildcard $(SVC)/*.h)
+	powerpc64-linux-gnu-gcc -O2 -Wall -static -I$(SVC) -I../source/audio -I$(FAAD_BE)/include -o $@ svc/test_dec.c $(DEC_SRC) $(FAAD_BE)/lib/libfaad.a -lm
+
 certs:
 	rm -rf sx_certs && bash sx_net/sx_net_certs.sh sx_certs
 
-check: all test_sc_be certs
+check: $(SYNTH)/stereo44/init.mp4 all test_sc_be test_fmp4_be test_dec_be certs $(SYNTH)/stereo44/init.mp4
 	./test_sc $(FIX)
 	qemu-ppc64 ./test_sc_be $(FIX)
+	./test_fmp4 $(FIX) $(SYNTH)
+	./test_dec $(SYNTH)
+	qemu-ppc64 ./test_dec_be $(SYNTH)
+	qemu-ppc64 ./test_fmp4_be $(FIX) $(SYNTH)
 	bash sx_net/sx_net_run.sh ./test_sx_net sx_certs
 
-live: test_sx_net live_sc
+live: test_sx_net live_sc live_play
 	./test_sx_net --live
 	./live_sc
+	./live_play
 
 clean:
-	rm -rf live_sc test_sx_net test_sc test_sc_be sx_certs
+	rm -rf live_play live_sc test_sx_net test_sc test_sc_be test_fmp4 test_fmp4_be test_dec test_dec_be sx_certs $(SYNTH)/stereo44 $(SYNTH)/mono48

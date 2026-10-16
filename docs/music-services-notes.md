@@ -61,3 +61,32 @@ Branch `feature/music-services`, worktree `~/jf-music`, base `fix/3.2.2` @ 5796b
 
 The handoff's 3/19 (16%) was from one artist; label-heavy profiles hide up to ~18%, independent ones ~4%.
 The user's own share is still to be measured on their profile (`live_sc --stats <name>`).
+
+## SC2: playback chain (source/svc/fmp4, sc_aac, sc_dec, sc_source)
+
+`sc_source` (playlist + on-demand segment fetch, retry, signed-URL refresh) -> `fmp4` (init/segment reader) ->
+`sc_aac` (libfaad, raw frames from the init segment's AudioSpecificConfig) -> `resample.c` -> 48 kHz stereo floats.
+`sc_dec` has the shape of local_audio's `la_open` / `la_decode` / `la_seek`, so the music engine drives a SoundCloud
+track the way it drives a file.
+
+* The Yo! Player port's `demux-mp4.c` reads through a random-access video source, so `fmp4.c` is a rewrite for
+  whole in-memory segments that follows its fragment handling (tfhd/trex defaults, tfdt, trun flags). No Yo! code is
+  copied, so no Apache NOTICE is carried; the idea is credited in the header.
+* Demux checked frame for frame against ffmpeg's demuxer on ffmpeg-made DASH segments (`fixtures/sc_synth/make.sh`,
+  own tones, generated at test time): 1078 stereo and 564 mono frames identical, including truncation and byte-flip
+  fuzzing. SoundCloud's real init segment parses (44.1 kHz, stereo, AAC-LC, 2-byte ASC).
+* Decode checked against ffmpeg's decoder: max difference 1.4e-4 (mono 48 kHz) and 2.2e-4 (stereo 44.1 kHz through the
+  resampler). **Big-endian: the same test under `qemu-ppc64` with libfaad 2.7 (the portlibs' version, built by
+  `~/st-tools/faad-be/build.sh`) passes with max 1.44e-4 / 1.90e-4.** It takes about 3 minutes under qemu.
+* Seeks: the segment's tfdt places the target exactly (the playlist's rounded EXTINF only picks the segment), two
+  frames of lead-in are decoded and dropped. libfaad's PNS noise runs on across a stream, so a seek re-rolls noise in
+  bands that use it: sample differences stay under 5e-4 against a 0.0625 tone.
+* `scaac_reset` reopens the libfaad handle instead of `NeAACDecPostSeekReset`, so a seek to 0 is bit-identical to a start.
+
+### Measured on this PC against the real service (`live_play`)
+
+* Free track (Forss, "Flickermood"): playlist in 325 ms, first sound 423 ms after the playlist request, seeks produce
+  audio in 38-118 ms, the last segment ends cleanly after 8.9 s, and a forced re-resolve (an expired URL) is
+  transparent (`refreshes=1`).
+* 23 real liked tracks from two profiles (160 and 96 kbit/s AAC, all 44.1 kHz): all decode, 0 bad frames.
+* Not measured: console CPU and heap, TLS speed on the PS3, how long a segment takes there. That is the user's SC0/SC-TV step.

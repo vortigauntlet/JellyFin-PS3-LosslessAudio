@@ -35,6 +35,8 @@ typedef struct {
     bool cid_dirty;                 // set when the id changed and the caller should store it
     int  last_status;               // HTTP status of the last request, 0 if none arrived
     int  last_err;                  // sx error code of the last transport failure
+    // Per-request timeouts in ms; 0 = the HTTP client's defaults (8 s connect, 12 s handshake, 24 s first byte, 8 s idle).
+    int  connect_ms, handshake_ms, first_byte_ms, idle_ms;
 } sc_net;
 
 void sc_net_init(sc_net *n);

@@ -102,3 +102,10 @@ tests/test_sc
 tests/test_sc_be
 tests/test_sx_net
 tests/sx_certs/
+tests/test_fmp4
+tests/test_fmp4_be
+tests/fixtures/sc_synth/stereo44/
+tests/fixtures/sc_synth/mono48/
+tests/test_dec
+tests/test_dec_be
+tests/live_play
