@@ -143,17 +143,20 @@ static int row_origin_x(HomeRowKind k) {
 
 // Step the eased scroll values once per frame (all three phases call this;
 // only the first in a frame does anything).
+#ifndef HOME_GLIDE_MS
+#define HOME_GLIDE_MS 420   // see ui_home_stage.inc
+#endif
 static void home_motion_tick(void) {
     const unsigned id = spine_frame_id();
     if (id == s_m_frame) return;
     const bool snap = s_m_fresh || !g_spine_on || s_m_frame + 1 < id;
     const unsigned long long dt = spine_frame_dt_us();
-    if (snap) spine_approach_init(&s_vs_m, (float)s_vscroll, SPINE_CATEGORY_MS);
+    if (snap) spine_approach_init(&s_vs_m, (float)s_vscroll, HOME_GLIDE_MS);
     spine_approach_set(&s_vs_m, (float)s_vscroll);
     if (!snap) spine_approach_step(&s_vs_m, dt);
     for (int r = 0; r < HOME_ROWS_N; r++) {
         if (snap) spine_approach_init(&s_hs_m[r], (float)s_rows[r].scroll,
-                                      SPINE_CATEGORY_MS);
+                                      HOME_GLIDE_MS);
         spine_approach_set(&s_hs_m[r], (float)s_rows[r].scroll);
         if (!snap) spine_approach_step(&s_hs_m[r], dt);
     }

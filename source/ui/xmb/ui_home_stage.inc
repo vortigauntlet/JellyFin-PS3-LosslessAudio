@@ -62,7 +62,13 @@ static void q_clamp_cols(void) {
     s_focus_col = s_row_col[s_focus_row];
 }
 
-#define Q_REST_SNAP 0.02f   // slots (~4 px at 1080p)
+#define Q_REST_SNAP 0.01f   // slots (~2 px at 1080p)
+// How long a flick between titles takes to settle.  The category-move value
+// (200 ms, SPINE_CATEGORY_MS) is right for the XMB bar but read as snappy on
+// the Home queue; 420 ms is about twice the time constant, a floatier glide.
+#ifndef HOME_GLIDE_MS
+#define HOME_GLIDE_MS 420
+#endif
 
 static void q_tick(void) {
     const unsigned id = spine_frame_id();
@@ -77,9 +83,9 @@ static void q_tick(void) {
     s_focus_row = depth_nearest_visitable(v, HOME_ROWS_N, s_focus_row);
     q_clamp_cols();
 
-    depth_follow(&s_qrow, (float)s_focus_row, snap, SPINE_CATEGORY_MS, dt);
+    depth_follow(&s_qrow, (float)s_focus_row, snap, HOME_GLIDE_MS, dt);
     for (int r = 0; r < HOME_ROWS_N; r++)
-        depth_follow(&s_qpos[r], (float)s_row_col[r], snap, SPINE_CATEGORY_MS, dt);
+        depth_follow(&s_qpos[r], (float)s_row_col[r], snap, HOME_GLIDE_MS, dt);
     // The approach is exponential and its last stretch moves under a pixel a
     // frame; Home lands it inside Q_REST_SNAP of the slot (the same distance
     // depth_queue_settle treats as at rest).
