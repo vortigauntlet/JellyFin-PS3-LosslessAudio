@@ -214,3 +214,13 @@ Stremio port has it, cost another 1 MB through fragmentation (3,512 KB) and was 
 whatever is left, as before, so the Jellyfin side has about 1.3 MB less to cache with: **worth a look on the TV
 (poster-heavy tabs, and playing a film after browsing)**. Host measurement of the TLS layer: one open HTTPS request is
 84 KB, a pooled idle one 65 KB, and `sx_http_pool_flush()` leaves 28 KB.
+
+### App variants (10-17)
+
+`make VARIANT=soundcloud` builds SoundCloud PS3, a separate app (title id SCPS30000, `ICON0-soundcloud.PNG`, objects in
+`obj-soundcloud/`); the default build is Jellyfin PS3, which keeps the SoundCloud tab. `APP_VARIANT` in `build_config.h` is the
+switch (`APP_STANDALONE` is anything but Jellyfin). The standalone app skips the update check (Jellyfin releases), the video
+reservations (HUD, VDEC arena, jitter buffer: about 120 MB), the server and login screens and the downloads and local-media
+services, and its XMB has one tab (`xmb_standalone_tabs`). Emulator run, same machine and settings: free memory after the
+reservations is **144,824 KB in the standalone app against 4,536 KB in the Jellyfin app with the music code**, and it reaches
+its first frame with no login. Its top bar still shows the Jellyfin mark and wordmark: its own UI is a separate piece of work.
