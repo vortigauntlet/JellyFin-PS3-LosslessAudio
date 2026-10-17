@@ -79,6 +79,11 @@ bool jellyfin_parse_item_identity(const char *json, JFItemIdentity *out);
 
 // Full per-item detail (populated by jellyfin_fetch_item_detail)
 typedef struct {
+    // The reply's own Id.  It can differ from the id asked for: a Gelato title
+    // found by Search is a stub that the server turns into a library item when
+    // it is first opened, and from then on only the new item's id has sources,
+    // images and PlaybackInfo.  "" when the reply carried none.
+    char id[64];
     char overview[1024];       // Plot summary
     char tagline[256];         // "How fast do you like it?"
     char official_rating[16];  // "NZ-M" / "PG-13" / etc.
@@ -104,13 +109,15 @@ bool jellyfin_fetch_item_detail(const char *item_id, XMBItemDetail *out);
 // -------------------------------------------------------
 // Selectable media streams (audio tracks + subtitles)
 // -------------------------------------------------------
-#define JF_MAX_STREAMS 8
+#define JF_MAX_STREAMS 8        // subtitles
+#define JF_MAX_AUDIO   16       // audio: a dubbed remux lists 9 Russian tracks before the English
 #define JF_MAX_SOURCES 48
 
 typedef struct {
     int  index;       // Jellyfin MediaStream Index (for AudioStreamIndex= etc.)
     char label[64];   // DisplayTitle, e.g. "English - EAC3 - 5.1 - Default"
     char codec[16];   // "subrip", "ass", "pgssub" ... -- see jf_sub_is_text()
+    char lang[16];    // MediaStream Language ("eng", "rus", sometimes "Japanese"); "" when untagged
     unsigned bitrate; // MediaStream BitRate, bits/s (audio; 0 = not reported).
                       // Budgeted inside the quality step (stream_budget.h).
 } JFStream;
@@ -127,12 +134,31 @@ bool jf_sub_is_text(const char *codec);
 bool jf_sub_is_pgs(const char *codec);
 
 typedef struct {
-    JFStream audio[JF_MAX_STREAMS];
+    JFStream audio[JF_MAX_AUDIO];
     int      n_audio;
-    int      default_audio;   // position in audio[] of the IsDefault track (or 0)
+    int      default_audio;   // position in audio[] playback starts on: see jf_tracks_pick_start()
     JFStream subs[JF_MAX_STREAMS];
     int      n_subs;
 } JFTracks;
+
+// The audio language playback prefers: the console's system language, as an
+// ISO 639-2 code ("eng" until jf_audio_lang_from_system runs).
+extern char g_audio_lang[4];
+// SYSUTIL_SYSTEMPARAM_ID_LANG value -> g_audio_lang.  Unknown values -> "eng".
+void jf_audio_lang_from_system(int sysutil_lang);
+// Is a track's Language tag ("eng", "en", "fre", "fra" ...) or, untagged, its
+// label's first word ("English - DTS - 5.1") the language `pref` names?
+bool jf_lang_matches(const char *track_lang, const char *label, const char *pref);
+// Where the next parsed audio track goes: the next slot, or -- once the list is
+// full -- the last slot, if the track is in the preferred language and no kept
+// one is.  -1 = dropped.
+int  jf_audio_slot(const JFTracks *t, const char *lang, const char *label);
+// Sets t->default_audio, the track playback starts on: the file's default
+// (`file_default`) when it is in g_audio_lang, else the first track in that
+// language that is not a commentary, else the file's default.  2026-10-17:
+// Avatar's Russian remuxes flag a Russian dub as default; an English console
+// played it.
+void jf_tracks_pick_start(JFTracks *t, int file_default);
 
 // One playable version from PlaybackInfo.MediaSources.  Jellyfin plugins such
 // as Gelato/AIOStreams expose their alternatives this way, just like local

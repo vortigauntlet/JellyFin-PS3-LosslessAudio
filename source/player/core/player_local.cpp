@@ -217,7 +217,7 @@ bool show_player_file(const char *path, const char *title, u32 resume_secs, char
     snprintf(local.path, sizeof(local.path), "%s", path);
     snprintf(local.label, sizeof(local.label), "File");
     // The audio the player can decode, in the file's order; the HUD's AUDIO menu lists these.
-    for (int i = 0; i < info.n_audio && local.tracks.n_audio < JF_MAX_STREAMS; i++) {
+    for (int i = 0; i < info.n_audio && local.tracks.n_audio < JF_MAX_AUDIO; i++) {
         if (!info.audio[i].decodable) continue;
         JFStream *s = &local.tracks.audio[local.tracks.n_audio];
         s->index = info.audio[i].id;

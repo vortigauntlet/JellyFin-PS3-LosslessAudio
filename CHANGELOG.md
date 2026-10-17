@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Stuck on "Finding versions..." for a film opened from Search.** The first
+  time a debrid title is opened from Search, the server adds it to your library
+  under a new id, and the old one stops working. The page kept asking about the
+  old one, so the versions never arrived until you opened the film again from
+  the Movies tab. The page now switches to the new id at once, and opening the
+  same search result again goes straight to it.
+- **Films playing in the wrong language.** Playback started on whichever
+  soundtrack the file marked as its default, which on some releases is a dub
+  (Avatar's Russian remuxes start on Russian). It now starts on a soundtrack in
+  your PS3's system language when the film has one, skipping commentaries, and
+  only otherwise uses the file's default. Up to 16 soundtracks per version are
+  listed now, up from 8, so an English track further down the list is no
+  longer cut off.
+
 ## 3.2.2
 
 ### Fixed

@@ -318,27 +318,30 @@ struct InfoLoad {
 static void info_load_work(void *arg) {
     InfoLoad *ld = (InfoLoad *)arg;
     jellyfin_fetch_item_detail(ld->it->id, ld->detail);
+    // A search stub answers as the library item it has just become; only that
+    // id has versions and art (see XMBItemDetail.id).
+    const char *id = ld->detail->id[0] ? ld->detail->id : ld->it->id;
     if (strcmp(ld->it->type, "Movie") == 0 || strcmp(ld->it->type, "Episode") == 0 ||
         strcmp(ld->it->type, "Video") == 0)
-        jellyfin_fetch_media_sources(ld->it->id, ld->versions);
+        jellyfin_fetch_media_sources(id, ld->versions);
     for (int v = 0; v < ld->versions->n_sources; v++)            // emoji -> gone
         ttf_clean_text(ld->versions->source[v].label, (int)sizeof ld->versions->source[v].label);
     // Episodes: the show's poster (the title card Home shows) and the
     // episode's own still -- its Primary image, 16:9 -- as the backdrop.  The
     // show's backdrop stands in when an episode has no still.
     const bool ep = strcmp(ld->it->type, "Episode") == 0 && ld->detail->series_id[0];
-    const char *poster_id = ep ? ld->detail->series_id : ld->it->id;
+    const char *poster_id = ep ? ld->detail->series_id : id;
     if (!detail_media_load(poster_id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster) && ep)
-        detail_media_load(ld->it->id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster);
-    ld->back_ok = ep && detail_media_load(ld->it->id, "Primary", 960, 540, 0.3f, &ld->back);
+        detail_media_load(id, "Primary", ld->pw, ld->ph, 0.5f, &ld->poster);
+    ld->back_ok = ep && detail_media_load(id, "Primary", 960, 540, 0.3f, &ld->back);
     // A Gelato title found by Search is the title item, whose "Backdrop" is
     // its poster again; its first version (what Home lists) carries the real
     // one.  Ask the version first when the two ids differ.
     if (!ld->back_ok && !ep && ld->versions->n_sources > 0 &&
-        ld->versions->source[0].id[0] && strcmp(ld->versions->source[0].id, ld->it->id) != 0)
+        ld->versions->source[0].id[0] && strcmp(ld->versions->source[0].id, id) != 0)
         ld->back_ok = detail_media_load(ld->versions->source[0].id, "Backdrop", 960, 540, 0.3f, &ld->back);
     if (!ld->back_ok)
-        ld->back_ok = detail_media_load(ep ? ld->detail->series_id : ld->it->id,
+        ld->back_ok = detail_media_load(ep ? ld->detail->series_id : id,
                                         "Backdrop", 960, 540, 0.3f, &ld->back);
 }
 
@@ -458,6 +461,16 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             ld.it = it; ld.detail = &detail; ld.versions = &versions;
             ld.pw = PW; ld.ph = PH;
             loading_run(info_load_work, &ld, TR("Loading"), true);
+            // 2026-10-17: from Search, a Gelato title opened for the first time
+            // is a stub that the server makes into a library item with a NEW id
+            // as it answers.  The stub id then 404s for sources, art and
+            // PlaybackInfo, so the page sat on "Finding versions..." until the
+            // title was opened again from its library tab.  The page becomes
+            // that item: versions, Play, resume and favourites all use it.
+            if (detail.id[0] && strcmp(detail.id, cur_item.id) != 0) {
+                snprintf(cur_item.id, sizeof cur_item.id, "%s", detail.id);
+                if (facts_wanted(it->type)) facts_request(it->id);
+            }
             {
                 int remembered = vquality_for_item(it->id);
                 if (remembered >= 0) vquality_set((vquality_t)remembered);
@@ -1231,6 +1244,9 @@ void xmb_show_item_info(const XMBItem *root) {
             detail_media_free(&hero_poster);
             memset(&detail, 0, sizeof(detail));
             jellyfin_fetch_item_detail(cur->id, &detail);
+            // A search stub answers as the item it became (see the v3 page).
+            if (detail.id[0] && strcmp(detail.id, cur_item.id) != 0)
+                snprintf(cur_item.id, sizeof cur_item.id, "%s", detail.id);
             // Re-apply the quality last chosen for THIS title, if any.
             // Done on load rather than at play time so the info row shows
             // what will actually be requested.

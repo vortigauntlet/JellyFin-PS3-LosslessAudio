@@ -283,6 +283,7 @@ bool jellyfin_fetch_tracks(const char *item_id, JFTracks *out) {
     arr++;
 
     const char *p = arr;
+    int file_default = 0;
     while (*p && *p != ']') {
         while (*p && *p != '{' && *p != ']') p++;
         if (!*p || *p == ']') break;
@@ -302,23 +303,27 @@ bool jellyfin_fetch_tracks(const char *item_id, JFTracks *out) {
         int idx = json_get_int_in_range(obj_start, olen, "Index", -1);
         if (idx < 0) continue;
 
-        char disp[64] = "";
+        char disp[64] = "", lang[8] = "";
         json_get_in_range(obj_start, olen, "DisplayTitle", disp, sizeof(disp));
-        if (!disp[0])
-            json_get_in_range(obj_start, olen, "Language", disp, sizeof(disp));
+        json_get_in_range(obj_start, olen, "Language", lang, sizeof(lang));
+        if (!disp[0]) snprintf(disp, sizeof(disp), "%s", lang);
 
-        if (strcmp(stype, "Audio") == 0 && out->n_audio < JF_MAX_STREAMS) {
-            JFStream *s = &out->audio[out->n_audio];
+        int slot = -1;
+        if (strcmp(stype, "Audio") == 0 && (slot = jf_audio_slot(out, lang, disp)) >= 0) {
+            JFStream *s = &out->audio[slot];
+            if (slot == out->n_audio) out->n_audio++;
+            else if (file_default == slot) file_default = 0;   // its track was replaced
+            memset(s, 0, sizeof(*s));
             s->index = idx;
             snprintf(s->label, sizeof(s->label), "%s",
                      disp[0] ? disp : "Audio");
+            snprintf(s->lang, sizeof(s->lang), "%s", lang);
             if (json_get_bool_in_range(obj_start, olen, "IsDefault"))
-                out->default_audio = out->n_audio;
+                file_default = slot;
             {
                 const int br = json_get_int_in_range(obj_start, olen, "BitRate", 0);
                 s->bitrate = br > 0 && br < 100000000 ? (unsigned)br : 0;
             }
-            out->n_audio++;
         } else if (strcmp(stype, "Subtitle") == 0 && out->n_subs < JF_MAX_STREAMS) {
             JFStream *s = &out->subs[out->n_subs];
             s->index = idx;
@@ -328,15 +333,46 @@ bool jellyfin_fetch_tracks(const char *item_id, JFTracks *out) {
         }
     }
 
-    char buf[64];
-    snprintf(buf, sizeof(buf), "fetch_tracks: %d audio, %d subs",
-             out->n_audio, out->n_subs);
+    jf_tracks_pick_start(out, file_default);
+
+    char buf[96];
+    snprintf(buf, sizeof(buf), "fetch_tracks: %d audio, %d subs, start=%d (%s)",
+             out->n_audio, out->n_subs, out->default_audio, g_audio_lang);
     plog(buf);
     return true;
 }
 
+// Search stubs already opened, and the library items they became.  After the
+// first open the stub id 404s for everything, the item fetch included, so the
+// same card opened again from the search results asks for the real item.
+// Only the details page's loads touch it (one at a time).
+#define STUB_MAP_N 16
+static struct { char stub[33], real[33]; } s_stub_map[STUB_MAP_N];
+static int s_stub_next = 0;
+
+static const char *stub_map_find(const char *id) {
+    for (int i = 0; i < STUB_MAP_N; i++)
+        if (s_stub_map[i].stub[0] && strcmp(s_stub_map[i].stub, id) == 0)
+            return s_stub_map[i].real;
+    return id;
+}
+
+static void stub_map_add(const char *stub, const char *real) {
+    if (strlen(stub) != 32 || strlen(real) != 32) return;
+    for (int i = 0; i < STUB_MAP_N; i++)
+        if (strcmp(s_stub_map[i].stub, stub) == 0) {
+            snprintf(s_stub_map[i].real, sizeof s_stub_map[i].real, "%s", real);
+            return;
+        }
+    snprintf(s_stub_map[s_stub_next].stub, sizeof s_stub_map[0].stub, "%s", stub);
+    snprintf(s_stub_map[s_stub_next].real, sizeof s_stub_map[0].real, "%s", real);
+    s_stub_next = (s_stub_next + 1) % STUB_MAP_N;
+}
+
 bool jellyfin_fetch_item_detail(const char *item_id, XMBItemDetail *out) {
     memset(out, 0, sizeof(*out));
+    const char *asked = item_id;
+    item_id = stub_map_find(item_id);
 
     char url[512];
     snprintf(url, sizeof(url),
@@ -354,6 +390,25 @@ bool jellyfin_fetch_item_detail(const char *item_id, XMBItemDetail *out) {
     }
 
     const char *resp = responseBuffer;
+
+    // The first "Id" is the item's own: BaseItemDto lists Name, OriginalTitle
+    // and ServerId before it, and nothing nested.  Kept only if it looks like
+    // one (32 hex digits).
+    {
+        char rid[64] = "";
+        json_get_string(resp, "Id", rid, sizeof(rid));
+        bool ok = strlen(rid) == 32;
+        for (int i = 0; ok && rid[i]; i++)
+            ok = (rid[i] >= '0' && rid[i] <= '9') || (rid[i] >= 'a' && rid[i] <= 'f');
+        if (!ok && item_id != asked) snprintf(rid, sizeof(rid), "%s", item_id);
+        if (ok || item_id != asked) snprintf(out->id, sizeof(out->id), "%s", rid);
+        if (ok && strcmp(rid, asked) != 0) {
+            stub_map_add(asked, rid);
+            char b[128];
+            snprintf(b, sizeof(b), "item_detail: %s answered as %s (search stub)", asked, rid);
+            plog(b);
+        }
+    }
 
     json_get_string(resp, "Overview",       out->overview,        sizeof(out->overview));
     json_get_string(resp, "OfficialRating", out->official_rating, sizeof(out->official_rating));

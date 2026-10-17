@@ -8,6 +8,8 @@
 
 #include <sysutil/sysutil.h>
 
+#include "../api/jellyfin_api.h"   // jf_audio_lang_from_system()
+
 #define LANG_FILE "jellyfin_language.txt"
 
 static int s_pref = LANG_PREF_AUTO;
@@ -53,6 +55,13 @@ void i18n_step_pref(int dir)
 
 void i18n_load(void)
 {
+    // Audio follows the console's language, not the app's menu language: the
+    // menus come in six languages, a soundtrack in any.
+    {
+        int v = 1;
+        if (sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_LANG, &v) != 0) v = 1;
+        jf_audio_lang_from_system(v);
+    }
     FILE *f = fopen(jf_data_path(LANG_FILE), "r");
     if (f) {
         char word[16] = "";

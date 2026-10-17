@@ -109,7 +109,7 @@ HudAction player_handle_menu_action(PlayerState *ps, HudAction act) {
     if (act == HUD_ACTION_AUDIO_TRACK) {
         act = HUD_ACTION_NONE;
         if (ps->have_tracks && ps->tracks.n_audio > 0) {
-            const char *items[JF_MAX_STREAMS];
+            const char *items[JF_MAX_AUDIO];
             for (int i = 0; i < ps->tracks.n_audio; i++)
                 items[i] = ps->tracks.audio[i].label;
             ps->menu_kind = PLAYER_MENU_AUDIO;

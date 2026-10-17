@@ -71,6 +71,88 @@ int main(int argc, char **argv) {
     assert(!jf_sub_is_pgs(NULL));
     assert(!jf_sub_is_pgs(""));
 
+    // ---- start track: the console's language (2026-10-17, Avatar) ----------
+    // Russian remux: nine Russian tracks, the first flagged default, then the
+    // English ones at 10 and 11 -- past the old 8-track cap.
+    {
+        static char js[8192];
+        int n = snprintf(js, sizeof js,
+            "{\"MediaSources\":[{\"Id\":\"ru\",\"Name\":\"Avatar\",\"MediaStreams\":["
+            "{\"Type\":\"Video\",\"Index\":0,\"DisplayTitle\":\"1080p H264\"}");
+        for (int i = 1; i <= 9; i++)
+            n += snprintf(js + n, sizeof js - n,
+                ",{\"Type\":\"Audio\",\"Index\":%d,\"Language\":\"rus\",%s"
+                "\"DisplayTitle\":\"Russian dub %d\"}", i, i == 1 ? "\"IsDefault\":true," : "", i);
+        n += snprintf(js + n, sizeof js - n,
+            ",{\"Type\":\"Audio\",\"Index\":10,\"Language\":\"eng\",\"DisplayTitle\":\"English - TrueHD 7.1\"}"
+            ",{\"Type\":\"Audio\",\"Index\":11,\"Language\":\"eng\",\"DisplayTitle\":\"English - DTS-HD MA 5.1\"}"
+            "]}]}");
+        JFMediaSources m;
+        snprintf(g_audio_lang, sizeof g_audio_lang, "eng");
+        assert(jellyfin_parse_media_sources(js, &m) == 1);
+        const JFTracks *t = &m.source[0].tracks;
+        assert(t->n_audio == 11);
+        assert(t->audio[t->default_audio].index == 10);
+        assert(strcmp(t->audio[9].lang, "eng") == 0);
+        // A Russian console keeps the file's own default.
+        jf_audio_lang_from_system(8);
+        assert(strcmp(g_audio_lang, "rus") == 0);
+        assert(jellyfin_parse_media_sources(js, &m) == 1);
+        assert(m.source[0].tracks.audio[m.source[0].tracks.default_audio].index == 1);
+        // Japanese: no Japanese track, so the file's default.
+        jf_audio_lang_from_system(0);
+        assert(jellyfin_parse_media_sources(js, &m) == 1);
+        assert(m.source[0].tracks.audio[m.source[0].tracks.default_audio].index == 1);
+        jf_audio_lang_from_system(1);
+        assert(strcmp(g_audio_lang, "eng") == 0);
+    }
+    // Twenty Russian tracks then one English: the list is full, so the English
+    // one takes the last slot rather than being dropped.
+    {
+        static char js[16384];
+        int n = snprintf(js, sizeof js, "{\"MediaSources\":[{\"Id\":\"x\",\"MediaStreams\":[");
+        for (int i = 1; i <= 20; i++)
+            n += snprintf(js + n, sizeof js - n, "%s{\"Type\":\"Audio\",\"Index\":%d,\"Language\":\"rus\"%s}",
+                          i > 1 ? "," : "", i, i == 16 ? ",\"IsDefault\":true" : "");
+        n += snprintf(js + n, sizeof js - n,
+            ",{\"Type\":\"Audio\",\"Index\":21,\"Language\":\"eng\"}"
+            ",{\"Type\":\"Audio\",\"Index\":22,\"Language\":\"eng\"}]}]}");
+        JFMediaSources m;
+        assert(jellyfin_parse_media_sources(js, &m) == 1);
+        const JFTracks *t = &m.source[0].tracks;
+        assert(t->n_audio == JF_MAX_AUDIO);
+        assert(t->audio[JF_MAX_AUDIO - 1].index == 21);   // first English kept, second dropped
+        assert(t->audio[t->default_audio].index == 21);
+    }
+    // Commentary goes last; tags in other spellings; untagged labels.
+    {
+        static const char js[] =
+            "{\"MediaSources\":[{\"Id\":\"c\",\"MediaStreams\":["
+            "{\"Type\":\"Audio\",\"Index\":1,\"Language\":\"ger\",\"IsDefault\":true,\"DisplayTitle\":\"Deutsch\"},"
+            "{\"Type\":\"Audio\",\"Index\":2,\"Language\":\"eng\",\"DisplayTitle\":\"English - Director's Commentary\"},"
+            "{\"Type\":\"Audio\",\"Index\":3,\"Language\":\"en\",\"DisplayTitle\":\"English - AC3 5.1\"}"
+            "]}]}";
+        JFMediaSources m;
+        assert(jellyfin_parse_media_sources(js, &m) == 1);
+        assert(m.source[0].tracks.audio[m.source[0].tracks.default_audio].index == 3);
+        // German console: the default is German already.
+        jf_audio_lang_from_system(4);
+        assert(jellyfin_parse_media_sources(js, &m) == 1);
+        assert(m.source[0].tracks.audio[m.source[0].tracks.default_audio].index == 1);
+        jf_audio_lang_from_system(1);
+    }
+    assert(jf_lang_matches("fra", NULL, "fre"));
+    assert(jf_lang_matches("Japanese", NULL, "jpn"));
+    assert(jf_lang_matches("", "English - DTS - 5.1", "eng"));
+    assert(!jf_lang_matches("", "Englishman", "eng"));
+    assert(!jf_lang_matches("und", "English", "eng"));      // a tag wins over the label
+    assert(!jf_lang_matches("eng", "English", "xx"));
+    jf_audio_lang_from_system(18);   // English (UK)
+    assert(strcmp(g_audio_lang, "eng") == 0);
+    jf_audio_lang_from_system(99);
+    assert(strcmp(g_audio_lang, "eng") == 0);
+    puts("media source parser: start track follows the console language ok");
+
     puts("media source parser: synthetic ok");
 
     // Optional real item-DTO/PlaybackInfo fixture (used by the WSL check).
