@@ -50,7 +50,11 @@ typedef enum {
     TABKIND_LIVETV,     // Jellyfin's "livetv" view: its own channel list and guide
     TABKIND_LOCAL,      // "Media": the internal disk's folders and USB drives, no server needed
     TABKIND_SOUNDCLOUD, // "SoundCloud": a public profile's music, no server needed (xmb/ui_soundcloud.cpp)
+    TABKIND_SPOTIFY,    // "Spotify": this console as a Spotify Connect speaker, no server needed (xmb/ui_spotify.cpp)
 } XMBTabKind;
+
+// The streaming-service tabs: lists of their own, no Jellyfin items behind them.
+static inline bool xmb_service_kind(int k) { return k == TABKIND_SOUNDCLOUD || k == TABKIND_SPOTIFY; }
 
 typedef struct {
     char label[40];         // server library name ("Kids Movies"), or app screen

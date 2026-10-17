@@ -40,6 +40,7 @@ extern void crash_log(const char *msg);   // survives a death plog does not
 #include "local_audio.h"
 #include "../build_config.h"
 #if APP_SPOTIFY
+#include "meminfo.h"
 #include "sp_svc.h"            // Spotify Connect: decoded 44.1 kHz audio from the receiver, fed to the ring below
 #endif
 #if APP_SOUNDCLOUD
@@ -94,6 +95,7 @@ static volatile bool s_run     = false;   // threads should keep going
 static volatile bool s_active  = false;   // queue not yet finished
 static volatile bool s_paused  = false;
 static volatile bool s_started = false;   // music_start() .. music_stop()
+static volatile bool s_spotify = false;   // the source is the Spotify receiver (music_start_spotify): the phone owns the queue
 static bool          s_local    = false;   // the queue is files on a drive: nothing is reported to a server
 
 // Commands (UI writes arg then cmd; stream thread consumes).
@@ -1087,8 +1089,7 @@ static void sp_feed_thread(void *arg) {
                     if (i && ((in[(i - 1) * 2] < 0) != (v < 0))) zc++;
                 }
                 char b[120];
-                snprintf(b, sizeof b, "music: spotify feed n=%d meanabs=%lld zcr=%d/%d first=%d,%d,%d,%d", n, acc / n, zc, n,
-                         in[0], in[2], in[4], in[6]);
+                snprintf(b, sizeof b, "music: spotify feed meanabs=%lld zcr=%d/%d free=%uKB", acc / n, zc, n, meminfo_avail_kb());
                 plog(b);
             }
         }
@@ -1152,6 +1153,8 @@ bool music_start_spotify(void) {
     s_active = true;
     s_started = true;
     s_local = true;                                  // nothing is reported to a Jellyfin server
+    s_spotify = true;
+    snprintf(s_src_info, sizeof s_src_info, "SPOTIFY");
     sysThreadCreate(&s_pump_tid, music_pump_thread, NULL, 700, 0x8000, THREAD_JOINABLE, (char *)"jf_mpump");
     sysThreadCreate(&s_stream_tid, sp_feed_thread, NULL, 850, 0x20000, THREAD_JOINABLE, (char *)"jf_spfeed");
     return true;
@@ -1189,6 +1192,7 @@ void music_stop(void) {
     audio_close();
     audio_set_paced(false);
     audio_set_source(NULL, NULL, NULL);   // hand the port back to the video path
+    s_spotify = false;
     // Let a queued progress report go out, then retire the worker.  Bounded at
     // one second: leaving the music screen must not wait on a server that has
     // stopped answering.
@@ -1199,6 +1203,9 @@ void music_stop(void) {
 }
 
 void music_toggle_pause(void) {
+#if APP_SPOTIFY
+    if (s_spotify) { sp_svc_set_pause(sp_svc_state() != SP_PAUSED); return; }     // the phone follows
+#endif
     s_paused = !s_paused;
     // Logged because the last hardware freeze happened within a second of a
     // pause and there was no way to tell, afterwards, whether the app stopped
@@ -1220,7 +1227,12 @@ void music_toggle_pause(void) {
                                        elapsed_ticks(), s_paused);
 }
 
-void music_next(void) { s_cmd = MCMD_NEXT; }
+void music_next(void) {
+#if APP_SPOTIFY
+    if (s_spotify) { sp_svc_next(); return; }
+#endif
+    s_cmd = MCMD_NEXT;
+}
 
 // Rebuild the play order around whatever is playing right now: shuffle
 // pulls the current track to position 0 and Fisher-Yates the rest behind
@@ -1264,6 +1276,9 @@ int music_track_at(int pos) {
 }
 
 void music_prev(void) {
+#if APP_SPOTIFY
+    if (s_spotify) { sp_svc_prev(); return; }
+#endif
     if (music_elapsed_secs() > 3) {
         s_cmd_arg = 0;
         s_cmd     = MCMD_SEEK;      // restart the current track
@@ -1273,6 +1288,7 @@ void music_prev(void) {
 }
 
 void music_seek(int delta_secs) {
+    if (s_spotify) return;                      // the receiver cannot seek: Spotify drives the position
     int target = (int)music_elapsed_secs() + delta_secs;
     if (target < 0) target = 0;
     if (s_duration > 0 && target > (int)s_duration - 1)
@@ -1287,14 +1303,27 @@ void music_jump(int queue_pos) {
 }
 
 bool music_is_active(void)    { return s_started && s_active; }
-bool music_is_paused(void)    { return s_paused; }
+bool music_is_paused(void)    {
+#if APP_SPOTIFY
+    if (s_spotify) return sp_svc_state() == SP_PAUSED;
+#endif
+    return s_paused;
+}
 int  music_current_index(void){ return s_order[s_ui_pos]; }
 
 u32 music_elapsed_secs(void) {
+#if APP_SPOTIFY
+    if (s_spotify) return sp_svc_position_ms() / 1000;
+#endif
     return s_seek_base + (u32)(s_consumed / 48000ULL);
 }
 
-u32         music_duration_secs(void) { return s_duration; }
+u32         music_duration_secs(void) {
+#if APP_SPOTIFY
+    if (s_spotify) { SpTrack t; return sp_svc_track(&t) ? t.duration_ms / 1000 : 0; }
+#endif
+    return s_duration;
+}
 const char *music_source_info(void)   { return s_src_info; }
 
 // -------------------------------------------------------

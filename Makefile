@@ -8,6 +8,17 @@ endif
 # title id and package (source/build_config.h APP_VARIANT).  Each has its own object directory.
 export TOPDIR ?= $(CURDIR)
 VARIANT     ?= jellyfin
+# cspot (the Spotify receiver) is compiled into the Spotify app and, only with JF_SPOTIFY=1, into the Jellyfin app (a Spotify tab).  It
+# needs C++ exceptions, which on this toolchain need one TOC for the whole program (-mminimal-toc, --no-multi-toc), so that choice
+# applies to everything built with it.
+JF_SPOTIFY  ?= 0
+ifeq ($(VARIANT),spotify)
+WITH_SPOTIFY := 1
+else ifeq ($(VARIANT),jellyfin)
+WITH_SPOTIFY := $(JF_SPOTIFY)
+else
+WITH_SPOTIFY := 0
+endif
 ifeq ($(VARIANT),soundcloud)
 ICON0       := $(CURDIR)/ICON0-soundcloud.PNG
 else ifeq ($(VARIANT),spotify)
@@ -41,7 +52,7 @@ SOURCES     := source source/audio source/audio/a52 source/audio/dca \
                source/ui source/ui/input source/ui/osk source/ui/xmb source/ui/render \
                source/util source/cache source/video source/music source/spu \
                source/offline source/local third_party/mohasi_fs source/i18n source/svc
-ifeq ($(VARIANT),spotify)
+ifeq ($(WITH_SPOTIFY),1)
 CSPOT       := third_party/cspot
 SOURCES     += source/spotify $(CSPOT)/cspot/src $(CSPOT)/bell/src $(CSPOT)/pregen/protobuf $(CSPOT)/nanopb \
                $(CSPOT)/tremor $(CSPOT)/cjson
@@ -71,10 +82,10 @@ endif
 
 # cspot and bell (third_party/cspot, GPL-3 and MIT): C++17, nanopb in malloc mode, the PS3 stand-ins for <mutex> and friends first
 # on the include path, and no fmt or regex.
-ifeq ($(VARIANT),spotify)
+ifeq ($(WITH_SPOTIFY),1)
 INCLUDES    += source/spotify/shim source/spotify $(CSPOT)/cspot/include $(CSPOT)/bell/include $(CSPOT)/nanopb $(CSPOT)/cjson \
                $(CSPOT) $(CSPOT)/pregen $(CSPOT)/tremor
-APPDEFS     += -mminimal-toc -I$(PORTLIBS)/include -DPB_ENABLE_MALLOC -DPB_FIELD_32BIT -DBELL_DISABLE_FMT -DBELL_DISABLE_REGEX
+APPDEFS     += -mminimal-toc -I$(PORTLIBS)/include -DPB_ENABLE_MALLOC -DPB_FIELD_32BIT -DBELL_DISABLE_FMT -DBELL_DISABLE_REGEX -DAPP_WITH_SPOTIFY=1
 APPLDFLAGS   := -Wl,--no-multi-toc
 CXXSTD      := -std=gnu++17 -include $(TOPDIR)/source/spotify/shim/str_compat.h
 endif
@@ -194,7 +205,7 @@ export OFILES := $(SPU_KERNEL_BIN).o \
 
 # The Spotify app throws C++ exceptions (cspot reports a lost connection that way), which this toolchain's start-up does not
 # prepare for: source/spotify/eh_anchor.S marks the start of the frame table sp_eh_init() registers, so it is linked first.
-ifeq ($(VARIANT),spotify)
+ifeq ($(WITH_SPOTIFY),1)
 export OFILES := eh_anchor.o $(filter-out eh_anchor.o,$(OFILES))
 endif
 

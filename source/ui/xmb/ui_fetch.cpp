@@ -57,6 +57,16 @@ static void add_media_tab(int next) {
         sc->enabled = true;
     }
 #endif
+#if APP_SPOTIFY && !APP_SPOTIFY_APP
+    if (next + 2 < XMB_TAB_COUNT) {
+        XMBTab *sp = &g_tabs[next + 2];
+        memset(sp, 0, sizeof(*sp));
+        snprintf(sp->label, sizeof(sp->label), "%s", "Spotify");
+        sp->icon    = "#";
+        sp->kind    = TABKIND_SPOTIFY;
+        sp->enabled = true;
+    }
+#endif
 }
 
 #if APP_STANDALONE
@@ -288,7 +298,7 @@ int xmb_detect_tabs_poll(void) {
 
 bool xmb_have_server_tabs(void) {
     for (int t = XMB_TAB_LIB0; t < XMB_TAB_COUNT; t++)
-        if (g_tabs[t].enabled && g_tabs[t].kind != TABKIND_LOCAL && g_tabs[t].kind != TABKIND_SOUNDCLOUD) return true;
+        if (g_tabs[t].enabled && g_tabs[t].kind != TABKIND_LOCAL && !xmb_service_kind(g_tabs[t].kind)) return true;
     return false;
 }
 

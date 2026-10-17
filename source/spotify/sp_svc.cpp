@@ -24,6 +24,7 @@
 #include "TrackPlayer.h"
 #include "WrappedSemaphore.h"
 #include "jf_paths.h"
+#include "meminfo.h"
 #include "plog.h"
 #include "sp_log.h"
 #include "sp_zeroconf.h"
@@ -226,7 +227,7 @@ void session_once() {
   ctx->session->startTask();
   s_state = SP_READY;
   set_status("Ready: pick this console in the Spotify app to play");
-  plog("spotify: signed in");
+  { char b[64]; snprintf(b, sizeof b, "spotify: signed in, free=%uKB", meminfo_avail_kb()); plog(b); }
 
   try {
     while (s_run) ctx->session->handlePacket();
@@ -260,6 +261,7 @@ void session_thread(void*) {
 
 void sp_svc_start(const char* device_name) {
   if (s_run) return;
+  { char b[64]; snprintf(b, sizeof b, "spotify: starting, free=%uKB", meminfo_avail_kb()); plog(b); }
   s_name = device_name && *device_name ? device_name : "PS3";
   s_ring.assign(kRingFrames * 2, 0);
   memset(&s_track, 0, sizeof s_track);
@@ -280,6 +282,8 @@ void sp_svc_stop(void) {
   sp_zc_stop();
   for (int i = 0; i < 40 && !s_thread_done; i++) usleep(100000);
 }
+
+void sp_svc_forget(void) { forget_creds(); plog("spotify: saved account forgotten"); }
 
 SpState sp_svc_state(void) { return (SpState)s_state.load(); }
 

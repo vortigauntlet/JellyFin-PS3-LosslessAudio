@@ -23,6 +23,8 @@ typedef struct {
 
 void sp_svc_start(const char* device_name);   // spawns the session thread; safe to call once
 void sp_svc_stop(void);
+// Deletes the saved account (the next start asks the phone to pair again).  A session already running stays signed in until the app ends.
+void sp_svc_forget(void);
 
 SpState sp_svc_state(void);
 const char* sp_svc_status_text(void);          // one line for the screen: what it is waiting for, or what failed

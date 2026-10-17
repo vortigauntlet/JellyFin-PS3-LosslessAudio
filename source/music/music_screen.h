@@ -28,4 +28,6 @@ void music_screen_open_local(const MusicTrack *tracks, int count, int start_idx,
 
 // The same for a queue from a streaming service (MusicTrack::path "sc:..."): `parent` is the breadcrumb segment
 // before the name ("SoundCloud"), `title` the playlist or list being played.
+// The Spotify tab's Now Playing: follows whatever the phone is playing through the Spotify receiver.  Spotify builds only.
+void music_screen_open_spotify(void);
 void music_screen_open_service(const MusicTrack *tracks, int count, int start_idx, const char *parent, const char *title);
