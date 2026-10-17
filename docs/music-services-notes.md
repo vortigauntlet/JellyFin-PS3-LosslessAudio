@@ -271,3 +271,13 @@ Not yet done or not verified: the console and TV (this was the emulator; the PS3
 on the user's router are untested), reconnecting after a reset in a long session, a Spotify tab inside the Jellyfin app (cspot
 needs the single-TOC link, which the Jellyfin app does not use yet, and its 120 KB of free memory is too little for it), the cover
 art, and the app's own UI (the screen is a plain one on purpose).
+
+### Spotify in the Jellyfin app: tried and removed (10-17)
+
+A Spotify tab in the Jellyfin app was built and run in the emulator, then removed at the user's request: **Spotify is its own app.**
+What it showed: cspot adds about 1.9 MB of static code and, because C++ exceptions need the single-TOC link, the whole Jellyfin app
+had to be compiled with `-mminimal-toc` and linked with `--no-multi-toc`. Free memory after the video reservations fell from
+4,536 KB (SoundCloud tab alone) to 2,616 KB, and the first use of the receiver aborted with `std::bad_alloc`: the thumbnail
+cache takes the rest of the heap, leaving cspot (a 350 KB audio ring alone, plus sessions and TLS) nothing. The Jellyfin app
+is now as it was before: the SoundCloud tab only, 4,536 KB free, no cspot, bell, Tremor or receiver symbol in the binary.
+The tab code is in the history (commit 25d37ed, reverted in 87645a5 on feature/music-in-jellyfin) if it is ever wanted.
