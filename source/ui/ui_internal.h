@@ -216,22 +216,6 @@ static inline void xmb_draw_sc(void) {}
 static inline bool xmb_sc_at_top(void) { return true; }
 static inline void xmb_sc_hints(void) {}
 #endif
-// The Spotify tab (xmb/ui_spotify.cpp), the same hooks again.  Only builds with the Spotify receiver have it.
-#if APP_SPOTIFY
-void xmb_sp_on_enter(void);
-bool xmb_input_sp(void);
-void xmb_cpu_draw_sp(void);
-void xmb_draw_sp(void);
-bool xmb_sp_at_top(void);
-void xmb_sp_hints(void);
-#else
-static inline void xmb_sp_on_enter(void) {}
-static inline bool xmb_input_sp(void) { return false; }
-static inline void xmb_cpu_draw_sp(void) {}
-static inline void xmb_draw_sp(void) {}
-static inline bool xmb_sp_at_top(void) { return true; }
-static inline void xmb_sp_hints(void) {}
-#endif
 // The channel list in display order, for the player's channel up/down.
 #include "livetv_list.h"
 // X and Left/Right on a Settings row, by its position in the displayed order

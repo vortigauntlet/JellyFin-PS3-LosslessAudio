@@ -90,10 +90,5 @@
 #else
 #define APP_ID_STR "JFPS30000"
 #endif
-#ifdef APP_WITH_SPOTIFY
-#define APP_SPOTIFY 1                    // the Spotify receiver (cspot) is compiled in: the Spotify app, or the Jellyfin app's Spotify tab
-#else
 #define APP_SPOTIFY (APP_VARIANT == 2)
-#endif
-#define APP_SPOTIFY_APP (APP_VARIANT == 2)   // the standalone Spotify app
 #define APP_STANDALONE (APP_VARIANT != 0)

@@ -168,7 +168,6 @@ static int spine_icon(int tab) {
     case TABKIND_LIVETV:    return ICON_ANTENNA;
     case TABKIND_LOCAL:     return ICON_COLLECTIONS;
     case TABKIND_SOUNDCLOUD: return ICON_MUSIC;
-    case TABKIND_SPOTIFY:   return ICON_MUSIC;
     default:                return ICON_PHOTO;
     }
 }
@@ -227,7 +226,7 @@ static void spine_open_column_item(int tab) {
         return;
     }
     if (k == TABKIND_SEARCH || k == TABKIND_SETTINGS || k == TABKIND_LIVETV ||
-        k == TABKIND_LOCAL || xmb_service_kind(k) ||
+        k == TABKIND_LOCAL || k == TABKIND_SOUNDCLOUD ||
         !g_items_loaded[tab] || g_item_count[tab] <= 0 ||
         g_sel < 0 || g_sel >= g_item_count[tab]) {
         spine_go(SPINE_L2);
@@ -259,7 +258,7 @@ static void spine_peek_column_item(int tab) {
     const int k = xmb_kind(tab);
     if (k == TABKIND_HOME) { xmb_home_peek_focused(); return; }
     if (k == TABKIND_SEARCH || k == TABKIND_SETTINGS || k == TABKIND_LIVETV ||
-        k == TABKIND_LOCAL || xmb_service_kind(k) || k == TABKIND_MUSIC ||
+        k == TABKIND_LOCAL || k == TABKIND_SOUNDCLOUD || k == TABKIND_MUSIC ||
         !g_items_loaded[tab] || g_item_count[tab] <= 0 ||
         g_sel < 0 || g_sel >= g_item_count[tab])
         return;
@@ -319,9 +318,6 @@ bool spine_try_back(int tab) {
     case TABKIND_SOUNDCLOUD:
         // Its lists and the track screens are screens of their own that return here.
         leave = back || (up && xmb_sc_at_top());
-        break;
-    case TABKIND_SPOTIFY:
-        leave = back || (up && xmb_sp_at_top());
         break;
     case TABKIND_MUSIC:
         // The grid's top row already moves Up onto the Albums/Artists/...
@@ -484,7 +480,7 @@ typedef char spine_focus_slots_fit[(XMB_TAB_COUNT <= DEPTH_MAX_CATS) ? 1 : -1];
 static bool spine_grid_tab(int tab) {
     const int k = xmb_kind(tab);
     return tab != XMB_TAB_HOME && k != TABKIND_SEARCH && k != TABKIND_SETTINGS &&
-           k != TABKIND_LIVETV && k != TABKIND_LOCAL && !xmb_service_kind(k);
+           k != TABKIND_LIVETV && k != TABKIND_LOCAL && k != TABKIND_SOUNDCLOUD;
 }
 
 void spine_focus_leave(int tab, bool window_dropped) {

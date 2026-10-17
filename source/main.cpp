@@ -47,7 +47,6 @@
 #endif
 #if APP_SPOTIFY
 #include "sp_eh.h"
-#include "sp_svc.h"
 #include "sp_ui.h"
 #endif
 #include "subfont.h"
@@ -359,7 +358,7 @@ int main(int argc, const char *argv[]) {
     if (APP_STANDALONE) {
         boot_anim_leave();
         crash_log("13 standalone menu");
-#if APP_SPOTIFY_APP
+#if APP_SPOTIFY
         sp_ui_run();
 #else
         show_main_menu();
@@ -449,9 +448,6 @@ int main(int argc, const char *argv[]) {
         lfs_stop();
         update_check_shutdown();
     }
-#if APP_SPOTIFY && !APP_SPOTIFY_APP
-    sp_svc_stop();           // the Spotify tab's receiver: leave its session before the app ends
-#endif
     thumb_cache_shutdown();
     http_end();
     ui_cleanup();

@@ -20,7 +20,6 @@
 #include "thumbnail_cache.h"
 #include "slog.h"
 #include "plog.h"
-#include "jf_paths.h"      // jf_data_path(): the start-tab test file
 #include "timing.h"        // timing_get_us() — background library retry
 #include "jellyfin_api.h"   // g_auth_expired — the XMB leaves when it is set
 
@@ -219,7 +218,7 @@ static void xmb_draw_gpu_phase(int tab) {
         xmb_home_gpu_phase();
     } else if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_livetv_gpu();
-    } else if (xmb_kind(tab) == TABKIND_LOCAL || xmb_service_kind(xmb_kind(tab))) {
+    } else if (xmb_kind(tab) == TABKIND_LOCAL || xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
         // nothing on the GPU: the list is panels and text
     } else if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS) {
         GridGeom gg; const XMBItem *items;
@@ -262,8 +261,6 @@ static void xmb_draw_cpu_phase(int tab) {
         xmb_cpu_draw_media();
     } else if (xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
         xmb_cpu_draw_sc();
-    } else if (xmb_kind(tab) == TABKIND_SPOTIFY) {
-        xmb_cpu_draw_sp();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_cpu_phase();
     } else {
@@ -297,8 +294,6 @@ static void xmb_draw_text_phase(int tab) {
         xmb_draw_media();
     } else if (xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
         xmb_draw_sc();
-    } else if (xmb_kind(tab) == TABKIND_SPOTIFY) {
-        xmb_draw_sp();
     } else if (tab == XMB_TAB_HOME) {
         xmb_home_text_phase();
     } else {
@@ -471,8 +466,6 @@ static void xmb_draw_hints(int tab) {
         xmb_media_hints();
     } else if (xmb_kind(tab) == TABKIND_SOUNDCLOUD) {
         xmb_sc_hints();
-    } else if (xmb_kind(tab) == TABKIND_SPOTIFY) {
-        xmb_sp_hints();
     } else if (tab == XMB_TAB_SETTINGS) {
         if (g_settings_confirm) {
             static const Hint h[] = {{'X',TRN("Confirm")},{'C',TRN("Cancel")}};
@@ -559,22 +552,6 @@ void ui_run_xmb(void) {
     if (!g_tabs[g_active_tab].enabled) {
         for (int t = 0; t < XMB_TAB_COUNT; t++) {
             if (g_tabs[t].enabled) { g_active_tab = t; break; }
-        }
-    }
-
-    // Opt-in test aid: jellyfin_starttab.txt naming a tab ("spotify", "soundcloud" or "media") opens the XMB on it, for a build
-    // that is driven without a pad (an emulator with no controller mapped).  Absent = the usual start tab.
-    {
-        FILE *f = fopen(jf_data_path("jellyfin_starttab.txt"), "r");
-        if (f) {
-            char w[24] = "";
-            if (fscanf(f, "%23s", w) != 1) w[0] = '\0';
-            fclose(f);
-            int want = -1;
-            if (!strcmp(w, "spotify"))         want = xmb_tab_of_kind(TABKIND_SPOTIFY);
-            else if (!strcmp(w, "soundcloud")) want = xmb_tab_of_kind(TABKIND_SOUNDCLOUD);
-            else if (!strcmp(w, "media"))      want = xmb_tab_of_kind(TABKIND_LOCAL);
-            if (want >= 0) { g_active_tab = want; xmb_switch_tab(want); }
         }
     }
 
@@ -675,7 +652,7 @@ void ui_run_xmb(void) {
         int tab = g_active_tab;
         if (tab != XMB_TAB_SEARCH && tab != XMB_TAB_SETTINGS
             && tab != XMB_TAB_HOME && xmb_kind(tab) != TABKIND_LIVETV
-            && xmb_kind(tab) != TABKIND_LOCAL && !xmb_service_kind(xmb_kind(tab)))
+            && xmb_kind(tab) != TABKIND_LOCAL && xmb_kind(tab) != TABKIND_SOUNDCLOUD)
             if (!g_items_loaded[tab]) {
                 if (first_iter) crash_log("13.7 fetch_tab_items");
                 xmb_fetch_tab_items(tab);
