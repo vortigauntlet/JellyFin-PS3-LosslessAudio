@@ -1,6 +1,7 @@
 // Drawing primitives — RSX clears plus direct-to-framebuffer CPU fills,
 // and small string utilities used by the draw paths.
 
+#include "../../build_config.h"
 #include <stdlib.h>
 #include <ctype.h>
 
@@ -29,9 +30,15 @@ void clearScreen(u32 color) {
 void drawHeader(void) {
     clearScreen(XMB_BG);
     rsxSync();
+#if APP_VARIANT == 1
+    drawTTF(XMB_ITEM_PAD, 20, "SoundCloud", 22, XMB_TEXT, true);
+    drawTTF(XMB_ITEM_PAD + ttf_text_width("SoundCloud", 22, true) + 8, 27, "PS3",
+            13, XMB_ACCENT, true);
+#else
     drawTTF(XMB_ITEM_PAD, 20, "Jellyfin", 22, XMB_TEXT, true);
     drawTTF(XMB_ITEM_PAD + ttf_text_width("Jellyfin", 22, true) + 8, 27, "PS3",
             13, XMB_ACCENT, true);
+#endif
 }
 
 // JSON \uXXXX escapes -> UTF-8, rewritten in place.

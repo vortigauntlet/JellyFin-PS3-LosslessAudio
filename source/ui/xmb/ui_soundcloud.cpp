@@ -33,6 +33,10 @@
 #include "thumbnail_cache.h"
 #include "local_names.h"       // local_format_duration
 #include "music_screen.h"
+#if APP_STANDALONE
+#include "theme.h"
+#include "ui_wave_audio.h"
+#endif
 
 #include "sc_api.h"
 #include "sc_net.h"
@@ -208,7 +212,11 @@ bool ask_profile(void) {
 //  tracks is read one track at a time (sc_jstream) into a record of 330 bytes, and the listing keeps a window of the
 //  newest TRACK_CAP of them; paging forward drops the oldest TRACK_DROP.
 
-enum Kind { K_LIKES, K_REPOSTS, K_UPLOADS, K_SEARCH, K_PLAYLIST, K_PLAYLISTS };
+enum Kind { K_LIKES, K_REPOSTS, K_UPLOADS, K_SEARCH, K_PLAYLIST, K_PLAYLISTS
+#if APP_STANDALONE
+    , K_RELATED
+#endif
+};
 
 const int TRACK_CAP  = 150;          // tracks kept (50 KB)
 const int TRACK_DROP = 50;           // dropped from the front when the window is full
@@ -310,6 +318,9 @@ bool first_url(PageJob *j) {
     case K_UPLOADS:   return sc_url_user_tracks(s_uid, 50, SC_CID_PLACEHOLDER, j->url, sizeof j->url);
     case K_PLAYLISTS: return sc_url_user_playlists(s_uid, 50, SC_CID_PLACEHOLDER, j->url, sizeof j->url);
     case K_SEARCH:    return sc_url_search_tracks(ls->query, 50, SC_CID_PLACEHOLDER, j->url, sizeof j->url);
+#if APP_STANDALONE
+    case K_RELATED:   return sc_url_related(ls->id, 50, SC_CID_PLACEHOLDER, j->url, sizeof j->url);
+#endif
     default:          return false;
     }
 }
@@ -322,7 +333,11 @@ void page_work(void *arg) {
     ls->shift = 0;
     bool ok = true;
     if (j->first) {
-        if (ls->kind != K_SEARCH) ok = resolve_uid(j);
+        if (ls->kind != K_SEARCH
+#if APP_STANDALONE
+            && ls->kind != K_RELATED
+#endif
+        ) ok = resolve_uid(j);
         if (ok) ok = first_url(j);
         if (!ok && j->rc == SC_NET_OK) j->rc = SC_NET_E_ARG;
     } else {
@@ -450,6 +465,11 @@ bool load_playlist(Listing *ls) {
 // ---------------------------------------------------------------------------
 
 // The queue from the listing, a window of at most MUSIC_QUEUE_MAX tracks around the chosen one.
+#if APP_STANDALONE
+int64_t s_last_track_id = 0;
+char s_last_track_title[96];
+#endif
+
 void play_from(const Listing *ls, int sel, const char *title) {
     static MusicTrack q[MUSIC_QUEUE_MAX];
     int first = sel - 10;
@@ -472,6 +492,12 @@ void play_from(const Listing *ls, int sel, const char *title) {
         m.duration_secs = (t.dur_ms + 500) / 1000;
         m.track_num = ls->base + first + i + 1;
         snprintf(m.path, sizeof m.path, "sc:%s", url);
+#if APP_STANDALONE
+        if (first + i == sel) {
+            s_last_track_id = t.id;
+            snprintf(s_last_track_title, sizeof s_last_track_title, "%s", t.title);
+        }
+#endif
     }
     if (n == 0) return;
     char msg[120];
@@ -684,11 +710,115 @@ void show_playlists(Listing *ls, const char *crumb) {
 //  The tab's list
 // ---------------------------------------------------------------------------
 
-enum Row { R_LIKES, R_PLAYLISTS, R_REPOSTS, R_TRACKS, R_SEARCH, R_PROFILE, R_QUALITY, R_COUNT };
+enum Row {
+#if APP_STANDALONE
+    R_STATION,
+#endif
+    R_LIKES, R_PLAYLISTS, R_REPOSTS, R_TRACKS, R_SEARCH, R_PROFILE, R_QUALITY,
+#if APP_STANDALONE
+    R_VISUALIZER, R_INTENSITY, R_THEME, R_ABOUT,
+#endif
+    R_COUNT
+};
 
 int s_sel = 0;
 
+#if APP_STANDALONE
+enum Category { C_SEARCH, C_STATIONS, C_LIBRARY, C_SETTINGS, C_COUNT };
+int s_category = C_STATIONS;
+
+int root_count(void) {
+    switch (s_category) {
+    case C_SEARCH:   return 1;
+    case C_STATIONS: return 1;
+    case C_LIBRARY:  return 4;
+    default:         return 6;
+    }
+}
+
+int root_row_at(int index) {
+    switch (s_category) {
+    case C_SEARCH:   return R_SEARCH;
+    case C_STATIONS: return R_STATION;
+    case C_LIBRARY:  return R_LIKES + index;
+    default: {
+        static const int rows[] = { R_QUALITY, R_VISUALIZER, R_INTENSITY, R_THEME, R_PROFILE, R_ABOUT };
+        return index >= 0 && index < (int)(sizeof rows / sizeof rows[0]) ? rows[index] : R_ABOUT;
+    }
+    }
+}
+
+int root_top(void) { return tab_top() + UIS_H(82); }
+
+const char *category_name(int category) {
+    switch (category) {
+    case C_SEARCH: return TR("Search");
+    case C_STATIONS: return TR("Stations");
+    case C_LIBRARY: return TR("Library");
+    default: return TR("Settings");
+    }
+}
+
+int category_icon(int category) {
+    switch (category) {
+    case C_SEARCH: return ICON_SEARCH;
+    case C_STATIONS: return ICON_MUSIC;
+    case C_LIBRARY: return ICON_COLLECTIONS;
+    default: return ICON_SETTINGS;
+    }
+}
+
+void category_move(int dir) {
+    const int next = (s_category + dir + C_COUNT) % C_COUNT;
+    if (next != s_category) {
+        s_category = next;
+        s_sel = 0;
+        ui_sfx_play(SFX_CURSOR);
+    }
+}
+
+void draw_category_rail(void) {
+    const int cy = tab_top() + UIS_H(4);
+    const int center = (int)display_width / 2;
+    const int step = UIS_W(154);
+    for (int i = 0; i < C_COUNT; ++i) {
+        const int cx = center + (i - s_category) * step;
+        const bool selected = i == s_category;
+        const u32 color = selected ? XMB_WHITE : XMB_TEXT_FAINT;
+        const float size = UIS_TF(selected ? 36.0f : 30.0f);
+        drawIcon((u32)(cx - (int)(size * 0.5f)), (u32)cy, category_icon(i), size, color);
+        const char *label = category_name(i);
+        const float label_px = UIS_TF(selected ? 15 : 13);
+        const int width = ttf_text_width_face(label, label_px, UI_FACE_ROBOCOND);
+        drawTTF_face((u32)(cx - width / 2), (u32)(cy + UIS_H(42)), label,
+                     label_px, selected ? XMB_TEXT : XMB_TEXT_FAINT, UI_FACE_ROBOCOND);
+        if (selected)
+            drawRect((u32)(cx - UIS_W(28)), (u32)(cy + UIS_H(66)), (u32)UIS_W(56), (u32)UIS_H(2), XMB_ACCENT);
+    }
+}
+#else
+int root_count(void) { return R_COUNT; }
+int root_row_at(int index) { return index; }
+int root_top(void) { return tab_top(); }
+#endif
+
 bool have_profile(void) { return sc_svc_profile()[0] != 0; }
+
+#if APP_STANDALONE
+const char *visualizer_name(void) {
+    switch (wave_vis_mode()) {
+    case WAVE_VIS_JELLYDROP: return TR("Alt waveform");
+    case WAVE_VIS_OFF:       return TR("Off");
+    default:                 return TR("Waveform");
+    }
+}
+
+void toggle_soundcloud_theme(void) {
+    const int next = strcmp(theme_current_name(), "SoundCloud Light") == 0 ? 0 : 1;
+    theme_apply_builtin(next);
+    theme_save_setting();
+}
+#endif
 
 void row_text(int r, char *title, int tcap, char *sub, int scap, int *icon) {
     *icon = ICON_MUSIC;
@@ -700,36 +830,61 @@ void row_text(int r, char *title, int tcap, char *sub, int scap, int *icon) {
     case R_REPOSTS:   snprintf(title, (size_t)tcap, "%s", TR("Reposts"));   break;
     case R_TRACKS:    snprintf(title, (size_t)tcap, "%s", TR("Tracks"));    break;
     case R_SEARCH:    snprintf(title, (size_t)tcap, "%s", TR("Search"));    *icon = ICON_SEARCH; break;
-    case R_PROFILE:   snprintf(title, (size_t)tcap, "%s", TR("Profile"));   *icon = ICON_SETTINGS; break;
-    default:          snprintf(title, (size_t)tcap, "%s", TR("Audio quality")); *icon = ICON_SETTINGS; break;
+#if APP_STANDALONE
+    case R_STATION:   snprintf(title, (size_t)tcap, "%s", TR("Start a Station")); *icon = ICON_MUSIC; break;
+    case R_VISUALIZER:snprintf(title, (size_t)tcap, "%s", TR("Visualizer")); *icon = ICON_MUSIC; break;
+    case R_INTENSITY: snprintf(title, (size_t)tcap, "%s", TR("Wave Intensity")); *icon = ICON_VOLUME; break;
+    case R_THEME:     snprintf(title, (size_t)tcap, "%s", TR("Theme")); *icon = ICON_SETTINGS; break;
+    case R_ABOUT:     snprintf(title, (size_t)tcap, "%s", TR("About")); *icon = ICON_BUG; break;
+#endif
+    case R_PROFILE:   snprintf(title, (size_t)tcap, "%s", TR("Public profile")); *icon = ICON_COLLECTIONS; break;
+    case R_QUALITY:   snprintf(title, (size_t)tcap, "%s", TR("Audio quality")); *icon = ICON_SETTINGS; break;
+    default:          snprintf(title, (size_t)tcap, "%s", TR("SoundCloud")); break;
     }
     if (needs) {
         if (have_profile()) snprintf(sub, (size_t)scap, TR("From %s"), sc_svc_profile());
         else snprintf(sub, (size_t)scap, "%s", TR("Choose a profile first"));
     } else if (r == R_SEARCH) {
         snprintf(sub, (size_t)scap, "%s", TR("Find tracks on SoundCloud"));
+#if APP_STANDALONE
+    } else if (r == R_STATION) {
+        if (s_last_track_id > 0)
+            snprintf(sub, (size_t)scap, TR("Related to %s"), s_last_track_title);
+        else if (have_profile())
+            snprintf(sub, (size_t)scap, "%s", TR("Related tracks from your public Likes"));
+        else
+            snprintf(sub, (size_t)scap, "%s", TR("Choose a public profile to start from its Likes"));
+    } else if (r == R_VISUALIZER) {
+        snprintf(sub, (size_t)scap, TR("%s  -  X to change"), visualizer_name());
+    } else if (r == R_INTENSITY) {
+        snprintf(sub, (size_t)scap, TR("%s  -  X to change"), wave_audio_level_label());
+    } else if (r == R_THEME) {
+        snprintf(sub, (size_t)scap, TR("%s  -  X to toggle"), theme_current_name());
+    } else if (r == R_ABOUT) {
+        snprintf(sub, (size_t)scap, "%s", TR("Public music from SoundCloud"));
+#endif
     } else if (r == R_PROFILE) {
         if (have_profile()) snprintf(sub, (size_t)scap, TR("%s  -  X to change"), sc_svc_profile());
-        else snprintf(sub, (size_t)scap, "%s", TR("Not set. X to enter the name of a public profile"));
-    } else {
+        else snprintf(sub, (size_t)scap, "%s", TR("Not set. X to choose a public profile"));
+    } else if (r == R_QUALITY) {
         snprintf(sub, (size_t)scap, TR("%d kbps  -  X to switch"), sc_svc_quality());
     }
 }
 
 void draw_root_panels(int top, int x, int w) {
     const int vis = rows_in(top);
-    for (int r = 0; r < vis && r < R_COUNT; r++)
+    for (int r = 0; r < vis && r < root_count(); r++)
         draw_row_frame(x, top + r * row_pitch(), w, row_h(), r == s_sel);
 }
 
 void draw_root_text(int top, int x, int w) {
     const int vis = rows_in(top);
-    for (int r = 0; r < vis && r < R_COUNT; r++) {
+    for (int r = 0; r < vis && r < root_count(); r++) {
         const int y = top + r * row_pitch();
         const bool s = (r == s_sel);
         char title[64], sub[160];
         int icon;
-        row_text(r, title, sizeof title, sub, sizeof sub, &icon);
+        row_text(root_row_at(r), title, sizeof title, sub, sizeof sub, &icon);
         drawIcon((u32)(x + UIS_W(18)), (u32)(y + (row_h() - UIS_H(24)) / 2), icon, UIS_TF(24.0f),
                  s ? XMB_ACCENT_ALT : XMB_TEXT_DIM);
         const int tx = x + UIS_W(68);
@@ -770,8 +925,49 @@ void open_search(void) {
     listing_free(&ls);
 }
 
+#if APP_STANDALONE
+void open_station(int64_t track_id, const char *seed_title) {
+    if (track_id <= 0) return;
+    static Listing ls;
+    memset(&ls, 0, sizeof ls);
+    ls.kind = K_RELATED;
+    ls.id = track_id;
+    snprintf(ls.title, sizeof ls.title, "%s", seed_title && seed_title[0] ? seed_title : TR("Station"));
+    if (!load_page(&ls, true) && ls.ntr == 0) {
+        xmb_dl_notice("SoundCloud", ls.error[0] ? ls.error : TR("The station could not be loaded."));
+        listing_free(&ls);
+        return;
+    }
+    show_tracks(&ls, TR("Station"));
+    listing_free(&ls);
+}
+
+void open_station_from_likes(void) {
+    if (!have_profile() && !ask_profile()) return;
+    static Listing seed;
+    memset(&seed, 0, sizeof seed);
+    seed.kind = K_LIKES;
+    if (!load_page(&seed, true) || seed.ntr == 0) {
+        xmb_dl_notice("SoundCloud", seed.error[0] ? seed.error : TR("No public Likes to start a station."));
+        listing_free(&seed);
+        return;
+    }
+    const int64_t id = seed.tr[0].id;
+    char title[96];
+    snprintf(title, sizeof title, "%s", seed.tr[0].title);
+    listing_free(&seed);
+    open_station(id, title);
+}
+#endif
+
 void open_row(int r) {
     switch (r) {
+#if APP_STANDALONE
+    case R_STATION:
+        if (s_last_track_id > 0) open_station(s_last_track_id, s_last_track_title);
+        else open_station_from_likes();
+        break;
+#endif
     case R_LIKES: case R_PLAYLISTS: case R_REPOSTS: case R_TRACKS:
         if (!have_profile() && !ask_profile()) return;
         open_listing(r == R_LIKES ? K_LIKES : r == R_PLAYLISTS ? K_PLAYLISTS : r == R_REPOSTS ? K_REPOSTS : K_UPLOADS,
@@ -780,13 +976,21 @@ void open_row(int r) {
     case R_SEARCH:  open_search(); break;
     case R_PROFILE: ask_profile(); break;
     case R_QUALITY: sc_svc_set_quality(sc_svc_quality() == 160 ? 96 : 160); break;
+#if APP_STANDALONE
+    case R_VISUALIZER: wave_vis_cycle(); break;
+    case R_INTENSITY: wave_audio_step(1); break;
+    case R_THEME: toggle_soundcloud_theme(); break;
+    case R_ABOUT:
+        xmb_dl_notice(TR("SoundCloud for PS3"), TR("Browse public profiles, tracks and playlists. Availability depends on SoundCloud."));
+        break;
+#endif
     }
 }
 
 void root_move(void) {
     const int was = s_sel;
     if (BTN_REPEAT(up)   && s_sel > 0)           s_sel--;
-    if (BTN_REPEAT(down) && s_sel < R_COUNT - 1) s_sel++;
+    if (BTN_REPEAT(down) && s_sel < root_count() - 1) s_sel++;
     if (s_sel != was) ui_sfx_play(SFX_CURSOR);
 }
 
@@ -805,23 +1009,40 @@ bool xmb_sc_at_top(void) { return s_sel <= 0; }
 bool xmb_input_sc(void) {
     if (BTN_PRESSED(l1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
+#if APP_STANDALONE
+    if (BTN_PRESSED(left))  { category_move(-1); return false; }
+    if (BTN_PRESSED(right)) { category_move(1); return false; }
+#endif
     root_move();
-    if (BTN_PRESSED(cross)) { ui_sfx_play(SFX_DECIDE); open_row(s_sel); }
+    if (BTN_PRESSED(cross)) { ui_sfx_play(SFX_DECIDE); open_row(root_row_at(s_sel)); }
     return false;
 }
 
 void xmb_sc_hints(void) {
+#if APP_STANDALONE
+    Hint h[3]; int n = 0;
+    const int row = root_row_at(s_sel);
+    const bool changing = row == R_QUALITY || row == R_VISUALIZER || row == R_INTENSITY || row == R_THEME;
+    h[n].glyph = 'X'; h[n].label = changing ? TRN("Change") : TRN("Open"); n++;
+    h[n].glyph = 'D'; h[n].label = TRN("Categories"); n++;
+    h[n].glyph = 'S'; h[n].label = wave_vis_next_label(); n++;
+    draw_hints_bar(h, n);
+#else
     Hint h[2]; int n = 0;
     h[n].glyph = 'X'; h[n].label = TRN("Open"); n++;
     h[n].glyph = 'S'; h[n].label = wave_vis_next_label(); n++;
     draw_hints_bar(h, n);
+#endif
 }
 
 void xmb_cpu_draw_sc(void) {
-    draw_root_panels(tab_top(), (int)(((int)display_width - XMB_LIST_W) / 2), XMB_LIST_W);
+    draw_root_panels(root_top(), (int)(((int)display_width - XMB_LIST_W) / 2), XMB_LIST_W);
 }
 
 void xmb_draw_sc(void) {
-    draw_root_text(tab_top(), (int)(((int)display_width - XMB_LIST_W) / 2), XMB_LIST_W);
+#if APP_STANDALONE
+    draw_category_rail();
+#endif
+    draw_root_text(root_top(), (int)(((int)display_width - XMB_LIST_W) / 2), XMB_LIST_W);
 }
 #endif   // APP_SOUNDCLOUD

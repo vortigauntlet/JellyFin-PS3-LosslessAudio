@@ -33,6 +33,9 @@ int music_fetch_playlist_tracks(const char *playlist_id,
 // or the queue is empty.
 bool music_start(const MusicTrack *tracks, int count, int start_idx);
 
+// The Spotify app: play what the Spotify receiver decodes (sp_svc.h) until music_stop().  Only in that app's build.
+bool music_start_spotify(void);
+
 // Stop playback and tear everything down (joins threads, closes the audio
 // port, restores the video pipeline's PCM source).  Safe to call twice.
 void music_stop(void);

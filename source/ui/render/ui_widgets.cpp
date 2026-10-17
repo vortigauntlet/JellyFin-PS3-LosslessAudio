@@ -1,6 +1,7 @@
 // Chrome widgets — top bar (brand + clock), tab bar, divider, alphabetical
 // jump bar, controller hints bar, empty states, breadcrumbs.
 
+#include "../../build_config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -133,6 +134,7 @@ void xmb_lockup_geom(XmbLockupGeom *g) {
 // The wordmark's depth: the ramp itself, darkened, as a short extrusion under
 // the face -- so the edge carries the gradient (a solid letter seen slightly
 // from above) rather than reading as a flat shadow.  k scales each channel.
+#if APP_VARIANT != 1
 static void lk_ramp_shade(const u32 *in, u32 *out, float k) {
     for (int i = 0; i < 4; i++) {
         const u32 c = in[i];
@@ -142,6 +144,7 @@ static void lk_ramp_shade(const u32 *in, u32 *out, float k) {
         out[i] = (c & 0xFF000000u) | (r << 16) | (g << 8) | b;
     }
 }
+#endif
 
 // The lockup's opacity (2026-09-27): the music screen fades it in focus mode.
 // Mixed toward the background in sixteenths, so the cached text runs are
@@ -161,6 +164,33 @@ void xmb_draw_topbar(void) {
     const float la  = (float)(int)(g_topbar_logo_a * 16.0f + 0.5f) / 16.0f;
     const int row_y = oy + UIS_H(20);            // the shared 24px row
 
+#if APP_VARIANT == 1
+    // Standalone SoundCloud identity: a compact, balanced bar-cloud mark and
+    // the brand name. The symmetric silhouette avoids a tapered tail shape.
+    if (la > 0.03f) {
+        const int mark_x = (int)XMB_ITEM_PAD;
+        const int center_y = row_y + UIS_H(12);
+        const int unit = UIS_H(1) > 0 ? UIS_H(1) : 1;
+        const int bar_w = UIS_W(2) > 0 ? UIS_W(2) : 1;
+        const int gap = UIS_W(1) > 0 ? UIS_W(1) : 1;
+        const int heights[7] = { 7, 12, 17, 20, 17, 12, 7 };
+        const int total_w = 7 * bar_w + 6 * gap;
+        const int base_y = center_y + UIS_H(9);
+        const u32 brand = lk_fade(XMB_ACCENT, la);
+        for (int i = 0; i < 7; ++i) {
+            const int h = heights[i] * unit;
+            const int x = mark_x + i * (bar_w + gap);
+            drawRect((u32)x, (u32)(base_y - h), (u32)bar_w, (u32)h, brand);
+        }
+        drawRect((u32)mark_x, (u32)(base_y - 2 * unit), (u32)total_w, (u32)(2 * unit), brand);
+
+        int word_y = center_y;
+        const float word_px = UIS_TF(16.0f);
+        ttf_center_y("SoundCloud", word_px, UI_FACE_ROBOCOND, center_y, &word_y);
+        drawTTF_face((u32)(mark_x + total_w + UIS_W(8)), (u32)word_y, "SoundCloud",
+                     word_px, brand, UI_FACE_ROBOCOND);
+    }
+#else
     XmbLockupGeom lk;
     xmb_lockup_geom(&lk);
 
@@ -230,6 +260,7 @@ void xmb_draw_topbar(void) {
     }
 
     #undef ramp
+#endif
     // Clock, right-aligned, with the date dimmer beside it.
     // The console's own zone, summer time, 12/24 h and date order, read once a
     // second (clock_fmt.h): what the XMB shows, not the C library's UTC guess.

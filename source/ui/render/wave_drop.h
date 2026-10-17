@@ -838,7 +838,7 @@ static inline void jd_motes_sprite(const jd_motes *m, int i, const jd_pose *P, f
     k = (0.45f + 0.55f * near_k) * vis;
     k *= 0.85f + 0.15f * wk_sinf(m->ph[i] * 3.0f) * (0.5f + twinkle);
     h = m->hue[i];
-    // violet -> Jellyfin blue -> the cyan rim, as the palette runs
+    // the branded gradient endpoints -> the rim, as the palette runs
     {
         float r_, g_, b_;
         if (h < 0.5f) {

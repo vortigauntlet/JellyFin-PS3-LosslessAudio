@@ -9,6 +9,7 @@
 // and once more if the user picked a theme FILE.  Nothing here runs per frame.
 
 #include "theme.h"
+#include "../build_config.h"
 #include "jf_paths.h"
 #include "plog.h"
 
@@ -46,6 +47,20 @@ static const char *THEME_DIRS[] = {
 // only correct if the crt walks init_array before main().  Spelled this way it
 // lands in .data, already correct at the first instruction, with no dependence
 // on static-init order at all.
+#if APP_VARIANT == 1
+#define THEME_INIT_XMB_WAVE {                                              \
+        0x00080503UL, 0x00170A05UL, 0x00030201UL,                          \
+        0x00FF5500UL, 0x00FFA273UL, 0x007A2900UL, 0x00FF5500UL,            \
+        0x00FFFFFFUL, 0x00E8D5CBUL, 0x009B7968UL,                          \
+        0x001A100BUL, 0x00251A13UL, 0x00402211UL, 0x00110B08UL,            \
+        0x000E0906UL, 0x00966C57UL, 0x00FFFFFFUL, 0x00000000UL,            \
+        0x001A100BUL, 0x00FFFFFFUL, 0x000E0906UL,                          \
+        0x00FF5500UL, 0x00FFA273UL, 0x00FF5500UL, 0x00FF5500UL,            \
+        0x00FFA273UL, 0x00FF5500UL, 0x00FFFFFFUL, 0x003B1606UL,            \
+        0x00030201UL, 0x00030201UL, 230, 168,                              \
+        4, 999, 72, 34, 0, 12, "SoundCloud"                                \
+    }
+#else
 #define THEME_INIT_XMB_WAVE {                                              \
         0x000B0E1EUL,   /* bg            RSX clear, under the ramp      */ \
         0x00151A38UL,   /* bg_top                                       */ \
@@ -83,9 +98,26 @@ static const char *THEME_DIRS[] = {
         4, 999, 115, 28, 0, 12,                                            \
         "Jellywave"                                                        \
     }
+#endif
 
 static const Theme THEME_BUILTIN[THEME_BUILTIN_COUNT] = {
     THEME_INIT_XMB_WAVE,
+#if APP_VARIANT == 1
+    {
+        0x00F7F5F3UL, 0x00FFFFFFUL, 0x00F0EEECUL,
+        0x00FF5500UL, 0x00E94E00UL, 0x00C74200UL, 0x00FF5500UL,
+        0x00232323UL, 0x005C5754UL, 0x00827B76UL,
+        0x00FFFFFFUL, 0x00F2F0EEUL, 0x00DDD9D6UL, 0x00E5E2DFUL,
+        0x00E3E0DDUL, 0x00756F6AUL, 0x00FFFFFFUL, 0x00000000UL,
+        0x00FFFFFFUL, 0x00232323UL, 0x00FFFFFFUL,
+        0x00FF5500UL, 0x00FFA273UL,
+        0x00FF5500UL, 0x00FF7540UL, 0x00FF9A68UL, 0x00FF5500UL,
+        0x00FF5500UL, 0x00F7E8DFUL,
+        0x00FFFFFFUL, 0x00FFFFFFUL, 230, 168,
+        6, 999, 44, 26, 0, 12,
+        "SoundCloud Light"
+    }
+#else
     {   // 1 — Golden Age (proves the token set is complete)
         0x000C0907UL,   // bg
         0x0017120EUL,   // bg_top
@@ -131,6 +163,7 @@ static const Theme THEME_BUILTIN[THEME_BUILTIN_COUNT] = {
         0,              // ramp_steps
         "Golden Age"
     },
+#endif
 };
 
 // The live palette.  Spelled from the macro, not `= THEME_BUILTIN[0]`, so this

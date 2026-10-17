@@ -83,7 +83,11 @@ bool ui_cpu_bg(void) { return BUILD_FOR_RPCS3 != 0; }
 // path is gated on jellyfin_gpuwave.txt and deleting the file falls back to
 // immediate mode with no reflash.  History: docs/wave-renderer-notes.md,
 // "Vertex arrays".
+#if APP_VARIANT == 1
+static const u32   WAVE_COLOR[3]  = { 0x00A93300, 0x00FF5500, 0x00FFA273 };
+#else
 static const u32   WAVE_COLOR[3]  = { 0x004A52A8, 0x006C5BD4, 0x003A4290 };
+#endif
 static const u8    WAVE_ALPHA[3]  = { 56, 42, 72 };
 static const float WAVE_AMP[3]    = { 30.0f, 22.0f, 15.0f };
 // Crest baselines as a fraction of screen height — kept low so the ribbons

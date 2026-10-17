@@ -24,6 +24,7 @@
 // Nothing here touches JellyWave: wave_draw() is called by the XMB loop as it
 // always is, and this module only ever draws AFTER it, on top.
 
+#include "../../build_config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -733,6 +734,12 @@ static void finish_if_done(void)
 
 bool boot_anim_begin(void)
 {
+#if APP_VARIANT == 1
+    // The shared animation is built around Jellyfin's bell mark; keep it out
+    // of the standalone SoundCloud app and use its own branded startup header.
+    plog("boot: Jellyfin mark disabled for SoundCloud standalone");
+    return false;
+#endif
     if (s_on) return true;
     if (ui_cpu_bg()) {
         plog("boot: animation off on the emulator build (CPU background)");

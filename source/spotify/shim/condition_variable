@@ -1,0 +1,101 @@
+// <condition_variable> for the PS3 toolchain (no gthreads).  lv2 condition variables are bound to one mutex when created and
+// std ones are not, so this is the classic counted-waiters-over-a-semaphore form: wait() registers, drops the caller's lock,
+// sleeps on the semaphore and takes the lock again.
+#pragma once
+#include <chrono>
+#include <mutex>
+#include <stdlib.h>
+#include <sys/sem.h>
+
+namespace std {
+
+enum class cv_status { no_timeout, timeout };
+
+class condition_variable {
+ public:
+  condition_variable() {
+    sys_sem_attr_t attr;
+    attr.attr_protocol = SYS_SEM_ATTR_PROTOCOL;
+    attr.attr_pshared = SYS_SEM_ATTR_PSHARED;
+    attr.key = 0;
+    attr.flags = 0;
+    attr.pad = 0;
+    attr.name[0] = '\0';
+    if (sysSemCreate(&sem_, &attr, 0, 4096) != 0) abort();
+  }
+  ~condition_variable() { sysSemDestroy(sem_); }
+  condition_variable(const condition_variable&) = delete;
+  condition_variable& operator=(const condition_variable&) = delete;
+
+  void notify_one() {
+    lock_guard<mutex> g(m_);
+    if (waiters_ > 0) {
+      waiters_--;
+      sysSemPost(sem_, 1);
+    }
+  }
+
+  void notify_all() {
+    lock_guard<mutex> g(m_);
+    if (waiters_ > 0) {
+      sysSemPost(sem_, waiters_);
+      waiters_ = 0;
+    }
+  }
+
+  template <class L>
+  void wait(L& lk) {
+    enter();
+    lk.unlock();
+    sysSemWait(sem_, 0);
+    lk.lock();
+  }
+
+  template <class L, class P>
+  void wait(L& lk, P pred) {
+    while (!pred()) wait(lk);
+  }
+
+  template <class L, class R, class Pe>
+  cv_status wait_for(L& lk, const chrono::duration<R, Pe>& d) {
+    long long us = chrono::duration_cast<chrono::microseconds>(d).count();
+    if (us < 1) us = 1;
+    enter();
+    lk.unlock();
+    const int rc = sysSemWait(sem_, (u64)us);
+    cv_status st = cv_status::no_timeout;
+    if (rc != 0) {                          // timed out: take our registration back, unless a notify already used it
+      lock_guard<mutex> g(m_);
+      if (waiters_ > 0) {
+        waiters_--;
+        st = cv_status::timeout;
+      } else {
+        sysSemTryWait(sem_);                // the notify's post is ours: consume it
+      }
+    }
+    lk.lock();
+    return st;
+  }
+
+  template <class L, class R, class Pe, class P>
+  bool wait_for(L& lk, const chrono::duration<R, Pe>& d, P pred) {
+    const auto end = chrono::steady_clock::now() + chrono::duration_cast<chrono::microseconds>(d);
+    while (!pred()) {
+      const auto left = end - chrono::steady_clock::now();
+      if (left <= chrono::microseconds(0)) return pred();
+      wait_for(lk, left);
+    }
+    return true;
+  }
+
+ private:
+  void enter() {
+    lock_guard<mutex> g(m_);
+    waiters_++;
+  }
+  mutex m_;
+  sys_sem_t sem_;
+  int waiters_ = 0;
+};
+
+}  // namespace std

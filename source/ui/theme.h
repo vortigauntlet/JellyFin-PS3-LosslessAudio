@@ -29,7 +29,7 @@
 #include <ppu-types.h>
 #include <stdbool.h>
 
-#define THEME_BUILTIN_COUNT 2    /* 0 = XMB wave, 1 = Golden Age */
+#define THEME_BUILTIN_COUNT 2    /* primary and alternate built-in palettes */
 #define THEME_MAX_ENTRIES   16   /* built-ins + files, the theme picker's cap */
 
 typedef struct {

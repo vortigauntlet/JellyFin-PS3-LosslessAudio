@@ -38,10 +38,16 @@
 #include "centermix.h"
 #include "net_selftest.h"
 #include "build_config.h"
-#if APP_SOUNDCLOUD
+#if APP_SOUNDCLOUD || APP_SPOTIFY
 #include "sx_tls.h"
+#endif
+#if APP_SOUNDCLOUD
 #include "sc_diag.h"
 #include "sc_svc.h"
+#endif
+#if APP_SPOTIFY
+#include "sp_eh.h"
+#include "sp_ui.h"
 #endif
 #include "subfont.h"
 #include "subcolor.h"
@@ -301,12 +307,17 @@ int main(int argc, const char *argv[]) {
         plog(buf);
     }
 
-#if APP_SOUNDCLOUD
+#if APP_SOUNDCLOUD || APP_SPOTIFY
     // TLS for the music service (mbedTLS; the firmware's SSL is too old for SoundCloud's hosts).  It parses the CA
     // bundle once (about 350 KB), so it runs here: after the reservations, which want a clean heap, and before the
     // thumbnail cache, which takes whatever is left.  A failure only disables the service.
-    if (!sx_tls_init()) plog("main: TLS did not start; SoundCloud will not connect");
+#if APP_SPOTIFY
+    sp_eh_init();      // C++ exceptions: cspot throws on every lost connection, and without this the first one aborts
+#endif
+    if (!sx_tls_init()) plog("main: TLS did not start; the streaming service will not connect");
+#if APP_SOUNDCLOUD
     sc_svc_init();     // the SoundCloud profile, quality and cached client id (the files are tiny)
+#endif
     {
         char buf[64];
         snprintf(buf, sizeof buf, "7g tls ready: free=%uKB", meminfo_avail_kb());
@@ -347,7 +358,11 @@ int main(int argc, const char *argv[]) {
     if (APP_STANDALONE) {
         boot_anim_leave();
         crash_log("13 standalone menu");
+#if APP_SPOTIFY
+        sp_ui_run();
+#else
         show_main_menu();
+#endif
         boot_anim_finish();
         running = 0;
     }

@@ -11,6 +11,7 @@
 // audio port; a linear resampler guards the ring anyway in case a server
 // ignores the parameter.
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,9 @@ extern void crash_log(const char *msg);   // survives a death plog does not
 #include "lfs_path.h"
 #include "local_audio.h"
 #include "../build_config.h"
+#if APP_SPOTIFY
+#include "sp_svc.h"            // Spotify Connect: decoded 44.1 kHz audio from the receiver, fed to the ring below
+#endif
 #if APP_SOUNDCLOUD
 #include "sc_dec.h"            // SoundCloud tracks: a pull decoder over HLS segments
 #include "sc_source.h"
@@ -1046,6 +1050,113 @@ bool music_start(const MusicTrack *tracks, int count, int start_idx) {
                     850, 0x20000, THREAD_JOINABLE, (char*)"jf_music");
     return true;
 }
+
+#if APP_SPOTIFY
+// ---- Spotify Connect ----
+//
+// The receiver (sp_svc) decodes whatever the phone is playing to 44.1 kHz 16-bit stereo; this thread takes it in real time, resamples
+// it to the ring's 48 kHz float and keeps the ring about half a second full, no more: the receiver reports a track as reaching the
+// speakers, and how far it has played, at the moment its audio is read, so reading far ahead would make both run early.
+static void sp_feed_thread(void *arg) {
+    (void)arg;
+    static int16_t in[2048 * 2];
+    static float   out[(2048 * 480 / 441 + 16) * 2];
+    double phase = 0.0;                              // position of the next output sample in input frames, relative to this chunk
+    float  prev_l = 0.0f, prev_r = 0.0f;             // the last frame of the previous chunk (index -1 of this one)
+    const double step = 44100.0 / 48000.0;
+    while (running && s_run) {
+        if (s_n > 24000) { usleep(4000); continue; }                  // ~500 ms ahead is enough
+        const size_t got = sp_svc_pcm_read(in, 1024);
+        if (got == 0) {
+            if (s_hold && s_n > 0) s_hold = false;                    // a short track end: play what there is
+            usleep(5000);
+            continue;
+        }
+        int n_out = 0;
+        const int n = (int)got;
+        {   // once a second: the level and the zero-crossing rate of what arrived (music is low on both, noise or swapped bytes is not)
+            static u64 s_stat_at = 0;
+            const u64 now = timing_get_us();
+            if (now - s_stat_at > 1000000) {
+                s_stat_at = now;
+                long long acc = 0;
+                int zc = 0;
+                for (int i = 0; i < n; i++) {
+                    const int v = in[i * 2];
+                    acc += v < 0 ? -v : v;
+                    if (i && ((in[(i - 1) * 2] < 0) != (v < 0))) zc++;
+                }
+                char b[120];
+                snprintf(b, sizeof b, "music: spotify feed n=%d meanabs=%lld zcr=%d/%d first=%d,%d,%d,%d", n, acc / n, zc, n,
+                         in[0], in[2], in[4], in[6]);
+                plog(b);
+            }
+        }
+        for (;;) {
+            const int i0 = (int)floor(phase);      // phase >= -1
+            if (i0 + 1 > n - 1) break;
+            const float fr = (float)(phase - (double)i0);
+            const float l0 = i0 < 0 ? prev_l : in[i0 * 2] * (1.0f / 32768.0f);
+            const float r0 = i0 < 0 ? prev_r : in[i0 * 2 + 1] * (1.0f / 32768.0f);
+            const float l1 = in[(i0 + 1) * 2] * (1.0f / 32768.0f);
+            const float r1 = in[(i0 + 1) * 2 + 1] * (1.0f / 32768.0f);
+            out[n_out * 2]     = l0 + (l1 - l0) * fr;
+            out[n_out * 2 + 1] = r0 + (r1 - r0) * fr;
+            n_out++;
+            phase += step;
+        }
+        phase -= (double)n;
+        prev_l = in[(n - 1) * 2] * (1.0f / 32768.0f);
+        prev_r = in[(n - 1) * 2 + 1] * (1.0f / 32768.0f);
+        mring_push(out, n_out);
+        if (s_hold && s_n >= 9600) s_hold = false;                    // ~200 ms pre-roll
+    }
+    plog("music: spotify feed thread exit");
+    sysThreadExit(0);
+}
+
+// Opens the audio port and plays what the Spotify receiver decodes, until music_stop().  Not a queue: the phone chooses the music.
+bool music_start_spotify(void) {
+    if (s_started) return false;
+    if (s_stream_unjoined) {
+        u64 r;
+        sysThreadJoin(s_stream_tid, &r);
+        s_stream_unjoined = false;
+    }
+    if (!s_pcm_mtx_ok) {
+        sys_mutex_attr_t mattr;
+        sysMutexAttrInitialize(mattr);
+        sysMutexCreate(&s_pcm_mtx, &mattr);
+        s_pcm_mtx_ok = true;
+    }
+    s_count = 0;
+    s_hold = true;
+    s_shuffle = false;
+    {
+        const int ms = wavelead_setting();
+        s_wave_lead = ms * 48;
+    }
+    s_cmd = MCMD_NONE;
+    s_paused = false;
+    s_seek_base = 0;
+    s_consumed = 0;
+    s_duration = 0;
+    s_src_info[0] = '\0';
+    mring_flush();
+    music_viz_reset();
+    music_sv_reset();
+    audio_set_source(music_pcm_avail, music_read_pcm, music_channels);
+    audio_open(2);
+    audio_set_paced(true);
+    s_run = true;
+    s_active = true;
+    s_started = true;
+    s_local = true;                                  // nothing is reported to a Jellyfin server
+    sysThreadCreate(&s_pump_tid, music_pump_thread, NULL, 700, 0x8000, THREAD_JOINABLE, (char *)"jf_mpump");
+    sysThreadCreate(&s_stream_tid, sp_feed_thread, NULL, 850, 0x20000, THREAD_JOINABLE, (char *)"jf_spfeed");
+    return true;
+}
+#endif
 
 // The video player calls this before it opens a stream: a music session that
 // was closed mid-network-call may still own its thread and the shared

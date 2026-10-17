@@ -74,6 +74,7 @@
 // =========================================================================
 //  0 = Jellyfin PS3, the media client; the music services are tabs in it
 //  1 = SoundCloud PS3, a separate app: no Jellyfin server, one tab, no video reservations
+//  2 = Spotify PS3, a separate app: a Spotify Connect receiver (cspot), same shell as 1
 //  The Makefile sets it from VARIANT=; each variant is its own title id and its own package.
 //  APP_SOUNDCLOUD is whether the SoundCloud code is compiled in at all (both of them).
 #ifndef APP_VARIANT
@@ -82,7 +83,12 @@
 #define APP_SOUNDCLOUD (APP_VARIANT == 0 || APP_VARIANT == 1)
 #if APP_VARIANT == 1
 #define APP_ID_STR "SCPS30000"    // the title id (Makefile APPID): its folder under /dev_hdd0/game
+#elif APP_VARIANT == 2
+#define APP_ID_STR "SPPS30000"
+#define APP_TITLE "Spotify"
+#define APP_WORDMARK "SPOTIFY"
 #else
 #define APP_ID_STR "JFPS30000"
 #endif
+#define APP_SPOTIFY (APP_VARIANT == 2)
 #define APP_STANDALONE (APP_VARIANT != 0)

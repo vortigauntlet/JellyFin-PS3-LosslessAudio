@@ -133,10 +133,25 @@
 #define JW_DIFF_E         0.0015f
 
 // --- palette --------------------------------------------------------------
-// Straight from the design, which took the first two from the Jellyfin brand
-// SVG.  These are also g_theme's accent / accent_alt, so a theme that repaints
-// the UI repaints the wave with it -- see jw_palette_from_theme().
-//   PURPLE #AA5CC3   BLUE #00A4DC   RIM #d8f4ff   DEEP #150a22   FRINGE #7fd0ff
+// Standalone SoundCloud uses its orange-to-apricot range; the Jellyfin app
+// keeps the violet-to-cyan palette from its original brand.
+#if defined(APP_VARIANT) && APP_VARIANT == 1
+#define JW_PURPLE_R    1.000000f
+#define JW_PURPLE_G    0.333333f
+#define JW_PURPLE_B    0.000000f
+#define JW_BLUE_R      1.000000f
+#define JW_BLUE_G      0.635294f
+#define JW_BLUE_B      0.450980f
+#define JW_RIMC_R      1.000000f
+#define JW_RIMC_G      0.839216f
+#define JW_RIMC_B      0.741176f
+#define JW_DEEP_R      0.141176f
+#define JW_DEEP_G      0.062745f
+#define JW_DEEP_B      0.015686f
+#define JW_FRINGE_R    1.000000f
+#define JW_FRINGE_G    0.462745f
+#define JW_FRINGE_B    0.219608f
+#else
 #define JW_PURPLE_R    0.666667f
 #define JW_PURPLE_G    0.360784f
 #define JW_PURPLE_B    0.764706f
@@ -158,8 +173,10 @@
 #define JW_FRINGE_G    0.360000f
 #define JW_FRINGE_B    1.000000f
 
-// The brand gradient axis: 30 degrees below horizontal, purple upper-left to
-// blue lower-right.  Verified from jellyfin-ux's icon-transparent.svg, whose
+#endif
+
+// The brand gradient axis: 30 degrees below horizontal, palette endpoint A
+// upper-left to endpoint B lower-right.  Verified from jellyfin-ux's icon-transparent.svg, whose
 // linearGradient runs (110.25,213.3) -> (496.14,436.09) -- exactly -30 degrees.
 // This is the design's AX, and the reason the colour is a property of WHERE a
 // point is in space rather than a gradient paint laid over the finished image.
@@ -475,7 +492,7 @@ static inline jw_frame jw_frame_at(float u, float disp, const jw_layer *L)
 //   p        world position, for the brand-axis hue
 //   topness  cy/ht in [-1,+1]
 //   rim      the section's geometric rim weight
-// Where p sits along the brand axis, 0 (purple) .. 1 (blue).
+// Where p sits along the brand axis, 0 (endpoint A) .. 1 (endpoint B).
 static inline float jw_axis_t(jw_vec3 p)
 {
     return jw_clamp01((p.x * JW_AXIS_X + p.y * JW_AXIS_Y + JW_AXIS_BIAS)

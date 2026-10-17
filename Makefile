@@ -6,9 +6,12 @@ endif
 
 # VARIANT picks the app this tree builds: jellyfin (the default) or soundcloud, a separate app with its own
 # title id and package (source/build_config.h APP_VARIANT).  Each has its own object directory.
+export TOPDIR ?= $(CURDIR)
 VARIANT     ?= jellyfin
 ifeq ($(VARIANT),soundcloud)
 ICON0       := $(CURDIR)/ICON0-soundcloud.PNG
+else ifeq ($(VARIANT),spotify)
+ICON0       := $(CURDIR)/ICON0-spotify.PNG
 else
 ICON0       := $(CURDIR)/ICON0.PNG
 endif
@@ -24,6 +27,9 @@ include $(PSL1GHT)/ppu_rules
 ifeq ($(VARIANT),soundcloud)
 TARGET      := SoundCloud-PS3
 BUILD       := obj-soundcloud
+else ifeq ($(VARIANT),spotify)
+TARGET      := Spotify-PS3
+BUILD       := obj-spotify
 else
 TARGET      := $(notdir $(CURDIR))
 BUILD       := obj
@@ -35,6 +41,11 @@ SOURCES     := source source/audio source/audio/a52 source/audio/dca \
                source/ui source/ui/input source/ui/osk source/ui/xmb source/ui/render \
                source/util source/cache source/video source/music source/spu \
                source/offline source/local third_party/mohasi_fs source/i18n source/svc
+ifeq ($(VARIANT),spotify)
+CSPOT       := third_party/cspot
+SOURCES     += source/spotify $(CSPOT)/cspot/src $(CSPOT)/bell/src $(CSPOT)/pregen/protobuf $(CSPOT)/nanopb \
+               $(CSPOT)/tremor $(CSPOT)/cjson
+endif
 DATA        := data
 INCLUDES    := source/audio source/audio/dcahd \
                source/audio/mlp/ff source/audio/mlp/ff/libavcodec \
@@ -48,10 +59,24 @@ ifeq ($(VARIANT),soundcloud)
 TITLE       := SoundCloud PS3
 APPID       := SCPS30000
 APPDEFS     := -DAPP_VARIANT=1
+else ifeq ($(VARIANT),spotify)
+TITLE       := Spotify PS3
+APPID       := SPPS30000
+APPDEFS     := -DAPP_VARIANT=2
 else
 TITLE       := Jellyfin PS3
 APPID       := JFPS30000
 APPDEFS     :=
+endif
+
+# cspot and bell (third_party/cspot, GPL-3 and MIT): C++17, nanopb in malloc mode, the PS3 stand-ins for <mutex> and friends first
+# on the include path, and no fmt or regex.
+ifeq ($(VARIANT),spotify)
+INCLUDES    += source/spotify/shim source/spotify $(CSPOT)/cspot/include $(CSPOT)/bell/include $(CSPOT)/nanopb $(CSPOT)/cjson \
+               $(CSPOT) $(CSPOT)/pregen $(CSPOT)/tremor
+APPDEFS     += -mminimal-toc -I$(PORTLIBS)/include -DPB_ENABLE_MALLOC -DPB_FIELD_32BIT -DBELL_DISABLE_FMT -DBELL_DISABLE_REGEX
+APPLDFLAGS   := -Wl,--no-multi-toc
+CXXSTD      := -std=gnu++17 -include $(TOPDIR)/source/spotify/shim/str_compat.h
 endif
 CONTENTID   := UP0001-$(APPID)_00-0000000000000000
 
@@ -65,8 +90,8 @@ CFLAGS      := -O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE) $(APPDEFS)
 # reason; without it the stub trampolines in source/audio/audio_out_stub.S
 # fail with "unsupported relocation against r1".
 ASFLAGS     := -mregnames -mcpu=cell $(MACHDEP) $(INCLUDE) $(APPDEFS) -D__ASSEMBLY__
-CXXFLAGS    := $(CFLAGS)
-LDFLAGS     := $(MACHDEP) -Wl,-Map,$(notdir $@).map
+CXXFLAGS    := $(CFLAGS) $(CXXSTD)
+LDFLAGS     := $(MACHDEP) -Wl,-Map,$(notdir $@).map $(APPLDFLAGS)
 
 # Vendored liba52 (source/audio/a52): upstream imdct.c passes `roots128 - 32`
 # as a deliberate table base and GCC's -Warray-bounds flags every use.  The
@@ -122,7 +147,7 @@ sc_aac.o:      CFLAGS += -I$(PORTLIBS)/include
 # -lfaad: AAC in files from a drive (source/audio/adec_aac.cpp), from the portlibs.
 LIBS        := -L$(PORTLIBS)/lib -lfaad -lvdec -laudio -lrsx -lgcm_sys -lio -lsysutil -lrt -llv2 -lm \
                -lnet -lsysmodule -lssl -lhttp -lhttputil -lsysfs \
-               -lmbedtls -lmbedx509 -lmbedcrypto
+               -lmbedtls -lmbedx509 -lmbedcrypto -lnetctl
 
 LIBDIRS     :=
 
@@ -166,6 +191,12 @@ export OFILES := $(SPU_KERNEL_BIN).o \
                  $(addsuffix .o,$(PNGFILES)) \
                  $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) \
                  $(sFILES:.s=.o) $(SFILES:.S=.o)
+
+# The Spotify app throws C++ exceptions (cspot reports a lost connection that way), which this toolchain's start-up does not
+# prepare for: source/spotify/eh_anchor.S marks the start of the frame table sp_eh_init() registers, so it is linked first.
+ifeq ($(VARIANT),spotify)
+export OFILES := eh_anchor.o $(filter-out eh_anchor.o,$(OFILES))
+endif
 
 export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
                   $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
