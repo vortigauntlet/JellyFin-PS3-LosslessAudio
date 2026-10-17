@@ -4,7 +4,14 @@ ifeq ($(strip $(PSL1GHT)),)
 $(error "Please set PSL1GHT in your environment. export PSL1GHT=<path>")
 endif
 
+# VARIANT picks the app this tree builds: jellyfin (the default) or soundcloud, a separate app with its own
+# title id and package (source/build_config.h APP_VARIANT).  Each has its own object directory.
+VARIANT     ?= jellyfin
+ifeq ($(VARIANT),soundcloud)
+ICON0       := $(CURDIR)/ICON0-soundcloud.PNG
+else
 ICON0       := $(CURDIR)/ICON0.PNG
+endif
 # sfo.xml: the stock template plus ITEM_PRIORITY (pins the app to the top of
 # the Game column, as ManaGunZ does) and the APP_VER the XMB shows.
 SFOXML      := $(CURDIR)/sfo.xml
@@ -14,8 +21,13 @@ include $(PSL1GHT)/ppu_rules
 #---------------------------------------------------------------------------
 # Project identity
 #---------------------------------------------------------------------------
+ifeq ($(VARIANT),soundcloud)
+TARGET      := SoundCloud-PS3
+BUILD       := obj-soundcloud
+else
 TARGET      := $(notdir $(CURDIR))
 BUILD       := obj
+endif
 SOURCES     := source source/audio source/audio/a52 source/audio/dca \
                source/gfx source/net source/api \
                source/player source/player/core source/player/hud source/player/gpu \
@@ -32,20 +44,27 @@ INCLUDES    := source/audio source/audio/dcahd \
                source/util source/cache source/video source/music source/spu \
                source/offline source/local third_party/mohasi_fs source/i18n source/svc
 
+ifeq ($(VARIANT),soundcloud)
+TITLE       := SoundCloud PS3
+APPID       := SCPS30000
+APPDEFS     := -DAPP_VARIANT=1
+else
 TITLE       := Jellyfin PS3
 APPID       := JFPS30000
+APPDEFS     :=
+endif
 CONTENTID   := UP0001-$(APPID)_00-0000000000000000
 
 #---------------------------------------------------------------------------
 # Compiler flags
 #---------------------------------------------------------------------------
-CFLAGS      := -O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE)
+CFLAGS      := -O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE) $(APPDEFS)
 
 # .S files: -mregnames so r0/r1/r2 assemble as REGISTERS rather than as
 # undefined symbols.  PSL1GHT's own sprx Makefile passes this for the same
 # reason; without it the stub trampolines in source/audio/audio_out_stub.S
 # fail with "unsupported relocation against r1".
-ASFLAGS     := -mregnames -mcpu=cell $(MACHDEP) $(INCLUDE) -D__ASSEMBLY__
+ASFLAGS     := -mregnames -mcpu=cell $(MACHDEP) $(INCLUDE) $(APPDEFS) -D__ASSEMBLY__
 CXXFLAGS    := $(CFLAGS)
 LDFLAGS     := $(MACHDEP) -Wl,-Map,$(notdir $@).map
 

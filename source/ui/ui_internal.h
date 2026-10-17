@@ -33,6 +33,9 @@ void xmb_switch_tab(int new_tab);
 int  xmb_next_enabled(int start, int dir);
 
 void xmb_detect_tabs(void);
+#if APP_STANDALONE
+void xmb_standalone_tabs(void);       // a music app: its one tab, no Jellyfin screens
+#endif
 bool xmb_take_prepared(void);     // see xmb_prepare() in ui.h
 // The XMB's background retry: start() sends one request from a worker;
 // poll() returns -1 while it is in flight (or none was started), else applies
@@ -196,13 +199,23 @@ void xmb_cpu_draw_media(void);        // CPU phase: the rows' panels
 void xmb_draw_media(void);            // text phase
 bool xmb_media_at_top(void);          // the first row (Up there leaves the tab)
 void xmb_media_hints(void);           // the tab's hint bar
-// The SoundCloud tab (xmb/ui_soundcloud.cpp): the same five hooks the Media tab has.
+// The SoundCloud tab (xmb/ui_soundcloud.cpp): the same five hooks the Media tab has.  Only the SoundCloud app
+// (build_config.h APP_VARIANT) contains it; the other variants get empty hooks.
+#if APP_SOUNDCLOUD
 void xmb_sc_on_enter(void);
 bool xmb_input_sc(void);              // the tab's input (it never exits the XMB)
 void xmb_cpu_draw_sc(void);
 void xmb_draw_sc(void);
 bool xmb_sc_at_top(void);
 void xmb_sc_hints(void);
+#else
+static inline void xmb_sc_on_enter(void) {}
+static inline bool xmb_input_sc(void) { return false; }
+static inline void xmb_cpu_draw_sc(void) {}
+static inline void xmb_draw_sc(void) {}
+static inline bool xmb_sc_at_top(void) { return true; }
+static inline void xmb_sc_hints(void) {}
+#endif
 // The channel list in display order, for the player's channel up/down.
 #include "livetv_list.h"
 // X and Left/Right on a Settings row, by its position in the displayed order

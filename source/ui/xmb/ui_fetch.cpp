@@ -46,6 +46,7 @@ static void add_media_tab(int next) {
     tb->icon    = "#";
     tb->kind    = TABKIND_LOCAL;
     tb->enabled = true;
+#if APP_SOUNDCLOUD
     // The streaming-service tabs follow it, for the same reason: neither needs a Jellyfin server.
     if (next + 1 < XMB_TAB_COUNT) {
         XMBTab *sc = &g_tabs[next + 1];
@@ -55,7 +56,21 @@ static void add_media_tab(int next) {
         sc->kind    = TABKIND_SOUNDCLOUD;
         sc->enabled = true;
     }
+#endif
 }
+
+#if APP_STANDALONE
+// A standalone music app: the one service tab, and none of the Jellyfin screens (they all need a server).
+void xmb_standalone_tabs(void) {
+    for (int t = 0; t < XMB_TAB_COUNT; t++) memset(&g_tabs[t], 0, sizeof(g_tabs[t]));
+    XMBTab *sc = &g_tabs[XMB_TAB_LIB0];
+    snprintf(sc->label, sizeof(sc->label), "%s", "SoundCloud");
+    sc->icon    = "#";
+    sc->kind    = TABKIND_SOUNDCLOUD;
+    sc->enabled = true;
+    g_active_tab = XMB_TAB_LIB0;
+}
+#endif
 
 // The last Views request's HTTP status: below 0 means nothing answered at
 // all (as opposed to a server that answered with an error).

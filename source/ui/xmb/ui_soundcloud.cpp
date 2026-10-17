@@ -1,3 +1,5 @@
+#include "../../build_config.h"
+#if APP_SOUNDCLOUD
 // The SoundCloud tab: music from SoundCloud with no Jellyfin server and no developer account.
 //
 //   * The tab is a short list: Likes, Playlists, Reposts, Tracks, Search, the profile it reads from, and the audio
@@ -822,3 +824,4 @@ void xmb_cpu_draw_sc(void) {
 void xmb_draw_sc(void) {
     draw_root_text(tab_top(), (int)(((int)display_width - XMB_LIST_W) / 2), XMB_LIST_W);
 }
+#endif   // APP_SOUNDCLOUD

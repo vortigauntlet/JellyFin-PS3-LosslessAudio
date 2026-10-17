@@ -19,7 +19,7 @@
 //  - RPCS3 (BUILD_FOR_RPCS3 1): the game USRDIR, unchanged.  RPCS3's USRDIR is
 //    writable and persists, so the emulator keeps its saved login across runs.
 #if BUILD_FOR_RPCS3
-#define JF_DATA_DIR "/dev_hdd0/game/JFPS30000/USRDIR"
+#define JF_DATA_DIR "/dev_hdd0/game/" APP_ID_STR "/USRDIR"
 #else
 #define JF_DATA_DIR "/dev_hdd0/tmp"
 #endif
@@ -29,7 +29,7 @@ const char *jf_data_path(const char *name) {
     static bool made = false;
     if (!made) {
         // Create the tree if missing (bare .self boot under RPCS3).
-        sysLv2FsMkdir("/dev_hdd0/game/JFPS30000", 0755);
+        sysLv2FsMkdir("/dev_hdd0/game/" APP_ID_STR, 0755);
         sysLv2FsMkdir(JF_DATA_DIR, 0755);
         made = true;
     }

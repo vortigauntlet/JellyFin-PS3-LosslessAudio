@@ -37,10 +37,13 @@ extern void crash_log(const char *msg);   // survives a death plog does not
 #include "lfs.h"                // files on a drive
 #include "lfs_path.h"
 #include "local_audio.h"
+#include "../build_config.h"
+#if APP_SOUNDCLOUD
 #include "sc_dec.h"            // SoundCloud tracks: a pull decoder over HLS segments
 #include "sc_source.h"
 #include "sc_svc.h"
 #include "meminfo.h"          // the free-memory figure in the SoundCloud track log line
+#endif
 
 extern u32 running;
 
@@ -574,6 +577,7 @@ static int play_local_track(const MusicTrack *t, u32 start_secs, bool gapless) {
     return ret;
 }
 
+#if APP_SOUNDCLOUD
 // ---- a SoundCloud track ----
 //
 // MusicTrack::path is "sc:" + the transcoding URL (sc_track.tc_url) and MusicTrack::id is "sc:<id>:<kbps>".  The
@@ -710,6 +714,12 @@ static int play_sc_track(const MusicTrack *t, u32 start_secs, bool gapless) {
     if (failed && ret == MCMD_NEXT) { s_sc_fails++; sc_warm_close(); }     // a broken stream is not reused
     return ret;
 }
+
+#else   // the other apps have no streaming service: nothing to open, nothing to close
+static bool is_sc_track(const MusicTrack *) { return false; }
+static int play_sc_track(const MusicTrack *, u32, bool) { return MCMD_STOP; }
+static void sc_warm_close(void) {}
+#endif
 
 static int play_one_track(u32 start_secs, bool gapless) {
     if (!s_run) return MCMD_STOP;

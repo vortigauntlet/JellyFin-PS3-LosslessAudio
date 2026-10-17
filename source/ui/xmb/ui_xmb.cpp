@@ -537,12 +537,17 @@ void ui_run_xmb(void) {
     wave_reset();
 
     crash_log("13.2 detect_tabs");
+#if APP_STANDALONE
+    xmb_standalone_tabs();      // no server: the app's own tab is all there is
+    bool server_prompt = false;
+#else
     // Already done behind the boot animation on a cold boot (xmb_prepare).
     if (!xmb_take_prepared()) xmb_detect_tabs();
-    crash_log("13.3 detect_tabs done");
     // No server answered, here or at a new address: say so once the menu is
     // up, rather than leaving an empty bar to explain itself.
     bool server_prompt = !xmb_have_server_tabs() && xmb_server_unreachable() && !g_auth_expired;
+#endif
+    crash_log("13.3 detect_tabs done");
 
     if (!g_tabs[g_active_tab].enabled) {
         for (int t = 0; t < XMB_TAB_COUNT; t++) {
@@ -594,7 +599,7 @@ void ui_run_xmb(void) {
         // doubles from 5s to a 60s ceiling so a genuinely absent server costs
         // almost nothing, while the usual case -- network arriving a few
         // seconds late -- recovers on the first or second try.
-        if (!g_auth_expired) {
+        if (!g_auth_expired && !APP_STANDALONE) {
             static u64 s_lib_next_us = 0;
             static u64 s_lib_gap_us  = 5000000ULL;
             if (server_prompt && !boot_anim_active() && !xmb_update_popup_active()) {

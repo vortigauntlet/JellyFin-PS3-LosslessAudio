@@ -37,9 +37,12 @@
 #include "surround.h"
 #include "centermix.h"
 #include "net_selftest.h"
+#include "build_config.h"
+#if APP_SOUNDCLOUD
 #include "sx_tls.h"
 #include "sc_diag.h"
 #include "sc_svc.h"
+#endif
 #include "subfont.h"
 #include "subcolor.h"
 #include "statsovl.h"
@@ -234,6 +237,7 @@ int main(int argc, const char *argv[]) {
 
     crash_log("9 running=1");
     running = 1;
+    if (!APP_STANDALONE) {      // the update feed is Jellyfin PS3's own release list
     crash_log("8b update check");
     update_check_start();
     // Wait (responsively) until it finishes so its HTTPS/SSL memory is released
@@ -244,6 +248,7 @@ int main(int argc, const char *argv[]) {
         if (!boot_anim_pump()) usleep(16000);
     }
     crash_log("8c update check done");
+    }
 
     // Reserve the player's big buffers NOW, while the heap is pristine:
     // HUD overlay (~8MB x2), VDEC arena (96MB), jitter buffer (16 slots).
@@ -252,6 +257,7 @@ int main(int argc, const char *argv[]) {
     // movie could fail to start depending on what the UI had allocated
     // (jbuf_alloc FAILED even on the first play after some boots).
     crash_log("7e media reserve");
+    if (!APP_STANDALONE) {      // a music app plays no video: it keeps that memory for itself
     hud_overlay_alloc();
     vdec_reserve_mem();
     {
@@ -268,6 +274,7 @@ int main(int argc, const char *argv[]) {
                         display_width, display_height, &rw, &rh,
                         NULL, NULL, NULL);
         if (!jbuf_reserve(rw, rh)) crash_log("7e jbuf_reserve FAILED");
+    }
     }
     boot_anim_pump();
     // The image decoder gets a reserved home too.  Thumbnail SLOTS were already
@@ -294,19 +301,25 @@ int main(int argc, const char *argv[]) {
         plog(buf);
     }
 
-    // TLS for the music-services tabs (mbedTLS; the firmware's SSL is too old for SoundCloud's hosts).  It parses the CA
+#if APP_SOUNDCLOUD
+    // TLS for the music service (mbedTLS; the firmware's SSL is too old for SoundCloud's hosts).  It parses the CA
     // bundle once (about 350 KB), so it runs here: after the reservations, which want a clean heap, and before the
-    // thumbnail cache, which takes whatever is left.  A failure only disables those tabs.
-    if (!sx_tls_init()) plog("main: TLS did not start; the SoundCloud and Spotify tabs will not connect");
+    // thumbnail cache, which takes whatever is left.  A failure only disables the service.
+    if (!sx_tls_init()) plog("main: TLS did not start; SoundCloud will not connect");
     sc_svc_init();     // the SoundCloud profile, quality and cached client id (the files are tiny)
     {
         char buf[64];
         snprintf(buf, sizeof buf, "7g tls ready: free=%uKB", meminfo_avail_kb());
         crash_log(buf);
     }
+#endif
 
     thumb_cache_init();
-    thumb_set_local_bytes(music_art_bytes);     // covers of music files on a drive, then SoundCloud's artwork
+#if APP_SOUNDCLOUD
+    thumb_set_local_bytes(music_art_bytes);     // SoundCloud's artwork
+#else
+    thumb_set_local_bytes(lm_art_bytes);        // covers of music files on a drive
+#endif
     boot_anim_pump();
 
     crash_log("10 load_config");
@@ -316,15 +329,27 @@ int main(int argc, const char *argv[]) {
     // network, off this thread), so what is already downloaded is usable
     // whatever state the server is in.  It transfers nothing until there is
     // a session -- a saved login counts; otherwise login releases it below.
-    crash_log("10b dl_service_start");
-    dl_service_start();
-    lfs_start();             // local media: the internal disk, and USB drives as they are plugged in
+    if (!APP_STANDALONE) {
+        crash_log("10b dl_service_start");
+        dl_service_start();
+        lfs_start();         // local media: the internal disk, and USB drives as they are plugged in
+    }
+#if APP_SOUNDCLOUD
     sc_diag_start();         // opt-in SoundCloud chain check (jellyfin_sc_test.txt); a no-op otherwise
+#endif
     {
         char buf[128];
         snprintf(buf, sizeof(buf), "10 server=%s token_len=%d userid=%s",
                  g_server, (int)strlen(g_token), g_userid);
         crash_log(buf);
+    }
+
+    if (APP_STANDALONE) {
+        boot_anim_leave();
+        crash_log("13 standalone menu");
+        show_main_menu();
+        boot_anim_finish();
+        running = 0;
     }
 
     while (running) {
@@ -401,11 +426,13 @@ int main(int argc, const char *argv[]) {
     crash_log("14 done");
     // First, while the network is still up: the active download parks itself
     // back in the queue with its data (resumes next launch).
-    xmb_season_stop();       // a season being queued reads the server: let it finish
-    xmb_livetv_stop();       // so does the Live TV list's refresh
-    dl_service_stop();
-    lfs_stop();
-    update_check_shutdown();
+    if (!APP_STANDALONE) {
+        xmb_season_stop();   // a season being queued reads the server: let it finish
+        xmb_livetv_stop();   // so does the Live TV list's refresh
+        dl_service_stop();
+        lfs_stop();
+        update_check_shutdown();
+    }
     thumb_cache_shutdown();
     http_end();
     ui_cleanup();
