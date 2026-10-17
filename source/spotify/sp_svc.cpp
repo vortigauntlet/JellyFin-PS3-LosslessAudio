@@ -34,6 +34,7 @@ namespace {
 const size_t kRingFrames = 44100 * 2;          // two seconds
 
 std::atomic<bool> s_run{false};
+std::atomic<bool> s_thread_done{true};        // the session thread has returned (or never started)
 std::atomic<int> s_state{SP_OFF};
 std::atomic<unsigned> s_serial{0}, s_frames_in{0}, s_tracks{0};
 std::string s_name = "PS3";
@@ -249,6 +250,7 @@ void session_thread(void*) {
     for (int i = 0; i < 10 && s_run; i++) usleep(500000);
   }
   s_state = SP_OFF;
+  s_thread_done = true;
   sysThreadExit(0);
 }
 
@@ -262,14 +264,22 @@ void sp_svc_start(const char* device_name) {
   s_ring.assign(kRingFrames * 2, 0);
   memset(&s_track, 0, sizeof s_track);
   s_run = true;
+  s_thread_done = false;
   sys_ppu_thread_t t;
   if (sysThreadCreate(&t, session_thread, nullptr, 1001, 256 * 1024, 0, (char*)"sp_session") != 0) {
     s_run = false;
+    s_thread_done = true;
     plog("spotify: could not start the session thread");
   }
 }
 
-void sp_svc_stop(void) { s_run = false; sp_zc_stop(); }
+// Asks the session thread to leave and waits a few seconds for it, so the app can exit without a worker still running.  A thread
+// blocked in the network is not forced: the wait is bounded and the app exits anyway (the console ends it).
+void sp_svc_stop(void) {
+  s_run = false;
+  sp_zc_stop();
+  for (int i = 0; i < 40 && !s_thread_done; i++) usleep(100000);
+}
 
 SpState sp_svc_state(void) { return (SpState)s_state.load(); }
 

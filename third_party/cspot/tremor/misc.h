@@ -48,7 +48,9 @@ extern void _VDBG_free(void *ptr,char *file,long line);
 
 #include <sys/types.h>
 
-#if BYTE_ORDER==LITTLE_ENDIAN
+/* PS3 port: newlib defines no BYTE_ORDER / LITTLE_ENDIAN, and in an #if two undefined names compare equal, which picked the
+   little-endian layout on this big-endian machine and made every MULT32 return the wrong half.  The compiler states it. */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 union magic {
   struct {
     ogg_int32_t lo;

@@ -79,5 +79,6 @@ void sp_ui_run(void) {
     flip();
   }
   music_stop();
+  music_join_stale();                    // the feed thread, left finishing by music_stop()
   sp_svc_stop();
 }

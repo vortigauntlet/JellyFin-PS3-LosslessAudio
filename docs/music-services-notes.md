@@ -224,3 +224,50 @@ reservations (HUD, VDEC arena, jitter buffer: about 120 MB), the server and logi
 services, and its XMB has one tab (`xmb_standalone_tabs`). Emulator run, same machine and settings: free memory after the
 reservations is **144,824 KB in the standalone app against 4,536 KB in the Jellyfin app with the music code**, and it reaches
 its first frame with no login. Its top bar still shows the Jellyfin mark and wordmark: its own UI is a separate piece of work.
+
+## Spotify PS3 (variant 2): SP0, SP3 and SP4 in the emulator (10-17)
+
+The user waived rule 1.3 for Spotify's web-player client id (personal use) and asked for the services as separate apps as well as
+tabs. Rules 1.1, 1.2 and 1.4 stand: nothing is written to disk but the login credential cspot returns, SP0 decides, and no id,
+token, signed address or blob is logged.
+
+**SP0 passed**, on the PS3 build running in RPCS3 (paired from the user's phone over the LAN, which is why the NAT-mode WSL was
+never needed): `Got audio key`, then the CDN stream opened and `Playing`. Audio then played through the music engine: the user
+confirmed it by ear.
+
+How it is built (`make VARIANT=spotify`, `source/spotify/`, `third_party/cspot/` vendored from cspot 1b07a9c / bell e837373 with
+their licences):
+
+* `sp_zeroconf`: an mDNS responder (224.0.0.251:5353, PTR/SRV/TXT/A) and a small HTTP server for the Spotify app's getInfo and
+  addUser requests. The phone finds the console in "Connect to a device".
+* `sp_svc`: LoginBlob, Session and SpircHandler on a worker thread; credentials saved as `jellyfin_spotify_creds` (the app's data
+  folder, not logged); a 2 s ring of 44.1 kHz 16-bit stereo; the position and track-start notifications Spotify expects.
+* `music_start_spotify` (music_player.cpp): a feed thread resamples 44.1 to 48 kHz into the engine's ring and keeps it about 500 ms
+  full, so the phone's clock and the audible audio agree. Same visualisers, volume and audio port as the other music.
+* `sp_log`: an allow-list logger. cspot logs the signed CDN address at info level (TrackQueue.cpp:305, CDNAudioFile.cpp:43), so
+  only fixed progress and error messages reach `player_log.txt`.
+* `sp_rng`: bell's Crypto.cpp seeded mbedTLS from `mbedtls_entropy_func`, which has no source on this platform (the keys would be
+  zeros); it now uses the console's random generator and aborts rather than make up keys.
+* PlainConnection, the TCP and TLS sockets, tasks, semaphores, `<mutex>` and `<condition_variable>` are replacements over lv2 and
+  the sx_* layer (`source/spotify/shim/`).
+
+Three platform traps found on the way, each invisible to the host and big-endian host tests:
+
+1. **C++ exceptions did not work at all** (any `throw` aborted inside the unwinder): the start-up never calls
+   `__register_frame_info`, and the label that would start the table sits on a zero-length terminator the unwinder reads as an
+   empty table (`sp_eh.cpp`, `eh_anchor.S`); and the program is linked with several TOCs while the unwinder does not restore r2 on
+   entering a handler, so a handler ran with another group's TOC (`-mminimal-toc` plus `-Wl,--no-multi-toc`; plain
+   `--no-multi-toc` overflows). cspot throws on every lost connection: the first reset aborted the whole app (RPCS3 showed the
+   dispatcher thread's `Abort called`, then every other thread's stack unmapped).
+2. **Tremor decoded to full-scale noise**: `misc.h` picks the layout of its 64-bit multiply with `#if BYTE_ORDER==LITTLE_ENDIAN`;
+   newlib defines neither name, `0==0` is true, so the little-endian layout was used on this big-endian CPU and every MULT32
+   returned the wrong half. The SP2 big-endian test did not see it because glibc defines both names. Patched to the compiler's
+   `__BYTE_ORDER__`. The log line that found it was a once-a-second level and zero-crossing statistic of the decoded audio
+   (mean |sample| 32,600 of 32,768, zero crossings 50%): noise, not music.
+3. `<mutex>`, `<condition_variable>`, `std::to_string` and friends are missing from this libstdc++ (SP1), and lv2 rejects a
+   zeroed mutex attribute: the shim initialises it.
+
+Not yet done or not verified: the console and TV (this was the emulator; the PS3's own audio output, the real network and mDNS
+on the user's router are untested), reconnecting after a reset in a long session, a Spotify tab inside the Jellyfin app (cspot
+needs the single-TOC link, which the Jellyfin app does not use yet, and its 120 KB of free memory is too little for it), the cover
+art, and the app's own UI (the screen is a plain one on purpose).
