@@ -207,7 +207,7 @@ static void wrap_synopsis(const char *text, float px, int max_w) {
 
 // After the frame's text flush (ui_xmb.cpp).  GPU, fence, text.
 void peek_draw_over(void) {
-    if (!g_spine_on || s_pk.phase == PEEK_OFF) return;
+    if (s_pk.phase == PEEK_OFF) return;
     const unsigned long long now = timing_get_us();
     peek_tick(&s_pk, now);
     if (s_pk.phase == PEEK_OFF) return;

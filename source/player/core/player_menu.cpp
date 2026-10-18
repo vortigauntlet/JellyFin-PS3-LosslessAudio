@@ -12,7 +12,7 @@
 #include "subtitles.h"
 #include "slog.h"
 #include "experience.h"
-#include "ui_visuals.h"      // g_spine_on   // vpick_audio_words
+#include "ui_visuals.h"      // vpick_audio_words
 #include "chapters.h"
 #include "player_picture.h"   // picture_cycle_aspect
 #include "timing.h"
@@ -150,7 +150,7 @@ HudAction player_handle_menu_action(PlayerState *ps, HudAction act) {
             sel >= 0 && sel < ps->tracks.n_audio && sel != ps->cur_audio) {
             ps->cur_audio = sel;
             track_pref_note_audio(&ps->tracks.audio[ps->cur_audio]);
-            if (g_spine_on) {
+            {
                 // The audio chip names the track, in the selector's words.
                 char w[64];
                 vpick_audio_words(ps->tracks.audio[ps->cur_audio].label, w, sizeof w);

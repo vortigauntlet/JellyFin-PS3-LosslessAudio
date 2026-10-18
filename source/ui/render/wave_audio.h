@@ -2,7 +2,7 @@
 //
 //   wave_audio.h   -> features   (this file)
 //   wave_motion.h  -> smoothed, slew-limited wave parameters
-//   wave_layers.h  -> per-layer geometry and colour over the existing spline
+//   wave_render_map.h -> what the renderer takes from them
 //
 // and from there into the geometry pipeline, which is NOT modified:
 //

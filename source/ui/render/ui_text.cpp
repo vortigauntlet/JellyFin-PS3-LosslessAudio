@@ -11,7 +11,6 @@
 
 #include "ui_visuals.h"
 #include "ui_text_gpu.h"
-#include "ui_strobe_test.h"
 #include "bitmap.h"
 #include "plog.h"
 #include "font8x8.xpm"
@@ -1171,7 +1170,6 @@ static float run_tracked(u32 x, u32 y, const char *text, float px, u32 color,
 void drawTTF_tracked(u32 x, u32 y, const char *text, float px, u32 color,
                      int face, float track)
 {
-    if (strobe_test_disable_tracked_text()) return;
     run_tracked(x, y, text, px, color, face, track, true, NULL, 0);
 }
 
@@ -1180,7 +1178,6 @@ void drawTTF_tracked(u32 x, u32 y, const char *text, float px, u32 color,
 void drawTTF_ramp(u32 x, u32 y, const char *text, float px,
                   const u32 *stops, int nstops, int face, float track)
 {
-    if (strobe_test_disable_tracked_text()) return;
     run_tracked(x, y, text, px, stops ? stops[0] : 0, face, track, true,
                 stops, nstops);
 }
@@ -1195,7 +1192,6 @@ void drawTTF_ramp_posed(u32 x, u32 y, const char *text, float px,
                         const float *reveal, const float *alpha, int npose,
                         float max_slide)
 {
-    if (strobe_test_disable_tracked_text()) return;
     run_tracked(x, y, text, px, stops ? stops[0] : 0, face, track, true,
                 stops, nstops, reveal, alpha, npose, max_slide);
 }

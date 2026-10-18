@@ -49,18 +49,11 @@
 #include "depth.h"
 #include "ui_depth.h"
 #include "icons.h"
-#include "jf_paths.h"
 #include "timing.h"
-#include "plog.h"
 #include "music_screen.h"
 
-extern void crash_log(const char *msg);   // main.cpp; survives a GPU wedge
-
-bool g_spine_on = false;
 
 static depth_focus_mem s_focus_mem;   // each category's focus (below)
-
-#define SPINE_FILE "jellyfin_spine.txt"
 
 static int            s_level = SPINE_L1;  // where the user is going
 static spine_approach s_dep;               // how far they have got (0..1)
@@ -68,26 +61,13 @@ static spine_approach s_cat;               // the row's position, in slots
 static unsigned long long s_last_us = 0;
 static bool           s_cat_fresh = true;  // snap the row on the first frame
 
-void spine_load(void) {
-    // ON unless the file says 0.  It used to be off unless the file said 1,
-    // and nothing ever writes the file: v3.0 installed fresh ran the old tab
-    // strip, with no d-pad route to the categories (tester, 2026-09-27).
-    int v = 1;
-    FILE *f = fopen(jf_data_path(SPINE_FILE), "r");
-    if (f) {
-        if (fscanf(f, "%d", &v) != 1) v = 1;
-        fclose(f);
-    }
-    g_spine_on = (v != 0);
+void spine_init(void) {
     s_level    = SPINE_L1;
     spine_approach_init(&s_dep, (float)SPINE_L1, SPINE_LEVEL_MS);
     spine_approach_init(&s_cat, 0.0f, SPINE_CATEGORY_MS);
     s_cat_fresh = true;
     s_last_us   = 0;
     depth_focus_init(&s_focus_mem);
-    plog(g_spine_on ? "spine: ON (default; jellyfin_spine.txt = 0 turns it off)"
-                    : "spine: off (jellyfin_spine.txt = 0) -- tab strip");
-    crash_log(g_spine_on ? "spine on" : "spine off");
 }
 
 static int spine_row(int *order, int *active);
@@ -121,19 +101,11 @@ void spine_clock_reset(void) {
     s_last_us = 0;          // the next spine_frame_begin() steps by dt = 0
 }
 
-float spine_depth(void) {
-    if (!g_spine_on) return (float)SPINE_L2;
-    return s_dep.value;
-}
+float spine_depth(void) { return s_dep.value; }
 
-bool spine_at_base(void) {
-    return g_spine_on && spine_depth() < 0.5f;
-}
+bool spine_at_base(void) { return spine_depth() < 0.5f; }
 
-float spine_divider_alpha(void) {
-    if (!g_spine_on) return 1.0f;
-    return spine_eval(spine_depth()).divider_a;
-}
+float spine_divider_alpha(void) { return spine_eval(spine_depth()).divider_a; }
 
 static void spine_go(int level) {
     if (level == s_level) return;
@@ -141,10 +113,9 @@ static void spine_go(int level) {
     spine_approach_set(&s_dep, (float)level);
 }
 
-int spine_target_level(void) { return g_spine_on ? s_level : SPINE_L2; }
+int spine_target_level(void) { return s_level; }
 
 void spine_set_level(int level) {
-    if (!g_spine_on) return;
     if (level < SPINE_L1) level = SPINE_L1;
     if (level > SPINE_L3) level = SPINE_L3;
     spine_go(level);
@@ -286,7 +257,7 @@ bool spine_input_base(void) {
 }
 
 bool spine_try_back(int tab) {
-    if (!g_spine_on || s_level != SPINE_L2) return false;
+    if (s_level != SPINE_L2) return false;
     const bool up = BTN_PRESSED(up), back = BTN_PRESSED(circle);
     if (!up && !back) return false;
 
@@ -364,7 +335,7 @@ static u32 mix_q(u32 a, u32 b, float t) {
 }
 
 void spine_draw_gpu(void) {
-    if (!g_spine_on || !wave_gpu_blend_ready()) return;
+    if (!wave_gpu_blend_ready()) return;
 
     const spine_level L = spine_eval(spine_depth());
     const int cx = sx(SPINE_ACTIVE_X);        // the focus never moves
@@ -486,7 +457,7 @@ static bool spine_grid_tab(int tab) {
 }
 
 void spine_focus_leave(int tab, bool window_dropped) {
-    if (!g_spine_on || tab < 0 || tab >= XMB_TAB_COUNT || !spine_grid_tab(tab)) return;
+    if (tab < 0 || tab >= XMB_TAB_COUNT || !spine_grid_tab(tab)) return;
     if (window_dropped || !g_items_loaded[tab] || g_item_count[tab] <= 0)
         depth_focus_forget(&s_focus_mem, tab);
     else
@@ -494,7 +465,7 @@ void spine_focus_leave(int tab, bool window_dropped) {
 }
 
 void spine_focus_enter(int tab) {
-    if (!g_spine_on || tab < 0 || tab >= XMB_TAB_COUNT || !spine_grid_tab(tab)) return;
+    if (tab < 0 || tab >= XMB_TAB_COUNT || !spine_grid_tab(tab)) return;
     if (!g_items_loaded[tab]) return;
     GridGeom gg;
     xmb_grid_geom(tab, &gg);
@@ -515,9 +486,6 @@ void spine_focus_enter(int tab) {
 //   * the tab's content glides up into place as a tab is entered;
 //   * the focus ring travels between cards instead of teleporting;
 //   * the grid scrolls by easing rows up or down instead of jumping a row.
-//
-// All three are inert with the gate off (values snap), so jellyfin_spine.txt=0
-// still reproduces the old frame exactly.
 
 // How far below rest the content starts as a tab is entered.  Decided here:
 // enough to read as the content rising out of the base layer, small enough
@@ -525,7 +493,6 @@ void spine_focus_enter(int tab) {
 #define CONTENT_RISE_PX 48
 
 int spine_content_dy(void) {
-    if (!g_spine_on) return 0;
     // Home and the library grids swing out of their column instead; gliding
     // their content too would move the grid off the cells the swing lands on.
     if (depth_stage_tab(g_active_tab)) return 0;
@@ -559,7 +526,6 @@ static void focus_draw(int x, int y, int w, int h, bool poster) {
 }
 
 static void focus_glide_gpu(int x, int y, int w, int h, bool poster) {
-    if (!g_spine_on) { focus_draw(x, y, w, h, poster); return; }
     depth_note_focus_rect(x, y, w, h);     // item detail flies out of it
 
     const float tgt[4] = { (float)x, (float)y, (float)w, (float)h };
@@ -585,7 +551,7 @@ static unsigned       s_grid_frame = 0;
 void spine_grid_motion(const GridGeom *gg, int scroll,
                        int *row0, int *rows, int *dy) {
     *row0 = 0; *rows = XMB_GRID_ROWS; *dy = 0;
-    if (!g_spine_on || gg->cols <= 0) return;
+    if (gg->cols <= 0) return;
 
     const float target = (float)(scroll / gg->cols);
     const int   ctx    = motion_ctx();

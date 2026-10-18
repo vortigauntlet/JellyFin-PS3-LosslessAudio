@@ -13,8 +13,7 @@
 // STILL NOT CARRIED, and why: detail[] and phase[] have no input on the spring
 // chain (it makes its own fine detail from perturb and its own phase from
 // integration); lift moves the whole band, which would shift its framing; hue
-// would have to re-tint wave_gel.h's lit colour per vertex.  wave_layers.h
-// consumes all of them and is not wired in.
+// would have to re-tint wave_gel.h's lit colour per vertex.
 //
 //   wave_audio.h       PCM -> features
 //   wave_motion.h      features -> slew-limited parameters
@@ -46,7 +45,7 @@
 //
 // So the mapping is a compressed lerp between two endpoints that were each
 // picked for a reason, and both reasons are testable.  It is header-only and
-// PS3-header-free so test_wave_layers.c can assert them against the real
+// PS3-header-free so test_wave_render_map.c can assert them against the real
 // kernel (.clinerules rule 7).
 
 #ifndef WAVE_RENDER_MAP_H
@@ -63,7 +62,7 @@
 #define WRM_DRIVE_IDLE  0.62f
 
 // 1.10 at full, straight from WM_MAX_DRIVE: this is the knee limit, not a look
-// choice, and test_wave_layers.c re-measures that the chain stays under
+// choice, and test_wave_render_map.c re-measures that the chain stays under
 // WK_KNEE when driven here through wf_step's own per-layer WF_DRIVE scaling.
 #define WRM_DRIVE_MAX   WM_MAX_DRIVE
 
@@ -115,7 +114,7 @@
 // reaches the horizontal midline.  At 1.30x that edge peaks at -0.099 in clip
 // space, a tenth of the screen's half-height below the line; on the legacy
 // ribbons it is 30 px * 1.10 * 1.30 = 43 px against a crest at 78% of the
-// height.  test_wave_layers.c re-runs that measurement against this constant.
+// height.  test_wave_render_map.c re-runs that measurement against this constant.
 #define WRM_AMP_MAX     1.30f
 #define WRM_AMP_GAIN    ((WRM_AMP_MAX - 1.0f) / (1.0f - WM_IDLE_AMP))
 // Derived: where amp = 0 lands, 0.845.  A band that is silent while the
@@ -136,7 +135,7 @@
 // and the step between frames is bounded by stage B's slews rather than by
 // anything here: at 60 fps the worst case is WM_SLEW_BRIGHT * 0.30 +
 // WM_SLEW_GLOW_UP * 0.08 = 0.017 a frame, so the full rise takes a fifth of a
-// second.  test_wave_layers.c asserts that bound.
+// second.  test_wave_render_map.c asserts that bound.
 #define WRM_LUM_BRIGHT  0.30f
 #define WRM_LUM_GLOW    0.08f
 #define WRM_LUM_MIN     0.85f
@@ -151,7 +150,7 @@
 // loudest at once -- WRM_DRIVE_MAX, WRM_AMP_MAX, this, and the accent sitting
 // on the crest along the whole band -- the near layer's top edge measured
 // -0.053 in clip space, just inside the same 0.05 margin under the midline
-// WRM_AMP_MAX keeps.  test_wave_layers.c re-runs that worst case.
+// WRM_AMP_MAX keeps.  test_wave_render_map.c re-runs that worst case.
 #define WRM_THICK_MAX   1.04f
 #define WRM_THICK_GAIN  ((WRM_THICK_MAX - 1.0f) / (1.0f - WM_IDLE_AMP))
 #define WRM_THICK_MIN   (1.0f - WRM_THICK_GAIN * WM_IDLE_AMP)

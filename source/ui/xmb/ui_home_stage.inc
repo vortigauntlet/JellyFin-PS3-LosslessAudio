@@ -59,7 +59,6 @@ static void q_clamp_cols(void) {
         if (s_row_col[r] >= n) s_row_col[r] = n > 0 ? n - 1 : 0;
         if (s_row_col[r] < 0)  s_row_col[r] = 0;
     }
-    s_focus_col = s_row_col[s_focus_row];
 }
 
 static void q_tick(void) {
@@ -538,7 +537,6 @@ int xmb_home_ambient_art(AmbientArt *out, int max) {
 // --- input ------------------------------------------------------------------------------
 
 bool xmb_home_at_top(void) {
-    if (!g_spine_on) return s_focus_row == 0;
     unsigned char v[HOME_ROWS_N];
     q_visit(v);
     return depth_at_top(v, HOME_ROWS_N, s_focus_row) != 0;
@@ -547,7 +545,7 @@ bool xmb_home_at_top(void) {
 bool xmb_home_open_focused(void) {
     home_init_once();
     const HomeRow *row = &s_rows[s_focus_row];
-    const int c = g_spine_on ? s_row_col[s_focus_row] : s_focus_col;
+    const int c = s_row_col[s_focus_row];
     if (row->count <= 0 || c < 0 || c >= row->count) return false;
     const XMBItem *it = &row->items[c];
     if (home_play_downloaded(it)) return true;
@@ -572,7 +570,7 @@ static void home_peek_open(void) { xmb_home_open_focused(); }
 bool xmb_home_peek_focused(void) {
     home_init_once();
     const HomeRow *row = &s_rows[s_focus_row];
-    const int c = g_spine_on ? s_row_col[s_focus_row] : s_focus_col;
+    const int c = s_row_col[s_focus_row];
     if (row->count <= 0 || c < 0 || c >= row->count) return false;
     const XMBItem *it = &row->items[c];
     if (strncmp(it->id, "offp:", 5) == 0) return false;     // a download has no page to peek
@@ -593,7 +591,6 @@ static bool home_queue_input(void) {
     int *col = &s_row_col[s_focus_row];
     if (BTN_REPEAT(right) && *col + 1 < n) (*col)++;
     if (BTN_REPEAT(left)  && *col > 0)     (*col)--;
-    s_focus_col = *col;
 
     // X opens (detail); Triangle is the quick-peek.
     if (BTN_PRESSED(cross))         xmb_home_open_focused();

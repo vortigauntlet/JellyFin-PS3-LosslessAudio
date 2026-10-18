@@ -1,5 +1,5 @@
 // The spine, drawn and driven.  Geometry lives in spine.h; this is the
-// XMB-side glue.  On by default; jellyfin_spine.txt = 0 makes all of it inert.
+// XMB-side glue.  Always on: the spine is the only menu.
 //
 // Two levels today (SPINE-PLAN.md S1 + the base layer of S4):
 //
@@ -16,9 +16,8 @@
 
 #include "ui_visuals.h"   // GridGeom
 
-// Read jellyfin_spine.txt into g_spine_on.  Call from main.cpp AFTER
-// plog_load_setting(), so which path is live reaches the log.  Starts at base.
-void spine_load(void);
+// Start at the base level with nothing remembered.  Once, from main.cpp.
+void spine_init(void);
 
 // Sample the animated depth for this frame.  Call once, at the top of the
 // frame loop; every query below reads that one sample.

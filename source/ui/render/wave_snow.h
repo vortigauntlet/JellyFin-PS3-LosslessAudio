@@ -1,6 +1,6 @@
 // JellyWave: the snow field -- screen-wide drifting particles while music plays.
 //
-// Replaces the stage 9 motes (wave_motes.h, kept, unwired) as what the music
+// Replaces the stage 9 motes as what the music
 // screen draws.  Hardware verdict on the motes: "need to be much better and
 // present throughout the whole screen, kinda like a snowing vibe".
 //

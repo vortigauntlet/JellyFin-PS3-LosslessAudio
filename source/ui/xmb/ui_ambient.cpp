@@ -70,7 +70,6 @@ static bool any_button(void) {
 }
 
 bool ambient_update(bool allowed) {
-    if (!g_spine_on) return false;
     ambient_init_once();
     const unsigned long long now = timing_get_us();
     // A modal (the update popup, overscan calibration) counts as activity:
@@ -96,7 +95,7 @@ bool ambient_update(bool allowed) {
     return swallow != 0;
 }
 
-bool ambient_draw_ui(void) { return !g_spine_on || s_f.draw_ui; }
+bool ambient_draw_ui(void) { return s_f.draw_ui; }
 
 static inline u8 a8(float a) {
     a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
@@ -124,7 +123,7 @@ static bool ambient_poster(AmbPoster *p) {
 
 // GPU phase, in place of the XMB's own (only when !ambient_draw_ui()).
 void ambient_gpu(void) {
-    if (!g_spine_on || !s_f.draw_ambient) return;
+    if (!s_f.draw_ambient) return;
     const int W = (int)display_width, H = (int)display_height;
     ui_rect_gpu_draw(0, 0, W, H, 0x00000000, a8(s_f.cover));
 
@@ -159,7 +158,7 @@ void ambient_gpu(void) {
 
 // Text phase (inside the text-run window).
 void ambient_text(void) {
-    if (!g_spine_on || !s_f.draw_ambient) return;
+    if (!s_f.draw_ambient) return;
     xmb_draw_topbar();     // the lockup and the clock stay: it is still the XMB
     AmbPoster p;
     if (!ambient_poster(&p)) return;
@@ -184,7 +183,7 @@ void ambient_text(void) {
 // blended quad over everything, FIFO-ordered after the text runs, so no
 // fence is needed.
 void ambient_cover_over_ui(void) {
-    if (!g_spine_on || !s_f.draw_ui || s_f.cover <= 0.002f) return;
+    if (!s_f.draw_ui || s_f.cover <= 0.002f) return;
     ui_rect_gpu_draw(0, 0, (int)display_width, (int)display_height,
                      0x00000000, a8(s_f.cover));
     ui_card_gpu_end();

@@ -232,20 +232,12 @@ static inline float uis_tf(float px) {
 #define XMB_TOPBAR_H    UIS_H(64)
 #define XMB_TABBAR_H    UIS_H(80)
 
-// The spine (README 2.9, render/spine.h) replaces the tab strip when
-// jellyfin_spine.txt says 1 -- read once at boot by spine_load().  Every XMB
-// screen is currently L2, where the spine's label stack runs down to y~205
-// and the header divider moves from 144 to 214.  Everything below the chrome
-// is positioned from XMB_CONTENT_Y, so moving the divider moves every screen
-// with it; nothing else needs to know the spine exists.
-//
-// A runtime choice rather than a rebuild, like the other gates: a spine that
-// reads badly on the TV is one character over FTP from the old strip.
-extern bool g_spine_on;
+// The spine (README 2.9, render/spine.h) is the navigation.  Every XMB
+// screen is L2, where the spine's label stack runs down to y~205 and the
+// header divider sits at 214.  Everything below the chrome is positioned from
+// XMB_CONTENT_Y, so moving the divider moves every screen with it.
 #include "render/spine.h"
-#define XMB_DIVIDER_Y   (g_spine_on                                              \
-        ? (XMB_OY + UIS_H((int)SPINE_LEVEL[SPINE_L2].divider_y))                \
-        : (XMB_OY + XMB_TOPBAR_H + XMB_TABBAR_H))
+#define XMB_DIVIDER_Y   (XMB_OY + UIS_H((int)SPINE_LEVEL[SPINE_L2].divider_y))
 // Where content sits AT REST, and where it is drawn this frame.  They differ
 // only while the spine is gliding a tab's content up into place (0 with the
 // gate off and at rest; see spine_content_dy() in render/ui_spine.cpp).
@@ -542,8 +534,6 @@ void ui_upper_ascii(char *s);
 void ui_text_stats_reset(void);
 void ui_text_stats_get(u32 *glyphs, u32 *blend_px, u32 *opaque_px);
 int  xmb_nav_depth(void);
-int  xmb_tab_focus_center(void);
-void xmb_draw_tabs(void);
 void xmb_draw_meta(u32 x, u32 y, const XMBItem *it, float px = UIS_TF(14));
 
 // Card grid (library tabs).  Two phases per frame (after rsxSync):

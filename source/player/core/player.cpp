@@ -700,7 +700,6 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     exit_reports_join();
     music_join_stale();
     plog("show_player: enter");
-    plog("show_player: BUILD=seek-diag-1");
     init_btns();
 
 #if BUILD_FOR_RPCS3
@@ -811,7 +810,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // The call runs on a worker while the render thread animates; the
     // presentation only draws (its artwork is already in video memory) and
     // makes no request, so responseBuffer is the worker's alone meanwhile.
-    if (g_spine_on) buffering_begin(item->id, item->name);
+    buffering_begin(item->id, item->name);
     player_startup_step(item->name, TR("Connecting"), TR("Connecting to server..."));
     {
         static struct {
@@ -975,10 +974,9 @@ void show_player_run(const JFItem *item, u32 resume_secs,
             exit_reports_start(item->id, ps.session_id, 0, ps.source.live_stream_id);
     };
 
-    // The buffering presentation starts here and runs until the first frame
-    // (spine gate on; the gate off keeps the status lines below).  It reuses
-    // the detail page's artwork, which is still in video memory.
-    if (g_spine_on && !buffering_active()) buffering_begin(item->id, item->name);
+    // The buffering presentation starts here and runs until the first frame.
+    // It reuses the detail page's artwork, which is still in video memory.
+    if (!buffering_active()) buffering_begin(item->id, item->name);
     player_startup_step(item->name, TR("Preparing"), TR("Initializing decoder..."));
 
     // Release the UI thumbnail cache (joins its fetch thread, frees ~15 MB
@@ -1106,6 +1104,8 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         vdec_close();
         thumb_cache_init();
         ui_restore_rsx_state();
+        show_error(TR("Not enough memory to start playback."),
+                   "See /dev_hdd0/tmp/player_log.txt");
         return;
     }
     {
@@ -1168,7 +1168,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         char w[64] = "";
         if (ps.have_tracks && ps.cur_audio >= 0 && ps.cur_audio < ps.tracks.n_audio)
             vpick_audio_words(ps.tracks.audio[ps.cur_audio].label, w, sizeof w);
-        hud_init(ps.total_secs, (g_spine_on && w[0]) ? w : NULL);   // the old HUD keeps AUDIO
+        hud_init(ps.total_secs, w[0] ? w : NULL);
     }
     hud_set_title(item->name);
     JFChannel live_ch;
@@ -1201,6 +1201,11 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         audio_close();
         vdec_close();
         thumb_cache_init();
+        if (running) {   // not when the console is quitting the app
+            ui_restore_rsx_state();
+            show_error(TR("Playback ended before the video started."),
+                       "See /dev_hdd0/tmp/player_log.txt");
+        }
         return;
     }
 
@@ -1858,7 +1863,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // the player's last frame, whose flip is still pending.
     // Not between episodes: an auto-advance goes straight on to the next
     // one's buffering screen (and that playback joins these reports first).
-    const bool ret_screen = g_spine_on && running && !s_next_requested;
+    const bool ret_screen = running && !s_next_requested;
     if (ret_screen) {
         if (flip_queued) { waitflip_timeout(250000); flip_queued = false; }
         ui_restore_rsx_state();
@@ -1928,6 +1933,15 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     // A drive pulled mid-film ends the stream like a clean end would: say why.
     if (local && stream_file_removed()) {
         show_error(TR("The drive was removed."), TR("Plug it back in to play this again."));
+        ui_restore_rsx_state();
+    } else if (ps.frame_count == 0 && running && !user_stopped && !s_next_requested) {
+        // Not one picture reached the screen: without this it just looks
+        // like the player gave up and went back to the menu.
+        plog(s_vdec_error ? "show_player: no picture (VDEC error)"
+                          : "show_player: no picture (stream ended first)");
+        show_error(TR("Playback could not start."),
+                   s_vdec_error ? TR("The video decoder rejected this stream.")
+                                : TR("The stream ended before the first picture."));
         ui_restore_rsx_state();
     }
     crash_log("p19 done");

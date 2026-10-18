@@ -58,9 +58,9 @@ all: test_wave_scope test_ac3_map test_ac3_decode test_iec61937 test_media_sourc
      test_truehd_map test_truehd_decode \
      test_dts_hd test_dts_xll_dump test_text_runs test_text_clip test_text_shadow test_utf8 test_theme test_layout test_circle_blit \
      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
-     test_wave_audio test_wave_motion test_wave_layers \
+     test_wave_audio test_wave_motion test_wave_render_map \
      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget \
-     test_experience test_json_unescape test_boot_seq test_wave_motes \
+     test_experience test_json_unescape test_boot_seq \
      test_wave_nav test_daynight test_canyon test_display_mode test_wave_look test_wave_drop test_offline test_stream_request test_jbuf_order \
      test_settings_model test_settings_model_nostats test_userdata test_livetv test_server_discovery test_rx_gap test_livetv_prefs test_chapters test_wol test_icons test_live_watch test_picture_resume test_mohasi_fs test_lfs_path test_lfs test_h264_sps test_mkv_demux test_mkv_ts test_local_probe test_local_play test_local_names test_local_resume test_resample test_aac test_flac test_lossless test_sub_conv test_local_subs test_local_tags test_local_audio test_local_music test_music_engine test_i18n test_i18n_text test_line_break test_clock_fmt
 
@@ -545,7 +545,7 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_wave_field
 	./test_wave_audio
 	./test_wave_motion
-	./test_wave_layers
+	./test_wave_render_map
 	./test_wave_cam
 	./test_wave_light
 	./test_wave_gel
@@ -557,7 +557,6 @@ check: all tones51.ac3 tones51.spdif tones51.dts tones51.thd tones51.thd.ref
 	./test_experience
 	./test_json_unescape
 	./test_boot_seq
-	./test_wave_motes
 	./test_canyon
 	./test_display_mode
 	./test_offline
@@ -612,8 +611,8 @@ clean:
 	      test_truehd_map test_truehd_decode test_dts_hd test_dts_xll_dump \
 	      test_text_runs test_text_clip test_text_shadow test_utf8 test_theme test_layout test_circle_blit \
 	      test_wave_kernel test_wave_spline test_wave_ribbon test_wave_field \
-	      test_wave_audio test_wave_motion test_wave_layers \
-	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq test_wave_motes test_display_mode \
+	      test_wave_audio test_wave_motion test_wave_render_map \
+	      test_wave_cam test_wave_light test_wave_gel test_spine test_depth test_facts test_stream_budget test_experience test_json_unescape test_boot_seq test_display_mode \
 	      test_offline test_stream_request track_codec_host.o \
 	      test_settings_model test_settings_model_nostats test_userdata test_livetv test_server_discovery test_rx_gap test_livetv_prefs test_chapters test_wol test_icons test_live_watch test_picture_resume \
 	      test_mohasi_fs test_mohasi_fs_be test_lfs_path \
@@ -766,16 +765,6 @@ test_wave_light: test_wave_light.c ../source/ui/render/wave_light.h \
 test_wave_gel: test_wave_gel.c $(JW_HDRS) $(WAVE_HDRS)
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_gel.c -lm
 
-# The motes (JellyWave stage 9, not wired into the renderer yet): the cloud's
-# spread against its closed form, framing at 16:9 and 4:3, how long a glint
-# is held, and the field's TOTAL light frame to frame -- the strobe bound.
-# wave_motion.h and wave_audio.h are named rather than taken from AUDIO_HDRS,
-# which is defined further down and so is still empty when this line is read.
-test_wave_motes: test_wave_motes.c ../source/ui/render/wave_motes.h \
-                 ../source/ui/render/wave_motion.h \
-                 ../source/ui/render/wave_audio.h $(JW_HDRS) $(WAVE_HDRS)
-	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_wave_motes.c -lm
-
 # The spine (README 2.9 depth model): per-level geometry, the divider/label
 # clearance through a transition, slot falloff and the eased motion clock.
 # Header-only pure C, like the JellyWave headers above.
@@ -819,20 +808,18 @@ test_boot_seq: test_boot_seq.c ../source/ui/render/boot_seq.h
 	$(CC) $(CFLAGS) -I../source/ui/render -o $@ test_boot_seq.c -lm
 
 # ---------------------------------------------------------------------------
-# Audio-reactive wave -- three more header-only scalar kernels, three tests.
+# Audio-reactive wave -- header-only scalar kernels and their tests.
 #
-#   wave_audio.h   PCM -> musical features   (filterbank, envelopes, onsets)
-#   wave_motion.h  features -> parameters    (smoothing + SLEW LIMITING)
-#   wave_layers.h  parameters -> per-layer geometry and colour
+#   wave_audio.h       PCM -> musical features   (filterbank, envelopes, onsets)
+#   wave_motion.h      features -> parameters    (smoothing + SLEW LIMITING)
+#   wave_render_map.h  parameters -> the renderer's drive, timescale and look
 #
 # See docs/wave-audio-spec.md.  These attach to the geometry pipeline
 # WITHOUT modifying it: the motion stage's drive, perturb and timescale go
-# into wk_step (or wf_step) through arguments those already take, and the
-# layer stage is a post-transform on ws_build's output feeding wr_build
-# unchanged.
+# into wk_step (or wf_step) through arguments those already take.
 #
-# Each test has ONE assertion it exists for, and each of the three caught a
-# real defect that every other check in its own file passed against:
+# Each test has ONE assertion it exists for, and each caught a real defect
+# that every other check in its own file passed against:
 #
 #   test_wave_audio    every band's maximum must be its OWN band.  A
 #                      three-pole cascade is sharper on paper and moves
@@ -845,18 +832,8 @@ test_boot_seq: test_boot_seq.c ../source/ui/render/boot_seq.h
 #                      wave's calm a property of the code rather than of
 #                      having picked good envelope constants.
 #
-#   test_wave_layers   the layers must actually CROSS, and the amplitude
-#                      budget must have real MARGIN rather than leaning on
-#                      the clamp.  Four parallel ribbons satisfy every
-#                      other assertion in that file and look like a bar
-#                      chart -- the first run found exactly that.
-#
-# test_wave_layers runs the WHOLE pipeline, PCM in and vertices out, for
-# about twelve minutes of simulated playback: a few seconds natively, and a
-# while under emulation.  The other two are instant.
-AUDIO_HDRS = ../source/ui/render/wave_audio.h \
-             ../source/ui/render/wave_motion.h \
-             ../source/ui/render/wave_layers.h
+#   test_wave_render_map  the mapped maximum drive must clear the solver's
+#                      knee, and the loudest look must stay framed.
 
 test_wave_audio: test_wave_audio.c ../source/ui/render/wave_audio.h
 	$(CC) $(CFLAGS) -o $@ test_wave_audio.c -lm
@@ -865,8 +842,11 @@ test_wave_motion: test_wave_motion.c ../source/ui/render/wave_audio.h \
                   ../source/ui/render/wave_motion.h
 	$(CC) $(CFLAGS) -o $@ test_wave_motion.c -lm
 
-test_wave_layers: test_wave_layers.c $(AUDIO_HDRS) $(WAVE_HDRS) $(JW_HDRS)
-	$(CC) $(CFLAGS) -o $@ test_wave_layers.c -lm
+test_wave_render_map: test_wave_render_map.c ../source/ui/render/wave_render_map.h \
+                      ../source/ui/render/wave_audio.h ../source/ui/render/wave_motion.h \
+                      $(WAVE_HDRS) $(JW_HDRS)
+	$(CC) $(CFLAGS) -o $@ test_wave_render_map.c -lm
+
 
 
 # The colour is packed into one u32, so its BYTE order in the vertex buffer is

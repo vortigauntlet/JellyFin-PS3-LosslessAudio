@@ -336,8 +336,7 @@ static void music_cover_gpu(const char *art_id, int ax, int ay, int A, float alp
 }
 
 static void music_accent_update(const char *art_id, int A) {
-    s_mpal = g_spine_on ? ui_art_palette(art_id, music_art_bitmap(art_id, A))
-                        : ui_art_fallback();
+    s_mpal = ui_art_palette(art_id, music_art_bitmap(art_id, A));
     // ... and so does the canyon, a little: each song keeps its own preset
     canyon_set_tint(s_mpal.valid ? s_mpal.accent : 0u, 0.35f);
     // the ribbons take a hint of the album's colour

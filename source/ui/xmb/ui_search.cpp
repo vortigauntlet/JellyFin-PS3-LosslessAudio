@@ -453,24 +453,11 @@ bool xmb_handle_input_search(void) {
                 g_search_scroll = g_search_sel - vis + 1;
         }
     }
-    // Triangle opens a search hit's details, as in the library grid.
+    // Triangle opens the quick-peek for a search hit, as in the library grid.
     if (BTN_PRESSED(triangle) && g_search_sel < g_search_results_count &&
         timing_get_us() >= g_info_cooldown_until) {
         const XMBItem *it = &g_search_results[g_search_sel];
-        if (g_spine_on) {
-            peek_open_item(it, XMB_THUMB_W, XMB_THUMB_H, search_peek_open);
-            return false;
-        }
-        if (strcmp(it->type, "Series") == 0) {
-            // Same rule as everywhere else: browse a show rather than
-            // offer it a version overlay it has no versions for.
-            if (xmb_open_series(it)) {
-                g_search_focus_results = false;
-                init_btns();
-            }
-        } else {
-            xmb_show_item_info(it);
-        }
+        peek_open_item(it, XMB_THUMB_W, XMB_THUMB_H, search_peek_open);
         return false;
     }
     if (BTN_PRESSED(cross) && g_search_sel < g_search_results_count) {

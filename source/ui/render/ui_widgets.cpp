@@ -1,4 +1,4 @@
-// Chrome widgets — top bar (brand + clock), tab bar, divider, alphabetical
+// Chrome widgets — top bar (brand + clock), divider, alphabetical
 // jump bar, controller hints bar, empty states, breadcrumbs.
 
 #include <stdio.h>
@@ -9,7 +9,6 @@
 #include "ui.h"
 #include "ui_visuals.h"
 #include "ui_wave.h"
-#include "ui_strobe_test.h"
 #include "ui_spine.h"    // frame clock for the A-Z rail's glide
 #include "boot_anim.h"
 #include "icons.h"
@@ -54,38 +53,12 @@ static int tab_icon(int tab) {
     }
 }
 
-static int xmb_tab_layout(int *enabled, int *spacing, int *x0)
-{
-    const int n = xmb_tab_order(enabled);
-    const int avail = (int)display_width - 2 * XMB_ITEM_PAD;
-    int step = UIS_H(136);
-
-    if (n > 1 && (n - 1) * step > avail) {
-        step = avail / (n - 1);
-        const int floor_px = UIS_H(32) + UIS_H(8);
-        if (step < floor_px) step = floor_px;
-    }
-    *spacing = step;
-    *x0 = (int)display_width / 2 - (n - 1) * step / 2;
-    return n;
-}
-
 int xmb_nav_depth(void)
 {
     if (g_tv_depth > 0) return g_tv_depth;
     if (g_col_depth > 0) return g_col_depth;
     if (g_music_depth > 0) return g_music_depth;
     return 0;
-}
-
-int xmb_tab_focus_center(void)
-{
-    int enabled[XMB_TAB_COUNT], spacing, x0;
-    const int n = xmb_tab_layout(enabled, &spacing, &x0);
-
-    for (int i = 0; i < n; i++)
-        if (enabled[i] == g_active_tab) return x0 + i * spacing;
-    return (int)display_width / 2;
 }
 
 // -------------------------------------------------------
@@ -337,99 +310,7 @@ void xmb_draw_divider(void) {
         divider_rule(XMB_DIVIDER_Y + UIS_H(4), XMB_TRIM, g_theme.trim_alpha);
 }
 
-// -------------------------------------------------------
-// Tab bar
-// -------------------------------------------------------
-
-// Tab strip geometry is MEASURED, from handoff section 3.1 and the Phase 2
-// block at the end of section 8.  The handoff states outright that those
-// numbers win over any revision note, because they were read off the rendered
-// JFChrome frame rather than projected:
-//
-//   7 items, width 70, gap 66, stride 136, row starts x=275
-//   focused icon 32x32 at y=61 · label y=96 · underline 2px y=110
-//   divider y=144
-//
-// The "nav band 80->68px" note is NOT a stride and was never one: it describes
-// the flex container holding the row. The row still starts at y=61 and the
-// divider still sits at y=144, so XMB_TABBAR_H stays as it was and nothing
-// below the chrome moves.
-//
-// The numbers are authored at 1280x720 and go through UIS_T, which scales both
-// ways -- see ui_visuals.h.  At 1080p that is 1.5x, which is what keeps the
-// strip proportional and consistent with the hints bar.  The vertical anchors
-// stay RELATIVE to XMB_TOPBAR_H so the strip cannot drift away from the bar
-// above it if that ever changes.
-#define TAB_FOCUS_ICON_PX 32
-#define TAB_IDLE_ICON_PX  24
-#define TAB_ITEM_W      70
-#define TAB_GAP         66
-#define TAB_STRIDE      (TAB_ITEM_W + TAB_GAP)   // 136
-#define TAB_ICON_Y      61   // from the top of the frame, 720p
-#define TAB_LABEL_Y     96
-#define TAB_RULE_Y     110
-#define TAB_RULE_H       2
-
-void xmb_draw_tabs(void) {
-    const int oy = XMB_OY;                       // overscan shift
-
-    // Display order (Search, Home, libraries, Settings) — NOT array order,
-    // since Settings keeps a low index but renders last.
-    int enabled[XMB_TAB_COUNT], spacing, tab_group_x0;
-    int n = xmb_tab_layout(enabled, &spacing, &tab_group_x0);
-    if (n == 0) return;
-
-    const int icon_y  = oy + UIS_H(TAB_ICON_Y);
-    const int label_y = oy + UIS_H(TAB_LABEL_Y);
-    const int rule_y  = oy + UIS_H(TAB_RULE_Y);
-    const bool recessed = xmb_nav_depth() > 0;
-    const int focus_center = xmb_tab_focus_center();
-
-    for (int i = 0; i < n; i++) {
-        int  t      = enabled[i];
-        int  cx     = tab_group_x0 + i * spacing;
-        bool active = (t == g_active_tab);
-        int  dist   = active ? 0 : abs(i - (focus_center - tab_group_x0) / spacing);
-        int  icon_px = UIS_H(active && !recessed ? TAB_FOCUS_ICON_PX
-                                                  : TAB_IDLE_ICON_PX);
-        u32 icon_color = recessed ? XMB_ICON_IDLE
-                       : active   ? XMB_WHITE
-                       : dist == 1 ? XMB_ICON_IDLE : XMB_HAIRLINE;
-
-        drawIcon((u32)(cx - icon_px / 2), (u32)icon_y, tab_icon(t),
-                 (float)icon_px, icon_color);
-
-        // Profile 1 suppresses only inactive labels; profile 2 suppresses
-        // the entire category-label path. All other profiles preserve the
-        // reconstructed strip exactly, including its tracked label layout.
-        const float px    = UIS_TF(11.5f);
-        const float track = px * 0.04f;
-        char label[sizeof(g_tabs[t].label)];
-        snprintf(label, sizeof label, "%s", tr(g_tabs[t].label));
-        ui_upper_ascii(label);
-
-        int lw = ttf_text_width_tracked(label, px, UI_FACE_TAB, track);
-        int lx = cx - lw / 2;
-        int lo = XMB_ITEM_PAD;
-        int hi = (int)display_width - XMB_ITEM_PAD - lw;
-        if (lx < lo) lx = lo;
-        if (hi >= lo && lx > hi) lx = hi;
-        u32 label_color = recessed ? XMB_TEXT_FAINT : XMB_WHITE;
-        if (!strobe_test_disable_category_labels() &&
-            (active || !strobe_test_disable_inactive_labels()))
-            drawTTF_tracked((u32)lx, (u32)label_y, label, px, label_color,
-                            active ? UI_FACE_TAB : UI_FACE_TAB_REG, track);
-        if (active) {
-            drawRect((u32)lx, (u32)rule_y, (u32)lw, (u32)UIS_H(TAB_RULE_H),
-                     recessed ? XMB_HAIRLINE : XMB_ACCENT);
-        }
-    }
-}
-
-// Alphabetical jump bar rendered to the left of the item list.
-// Always visible on library tabs at depth 0; letters are dimmed when unfocused,
-// the selected entry pops white while g_jumpbar_active is true.
-// The A-Z rail as an XMB list -- used whenever the spine is on.
+// The A-Z rail, left of a library grid, as an XMB list.
 //
 // WHY NOT THE DESIGN'S STATIC RAIL.  README 3.3 draws all 27 entries at once.
 // Under the spine that is physically capped: 27 rows have to fit between the
@@ -526,65 +407,17 @@ void xmb_draw_jumpbar(int tab) {
     int jbar_x = gg.x0 - JBAR_GAP * 3 - JBAR_W;
     if (jbar_x < 0) jbar_x = 0;
 
-    // A FIXED PITCH, not a share of the grid.  This used to divide two grid
-    // rows' height by 27, so the letters were only ever as big as the cards
-    // left room for: when the spine moved the divider down 70 px the grid got
-    // shorter, and on the Music tab (smaller square cards, a sub-tab header
-    // above them) the letters fell to ~12 px at 1080p.  The design's rail
-    // (README 3.3) is a type ladder with its own stride -- mono 11 at a 15 px
-    // pitch -- set here one step larger (13 / 17), because the rail was
-    // reported unreadable on the TV.  Only a screen too short for 27 of those
-    // shrinks it, and then against the room actually below the grid's top
-    // rather than two card rows.
     // From the REST top: the rail's pitch is a size, and must not change while
     // the content glides in (it would re-rasterise every letter per frame).
     const int avail = (int)display_height - XMB_BOTTOM_PAD
                     - (bar_top - spine_content_dy());
-    float entry_h = (float)UIS_H(17);
-    if (entry_h * JBAR_ENTRIES > (float)avail) entry_h = (float)avail / JBAR_ENTRIES;
-    float font_px = UIS_TF(13);
-    if (font_px > entry_h * 0.9f) font_px = entry_h * 0.9f;
-    if (font_px < UIS_TF(8)) font_px = UIS_TF(8);
-
-    // The column is still the hard constraint: 'W' is the widest label, and
-    // the advance scales linearly with px, so one division is exact.
-    float wide = (float)ttf_text_width("W", font_px, false);
-    if (wide > (float)JBAR_W) font_px *= (float)JBAR_W / wide;
 
     static const char * const jbar_labels[JBAR_ENTRIES] = {
         "#","A","B","C","D","E","F","G","H","I","J","K","L","M",
         "N","O","P","Q","R","S","T","U","V","W","X","Y","Z"
     };
 
-    if (g_spine_on) {
-        xmb_draw_jumpbar_window(tab, jbar_x, bar_top, avail, jbar_labels);
-        return;
-    }
-
-    // README 3.3's three states: the letter heading the focused item's section
-    // in `text`, the jump cursor in `accent_alt`, everything else `text_faint`.
-    // Every letter used to be `hairline`, a shade off the background, which is
-    // most of why the rail read as too small to see.
-    int here = -1;
-    if (g_sel >= 0 && g_sel < g_item_count[tab]) {
-        char c = g_items[tab][g_sel].name[0];
-        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-        here = (c >= 'A' && c <= 'Z') ? 1 + (c - 'A') : 0;
-    }
-
-    for (int i = 0; i < JBAR_ENTRIES; i++) {
-        int ey = bar_top + (int)(i * entry_h);
-        int ty = ey + (int)((entry_h - font_px) * 0.5f);
-        if (ty < 0) ty = 0;
-        if ((u32)ty >= display_height) continue;
-        bool sel = g_jumpbar_active && (i == g_jumpbar_sel);
-        u32 color = sel               ? XMB_ACCENT_ALT
-                  : (i == here)       ? XMB_TEXT
-                  :                     XMB_TEXT_FAINT;
-        int lw = ttf_text_width(jbar_labels[i], font_px, sel);
-        drawTTF((u32)(jbar_x + (JBAR_W - lw) / 2), (u32)ty, jbar_labels[i],
-                font_px, color, sel);
-    }
+    xmb_draw_jumpbar_window(tab, jbar_x, bar_top, avail, jbar_labels);
 }
 
 // Music sub-tab header — "Albums  Artists  Playlists  Genres  Songs" over

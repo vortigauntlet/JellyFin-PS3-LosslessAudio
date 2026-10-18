@@ -35,7 +35,6 @@ typedef struct {
     HomeRowKind kind;
     XMBItem     items[HOME_ROW_MAX];
     int         count;
-    int         scroll;   // leftmost visible card index
     bool        loaded;
 } HomeRow;
 
@@ -67,120 +66,7 @@ static HomeExtra s_extra[HOME_ROWS_N][HOME_ROW_MAX];
 static unsigned s_seen_gen = 0;
 
 static int     s_focus_row = 0;
-static int     s_focus_col = 0;
-static int     s_vscroll   = 0;   // pixels the stack is scrolled up
 static bool    s_inited    = false;
-
-// Scroll easing (the spine's approach; render/ui_spine.cpp).  s_vscroll and
-// each row's `scroll` stay the LOGICAL positions -- input and the visibility
-// bookkeeping never see these.  The draw walks read the eased copies, so a
-// shelf change or a row stepping sideways glides instead of jumping.  With
-// the spine gate off they snap every frame, which is the old drawing exactly.
-static spine_approach s_vs_m;
-static spine_approach s_hs_m[HOME_ROWS_N];
-static unsigned       s_m_frame = 0;
-static bool           s_m_fresh = true;
-
-// -------------------------------------------------------
-// Layout metrics (resolution-independent, computed each call)
-// -------------------------------------------------------
-
-#define HOME_HEADER_H UIS_H(30)          // row-title band above the cards
-#define HOME_LABEL_H  UIS_H(26)          // card-title band beneath the cards
-#define HOME_ROW_GAP  UIS_H(14)          // gap between rows
-#define HOME_SIDE_PAD XMB_ITEM_PAD
-#define HOME_CARD_GAP XMB_CARD_GAP_X
-
-static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
-static int view_top(void) { return XMB_CONTENT_Y; }
-static int view_bot(void) { return (int)display_height - XMB_BOTTOM_PAD; }
-
-static int row_card_h(HomeRowKind k) {
-    // Sized from the REST top, not view_top(): while the spine glides the
-    // content in, view_top() moves, and a card height that moved with it
-    // would re-request every thumbnail at a new size on every frame.
-    int vh = view_bot() - XMB_CONTENT_Y_REST;
-    // Tuned so ~5 landscape stills / ~8 portrait posters fit per row at 1080p,
-    // and ~3 rows are visible before vertical scrolling.
-    return (k == HROW_PORTRAIT) ? clampi(vh * 44 / 100, 160, 280)
-                                : clampi(vh * 24 / 100, 110, 175);
-}
-static int row_card_w(HomeRowKind k) {
-    int h = row_card_h(k);
-    if (k == HROW_SQUARE) return h;   // album art is square
-    return (k == HROW_PORTRAIT) ? h * 2 / 3 : h * 16 / 9;
-}
-static int row_band_h(HomeRowKind k) {
-    return HOME_HEADER_H + row_card_h(k) + HOME_LABEL_H + HOME_ROW_GAP;
-}
-// An optional row with nothing in it is not there at all (no band, no focus).
-static bool row_hidden(int r) { return row_optional(r) && s_rows[r].count == 0; }
-// Absolute top of row r (as if s_vscroll == 0).
-static int row_abs_top(int r) {
-    int y = view_top();
-    for (int i = 0; i < r; i++) if (!row_hidden(i)) y += row_band_h(s_rows[i].kind);
-    return y;
-}
-static int row_visible_cols(HomeRowKind k) {
-    int per   = row_card_w(k) + HOME_CARD_GAP;
-    int avail = (int)display_width - 2 * HOME_SIDE_PAD + HOME_CARD_GAP;
-    int n     = avail / per;
-    return n < 1 ? 1 : n;
-}
-// Pixel width spanned by a full row of `vis` cards.
-static int row_strip_w(HomeRowKind k) {
-    int vis = row_visible_cols(k);
-    return vis * row_card_w(k) + (vis - 1) * HOME_CARD_GAP;
-}
-// Left edge of the card strip, centered on screen (like the library grid)
-// rather than pinned to the side pad — otherwise the cards never fill the
-// width and the whole row reads as shoved to the left.  Shared by the title,
-// cards, labels and chevrons so they all move together.
-static int row_origin_x(HomeRowKind k) {
-    int x0 = ((int)display_width - row_strip_w(k)) / 2;
-    return x0 < HOME_SIDE_PAD ? HOME_SIDE_PAD : x0;
-}
-
-// Step the eased scroll values once per frame (all three phases call this;
-// only the first in a frame does anything).
-static void home_motion_tick(void) {
-    const unsigned id = spine_frame_id();
-    if (id == s_m_frame) return;
-    const bool snap = s_m_fresh || !g_spine_on || s_m_frame + 1 < id;
-    const unsigned long long dt = spine_frame_dt_us();
-    if (snap) spine_approach_init(&s_vs_m, (float)s_vscroll, SPINE_CATEGORY_MS);
-    spine_approach_set(&s_vs_m, (float)s_vscroll);
-    if (!snap) spine_approach_step(&s_vs_m, dt);
-    for (int r = 0; r < HOME_ROWS_N; r++) {
-        if (snap) spine_approach_init(&s_hs_m[r], (float)s_rows[r].scroll,
-                                      SPINE_CATEGORY_MS);
-        spine_approach_set(&s_hs_m[r], (float)s_rows[r].scroll);
-        if (!snap) spine_approach_step(&s_hs_m[r], dt);
-    }
-    s_m_frame = id;
-    s_m_fresh = false;
-}
-
-static int   home_vs(void)  { return (int)(s_vs_m.value + 0.5f); }
-static float home_hs(int r) { return s_hs_m[r].value; }
-
-// The columns to draw for a row whose eased offset is hs: one extra card while
-// it is between positions, so the card sliding in is there before it arrives.
-// At rest this is exactly [scroll, scroll + vis).
-static void home_cols(float hs, int vis, int count, int *c0, int *c1) {
-    int first = (int)hs;                        // hs >= 0, so this is floor
-    int last  = first + vis + ((float)first != hs ? 1 : 0);
-    if (last > count) last = count;
-    *c0 = first; *c1 = last;
-}
-static int home_card_x(int x0, int c, float hs, int pitch) {
-    const float off = ((float)c - hs) * (float)pitch;
-    return x0 + (int)(off + (off >= 0.0f ? 0.5f : -0.5f));
-}
-
-// -------------------------------------------------------
-// Init + fetch
-// -------------------------------------------------------
 
 static void home_init_once(void) {
     if (s_inited) return;
@@ -211,8 +97,8 @@ static void home_each_extra(int i, const char *o, int n, void *ctx) {
 // and put their focus back on the front, where what was just watched lands.
 static void home_stage_dynamic_reset(void);
 static void home_mark_dynamic_stale(void) {
-    s_rows[HR_CONTINUE].loaded = false; s_rows[HR_CONTINUE].scroll = 0;
-    s_rows[HR_NEXTUP].loaded   = false; s_rows[HR_NEXTUP].scroll   = 0;
+    s_rows[HR_CONTINUE].loaded = false;
+    s_rows[HR_NEXTUP].loaded   = false;
     s_rows[HR_FAVOURITES].loaded = false;     // keeps its place: a star toggled
     s_seen_gen = g_play_gen;
     home_stage_dynamic_reset();
@@ -280,7 +166,6 @@ static void home_fetch_row(int r) {
                ? parse_xmb_items_each(responseBuffer, row->items, HOME_ROW_MAX,
                                       home_each_extra, s_extra[r]) : 0;
     row->loaded = true;
-    if (row->scroll > row->count) row->scroll = 0;
 }
 
 // --- rows off the render thread -------------------------------------------
@@ -362,7 +247,6 @@ static void home_worker_collect(void) {
             row->count = n;
         }
         row->loaded = true;
-        if (row->scroll > row->count) row->scroll = 0;
     }
     s_hw_row = -1;
     __sync_synchronize();
@@ -437,7 +321,6 @@ static void home_step_local(void) {
         memcpy(s_extra[HR_DOWNLOADED], s_dl_extra, sizeof s_extra[HR_DOWNLOADED]);
         row->count  = s_dl_count;
         row->loaded = true;
-        if (row->scroll > row->count) row->scroll = 0;
         s_dl_sig = s_dl_pending_sig;
         s_dl_building = false;
     }
@@ -489,293 +372,12 @@ void xmb_home_prefetch(void) {
 
 void xmb_home_on_enter(void) {
     home_init_once();
-    if (g_spine_on) {
-        // The XMB remembers where it was in a category.  Coming back to Home
-        // keeps the category and each row's position, and refetches the
-        // dynamic rows only when something has played since -- walking the
-        // spine past Home used to cost two blocking fetches every time.
-        if (g_play_gen != s_seen_gen) home_mark_dynamic_stale();
-        return;
-    }
-    s_focus_row = 0; s_focus_col = 0; s_vscroll = 0;
-    s_m_fresh = true;     // a new visit starts still, not sliding from the last
-    // Continue Watching + Next Up change after every playback — refetch them.
-    s_rows[HR_CONTINUE].loaded = false; s_rows[HR_CONTINUE].scroll = 0;
-    s_rows[HR_NEXTUP].loaded   = false; s_rows[HR_NEXTUP].scroll   = 0;
-    s_rows[HR_FAVOURITES].loaded = false;
+    // The XMB remembers where it was in a category.  Coming back to Home
+    // keeps the category and each row's position, and refetches the dynamic
+    // rows only when something has played since -- walking the spine past
+    // Home used to cost two blocking fetches every time.
+    if (g_play_gen != s_seen_gen) home_mark_dynamic_stale();
 }
-
-// -------------------------------------------------------
-// Focus / scroll bookkeeping
-// -------------------------------------------------------
-
-static void ensure_row_visible(void) {
-    int top  = row_abs_top(s_focus_row);
-    int band = row_band_h(s_rows[s_focus_row].kind);
-    if (top - s_vscroll < view_top())              s_vscroll = top - view_top();
-    if (top + band - s_vscroll > view_bot())       s_vscroll = top + band - view_bot();
-    if (s_vscroll < 0) s_vscroll = 0;
-}
-static void ensure_col_visible(void) {
-    HomeRow *row = &s_rows[s_focus_row];
-    if (row->kind == HROW_STUB) { row->scroll = 0; return; }
-    int vis = row_visible_cols(row->kind);
-    if (s_focus_col < row->scroll)             row->scroll = s_focus_col;
-    if (s_focus_col > row->scroll + vis - 1)   row->scroll = s_focus_col - vis + 1;
-    if (row->scroll < 0) row->scroll = 0;
-}
-static void clamp_col(void) {
-    HomeRow *row = &s_rows[s_focus_row];
-    int maxc = (row->kind == HROW_STUB || row->count == 0) ? 0 : row->count - 1;
-    if (s_focus_col > maxc) s_focus_col = maxc;
-    if (s_focus_col < 0)    s_focus_col = 0;
-    ensure_col_visible();
-}
-
-// -------------------------------------------------------
-// Rendering
-// -------------------------------------------------------
-
-// Card titles in the condensed face, like the library grids (ui_lists.cpp):
-// the system face fitted about 8 characters under a portrait card.
-static void home_clip_text(int x, int y, const char *s, float px, u32 color,
-                           int max_w, bool bold = false) {
-    (void)bold;                                  // Roboto Condensed is the bold cut
-    const int face = UI_FACE_ROBOCOND;
-    if (ttf_text_width_face(s, px, face) <= max_w) { drawTTF_face((u32)x, (u32)y, s, px, color, face); return; }
-    char buf[160]; snprintf(buf, sizeof(buf), "%s", s);
-    int len = (int)strlen(buf);
-    while (len > 1) {
-        buf[--len] = '\0';
-        char t[164]; snprintf(t, sizeof(t), "%s..", buf);
-        if (ttf_text_width_face(t, px, face) <= max_w) { drawTTF_face((u32)x, (u32)y, t, px, color, face); return; }
-    }
-}
-
-static void home_sel_frame(int cx, int cy, int w, int h) {
-    const int T = 2, G = 2, O = G + T;
-    drawRect((u32)(cx - O), (u32)(cy - O),     (u32)(w + 2*O), T, XMB_FOCUS_RING);
-    drawRect((u32)(cx - O), (u32)(cy + h + G), (u32)(w + 2*O), T, XMB_FOCUS_RING);
-    drawRect((u32)(cx - O), (u32)(cy - G),     T, (u32)(h + 2*G), XMB_FOCUS_RING);
-    drawRect((u32)(cx + w + G), (u32)(cy - G), T, (u32)(h + 2*G), XMB_FOCUS_RING);
-}
-
-// True when row r's card band touches the viewport (cheap vertical cull).
-static bool row_on_screen(int r, int *out_vy, int *out_card_y) {
-    int vy     = row_abs_top(r) - home_vs();
-    int card_y = vy + HOME_HEADER_H;
-    if (out_vy) *out_vy = vy;
-    if (out_card_y) *out_card_y = card_y;
-    if (row_hidden(r)) return false;
-    int ch = row_card_h(s_rows[r].kind);
-    return !(card_y + ch < view_top() || vy > view_bot());
-}
-
-// Thumbnail requests, most wanted first.  The cache has 32 slots and a claim
-// may evict anything not yet asked for THIS frame, so when Home wants more
-// than fit, request order is priority.  It used to be top row to bottom, and
-// ensure_row_visible() leaves the focused row at the BOTTOM of the view after
-// a step down: the row being looked at starved, some of its posters never
-// loading until the row above scrolled away (tester, 2026-09-27).  Now: the
-// focused row, the other rows on screen nearest first, then the focused row's
-// preload past its edges.  Once per frame, before the first draw touches.
-static unsigned s_req_frame = ~0u;
-
-static void home_request_cols(const HomeRow *row, int c0, int c1) {
-    const int cw = row_card_w(row->kind), ch = row_card_h(row->kind);
-    for (int c = c0 < 0 ? 0 : c0; c < c1 && c < row->count; c++) {
-        const ThumbImg img = (row->kind == HROW_LANDSCAPE && row->items[c].has_thumb)
-                           ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
-        thumb_request(row->items[c].id, cw, ch, img);
-    }
-}
-
-static void home_request_thumbs(void) {
-    const unsigned id = spine_frame_id();
-    if (id == s_req_frame) return;
-    s_req_frame = id;
-    for (int d = 0; d < HOME_ROWS_N; d++) {
-        for (int s = -1; s <= 1; s += 2) {
-            if (d == 0 && s > 0) continue;
-            const int r = s_focus_row + s * d;
-            if (r < 0 || r >= HOME_ROWS_N) continue;
-            const HomeRow *row = &s_rows[r];
-            if (row->kind == HROW_STUB || row->count <= 0) continue;
-            if (!row_on_screen(r, NULL, NULL)) continue;
-            int c0, c1;
-            home_cols(home_hs(r), row_visible_cols(row->kind), row->count, &c0, &c1);
-            home_request_cols(row, c0, c1);
-        }
-    }
-    const HomeRow *row = &s_rows[s_focus_row];
-    if (row->kind != HROW_STUB && row->count > 0) {
-        const int vis = row_visible_cols(row->kind);
-        home_request_cols(row, row->scroll - 1, row->scroll + vis + 3);
-    }
-}
-
-// GPU phase (BEFORE rsxSync): card images only, from their VRAM mirrors.
-// Mirrors xmb_home_cpu_phase's walk exactly -- same rows, same visibility
-// test, same ThumbImg choice -- so a card either gets drawn here and skipped
-// there, or missed here and blitted there.  Divergence between the two walks
-// would show up as a card drawn twice or not at all.
-void xmb_home_gpu_phase(void) {
-    if (!ui_card_gpu_ready()) return;
-    home_init_once();
-    home_motion_tick();
-    home_request_thumbs();
-
-    ui_card_gpu_clip(view_top(), view_bot());
-
-    for (int r = 0; r < HOME_ROWS_N; r++) {
-        HomeRow *row = &s_rows[r];
-        int card_y;
-        if (!row_on_screen(r, NULL, &card_y)) continue;
-        if (row->kind == HROW_STUB) continue;      // a CPU rect, not an image
-        int cw = row_card_w(row->kind), ch = row_card_h(row->kind);
-        int x0 = row_origin_x(row->kind);
-
-        int vis = row_visible_cols(row->kind);
-        const float hs = home_hs(r);
-        int c0, c1;
-        home_cols(hs, vis, row->count, &c0, &c1);
-        for (int c = c0; c < c1; c++) {
-            int cx = home_card_x(x0, c, hs, cw + HOME_CARD_GAP);
-            // The GPU can draw a card partly off either edge, so the one
-            // sliding out is only dropped once it is wholly gone.
-            if (cx + cw <= 0 || cx >= (int)display_width) continue;
-            ThumbImg img = (row->kind == HROW_LANDSCAPE && row->items[c].has_thumb)
-                         ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
-            xmb_card_gpu_one(row->items[c].id, cx, card_y, cw, ch, img);
-            if (r == s_focus_row && c == s_focus_col)   // glides (spine gate)
-                spine_focus_poster_gpu(cx, card_y, cw, ch);
-        }
-    }
-
-    ui_card_gpu_clip(0, 0);
-}
-
-void xmb_home_cpu_phase(void) {
-    home_init_once();
-    home_step_load();
-    home_motion_tick();
-    home_request_thumbs();   // no-op if the GPU phase already did
-
-    // Rows scroll smoothly by pixels, so a row leaving the top/bottom is drawn
-    // partly outside the content band.  Scissor cards (and their text below) to
-    // the band so they never bleed over the tab bar or the hints bar.
-    g_cpu_clip_top = view_top();
-    g_cpu_clip_bot = view_bot();
-
-    for (int r = 0; r < HOME_ROWS_N; r++) {
-        HomeRow *row = &s_rows[r];
-        int card_y;
-        if (!row_on_screen(r, NULL, &card_y)) continue;
-        int cw = row_card_w(row->kind), ch = row_card_h(row->kind);
-        int x0 = row_origin_x(row->kind);
-
-        if (row->kind == HROW_STUB) {
-            drawRect((u32)x0, (u32)card_y, (u32)cw, (u32)ch, XMB_THUMB_DIM);
-            if (r == s_focus_row) home_sel_frame(x0, card_y, cw, ch);
-            continue;
-        }
-
-        int vis = row_visible_cols(row->kind);
-        const float hs = home_hs(r);
-        int c0, c1;
-        home_cols(hs, vis, row->count, &c0, &c1);
-        for (int c = c0; c < c1; c++) {
-            int cx = home_card_x(x0, c, hs, cw + HOME_CARD_GAP);
-            // CPU rects and text take unsigned x, so a card that is partly
-            // off screen is left to the GPU image alone.  At rest every card
-            // is on screen, so this never fires.
-            if (cx < 0 || cx + cw > (int)display_width) continue;
-            bool sel = (r == s_focus_row && c == s_focus_col);
-            // Landscape rows want wide art.  An item's Primary is a portrait
-            // poster for movies (which looked badly cropped in these 16:9
-            // cards) but an already-16:9 still for episodes — so prefer the
-            // Thumb only where the server actually published one.
-            ThumbImg img = (row->kind == HROW_LANDSCAPE && row->items[c].has_thumb)
-                         ? THUMB_IMG_THUMB : THUMB_IMG_PRIMARY;
-            xmb_draw_card(row->items[c].id, cx, card_y, cw, ch,
-                          row->items[c].progress_pct, sel,
-                          r == HR_MUSIC ? row->items[c].name : NULL, img);
-        }
-    }
-
-    g_cpu_clip_top = 0; g_cpu_clip_bot = 0;
-}
-
-void xmb_home_text_phase(void) {
-    home_init_once();
-    home_motion_tick();
-
-    g_cpu_clip_top = view_top();
-    g_cpu_clip_bot = view_bot();
-
-    for (int r = 0; r < HOME_ROWS_N; r++) {
-        HomeRow *row = &s_rows[r];
-        int vy, card_y;
-        if (!row_on_screen(r, &vy, &card_y)) continue;
-        int cw = row_card_w(row->kind), ch = row_card_h(row->kind);
-        int x0 = row_origin_x(row->kind);
-        bool row_focused = (r == s_focus_row);
-
-        // Row header, with a dim item count when the row overflows the screen
-        // (replaces the old horizontal scrollbar as the "there's more" cue).
-        // v1.0: row titles are eyebrows -- Microgramma, uppercase, 0.18em.
-        int hw = xmb_draw_eyebrow(x0, vy + UIS_H(4), tr(row->title),
-                                  row_focused ? XMB_TEXT : XMB_TEXT_FAINT);
-        if (row->kind != HROW_STUB && row->count > row_visible_cols(row->kind)) {
-            char cnt[8];
-            snprintf(cnt, sizeof(cnt), "%d", row->count);
-            drawTTF((u32)(x0 + hw + UIS_W(10)),
-                    (u32)(vy + UIS_H(2)), cnt, UIS_TF(11), XMB_TEXT_FAINT);
-        }
-
-        if (row->kind == HROW_STUB) {
-            const char *msg = TR("Coming soon");
-            int tw = ttf_text_width(msg, UIS_TF(16));
-            drawTTF((u32)(x0 + (cw - tw) / 2),
-                    (u32)(card_y + ch / 2 - UIS_H(8)), msg, UIS_TF(16), XMB_TEXT_FAINT);
-            continue;
-        }
-
-        if (row->count == 0) {
-            const char *msg = row->loaded ? TR("Nothing here yet") : TR("Loading...");
-            drawTTF((u32)x0, (u32)(card_y + ch / 2 - UIS_H(8)), msg, UIS_TF(15), XMB_TEXT_FAINT);
-            continue;
-        }
-
-        int vis = row_visible_cols(row->kind);
-        const float hs = home_hs(r);
-        int c0, c1;
-        home_cols(hs, vis, row->count, &c0, &c1);
-        for (int c = c0; c < c1; c++) {
-            int cx = home_card_x(x0, c, hs, cw + HOME_CARD_GAP);
-            // CPU rects and text take unsigned x, so a card that is partly
-            // off screen is left to the GPU image alone.  At rest every card
-            // is on screen, so this never fires.
-            if (cx < 0 || cx + cw > (int)display_width) continue;
-            int ty = card_y + ch + UIS_H(5);
-            bool sel = (row_focused && c == s_focus_col);
-            home_clip_text(cx, ty, row->items[c].name, UIS_TF(19),
-                           sel ? XMB_WHITE : XMB_TEXT_DIM, cw, sel);
-            if (sel && row->items[c].year_str[0])
-                drawTTF((u32)cx, (u32)(ty + UIS_H(23)), row->items[c].year_str, UIS_TF(13), XMB_TEXT_FAINT);
-        }
-
-    }
-
-    // No scrollbars: horizontal overflow is signalled by the count in the row
-    // header, vertical by the next row peeking in from the bottom edge.
-
-    g_cpu_clip_top = 0; g_cpu_clip_bot = 0;
-}
-
-// -------------------------------------------------------
-// The spine's Home: one category at a time (ui_home_stage.inc)
-// -------------------------------------------------------
 
 #include "ui_home_stage.inc"
 
@@ -786,8 +388,6 @@ static void home_stage_dynamic_reset(void) {
 }
 
 void xmb_queue_src(int *w, int *h) {
-    *w = *h = 0;
-    if (!g_spine_on) return;
     // The focused poster's own size, capped at 120,000 px (~15 MB for the
     // cache's 32 slots): at 720p that is the full 200x300, at 1080p it
     // fetches 283x424 for a 300x450 box -- a 6% stretch nobody will see.
@@ -801,77 +401,7 @@ void xmb_queue_src(int *w, int *h) {
     *h = (int)fh;
 }
 
-// -------------------------------------------------------
-// Input
-// -------------------------------------------------------
-
-static void home_activate(void) {
-    HomeRow *row = &s_rows[s_focus_row];
-    if (row->kind == HROW_STUB || row->count == 0 || s_focus_col >= row->count) return;
-    XMBItem *it = &row->items[s_focus_col];
-    if (home_play_downloaded(it)) return;
-
-    // A show opens the existing TV Series -> Seasons -> Episodes sub-screen.
-    // Keyed off the ITEM TYPE, not the row: a Series turns up in Continue
-    // Watching and Recently Added too, and there it used to fall through to
-    // the video player, which cannot play a folder.
-    if (strcmp(it->type, "Series") == 0) {
-        if (xmb_open_series(it)) init_btns();
-        return;
-    }
-
-    // Albums open the music album screen (queue + Now Playing).
-    if (strcmp(it->type, "MusicAlbum") == 0) {
-        music_screen_open_album(it, "Home");
-        init_btns();
-        return;
-    }
-
-    // Continue Watching resumes; everything else plays from the start.
-    // Episodes get the NEXT prompt / auto-advance no matter which row
-    // they came from.
-    u32 resume = (s_focus_row == HR_CONTINUE) ? xmb_resume_for(it->id, it->resume_secs) : 0;
-    if (strcmp(it->type, "Episode") == 0)
-        xmb_play_episode_with_next(it, resume);
-    else
-        xmb_play_item(it, resume);
-    s_rows[HR_CONTINUE].loaded = false; s_rows[HR_CONTINUE].scroll = 0;
-    s_rows[HR_NEXTUP].loaded   = false; s_rows[HR_NEXTUP].scroll   = 0;
-    init_btns();
-}
-
 bool xmb_handle_input_home(void) {
     home_init_once();
-    if (g_spine_on) return home_queue_input();
-
-    if (BTN_PRESSED(l1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
-    if (BTN_PRESSED(r1)) { xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
-
-    if (BTN_REPEAT(up)) {
-        int r = s_focus_row - 1;
-        while (r >= 0 && row_hidden(r)) r--;
-        if (r >= 0) { s_focus_row = r; clamp_col(); ensure_row_visible(); }
-    }
-    if (BTN_REPEAT(down)) {
-        int r = s_focus_row + 1;
-        while (r < HOME_ROWS_N && row_hidden(r)) r++;
-        if (r < HOME_ROWS_N) { s_focus_row = r; clamp_col(); ensure_row_visible(); }
-    }
-
-    HomeRow *row = &s_rows[s_focus_row];
-    if (BTN_REPEAT(right) && row->kind != HROW_STUB && s_focus_col + 1 < row->count) { s_focus_col++; ensure_col_visible(); }
-    if (BTN_REPEAT(left)  && s_focus_col > 0)                                        { s_focus_col--; ensure_col_visible(); }
-
-    if (BTN_PRESSED(cross)) home_activate();
-    if (BTN_PRESSED(triangle) && row->kind != HROW_STUB && s_focus_col < row->count) {
-        XMBItem *it = &row->items[s_focus_col];
-        if (strncmp(it->id, "offp:", 5) == 0) return false;     // a download: X plays it
-        // Triangle on a show browses its seasons rather than opening the
-        // version overlay, which for a Series could only ever say "Play".
-        // Pick the episode first; Triangle THERE gives the version picker.
-        if (strcmp(it->type, "Series") == 0) { if (xmb_open_series(it)) init_btns(); }
-        else                                 xmb_show_item_info(it);
-    }
-
-    return false;
+    return home_queue_input();
 }

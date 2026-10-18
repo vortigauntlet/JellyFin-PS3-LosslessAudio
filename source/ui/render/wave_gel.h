@@ -71,8 +71,7 @@
 //
 // House rules (.clinerules rule 7): header-only, pure C, no libm, no PS3
 // headers, deterministic, caller-owned state, no globals.  wave_kernel.h is
-// included for wk_sinf ONLY -- the same deliberate reuse wave_layers.h makes,
-// for the same reason: that function is already measured against libm in
+// included for wk_sinf ONLY: that function is already measured against libm in
 // test_wave_kernel.c and a fourth polynomial sine in one pipeline is a
 // liability, not an optimisation.
 

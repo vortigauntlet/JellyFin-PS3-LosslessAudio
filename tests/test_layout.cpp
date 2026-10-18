@@ -36,9 +36,6 @@ QualityMode g_quality = QUALITY_FULL;
 // 0 = auto, which is the shipping default and what most of this file exercises.
 int g_uis_pct = 0;
 
-// Normally defined in ui/render/ui_spine.cpp.  false = the tab strip, which is
-// what check_res() exercises; check_spine_res() turns it on.
-bool g_spine_on = false;
 // Also ui_spine.cpp's: the content glide offset, which is 0 at rest.  Layout
 // is checked at rest, and SIZES must not depend on it anyway (they use
 // XMB_CONTENT_Y_REST) -- see test_glide_sizes() below.
@@ -115,7 +112,7 @@ static void check_res(const char *name, u32 w, u32 h, float ovs) {
 }
 
 // ---------------------------------------------------------------------------
-// The spine (jellyfin_spine.txt = 1, stage S1: every XMB screen at L2).
+// The spine (every XMB screen at L2).
 //
 // test_spine.c proves the geometry on the 1280x720 authoring canvas.  This is
 // the other half: the same numbers pushed through the REAL anchors at every
@@ -124,7 +121,6 @@ static void check_res(const char *name, u32 w, u32 h, float ovs) {
 // ---------------------------------------------------------------------------
 static void check_spine_res(const char *name, u32 w, u32 h, float ovs) {
     display_width = w; display_height = h; overscan_set_frac(ovs);
-    g_spine_on = true;
 
     const spine_level L = spine_eval((float)SPINE_L2);
     const int icon_top = XMB_OY + UIS_H((int)L.icon_y) - UIS_H((int)L.active_px) / 2;
@@ -184,7 +180,6 @@ static void check_spine_res(const char *name, u32 w, u32 h, float ovs) {
     else if (right_x > (int)w)
         printf("   note: furthest slot skipped at %s (ends %d)\n", name, right_x);
 
-    g_spine_on = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +193,6 @@ static void check_spine_res(const char *name, u32 w, u32 h, float ovs) {
 // ---------------------------------------------------------------------------
 static void check_depth_res(const char *name, u32 w, u32 h, float ovs) {
     display_width = w; display_height = h; overscan_set_frac(ovs);
-    g_spine_on = true;
     const depth_xform xf = depth_xform_make(XMB_OX, XMB_OY, (int)w, (int)h, g_uis_pct);
     const int hint_y = (int)display_height - XMB_OY - UIS_H(22);
     const spine_level L1 = SPINE_LEVEL[SPINE_L1];
@@ -265,7 +259,6 @@ static void check_depth_res(const char *name, u32 w, u32 h, float ovs) {
 
     printf("%-22s %4ux%-4u ovs %.3f  L1 focus gap to hints %4d  label room %4d"
            "  L2 focus %3d..%3d\n", name, w, h, (double)ovs, worst_gap, room, qtop, qbot);
-    g_spine_on = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +379,6 @@ static void test_safe_area(void) {
 static void test_glide_sizes(void) {
     puts("-- content glide moves positions, not sizes --");
     display_width = 1920; display_height = 1080; overscan_set_frac(0.0f);
-    g_spine_on = true;
     s_test_dy = 0;
     const int y0 = XMB_CONTENT_Y, g0 = XMB_GRID_Y0;
     const int h0 = XMB_CARD_H_FIT, v0 = XMB_ITEMS_VIS, a0 = XMB_GRID_AVAIL_H;
@@ -400,7 +392,6 @@ static void test_glide_sizes(void) {
     ck("glide leaves every size alone",
        XMB_CARD_H_FIT == h0 && XMB_ITEMS_VIS == v0 && XMB_GRID_AVAIL_H == a0, buf);
     s_test_dy = 0;
-    g_spine_on = false;
 }
 
 // ---------------------------------------------------------------------------

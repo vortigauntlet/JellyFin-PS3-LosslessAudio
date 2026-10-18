@@ -356,8 +356,9 @@ static void fetch_thread_fn(void *arg) {
         else
             snprintf(url, sizeof(url),
                 "%s/Items/%s/Images/%s?fillWidth=%d&fillHeight=%d"
-                "&quality=75&format=Jpeg",
-                g_server, item_id, img_name(img), tw, th);
+                "&quality=%d&format=Jpeg",
+                g_server, item_id, img_name(img), tw, th,
+                img == THUMB_IMG_PRIMARY ? 85 : 75);
 
         glogf("fetch START %s %dx%d%s", item_id, tw, th, local ? " (local)" : "");
         // A provider's own key is answered by the provider alone; any other goes to a local file or the server.

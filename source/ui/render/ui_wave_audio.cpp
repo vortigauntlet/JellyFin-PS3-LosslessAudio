@@ -399,7 +399,6 @@ void wave_audio_look(float amp[3], float *lum)
     if (lum) *lum = o->lum;
 }
 
-const wm_params *wave_audio_params(void) { return s_on ? &s_wm.p : NULL; }
 float wave_audio_presence(void) { return s_on ? s_present : 0.0f; }
 
 void wave_audio_bands(float lvl[3], float *kick)

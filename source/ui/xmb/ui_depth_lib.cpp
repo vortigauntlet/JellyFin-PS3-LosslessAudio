@@ -49,11 +49,11 @@ static bool lib_grid_kind(int tab) {
 }
 
 bool depth_stage_tab(int tab) {
-    return g_spine_on && (tab == XMB_TAB_HOME || lib_grid_kind(tab));
+    return tab == XMB_TAB_HOME || lib_grid_kind(tab);
 }
 
 bool depth_lib_owns(int tab) {
-    if (!g_spine_on || tab == XMB_TAB_HOME) return false;
+    if (tab == XMB_TAB_HOME) return false;
     // Search and Settings have no column: their label block shows at base
     // and their own screen takes over at the halfway point, as before.
     if (!lib_grid_kind(tab)) return spine_at_base();

@@ -20,7 +20,6 @@
 #include "ui_wave_audio.h"
 #include "ui_wave.h"
 #include "ui_visuals.h"
-#include "ui_strobe_test.h"
 #include "plog.h"
 #include "jf_paths.h"
 #include <unistd.h>
@@ -2173,7 +2172,7 @@ void wave_draw(void) {
     s_jw_drawn = false;
     if (ui_cpu_bg()) { wave_draw_cpu(); return; }
     if (!s_wave_fp_buf) return;
-    const bool jellywave = s_wave_jelly && !strobe_test_disable_jellywave();
+    const bool jellywave = s_wave_jelly;
 
     rsxVertexProgram  *vpo = (rsxVertexProgram*)  wave_vp_data;
     rsxFragmentProgram *fpo = (rsxFragmentProgram*) wave_fp_data;
@@ -2606,9 +2605,6 @@ void wave_draw(void) {
 
             for (int slot = 0; slot < JW_LAYERS; slot++) {
                 for (int pass = 0; pass < 2; pass++) {
-                    if ((pass == 0 && strobe_test_disable_jellywave_body()) ||
-                        (pass == 1 && strobe_test_disable_jellywave_rim()))
-                        continue;
                     const u32 count = s_jw_cnt[slot][pass];
                     if (!count)
                         continue;

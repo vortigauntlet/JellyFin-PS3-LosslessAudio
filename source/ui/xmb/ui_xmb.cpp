@@ -14,8 +14,7 @@
 #include "ui_sfx.h"
 #include "ui_card_gpu.h"
 #include "ui_text_gpu.h"
-#include "ui_strobe_test.h"
-#include "ui_spine.h"      // the README 2.9 spine, gated by jellyfin_spine.txt
+#include "ui_spine.h"      // the README 2.9 spine
 #include "boot_anim.h"
 #include "thumbnail_cache.h"
 #include "slog.h"
@@ -182,23 +181,10 @@ static void xmb_draw_gpu_phase(int tab) {
     // single largest item in the frame.  It has to be issued here, before the
     // frame's rsxSync() -- see wave_draw_divider_gpu().
     if (wave_gpu_blend_ready()) {
-        // The spine's base layer draws no divider; between levels it fades
-        // (spine_divider_alpha() is 1 with the gate off, so this is 72 there).
+        // The spine's base layer draws no divider; between levels it fades.
         const u8 div_a = (u8)(72.0f * spine_divider_alpha() + 0.5f);
         if (div_a) wave_draw_divider_gpu(XMB_DIVIDER_Y, 0x8A, 0x93, 0xC8, div_a);
-        if (g_spine_on) {
-            spine_draw_gpu();  // glow band + bloom
-        } else if (!strobe_test_disable_gpu_glow()) {
-            // The tab strip's focus glow, exactly as the strobe line has it.
-            const u32 accent = XMB_ACCENT;
-            const int alpha = xmb_nav_depth() > 0 ? 24 : 72;
-            wave_draw_glow_gpu(xmb_tab_focus_center(),
-                               XMB_OY + UIS_H(61) + UIS_H(16),
-                               UIS_H(34),
-                               (u8)((accent >> 16) & 0xFF),
-                               (u8)((accent >> 8) & 0xFF),
-                               (u8)(accent & 0xFF), (u8)alpha);
-        }
+        spine_draw_gpu();  // glow band + bloom
         s_div_on_gpu = true;
     } else {
         s_div_on_gpu = false;
@@ -206,15 +192,13 @@ static void xmb_draw_gpu_phase(int tab) {
 
     if (!ui_card_gpu_ready()) return;
 
-    // Under the spine every category is a depth-engine stage: Home's column
-    // swings into its queue at every depth, a library's into its grid until
-    // the grid takes the screen back (render/depth.h, ui_depth.cpp).
-    if (g_spine_on && tab == XMB_TAB_HOME) {
+    // Every category is a depth-engine stage: Home's column swings into its
+    // queue at every depth, a library's into its grid until the grid takes
+    // the screen back (render/depth.h, ui_depth.cpp).
+    if (tab == XMB_TAB_HOME) {
         xmb_home_stage_gpu();
     } else if (depth_lib_owns(tab)) {
         depth_lib_gpu(tab);          // the L1 column, or its swing into the grid
-    } else if (tab == XMB_TAB_HOME) {
-        xmb_home_gpu_phase();
     } else if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_livetv_gpu();
     } else if (xmb_kind(tab) == TABKIND_LOCAL) {
@@ -236,11 +220,10 @@ static void xmb_draw_gpu_phase(int tab) {
 // CPU draw phase — direct framebuffer writes, runs after rsxSync().
 static void xmb_draw_cpu_phase(int tab) {
     // Only when the GPU phase did not already lay it down as a blended quad.
-    if (!s_div_on_gpu && spine_divider_alpha() >= 0.5f &&
-        !strobe_test_disable_cpu_divider())
+    if (!s_div_on_gpu && spine_divider_alpha() >= 0.5f)
         xmb_draw_divider();
 
-    if (g_spine_on && tab == XMB_TAB_HOME) {
+    if (tab == XMB_TAB_HOME) {
         xmb_home_stage_cpu();
         depth_lib_prefetch(xmb_next_enabled(tab, +1), 6);   // the libraries either side
         depth_lib_prefetch(xmb_next_enabled(tab, -1), 6);
@@ -258,8 +241,6 @@ static void xmb_draw_cpu_phase(int tab) {
         xmb_cpu_draw_livetv();
     } else if (xmb_kind(tab) == TABKIND_LOCAL) {
         xmb_cpu_draw_media();
-    } else if (tab == XMB_TAB_HOME) {
-        xmb_home_cpu_phase();
     } else {
         GridGeom gg; const XMBItem *items;
         int count, sel, scroll, y0, a_start, a_total; bool more;
@@ -277,7 +258,7 @@ static void xmb_draw_cpu_phase(int tab) {
 static void xmb_draw_text_phase(int tab) {
     xmb_draw_topbar();
 
-    if (g_spine_on && tab == XMB_TAB_HOME) {
+    if (tab == XMB_TAB_HOME) {
         xmb_home_stage_text();
     } else if (depth_lib_owns(tab)) {
         depth_lib_text(tab);
@@ -289,8 +270,6 @@ static void xmb_draw_text_phase(int tab) {
         xmb_draw_livetv();
     } else if (xmb_kind(tab) == TABKIND_LOCAL) {
         xmb_draw_media();
-    } else if (tab == XMB_TAB_HOME) {
-        xmb_home_text_phase();
     } else {
         // Card-grid tabs: breadcrumb (sub-screens), empty text, grid labels.
         if (xmb_kind(tab) == TABKIND_MUSIC && g_music_depth == 0) {
@@ -407,7 +386,7 @@ static void xmb_cost_tick(u64 frame_us)
     snprintf(b, sizeof(b),
              "xmb: frame=%llu.%02llums vsync=%llu gpu=%llu sync=%llu cards=%llu "
              "text=%llu chrome=%llu tgpu=%llu flip=%llu other=%llu (us/frame) "
-             "gl=%u bpx=%u opx=%u tr=%u tm=%u tkb=%u strobe=%d:%s",
+             "gl=%u bpx=%u opx=%u tr=%u tm=%u tkb=%u",
              (unsigned long long)(s_fc.total / n / 1000),
              (unsigned long long)((s_fc.total / n % 1000) / 10),
              (unsigned long long)(s_fc.vsync  / n),
@@ -419,8 +398,7 @@ static void xmb_cost_tick(u64 frame_us)
              (unsigned long long)(s_fc.textgpu / n),
              (unsigned long long)(s_fc.flip    / n),
              (unsigned long long)(other        / n),
-             gl / n, bpx / n, opx / n, tr / n, tm, tb / 1024u,
-             strobe_test_profile(), strobe_test_profile_name());
+             gl / n, bpx / n, opx / n, tr / n, tm, tb / 1024u);
     plog(b);
 
     memset(&s_fc, 0, sizeof(s_fc));
@@ -453,8 +431,6 @@ static void xmb_draw_hints(int tab) {
         draw_hints_vis(h, 2);
         return;
     }
-    const bool spine_back = g_spine_on;
-
     if (xmb_kind(tab) == TABKIND_LIVETV) {
         xmb_livetv_hints();
     } else if (xmb_kind(tab) == TABKIND_LOCAL) {
@@ -466,7 +442,7 @@ static void xmb_draw_hints(int tab) {
         } else {
             if (g_settings_cat < 0) {
                 static const Hint h[] = {{'X',TRN("Open")},{'C',TRN("Back")}};
-                draw_hints_vis(h, g_spine_on ? 2 : 1);
+                draw_hints_vis(h, 2);
             } else {
                 // L2 and R2 pair into one "Category" hint (an empty label pairs a
                 // hint with the next).
@@ -500,27 +476,19 @@ static void xmb_draw_hints(int tab) {
     } else if (g_jumpbar_active) {
         static const Hint h[] = {{'X',TRN("Jump")},{'C',TRN("Cancel")}};
         draw_hints_vis(h, 2);
-    } else if (tab == XMB_TAB_HOME && spine_back) {
+    } else if (tab == XMB_TAB_HOME) {
         // The canvas's L2 bar: the d-pad walks the queue and the categories,
         // X opens detail, O goes back up to the base layer.
         static const Hint h[] = {{'E',TRN("Nav")},{'X',TRN("Open")},{'T',TRN("Details")},{'C',TRN("Back")}};
         draw_hints_vis(h, 4);
-    } else if (tab == XMB_TAB_HOME) {
-        // The L1/R1 cluster leads, per handoff section 3.1.  Label is "Tab"
-        // and not the document's "Page" because L1/R1 switch TABS on this
-        // build (ui_nav.cpp / ui_home.cpp) -- paging is Phase 4, and a hint
-        // must describe what the button does today.
-        static const Hint h[] = {{'l',""},{'r',TRN("Tab")},
-                                 {'X',TRN("Open")},{'T',TRN("Details")},{'C',TRN("Back")}};
-        draw_hints_vis(h, spine_back ? 5 : 4);
     } else {
         static const Hint h[] = {{'l',""},{'r',TRN("Tab")},
                                  {'E',TRN("Nav")},{'X',TRN("Select")},{'T',TRN("Details")},
                                  {'C',TRN("Back")}};
         static const Hint hm[] = {{'l',""},{'r',TRN("Tab")},
                                   {'E',TRN("Nav")},{'X',TRN("Select")},{'C',TRN("Back")}};
-        if (xmb_kind(tab) == TABKIND_MUSIC) draw_hints_vis(hm, spine_back ? 5 : 4);
-        else                                draw_hints_vis(h, spine_back ? 6 : 5);
+        if (xmb_kind(tab) == TABKIND_MUSIC) draw_hints_vis(hm, 5);
+        else                                draw_hints_vis(h, 6);
     }
 }
 
@@ -550,7 +518,6 @@ void ui_run_xmb(void) {
     // Breadcrumbs inside the loop fire only on the first pass so the log
     // doesn't grow unbounded once the UI is actually running.
     bool first_iter = true;
-    strobe_test_enter_xmb();
     while (running) {
         // The server revoked this device's token (http.cpp saw a 401 on a
         // request that carried it).  Every fetch from here on returns nothing,
@@ -560,7 +527,6 @@ void ui_run_xmb(void) {
             crash_log("13.x auth expired, leaving XMB");
             plog("xmb: session revoked by server, returning to login");
             xmb_search_shutdown();
-            strobe_test_leave_xmb();
             return;
         }
         u64 t_f0 = timing_get_us();
@@ -721,8 +687,7 @@ void ui_run_xmb(void) {
             // The popup and the quick-peek draw their own hints.
             if (!popup && !peek_visible()) xmb_draw_hints(tab);
             if (first_iter) crash_log("13.8d tabs");
-            if (g_spine_on) spine_draw();
-            else            xmb_draw_tabs();
+            spine_draw();
             if (popup) {
                 // The popup GPU-dims the whole screen and then lays an opaque
                 // panel on it, so everything queued so far has to be on the
@@ -756,7 +721,6 @@ void ui_run_xmb(void) {
         if (first_iter) { crash_log("13.10 first frame done"); first_iter = false; }
         sysUtilCheckCallback();
         xmb_cost_tick(timing_get_us() - t_f0);
-        strobe_test_tick();
     }
 
     // A search can still be out on its worker.  It writes into file-static
@@ -765,5 +729,4 @@ void ui_run_xmb(void) {
     // the caller tears it down.  Join it here -- worst case this waits out one
     // request, which is bounded by the HTTP timeouts.
     xmb_search_shutdown();
-    strobe_test_leave_xmb();
 }

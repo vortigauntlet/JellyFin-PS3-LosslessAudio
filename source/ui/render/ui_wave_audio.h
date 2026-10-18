@@ -59,9 +59,7 @@ void wave_audio_lum3(float lum3[3]);
 // stereo as a lean, treble as the rim gain.  The rest value when off.
 void wave_audio_deform(wdf_look *out);
 
-// Stage B's parameters for the motes (wave_motes.h), NULL when the analyser is
-// off; and how present audio is, 0 at rest .. 1 with music.
-const wm_params *wave_audio_params(void);
+// How present audio is, 0 at rest .. 1 with music.
 float wave_audio_presence(void);
 
 // The distinct-band levels (lows, mids, highs; 0..1) and a pending sub-bass

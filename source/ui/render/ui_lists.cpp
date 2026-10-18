@@ -12,7 +12,6 @@
 #include "thumbnail_cache.h"
 #include "circle_blit.h"
 #include "ui_card_gpu.h"
-#include "ui_strobe_test.h"
 #include "ui_spine.h"      // spine_focus_ring_gpu, grid scroll motion
 
 // -------------------------------------------------------
@@ -266,8 +265,8 @@ void xmb_grid_geom_portrait(GridGeom *gg) {
 // spine_grid_motion().  The grid still has ONE logical scroll position; this
 // only says which rows to DRAW and how far to shift them, so a row change
 // eases instead of jumping.  Its resting value -- rows [0, XMB_GRID_ROWS) of
-// `scroll`, no offset -- is exactly the walk these loops always did, which is
-// what keeps jellyfin_spine.txt=0 identical.  The scrollbar deliberately
+// `scroll`, no offset -- is exactly the walk these loops always did.  The
+// scrollbar deliberately
 // ignores it: that tracks the logical position.
 static int s_gm_row0 = 0, s_gm_rows = XMB_GRID_ROWS, s_gm_dy = 0;
 
@@ -406,8 +405,7 @@ void xmb_draw_card_src(const char *item_id, int src_w, int src_h,
     // VRAM read-modify-write path, ~1,200 pixels at the measured ~700 ns each.
     // When the GPU pass is live it has already drawn the identical geometry
     // with blended quads, so skip it here rather than paying for it twice.
-    if (selected && !ui_card_gpu_ready() &&
-        !strobe_test_disable_card_cpu_fallback()) {
+    if (selected && !ui_card_gpu_ready()) {
         const int T = 2, G = 2, O = G + T;
         int w = card_w, h = card_h;
         drawRect((u32)(cx - O), (u32)(cy - O), (u32)(w + 2*O), T, XMB_FOCUS_RING);

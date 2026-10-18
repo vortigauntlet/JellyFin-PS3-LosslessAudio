@@ -2,7 +2,7 @@
 //
 //   wave_audio.h   -> features
 //   wave_motion.h  -> smoothed, slew-limited wave parameters   (this file)
-//   wave_layers.h  -> per-layer geometry and colour
+//   wave_render_map.h -> what the renderer takes from them
 //
 // Three of this stage's outputs go straight into the EXISTING solver through
 // arguments it already takes -- wk_step(c, dt * timescale, perturb, drive) --
@@ -62,7 +62,7 @@
 // own clip has stopped being a solver: the clip is monotone but compressive,
 // so loud passages would stop growing and the whole top of the dynamic range
 // would flatten out.  1.10 peaks at 0.739, which is 8% clear of the knee.
-// See wave_layers.h's WL_BASE_MAX for the measurement and the harness.
+// test_wave_render_map.c re-measures that the mapped maximum clears the knee.
 //
 // WM_MAX_PERTURB stays under the reference's observed PERTURBATION ceiling of
 // 0.1 (wave-spec.md section 1), and well under it, because WK_NOISE_SCALE was
@@ -112,9 +112,9 @@
 // --- per-layer drift rates, radians per second at timescale 1 -------------
 // Rising with depth, because the nearest layer must move fastest: that is the
 // parallax half of the aerial-perspective cue in spec 1.2.  The WAVENUMBERS
-// that pair with these live in wave_layers.h, with the rest of the
-// appearance constants; the rates live here because the phases they advance
-// are integrated state and integrated state belongs to the motion stage.
+// that paired with these were in the four-layer stage, never wired in and
+// since removed; the rates live here because the phases they advance are
+// integrated state and integrated state belongs to the motion stage.
 //
 // The ratios are deliberately not simple fractions, so the crossing pattern
 // the layers make does not repeat on any short cycle.

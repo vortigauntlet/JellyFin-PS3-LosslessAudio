@@ -233,6 +233,3 @@ bool xmb_grid_view(int tab, GridGeom *gg, const XMBItem **items,
                    int *count, int *sel, int *scroll, int *y0,
                    bool *more_below, int *abs_start, int *abs_total);
 void xmb_home_prefetch(void);     // fetch every unloaded row now (boot worker)
-void xmb_home_gpu_phase(void);    // card images as RSX quads (BEFORE rsxSync)
-void xmb_home_cpu_phase(void);    // card images / placeholders / selection (after rsxSync)
-void xmb_home_text_phase(void);   // row titles, labels, chevrons

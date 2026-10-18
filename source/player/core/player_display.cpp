@@ -534,13 +534,6 @@ one_to_one_done: ;
     // the old CPU-drawn HUD (fenced with rsxSync each frame) pushed it to a
     // 2-vblank cadence, halving playback fps whenever the seek bar showed.
     if (hud_is_visible() && ps->frame_count > 0) {
-        static int s_hg = 0;
-        if (s_hg < 12) {
-            char b[80];
-            snprintf(b, sizeof(b), "hud_gate: vis paused=%d fr=%d",
-                     (int)ps->paused, ps->frame_count);
-            plog(b); s_hg++;
-        }
         // While a seek is armed, show where the accumulated skip will land so
         // the user can keep tapping toward the right spot before it fires.
         u64 hud_elapsed = ps->play_base_us + audio_get_clock_us();
@@ -549,7 +542,6 @@ one_to_one_done: ;
             hud_elapsed = prev < 0 ? 0 : (u64)prev;
         }
         hud_draw(hud_elapsed, ps->paused, ps->seek.state == SEEK_SCRUB);
-        { static int s_hg2 = 0; if (s_hg2 < 12) { plog("hud_gate: draw returned"); s_hg2++; } }
     }
 
     // Player stats overlay.  Same GPU-quad discipline as the HUD above — it

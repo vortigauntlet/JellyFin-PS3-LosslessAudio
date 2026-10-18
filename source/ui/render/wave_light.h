@@ -61,7 +61,7 @@
 // toward the origin, so a position doubles as a direction; these are those
 // positions, normalised.
 //
-// KEY is the one that matters and the one wave_motes.h also reads: cool white
+// KEY is the one that matters: cool white
 // from above, behind and to the right.  It is the same (9, 7.5, -9) the
 // design's gelColor uses for its own `lit` term, so the baked body shading and
 // the additive rim pass agree about where the light is.
@@ -343,8 +343,8 @@ static inline float jw_fresnel(jw_vec3 n, jw_vec3 eyev)
     return jw_lut(JW_FRESNEL_LUT, g);
 }
 
-// How lit a point is by the key alone, 0..1 -- the scalar wave_motes.h uses so
-// a mote brightens on the same beat the ribbon's highlight does.  This is the
+// How lit a point is by the key alone, 0..1, for anything that should
+// brighten on the same beat the ribbon's highlight does.  This is the
 // correlation the file's opening comment is about; it is exposed rather than
 // recomputed so there is exactly one definition of "lit" in the scene.
 static inline float jw_key_lit_k(jw_vec3 n, jw_vec3 key)

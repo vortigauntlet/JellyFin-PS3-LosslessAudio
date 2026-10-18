@@ -12,7 +12,6 @@
 #include "timing.h"
 #include "audio.h"
 #include "audio_bitstream.h"   // passthrough: the receiver owns the volume
-#include "ui_visuals.h"   // g_spine_on: the redesigned HUD's buttons
 #include "statsovl.h"
 
 HudState g_hud;
@@ -297,27 +296,23 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
             // The redesigned HUD has no REW / FF buttons: those stops only
             // said "back 10s" / "ahead 10s" and confused (user, 09-27).
             // L2 / R2 seek.  Step over them.
-            if (g_spine_on && g_hud.focus == FOCUS_FF)  g_hud.focus = FOCUS_PP;
-            if (g_spine_on && g_hud.focus == FOCUS_REW) g_hud.focus = FOCUS_PP;
+            if (g_hud.focus == FOCUS_FF)  g_hud.focus = FOCUS_PP;
+            if (g_hud.focus == FOCUS_REW) g_hud.focus = FOCUS_PP;
             return HUD_ACTION_NONE;
         }
         if (BTN_PRESSED(right)) {
             if (g_hud.focus < 0)                   g_hud.focus = FOCUS_PP;
             else if (g_hud.focus < FOCUS_COUNT - 1) g_hud.focus++;
-            if (g_spine_on && g_hud.focus == FOCUS_FF)  g_hud.focus = FOCUS_AUDIO;
-            // The old bar has no picture-shape chip to land on.
-            if (!g_spine_on && g_hud.focus == FOCUS_ASPECT) g_hud.focus = FOCUS_CC;
+            if (g_hud.focus == FOCUS_FF)  g_hud.focus = FOCUS_AUDIO;
             return HUD_ACTION_NONE;
         }
     }
 
-    // The redesigned HUD (design-import-v3 "07 · Player HUD") names Triangle
-    // Tracks in its hint cluster.  Only with the spine gate on, and not on the
-    // press that revealed the bar.  (O and Square are handled above for both
-    // HUDs; the stats overlay is on DISPLAY and in Settings.)
-    if (g_spine_on && !was_hidden) {
-        if (BTN_PRESSED(triangle)) return HUD_ACTION_AUDIO_TRACK;
-    }
+    // The HUD (design-import-v3 "07 · Player HUD") names Triangle Tracks in
+    // its hint cluster -- not on the press that revealed the bar.  (O and
+    // Square are handled above; the stats overlay is on DISPLAY and in
+    // Settings.)
+    if (!was_hidden && BTN_PRESSED(triangle)) return HUD_ACTION_AUDIO_TRACK;
 
     // X (cross) activates the focused control.
     if (BTN_PRESSED(cross)) {
