@@ -13,6 +13,7 @@
 #define HUD_DIMMED          0x00555C84UL   // unfocused when another slot is active
 #define HUD_FOCUSED         0x00FFFFFFUL   // white for focused control
 #define HUD_SHOW_US         4000000ULL
+#define HUD_SHOW_PAUSED_US  8000000ULL   // paused: the bar still goes, after a longer idle
 
 #define HUD_STRIP_H          64
 #define CTRL_Y_OFF  (HUD_STRIP_H / 2)      // control row centred in the strip

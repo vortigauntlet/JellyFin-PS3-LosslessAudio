@@ -506,6 +506,14 @@ int  ttf_text_width(const char *text, float px, bool bold = false);
 int  ttf_text_width_face(const char *text, float px, int face);
 void drawTTF_face(u32 x, u32 y, const char *text, float px, u32 color, int face);
 
+// Text cut to max_w pixels with ".." when it does not fit (at a character
+// boundary; "" when not even one character and ".." fit).  The cut form is
+// remembered per (text, size, face, width): measuring is a kerning lookup per
+// character pair, and screens draw the same titles every frame.
+void ttf_clip(const char *text, float px, int face, int max_w, char *out, int cap);
+void drawTTF_clipped(u32 x, u32 y, const char *text, float px, u32 color,
+                     int max_w, int face);
+
 // Letter-spacing, in pixels ADDED BETWEEN glyphs (the design spells it in em:
 // 0.04em at 11.5px is 0.46px).  See the note in render/ui_text.cpp -- these
 // take the per-glyph path, so they are for short labels, not body text.

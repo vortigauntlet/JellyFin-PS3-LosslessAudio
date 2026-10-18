@@ -232,8 +232,9 @@ HudAction hud_handle_input(bool l2_pressed, bool r2_pressed, bool paused) {
         if (was_hidden) g_hud.focus = FOCUS_PP;
     }
 
-    // Auto-hide after timeout — only when playing; stay visible indefinitely while paused.
-    if (g_hud.visible && !paused && (timing_get_us() - g_hud.show_us) >= HUD_SHOW_US) {
+    // Auto-hide after an idle timeout, a longer one while paused.
+    if (g_hud.visible &&
+        (timing_get_us() - g_hud.show_us) >= (paused ? HUD_SHOW_PAUSED_US : HUD_SHOW_US)) {
         g_hud.visible      = false;
         g_hud.focus        = -1;
         g_hud.menu_visible = false;

@@ -9,6 +9,7 @@
 
 #include "ui_internal.h"
 #include "ui_wave.h"
+#include "ui_text_gpu.h"   // the version picker draws its text on the RSX
 #include "jellyfin_api.h"
 #include "vquality.h"
 #include "hd1080.h"
@@ -42,48 +43,8 @@
 // UI_FACE_SPEC for codec and quality values.
 static void info_clip_text(int x, int y, const char *text, float px,
                            u32 color, int max_w, bool bold, int face = -1) {
-    if (!text || !text[0]) return;
-    if (face >= 0) {
-        if (ttf_text_width_face(text, px, face) <= max_w) {
-            drawTTF_face((u32)x, (u32)y, text, px, color, face);
-            return;
-        }
-        // Clip against the SAME face the text is drawn in, or the ellipsis
-        // lands in the wrong place.
-        char fb[160];
-        snprintf(fb, sizeof(fb), "%s", text);
-        int fl = (int)strlen(fb);
-        while (fl > 1) {
-            fl--;
-            while (fl > 1 && ((unsigned char)fb[fl] & 0xC0) == 0x80) fl--;     // not inside a character
-            fb[fl] = '\0';
-            char tr[164];
-            snprintf(tr, sizeof(tr), "%s..", fb);
-            if (ttf_text_width_face(tr, px, face) <= max_w) {
-                drawTTF_face((u32)x, (u32)y, tr, px, color, face);
-                return;
-            }
-        }
-        return;
-    }
-    if (ttf_text_width(text, px, bold) <= max_w) {
-        drawTTF((u32)x, (u32)y, text, px, color, bold);
-        return;
-    }
-    char buf[160];
-    snprintf(buf, sizeof(buf), "%s", text);
-    int len = (int)strlen(buf);
-    while (len > 1) {
-        len--;
-        while (len > 1 && ((unsigned char)buf[len] & 0xC0) == 0x80) len--;     // not inside a character
-        buf[len] = '\0';
-        char trial[164];
-        snprintf(trial, sizeof(trial), "%s..", buf);
-        if (ttf_text_width(trial, px, bold) <= max_w) {
-            drawTTF((u32)x, (u32)y, trial, px, color, bold);
-            return;
-        }
-    }
+    drawTTF_clipped((u32)x, (u32)y, text, px, color, max_w,
+                    face >= 0 ? face : bold ? UI_FACE_BOLD : UI_FACE_REGULAR);
 }
 
 // A frame that bails out early — switching titles, or coming back from the
@@ -139,10 +100,6 @@ static int info_choose_version(const char *title,
             if (BTN_PRESSED(cross)) { init_btns(); return sel; }
         }
 
-        clearScreen(XMB_BG);
-        wave_draw();
-        rsxSync();
-
         const int max_rows = 8;
         int shown = sources->n_sources < max_rows
                       ? sources->n_sources : max_rows;
@@ -156,13 +113,27 @@ static int info_choose_version(const char *title,
         int ph = UIS_H(104) + shown * row_h;
         int px = ((int)display_width - pw) / 2;
         int py = ((int)display_height - ph) / 2;
-        drawRect((u32)px, (u32)py, (u32)pw, (u32)ph, XMB_PANEL);
-        drawRect((u32)px, (u32)py, (u32)pw, 1, XMB_HAIRLINE);
-        drawRect((u32)px, (u32)(py + ph - 1), (u32)pw, 1, XMB_HAIRLINE);
-        drawRect((u32)px, (u32)py, 1, (u32)ph, XMB_HAIRLINE);
-        drawRect((u32)(px + pw - 1), (u32)py, 1, (u32)ph, XMB_HAIRLINE);
-
         int cx = px + UIS_W(30);
+        const int y0 = py + UIS_H(72);
+
+        // Everything is drawn on the RSX, as on the page under it: the panel,
+        // the selection and the text runs.  CPU rectangles and per-glyph text
+        // after an rsxSync blended against VRAM, and the wave under them ran
+        // at a frame or two a second.
+        clearScreen(XMB_BG);
+        wave_draw();
+        wave_draw_rrect_outline_gpu(px, py, pw, ph, 0, 1, XMB_HAIRLINE, 255,
+                                    XMB_PANEL, XMB_PANEL, 255);
+        {
+            const int ry = y0 + (sel - first) * row_h;
+            wave_draw_rrect_gpu(cx, ry, pw - UIS_W(60), row_h - UIS_H(4), 0,
+                                XMB_PANEL_HI, XMB_PANEL_HI, 255);
+            wave_draw_rrect_gpu(cx - UIS_W(4), ry, UIS_W(3), row_h - UIS_H(4), 0,
+                                XMB_ACCENT, XMB_ACCENT, 255);
+        }
+        rsxSync();
+        ui_text_gpu_begin();
+
         // Media title -- one of the two things section 3.0 gives to the
         // display face.
         info_clip_text(cx, py + UIS_H(22), title, UIS_TF(24), XMB_WHITE,
@@ -174,17 +145,9 @@ static int info_choose_version(const char *title,
         drawTTF((u32)(px + pw - UIS_W(30) - cw),
                 (u32)(py + UIS_H(27)), count, UIS_TF(17), XMB_TEXT_DIM);
 
-        int y0 = py + UIS_H(72);
         for (int row = 0; row < shown; row++) {
             int idx = first + row;
             int ry = y0 + row * row_h;
-            if (idx == sel) {
-                drawRect((u32)cx, (u32)ry,
-                         (u32)(pw - UIS_W(60)), (u32)(row_h - UIS_H(4)),
-                         XMB_PANEL_HI);
-                drawRect((u32)(cx - UIS_W(4)), (u32)ry, UIS_W(3),
-                         (u32)(row_h - UIS_H(4)), XMB_ACCENT);
-            }
             // The summary ("1080p · REMUX · DTS-HD MA 7.1 · 38.8 GB"), and
             // the full, cleaned name small beneath it.
             info_clip_text(cx + UIS_W(16), ry + UIS_H(7),
@@ -200,6 +163,7 @@ static int info_choose_version(const char *title,
 
         { static const Hint h[] = {{'X', TRN("Select")}, {'C', TRN("Back")}};
           draw_hints_bar(h, 2); }
+        ui_text_gpu_flush();
         flip();
     }
     init_btns();

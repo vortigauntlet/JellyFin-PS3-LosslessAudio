@@ -355,22 +355,7 @@ static void fmt_mmss(char *out, int cap, u32 secs) {
 // Text clipped to max_w with ".." (local copy of the grid's helper).
 static void draw_clipped(u32 x, u32 y, const char *text, float px,
                          u32 color, int max_w, bool bold = false) {
-    if (ttf_text_width(text, px, bold) <= max_w) {
-        drawTTF(x, y, text, px, color, bold);
-        return;
-    }
-    char buf[128];
-    snprintf(buf, sizeof(buf), "%s", text);
-    int len = (int)strlen(buf);
-    while (len > 1) {
-        buf[--len] = '\0';
-        char trial[132];
-        snprintf(trial, sizeof(trial), "%s..", buf);
-        if (ttf_text_width(trial, px, bold) <= max_w) {
-            drawTTF(x, y, trial, px, color, bold);
-            return;
-        }
-    }
+    drawTTF_clipped(x, y, text, px, color, max_w, bold ? UI_FACE_BOLD : UI_FACE_REGULAR);
 }
 
 // Anti-aliased filled circle: opaque row spans inside, per-pixel coverage

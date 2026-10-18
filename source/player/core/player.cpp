@@ -359,20 +359,21 @@ static void player_draw_skip_badge_gpu(const char *label) {
     ui_text_gpu_flush();
 }
 
-// Skip Intro shows for SKIP_BADGE_US after its segment starts, then goes (the
-// user, 2026-10-14).  While it is gone X does what it does without it; leaving
-// and re-entering a segment (a seek back) shows it again.
-#define SKIP_BADGE_US 5000000ULL
-// The NEXT badge the same way: 5 s from when it first comes up, and again for
-// the last 5 s of an auto-advance countdown so the jump is never a surprise.
-// While it is hidden SELECT is the picture-size key again.
+// Skip Intro shows for SKIP_BADGE_US after its segment starts, then goes.
+// While it is gone X does what it does without it; leaving and re-entering a
+// segment (a seek back) shows it again.
+#define SKIP_BADGE_US 10000000ULL
+// The NEXT badge the same way: NEXT_BADGE_US from when it first comes up, and
+// again for the last 5 s of an auto-advance countdown so the jump is never a
+// surprise.  While it is hidden SELECT is the picture-size key again.
+#define NEXT_BADGE_US 20000000ULL
 static u64  s_next_since_us = 0;
 static bool s_next_was      = false;
 static bool next_badge_update(bool wanted, int auto_secs) {
     if (!wanted) { s_next_was = false; return false; }
     const u64 now = timing_get_us();
     if (!s_next_was) { s_next_was = true; s_next_since_us = now; }
-    return now - s_next_since_us < SKIP_BADGE_US || (auto_secs >= 0 && auto_secs <= 5);
+    return now - s_next_since_us < NEXT_BADGE_US || (auto_secs >= 0 && auto_secs <= 5);
 }
 static double s_skip_seg_start = -1.0;
 static u64    s_skip_since_us  = 0;
@@ -1403,7 +1404,8 @@ void show_player_run(const JFItem *item, u32 resume_secs,
     player_flip_resync();
     bool flip_queued  = false;
     bool was_paused   = false;
-    int  pause_settle = 0;   // frames still to draw after a pause-state change
+    bool was_hud      = false;
+    int  pause_settle = 0;   // frames still to draw after a pause-state or bar change
     bool lc_first_frame = false;
 
     // Live TV: a channel change waits for a quiet 600 ms (the banner follows
@@ -1681,6 +1683,7 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         // seek, or the pause state itself); otherwise sleep one vblank and
         // just keep polling input.  Playback (!paused) is never gated.
         if (ps.paused != was_paused) { was_paused = ps.paused; pause_settle = 2; }
+        if (hud_is_visible() != was_hud) { was_hud = !was_hud; pause_settle = 2; }
         bool any_input =
             btn_cur.up || btn_cur.down || btn_cur.left || btn_cur.right ||
             btn_cur.cross || btn_cur.circle || btn_cur.square || btn_cur.triangle ||

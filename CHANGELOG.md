@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.2.3
 
 ### Fixed
 - **Stuck on "Finding versions..." for a film opened from Search.** The first
@@ -16,6 +16,15 @@
   only otherwise uses the file's default. Up to 16 soundtracks per version are
   listed now, up from 8, so an English track further down the list is no
   longer cut off.
+- **Home's posters glide at 3.1's speed again**, and the details under a
+  poster fade in as it arrives instead of waiting for it to stop.
+- **The wave no longer stutters behind the version picker or the music
+  player.** The version list is drawn by the graphics chip now, and every list
+  remembers how it shortened a long title instead of working it out again every
+  frame.
+- **Episode titles use the wider type 3.1 had**, so most fit under the still.
+- **The player bar goes away when paused too**, after 8 seconds without a
+  button press. Skip Intro stays up for 10 seconds and Next Episode for 20.
 
 ## 3.2.2
 

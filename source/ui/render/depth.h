@@ -497,13 +497,10 @@ static inline float depth_over_l2(float depth)
 }
 
 // A category's detail text waits until its queue has settled on the focus:
-// text under a poster flying 770 px reads as noise.  It also costs a burst of
-// glyph drawing, so it starts only once the poster is within ~0.1 of a slot
-// of rest, not while the glide is still visibly moving; it fades in over the
-// last ~0.19 of a slot (12.5 made it pop in, 3.0 started it mid-flight).
+// text under a poster flying 770 px reads as noise.
 static inline float depth_queue_settle(float pos, int focus)
 {
-    return spine_clampf(1.0f - (fabsf(pos - (float)focus) - 0.02f) * 6.0f, 0.0f, 1.0f);
+    return spine_clampf(1.0f - fabsf(pos - (float)focus) * 3.0f, 0.0f, 1.0f);
 }
 
 // The focus treatment (glow, accent bands, frame) follows whichever item is

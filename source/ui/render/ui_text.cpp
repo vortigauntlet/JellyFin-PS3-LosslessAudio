@@ -728,6 +728,68 @@ int ttf_text_width(const char *text, float px, bool bold) {
     return ttf_text_width_face(text, px, bold ? UI_FACE_BOLD : UI_FACE_REGULAR);
 }
 
+// ---- clipped text (see ui_visuals.h) -----------------------------------------
+// Every list used to trim one character at a time, re-measuring the whole
+// string at each step, every frame: 9-14 ms of a Live TV frame, and the music
+// screen's Up Next list pushed its frames past a vblank.  Render thread only.
+#define CLIP_N   192
+#define CLIP_MAX 192
+struct ClipEntry { u32 hash; int px100, face, max_w; char text[CLIP_MAX], out[CLIP_MAX]; };
+static ClipEntry s_clip[CLIP_N];
+static int       s_clip_next = 0;
+
+static void clip_compute(const char *text, float px, int face, int max_w, char *out, int cap) {
+    snprintf(out, (size_t)cap, "%s", text);
+    if (ttf_text_width_face(out, px, face) <= max_w) return;
+    // Character boundaries, then the longest prefix whose "prefix.." fits
+    // (binary search: width grows with the prefix).
+    int cut[CLIP_MAX], n = 0;
+    const int len = (int)strlen(out);
+    for (int i = 1; i <= len && n < CLIP_MAX; i++)
+        if (i == len || ((unsigned char)out[i] & 0xC0) != 0x80) cut[n++] = i;
+    char trial[CLIP_MAX + 3];
+    int lo = 0, hi = n - 1, best = -1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        snprintf(trial, sizeof trial, "%.*s..", cut[mid], text);
+        if (ttf_text_width_face(trial, px, face) <= max_w) { best = mid; lo = mid + 1; }
+        else hi = mid - 1;
+    }
+    if (best < 0) out[0] = '\0';
+    else snprintf(out, (size_t)cap, "%.*s..", cut[best], text);
+}
+
+void ttf_clip(const char *text, float px, int face, int max_w, char *out, int cap) {
+    if (!text || !text[0] || cap <= 0) { if (cap > 0) out[0] = '\0'; return; }
+    u32 h = 2166136261u;
+    for (const char *p = text; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+    const int px100 = (int)(px * 100.0f + 0.5f);
+    const bool keep = strlen(text) < CLIP_MAX;
+    if (keep)
+        for (int i = 0; i < CLIP_N; i++) {
+            const ClipEntry &e = s_clip[i];
+            if (e.hash == h && e.px100 == px100 && e.face == face && e.max_w == max_w &&
+                e.text[0] && strcmp(e.text, text) == 0) {
+                snprintf(out, (size_t)cap, "%s", e.out);
+                return;
+            }
+        }
+    clip_compute(text, px, face, max_w, out, cap);
+    if (!keep) return;
+    ClipEntry &e = s_clip[s_clip_next];
+    s_clip_next = (s_clip_next + 1) % CLIP_N;
+    e.hash = h; e.px100 = px100; e.face = face; e.max_w = max_w;
+    snprintf(e.text, sizeof e.text, "%s", text);
+    snprintf(e.out,  sizeof e.out,  "%s", out);
+}
+
+void drawTTF_clipped(u32 x, u32 y, const char *text, float px, u32 color,
+                     int max_w, int face) {
+    char buf[CLIP_MAX + 3];
+    ttf_clip(text, px, face, max_w, buf, sizeof buf);
+    if (buf[0]) drawTTF_face(x, y, buf, px, color, face);
+}
+
 // -------------------------------------------------------
 // Run measurement and rasterization for the GPU path
 // -------------------------------------------------------

@@ -188,43 +188,8 @@ void xmb_draw_meta(u32 x, u32 y, const XMBItem *it, float px) {
 static void draw_ttf_clipped(u32 x, u32 y, const char *text, float px,
                              u32 color, int max_w, bool bold = false,
                              int face = -1) {
-    if (face >= 0) {
-        if (ttf_text_width_face(text, px, face) <= max_w) {
-            drawTTF_face(x, y, text, px, color, face);
-            return;
-        }
-        // Clip against the SAME face the text will be drawn in, or the ellipsis
-        // lands in the wrong place.
-        char buf[192];
-        snprintf(buf, sizeof(buf), "%s", text);
-        int len = (int)strlen(buf);
-        while (len > 1) {
-            buf[--len] = '\0';
-            char trial[196];
-            snprintf(trial, sizeof(trial), "%s..", buf);
-            if (ttf_text_width_face(trial, px, face) <= max_w) {
-                drawTTF_face(x, y, trial, px, color, face);
-                return;
-            }
-        }
-        return;
-    }
-    if (ttf_text_width(text, px, bold) <= max_w) {
-        drawTTF(x, y, text, px, color, bold);
-        return;
-    }
-    char buf[128];
-    snprintf(buf, sizeof(buf), "%s", text);
-    int len = (int)strlen(buf);
-    while (len > 1) {
-        buf[--len] = '\0';
-        char trial[132];
-        snprintf(trial, sizeof(trial), "%s..", buf);
-        if (ttf_text_width(trial, px, bold) <= max_w) {
-            drawTTF(x, y, trial, px, color, bold);
-            return;
-        }
-    }
+    drawTTF_clipped(x, y, text, px, color, max_w,
+                    face >= 0 ? face : bold ? UI_FACE_BOLD : UI_FACE_REGULAR);
 }
 
 // -------------------------------------------------------
@@ -558,6 +523,16 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
                    int sel, int scroll, int y0, bool more_below,
                    int abs_start, int abs_total) {
     (void)more_below;
+    // Title face and sizes.  Posters: Roboto Condensed 20 / 21 (2026-10-14).
+    // A poster is 122 px wide at 1080 lines and the display face, GT America
+    // EXPANDED, fit about 8 characters under one; the condensed face fits 11
+    // (the widest of ten real 11-character titles measured 103 px).  Wide
+    // stills (episodes, Continue Watching) have room for the display face at
+    // 16 / 20, as in 3.1, and an episode title usually fits whole in it.
+    const bool  wide    = !gg->portrait && gg->card_w > gg->card_h;
+    const int   t_face  = wide ? UI_FACE_DISPLAY : UI_FACE_ROBOCOND;
+    const float t_px    = wide ? UIS_TF(16) : UIS_TF(20);
+    const float t_px_hi = wide ? UIS_TF(20) : UIS_TF(21);
     // Dimmed title under every non-selected card so the user always sees
     // what each card is.
     int i0, i1;
@@ -569,17 +544,9 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         if (idx == sel) continue;
         int cx, cy;
         grid_cell_pos_m(gg, i, y0, &cx, &cy);
-        // Media title, in the condensed face (2026-10-14).  Section 3.0 gave
-        // these to the display face, GT America EXPANDED: about 8 characters
-        // fit under a poster before the "..".  Roboto Condensed Bold at the same
-        // size fits 11 (measured: the widest of ten real 11-character titles is
-        // 103 px against a 122 px card at 1080 lines; card and type both scale
-        // with the screen height, so 720p and 4:3 fit the same).  At 16 that
-        // read small, so 20: at least 11 characters of every sample title,
-        // about 10 plus ".." on a long one.
         draw_ttf_clipped((u32)cx, (u32)(cy + gg->card_h + UIS_H(8)),
-                         items[idx].name, UIS_TF(20), XMB_TEXT_DIM, gg->card_w,
-                         false, UI_FACE_ROBOCOND);
+                         items[idx].name, t_px, XMB_TEXT_DIM, gg->card_w,
+                         false, t_face);
         // Music cards carry an artist credit under the title -- the XMB's
         // proportions for a secondary line: about 70% of the title, regular
         // weight, muted, in Satoshi Regular (the UI's face for secondary
@@ -595,9 +562,8 @@ void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
         int cx, cy;
         grid_cell_pos_m(gg, sel - scroll, y0, &cx, &cy);
         int ty = cy + gg->card_h + UIS_H(7);
-        // One step above the others; about 10 characters.
-        draw_ttf_clipped((u32)cx, (u32)ty, it->name, UIS_TF(21),
-                         XMB_WHITE, gg->card_w, false, UI_FACE_ROBOCOND);
+        draw_ttf_clipped((u32)cx, (u32)ty, it->name, t_px_hi,
+                         XMB_WHITE, gg->card_w, false, t_face);
         if (it->artist[0]) {
             draw_ttf_clipped((u32)cx, (u32)(ty + UIS_H(28)), it->artist, UIS_TF(15),
                              XMB_TEXT_DIM, gg->card_w, false, UI_FACE_TAB_REG);
