@@ -22,7 +22,9 @@
 #include "music_player.h"
 #if APP_SPOTIFY
 #include "sp_art.h"
+static bool s_live = false;             // Now Playing is following the Spotify receiver
 #include "sp_svc.h"
+#include "sp_lyrics.h"
 #endif
 #include "music_fft.h"
 #include "plog.h"
@@ -836,6 +838,81 @@ static void draw_spotify_mark(int x, int y, int size) {
     drawBitmapRectAlpha(pixels, (u32)size, 0, 0, (u32)size, (u32)size, (u32)x, (u32)y);
 }
 
+// The position the listener hears: the receiver's read position less what is still queued for the speakers.
+static uint32_t spotify_heard_ms(void) {
+    const uint32_t pos = sp_svc_position_ms(), lag = music_output_lag_ms();
+    return pos > lag ? pos - lag : 0;
+}
+
+// Lyrics in the text column, from y0 down to y1.  Synced: the playing line sits on the second row, in white, and the column glides
+// up a row (LY_GLIDE_US) whenever the next line starts; lines already sung are fainter than the ones to come.  Unsynced: the words
+// follow the song's progress, a page at a time.
+static void draw_spotify_lyrics(int x, int y0, int w, int y1, SpLyricsState st) {
+    static const u64 LY_GLIDE_US = 260000ULL;
+    static int   s_ly_cur = -2;
+    static float s_ly_from = 0.0f, s_ly_to = 0.0f;
+    static u64   s_ly_t0 = 0;
+    const int pitch = UIS_H(48);
+    if (st == SPL_UNSYNCED) {
+        drawTTF((u32)x, (u32)(y1 - UIS_H(18)), "These lyrics are not synced", UIS_TF(12.0f), XMB_TEXT_FAINT);
+        y1 -= UIS_H(26);
+    }
+    const int rows = (y1 - y0) / pitch;
+    if (rows <= 0) return;
+    if (st == SPL_LOADING) {
+        drawTTF((u32)x, (u32)y0, "Loading lyrics...", UIS_TF(18.0f), XMB_TEXT_DIM);
+        s_ly_cur = -2;
+        return;
+    }
+    const int n = sp_lyrics_count();
+    if (n <= 0) return;
+    const u64 now = timing_get_us();
+    float scroll;
+    int cur;
+    if (st == SPL_SYNCED) {
+        cur = sp_lyrics_index_at(spotify_heard_ms());
+        const float target = (float)(cur - 1);
+        if (cur != s_ly_cur) {
+            // a seek or a new song jumps; the next line glides
+            const bool step = s_ly_cur >= -1 && cur == s_ly_cur + 1;
+            float shown = s_ly_to;
+            if (step && now - s_ly_t0 < LY_GLIDE_US) {
+                const float e = (float)(now - s_ly_t0) / (float)LY_GLIDE_US;
+                shown = s_ly_from + (s_ly_to - s_ly_from) * (1.0f - (1.0f - e) * (1.0f - e));
+            }
+            s_ly_from = step ? shown : target;
+            s_ly_to = target;
+            s_ly_t0 = now;
+            s_ly_cur = cur;
+        }
+        float e = now - s_ly_t0 >= LY_GLIDE_US ? 1.0f : (float)(now - s_ly_t0) / (float)LY_GLIDE_US;
+        e = 1.0f - (1.0f - e) * (1.0f - e);
+        scroll = s_ly_from + (s_ly_to - s_ly_from) * e;
+    } else {
+        const u32 dur = music_duration_secs() * 1000U;
+        const int page = (dur ? (int)((u64)spotify_heard_ms() * (u64)n / dur) : 0) / rows;
+        scroll = (float)(page * rows);
+        cur = -1;
+        s_ly_cur = -2;
+    }
+
+    const int first = (int)floorf(scroll);
+    char line[256];
+    for (int i = first; i <= first + rows && i < n; i++) {
+        if (i < 0) continue;
+        const float fy = (float)y0 + ((float)i - scroll) * (float)pitch;
+        if (fy < (float)y0 - (float)pitch * 0.35f || fy > (float)(y1 - pitch) + 0.5f) continue;
+        if (!sp_lyrics_text(i, line, sizeof line) || !line[0]) continue;
+        const bool on = i == cur;
+        float px = on ? UIS_TF(25.0f) : UIS_TF(20.0f);
+        // a long line shrinks a little before it is cut
+        const int lw = ttf_text_width(line, px, on);
+        if (lw > w) { const float k = (float)w / (float)lw; px *= k < 0.78f ? 0.78f : k; }
+        const u32 col = on ? XMB_WHITE : (st == SPL_SYNCED && i < cur ? XMB_TEXT_FAINT : XMB_TEXT_DIM);
+        draw_clipped((u32)x, (u32)(fy + (on ? 0.0f : (float)UIS_H(3))), line, px, col, w, on);
+    }
+}
+
 static void draw_spotify_now_playing(const MusicCtx *ctx, const MusicTrack *tracks, int count) {
     const int W = (int)display_width, H = (int)display_height;
     const int pad = (int)XMB_ITEM_PAD;
@@ -861,14 +938,29 @@ static void draw_spotify_now_playing(const MusicCtx *ctx, const MusicTrack *trac
     cover_geom(&ax, &ay, &A, &art_alpha);
     const int tx = ax + A + UIS_W(42);
     const int tw = W - pad - tx;
-    const int title_y = ay + (A - UIS_H(115)) / 2;
-    draw_clipped((u32)tx, (u32)title_y, t->name, UIS_TF(28.0f), XMB_WHITE, tw, true);
-    if (t->artist[0])
-        draw_clipped((u32)tx, (u32)(title_y + UIS_H(48)), t->artist, UIS_TF(19.0f), XMB_TEXT, tw);
-    if (ctx->title[0])
-        draw_clipped((u32)tx, (u32)(title_y + UIS_H(82)), ctx->title, UIS_TF(15.0f), XMB_TEXT_DIM, tw);
-    drawTTF((u32)tx, (u32)(title_y + UIS_H(124)),
-            music_is_paused() ? "PAUSED" : "PLAYING ON PS3", UIS_TF(13.0f), SPOTIFY_GREEN, true);
+    const SpLyricsState ls = sp_lyrics_state();
+    const bool lyrics = sp_lyrics_enabled() && (ls == SPL_LOADING || ls == SPL_SYNCED || ls == SPL_UNSYNCED);
+    if (lyrics) {
+        // the title block moves to the top of the cover's height and the lyrics take the rest
+        draw_clipped((u32)tx, (u32)ay, t->name, UIS_TF(26.0f), XMB_WHITE, tw, true);
+        if (t->artist[0])
+            draw_clipped((u32)tx, (u32)(ay + UIS_H(42)), t->artist, UIS_TF(17.0f), XMB_TEXT, tw);
+        char st[64];
+        const char *src = sp_lyrics_source();
+        snprintf(st, sizeof st, "%s%s%s", music_is_paused() ? "PAUSED" : "PLAYING ON PS3",
+                 src[0] ? "  \xC2\xB7  LYRICS FROM " : "", src[0] ? (strcmp(src, "Spotify") == 0 ? "SPOTIFY" : "LRCLIB") : "");
+        drawTTF((u32)tx, (u32)(ay + UIS_H(76)), st, UIS_TF(12.0f), SPOTIFY_GREEN, true);
+        draw_spotify_lyrics(tx, ay + UIS_H(118), tw, ay + A, ls);
+    } else {
+        const int title_y = ay + (A - UIS_H(115)) / 2;
+        draw_clipped((u32)tx, (u32)title_y, t->name, UIS_TF(28.0f), XMB_WHITE, tw, true);
+        if (t->artist[0])
+            draw_clipped((u32)tx, (u32)(title_y + UIS_H(48)), t->artist, UIS_TF(19.0f), XMB_TEXT, tw);
+        if (ctx->title[0])
+            draw_clipped((u32)tx, (u32)(title_y + UIS_H(82)), ctx->title, UIS_TF(15.0f), XMB_TEXT_DIM, tw);
+        drawTTF((u32)tx, (u32)(title_y + UIS_H(124)),
+                music_is_paused() ? "PAUSED" : "PLAYING ON PS3", UIS_TF(13.0f), SPOTIFY_GREEN, true);
+    }
 
     const int cy = H - UIS_H(139), cx = W / 2;
     drawIcon((u32)(cx - UIS_W(88)), (u32)(cy - UIS_H(13)), ICON_SKIP_BACK,
@@ -895,9 +987,15 @@ static void draw_spotify_now_playing(const MusicCtx *ctx, const MusicTrack *trac
         int fill = (int)((u64)bw * (elapsed > duration ? duration : elapsed) / duration);
         drawRect((u32)bx, (u32)by, (u32)fill, UIS_H(3), XMB_ACCENT);
     }
-    const Hint hints[4] = {{'l', TRN("Previous")}, {'r', TRN("Next")},
-                           {'X', TRN("Play")}, {'C', TRN("Back")}};
-    draw_hints_bar(hints, 4);
+    const bool have_lyrics = ls == SPL_SYNCED || ls == SPL_UNSYNCED;
+    const Hint hints[5] = {{'l', TRN("Previous")}, {'r', TRN("Next")},
+                           {'X', TRN("Play")}, {'T', sp_lyrics_enabled() ? "Hide lyrics" : "Lyrics"},
+                           {'C', TRN("Back")}};
+    if (have_lyrics) draw_hints_bar(hints, 5);
+    else {
+        const Hint h4[4] = {hints[0], hints[1], hints[2], hints[4]};
+        draw_hints_bar(h4, 4);
+    }
 }
 
 static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
@@ -1360,6 +1458,12 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
         }
     }
 
+#if APP_SPOTIFY
+    if (s_live && BTN_PRESSED(triangle)) {            // the phone owns shuffle; Triangle shows or hides the lyrics
+        sp_lyrics_set_enabled(!sp_lyrics_enabled());
+        ui_sfx_play(SFX_OPTION);
+    } else
+#endif
     if (BTN_PRESSED(triangle))
         music_set_shuffle(!music_is_shuffle());
 
@@ -1388,8 +1492,7 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
 static MusicTrack s_tracks[MUSIC_QUEUE_MAX];
 
 #if APP_SPOTIFY
-// Spotify mode: one track that follows what the phone is playing.
-static bool     s_live = false;
+// Spotify mode: one track that follows what the phone is playing.  (s_live is declared near the top.)
 static unsigned s_live_serial = 0;
 
 static void live_refresh(void) {
@@ -1545,6 +1648,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
 
 #if APP_SPOTIFY
         if (s_live && sp_svc_track_serial() != s_live_serial) { s_live_serial = sp_svc_track_serial(); live_refresh(); }
+        if (s_live) { SpTrack lt; const bool ok = sp_svc_track(&lt); sp_lyrics_follow(&lt, ok); }
 #endif
         poll_buttons();
         if (!s_outro) {

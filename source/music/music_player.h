@@ -61,5 +61,6 @@ int         music_current_index(void);  // ORIGINAL index of playing track
 int         music_current_pos(void);    // position in the play order
 int         music_track_at(int pos);    // play order -> original index (-1 OOB)
 u32         music_elapsed_secs(void);
+u32         music_output_lag_ms(void);  // decoded audio queued ahead of the speakers
 u32         music_duration_secs(void);  // current track (server-reported)
 const char *music_source_info(void);    // "320 kbps FLAC" ("" until known)

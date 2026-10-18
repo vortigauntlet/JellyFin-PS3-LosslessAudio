@@ -28,6 +28,7 @@
 #include "meminfo.h"
 #include "plog.h"
 #include "sp_log.h"
+#include "sp_lyrics_parse.h"
 #include "sp_zeroconf.h"
 #include "sx_http.h"
 #include "sx_plat.h"
@@ -116,7 +117,9 @@ void set_track_locked(const cspot::TrackInfo& ti) {
   snprintf(s_track.artist, sizeof s_track.artist, "%s", ti.artist.c_str());
   snprintf(s_track.album, sizeof s_track.album, "%s", ti.album.c_str());
   snprintf(s_track.image, sizeof s_track.image, "%s", ti.imageUrl.c_str());
-  s_track.uri[0] = '\0';
+  char b62[23];
+  if (sp_hex_to_base62(ti.trackId.c_str(), b62)) snprintf(s_track.uri, sizeof s_track.uri, "spotify:track:%s", b62);
+  else s_track.uri[0] = '\0';
   s_track.duration_ms = ti.duration;
   s_have_track = true;
 }
@@ -659,6 +662,15 @@ bool sp_svc_track(SpTrack* out) {
 }
 
 unsigned sp_svc_track_serial(void) { return s_serial.load(); }
+
+bool sp_svc_access_token(char* out, size_t cap) {
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
+  auto q = h ? h->getTrackQueue() : nullptr;
+  const std::string token = q ? q->getAccessToken() : "";
+  if (token.empty() || token.size() >= cap) return false;
+  memcpy(out, token.c_str(), token.size() + 1);
+  return true;
+}
 unsigned sp_svc_audio_generation(void) { return s_audio_generation.load(); }
 
 unsigned sp_svc_queue_count(void) {

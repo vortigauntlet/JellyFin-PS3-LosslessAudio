@@ -316,6 +316,7 @@ int main(int argc, const char *argv[]) {
 #if APP_SPOTIFY
     sp_eh_init();      // C++ exceptions: cspot throws on every lost connection, and without this the first one aborts
     sx_http_init();    // the pool lock: covers and the Web API fetch from different threads
+    sx_http_set_user_agent("Spotify-PS3/1.0");
 #endif
     if (!sx_tls_init()) plog("main: TLS did not start; the streaming service will not connect");
 #if APP_SOUNDCLOUD

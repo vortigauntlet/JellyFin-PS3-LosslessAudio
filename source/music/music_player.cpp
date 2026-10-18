@@ -1345,6 +1345,10 @@ bool music_is_paused(void)    {
 }
 int  music_current_index(void){ return s_order[s_ui_pos]; }
 
+u32 music_output_lag_ms(void) {
+    return (u32)((u64)s_n * 1000ULL / 48000ULL) + 40;   // the engine ring, plus about one audio-port block
+}
+
 u32 music_elapsed_secs(void) {
 #if APP_SPOTIFY
     if (s_spotify) return sp_svc_position_ms() / 1000;

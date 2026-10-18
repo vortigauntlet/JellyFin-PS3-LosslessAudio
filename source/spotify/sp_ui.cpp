@@ -23,6 +23,7 @@
 #include "music_screen.h"
 #include "plog.h"
 #include "sp_art.h"
+#include "sp_lyrics.h"
 #include "sp_svc.h"
 #include "thumbnail_cache.h"
 #include "timing.h"
@@ -414,6 +415,11 @@ void sp_ui_run(void) {
     draw_spotify_backdrop();
     rsxSync();
     thumb_cache_tick();
+    {
+      SpTrack lt;
+      const bool ok = sp_svc_track(&lt);
+      sp_lyrics_follow(&lt, ok);       // fetched while Home is up, ready when Now Playing opens
+    }
     poll_buttons();
     if (first) {
       char b[160];

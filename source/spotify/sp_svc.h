@@ -34,6 +34,7 @@ const char* sp_svc_status_text(void);          // one line for the screen: what 
 bool sp_svc_track(SpTrack* out);               // the current track, false when there is none
 unsigned sp_svc_position_ms(void);
 unsigned sp_svc_track_serial(void);            // changes whenever a new track starts
+bool sp_svc_access_token(char* out, size_t cap); // the session's Web API token (never log it); false before sign-in
 unsigned sp_svc_audio_generation(void);         // changes when the receiver flushes/seeks/starts a track
 unsigned sp_svc_queue_count(void);               // tracks in the context sent by the Spotify Connect client
 int sp_svc_queue_current(void);                  // current index in that Connect queue
