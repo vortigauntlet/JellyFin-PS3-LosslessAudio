@@ -397,6 +397,15 @@ static inline int ws_shade(const ws_state *st, const ws_ctl *c, float alpha,
             const float u = (h - 0.5f) * 2.0f;
             cr = 255.0f; cg = 154.0f + (220.0f - 154.0f) * u; cb = 48.0f + (150.0f - 48.0f) * u;
         }
+#elif defined(APP_VARIANT) && APP_VARIANT == 2
+        // Spotify's green range, carried through the same depth lift.
+        if (h < 0.5f) {
+            const float u = h * 2.0f;
+            cr = 30.0f + (124.0f - 30.0f) * u; cg = 215.0f + (240.0f - 215.0f) * u; cb = 96.0f + (168.0f - 96.0f) * u;
+        } else {
+            const float u = (h - 0.5f) * 2.0f;
+            cr = 124.0f + (204.0f - 124.0f) * u; cg = 240.0f + (255.0f - 240.0f) * u; cb = 168.0f + (224.0f - 168.0f) * u;
+        }
 #else
         // JellyDrop's orbit palette: violet -> Jellyfin blue -> cyan.
         if (h < 0.5f) {

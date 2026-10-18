@@ -734,10 +734,10 @@ static void finish_if_done(void)
 
 bool boot_anim_begin(void)
 {
-#if APP_VARIANT == 1
+#if APP_VARIANT == 1 || APP_VARIANT == 2
     // The shared animation is built around Jellyfin's bell mark; keep it out
-    // of the standalone SoundCloud app and use its own branded startup header.
-    plog("boot: Jellyfin mark disabled for SoundCloud standalone");
+    // of the standalone apps and use their own branded startup header.
+    plog("boot: Jellyfin mark disabled for a standalone app");
     return false;
 #endif
     if (s_on) return true;

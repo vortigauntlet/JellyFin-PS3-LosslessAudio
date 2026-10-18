@@ -60,6 +60,19 @@ static const char *THEME_DIRS[] = {
         0x00030201UL, 0x00030201UL, 230, 168,                              \
         4, 999, 72, 34, 0, 12, "SoundCloud"                                \
     }
+#elif APP_VARIANT == 2
+#define THEME_INIT_XMB_WAVE {                                              \
+        0x00050505UL, 0x00121212UL, 0x00000000UL,                          \
+        0x001ED760UL, 0x003BE477UL, 0x001ABC54UL, 0x001ED760UL,            \
+        0x00FFFFFFUL, 0x00B3B3B3UL, 0x007A7A7AUL,                          \
+        0x00141414UL, 0x002A2A2AUL, 0x00282828UL, 0x000C0C0CUL,            \
+        0x00404040UL, 0x00A7A7A7UL, 0x00FFFFFFUL, 0x00000000UL,            \
+        0x00141414UL, 0x00FFFFFFUL, 0x00000000UL,                          \
+        0x001ED760UL, 0x003BE477UL, 0x001ED760UL, 0x001ED760UL,            \
+        0x003BE477UL, 0x001ED760UL, 0x00FFFFFFUL, 0x00102A18UL,            \
+        0x00000000UL, 0x00000000UL, 230, 168,                              \
+        8, 999, 56, 24, 0, 12, "Spotify"                                   \
+    }
 #else
 #define THEME_INIT_XMB_WAVE {                                              \
         0x000B0E1EUL,   /* bg            RSX clear, under the ramp      */ \
@@ -116,6 +129,20 @@ static const Theme THEME_BUILTIN[THEME_BUILTIN_COUNT] = {
         0x00FFFFFFUL, 0x00FFFFFFUL, 230, 168,
         6, 999, 44, 26, 0, 12,
         "SoundCloud Light"
+    }
+#elif APP_VARIANT == 2
+    {   // 1 - the same palette with the wave let through more
+        0x00050505UL, 0x00121212UL, 0x00000000UL,
+        0x001ED760UL, 0x003BE477UL, 0x001ABC54UL, 0x001ED760UL,
+        0x00FFFFFFUL, 0x00B3B3B3UL, 0x007A7A7AUL,
+        0x00141414UL, 0x002A2A2AUL, 0x00282828UL, 0x000C0C0CUL,
+        0x00404040UL, 0x00A7A7A7UL, 0x00FFFFFFUL, 0x00000000UL,
+        0x00141414UL, 0x00FFFFFFUL, 0x00000000UL,
+        0x001ED760UL, 0x003BE477UL, 0x001ED760UL, 0x001ED760UL,
+        0x003BE477UL, 0x001ED760UL, 0x00FFFFFFUL, 0x00102A18UL,
+        0x00000000UL, 0x00000000UL, 230, 168,
+        8, 999, 56, 90, 0, 12,
+        "Spotify Wave"
     }
 #else
     {   // 1 — Golden Age (proves the token set is complete)

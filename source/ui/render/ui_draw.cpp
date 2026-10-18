@@ -34,6 +34,10 @@ void drawHeader(void) {
     drawTTF(XMB_ITEM_PAD, 20, "SoundCloud", 22, XMB_TEXT, true);
     drawTTF(XMB_ITEM_PAD + ttf_text_width("SoundCloud", 22, true) + 8, 27, "PS3",
             13, XMB_ACCENT, true);
+#elif APP_VARIANT == 2
+    drawTTF(XMB_ITEM_PAD, 20, "Spotify", 22, XMB_TEXT, true);
+    drawTTF(XMB_ITEM_PAD + ttf_text_width("Spotify", 22, true) + 8, 27, "PS3",
+            13, XMB_ACCENT, true);
 #else
     drawTTF(XMB_ITEM_PAD, 20, "Jellyfin", 22, XMB_TEXT, true);
     drawTTF(XMB_ITEM_PAD + ttf_text_width("Jellyfin", 22, true) + 8, 27, "PS3",

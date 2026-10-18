@@ -151,6 +151,23 @@
 #define JW_FRINGE_R    1.000000f
 #define JW_FRINGE_G    0.462745f
 #define JW_FRINGE_B    0.219608f
+#elif defined(APP_VARIANT) && APP_VARIANT == 2
+// Spotify's bright green (#1ED760) and a mint, on a very dark green.
+#define JW_PURPLE_R    0.117647f
+#define JW_PURPLE_G    0.843137f
+#define JW_PURPLE_B    0.376471f
+#define JW_BLUE_R      0.486275f
+#define JW_BLUE_G      0.941176f
+#define JW_BLUE_B      0.658824f
+#define JW_RIMC_R      0.800000f
+#define JW_RIMC_G      1.000000f
+#define JW_RIMC_B      0.880000f
+#define JW_DEEP_R      0.015686f
+#define JW_DEEP_G      0.082353f
+#define JW_DEEP_B      0.039216f
+#define JW_FRINGE_R    0.200000f
+#define JW_FRINGE_G    0.900000f
+#define JW_FRINGE_B    0.450000f
 #else
 #define JW_PURPLE_R    0.666667f
 #define JW_PURPLE_G    0.360784f

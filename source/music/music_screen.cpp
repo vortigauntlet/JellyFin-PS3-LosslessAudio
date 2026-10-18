@@ -18,7 +18,12 @@
 #include "ui_wave.h"
 #include "ui_sfx.h"
 #include "music_screen.h"
+#include "../build_config.h"
 #include "music_player.h"
+#if APP_SPOTIFY
+#include "sp_art.h"
+#include "sp_svc.h"
+#endif
 #include "music_fft.h"
 #include "plog.h"
 #include "timing.h"
@@ -1269,6 +1274,25 @@ static bool music_screen_input(const MusicTrack *tracks, int count) {
 
 static MusicTrack s_tracks[MUSIC_QUEUE_MAX];
 
+#if APP_SPOTIFY
+// Spotify mode: one track that follows what the phone is playing.
+static bool     s_live = false;
+static unsigned s_live_serial = 0;
+
+static void live_refresh(void) {
+    SpTrack t;
+    if (!sp_svc_track(&t)) return;
+    MusicTrack *m = &s_tracks[0];
+    memset(m, 0, sizeof *m);
+    snprintf(m->id, sizeof m->id, "sp:live");
+    snprintf(m->name, sizeof m->name, "%s", t.title);
+    snprintf(m->artist, sizeof m->artist, "%s", t.artist);
+    m->duration_secs = t.duration_ms / 1000;
+    m->track_num = 1;
+    if (!sp_art_key(t.image, m->art_id, sizeof m->art_id)) m->art_id[0] = '\0';
+}
+#endif
+
 static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
     {
         char buf[112];
@@ -1277,7 +1301,12 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         plog(buf);
     }
     if (count <= 0) return;
+#if APP_SPOTIFY
+    if (s_live ? !music_start_spotify() : !music_start(s_tracks, count, start_idx)) return;
+    s_live_serial = sp_svc_track_serial();
+#else
     if (!music_start(s_tracks, count, start_idx)) return;
+#endif
 
     // Entered mid-frame from the XMB input handler: that frame has RSX work
     // queued (clear + wave) but its flip hasn't been issued yet.  Finish it
@@ -1399,6 +1428,9 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             }
         }
 
+#if APP_SPOTIFY
+        if (s_live && sp_svc_track_serial() != s_live_serial) { s_live_serial = sp_svc_track_serial(); live_refresh(); }
+#endif
         poll_buttons();
         if (!s_outro) {
             if (music_any_press()) s_last_input_us = timing_get_us();
@@ -1446,6 +1478,10 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
     }
 
     music_stop();
+#if APP_SPOTIFY
+    if (s_live) sp_svc_set_pause(true);       // the phone shows paused, not playing into silence
+    s_live = false;
+#endif
     wave_set_album_tint(0u, 0.0f);            // back to the plain palette
     wave_set_bg_dim(0.0f);                    // the menus get their gradient back
     // Home's posters went blank after an album was played (they stayed fine
@@ -1513,6 +1549,21 @@ void music_screen_open_songs(const XMBItem *items, int count, int start_idx) {
     snprintf(ctx.genre,  sizeof(ctx.genre), "%s", items[start_idx].genre);
     music_screen_run(&ctx, count, start_idx);
 }
+
+#if APP_SPOTIFY
+void music_screen_open_spotify(void) {
+    s_origin_pending = false; take_origin();
+    s_live = true;
+    live_refresh();
+    if (s_tracks[0].name[0] == '\0') snprintf(s_tracks[0].name, sizeof s_tracks[0].name, "Spotify");
+    MusicCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    snprintf(ctx.parent, sizeof(ctx.parent), "Spotify");
+    snprintf(ctx.title,  sizeof(ctx.title),  "Spotify Connect");
+    s_entry_flipped = true;
+    music_screen_run(&ctx, 1, 0);
+}
+#endif
 
 void music_screen_open_service(const MusicTrack *tracks, int count, int start_idx, const char *parent, const char *title) {
     s_origin_pending = false; take_origin();

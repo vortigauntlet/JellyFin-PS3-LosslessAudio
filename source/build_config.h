@@ -91,4 +91,5 @@
 #define APP_ID_STR "JFPS30000"
 #endif
 #define APP_SPOTIFY (APP_VARIANT == 2)
+#define APP_SPOTIFY_APP (APP_VARIANT == 2)   // the standalone Spotify app
 #define APP_STANDALONE (APP_VARIANT != 0)

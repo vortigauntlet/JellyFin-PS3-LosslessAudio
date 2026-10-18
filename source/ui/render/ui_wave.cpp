@@ -85,6 +85,8 @@ bool ui_cpu_bg(void) { return BUILD_FOR_RPCS3 != 0; }
 // "Vertex arrays".
 #if APP_VARIANT == 1
 static const u32   WAVE_COLOR[3]  = { 0x00A93300, 0x00FF5500, 0x00FFA273 };
+#elif APP_VARIANT == 2
+static const u32   WAVE_COLOR[3]  = { 0x000F7A38, 0x001ED760, 0x004BE88A };
 #else
 static const u32   WAVE_COLOR[3]  = { 0x004A52A8, 0x006C5BD4, 0x003A4290 };
 #endif

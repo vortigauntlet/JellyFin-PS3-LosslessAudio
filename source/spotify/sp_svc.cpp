@@ -24,6 +24,7 @@
 #include "TrackPlayer.h"
 #include "WrappedSemaphore.h"
 #include "jf_paths.h"
+#include "meminfo.h"
 #include "plog.h"
 #include "sp_log.h"
 #include "sp_zeroconf.h"
@@ -57,6 +58,23 @@ bool s_paused = false, s_depleted = false;
 uint64_t s_last_pos_report = 0;
 
 std::shared_ptr<cspot::SpircHandler> s_handler;
+std::shared_ptr<cspot::Context> s_ctx;         // the live session's context (the quality is read from it for each track)
+std::atomic<int> s_quality{160};
+
+const char* quality_path() { return jf_data_path("jellyfin_spotify_quality.txt"); }
+
+AudioFormat format_for(int kbps) {
+  return kbps == 96 ? AudioFormat_OGG_VORBIS_96 : kbps == 320 ? AudioFormat_OGG_VORBIS_320 : AudioFormat_OGG_VORBIS_160;
+}
+
+void load_quality() {
+  FILE* f = fopen(quality_path(), "r");
+  if (!f) return;
+  int v = 160;
+  if (fscanf(f, "%d", &v) != 1) v = 160;
+  fclose(f);
+  s_quality = v == 96 ? 96 : v == 320 ? 320 : 160;
+}
 
 void set_status(const char* t) {
   std::lock_guard<std::mutex> g(s_mtx);
@@ -209,6 +227,8 @@ void session_once() {
   s_state = SP_SIGNING_IN;
   set_status("Signing in to Spotify");
   auto ctx = cspot::Context::createFromBlob(blob);
+  ctx->config.audioFormat = format_for(s_quality);
+  { std::lock_guard<std::mutex> g(s_mtx); s_ctx = ctx; }
   ctx->session->connectWithRandomAp();
   ctx->config.authData = ctx->session->authenticate(blob);
   if (ctx->config.authData.empty()) {
@@ -226,7 +246,7 @@ void session_once() {
   ctx->session->startTask();
   s_state = SP_READY;
   set_status("Ready: pick this console in the Spotify app to play");
-  plog("spotify: signed in");
+  { char b[64]; snprintf(b, sizeof b, "spotify: signed in, free=%uKB", meminfo_avail_kb()); plog(b); }
 
   try {
     while (s_run) ctx->session->handlePacket();
@@ -236,6 +256,7 @@ void session_once() {
   s_handler->disconnect();
   ctx->session->disconnect();
   s_handler.reset();
+  { std::lock_guard<std::mutex> g(s_mtx); s_ctx.reset(); }
 }
 
 void session_thread(void*) {
@@ -260,7 +281,9 @@ void session_thread(void*) {
 
 void sp_svc_start(const char* device_name) {
   if (s_run) return;
+  { char b[64]; snprintf(b, sizeof b, "spotify: starting, free=%uKB", meminfo_avail_kb()); plog(b); }
   s_name = device_name && *device_name ? device_name : "PS3";
+  load_quality();
   s_ring.assign(kRingFrames * 2, 0);
   memset(&s_track, 0, sizeof s_track);
   s_run = true;
@@ -280,6 +303,19 @@ void sp_svc_stop(void) {
   sp_zc_stop();
   for (int i = 0; i < 40 && !s_thread_done; i++) usleep(100000);
 }
+
+int sp_svc_quality(void) { return s_quality; }
+
+void sp_svc_set_quality(int kbps) {
+  s_quality = kbps == 96 ? 96 : kbps == 320 ? 320 : 160;
+  FILE* f = fopen(quality_path(), "w");
+  if (f) { fprintf(f, "%d\n", s_quality.load()); fclose(f); }
+  std::shared_ptr<cspot::Context> c;
+  { std::lock_guard<std::mutex> g(s_mtx); c = s_ctx; }
+  if (c) c->config.audioFormat = format_for(s_quality);      // read when the next track is loaded
+}
+
+void sp_svc_forget(void) { forget_creds(); plog("spotify: saved account forgotten"); }
 
 SpState sp_svc_state(void) { return (SpState)s_state.load(); }
 

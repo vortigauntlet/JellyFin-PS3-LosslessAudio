@@ -46,6 +46,7 @@
 #include "sc_svc.h"
 #endif
 #if APP_SPOTIFY
+#include "sp_art.h"
 #include "sp_eh.h"
 #include "sp_ui.h"
 #endif
@@ -328,6 +329,8 @@ int main(int argc, const char *argv[]) {
     thumb_cache_init();
 #if APP_SOUNDCLOUD
     thumb_set_local_bytes(music_art_bytes);     // SoundCloud's artwork
+#elif APP_SPOTIFY_APP
+    thumb_set_local_bytes(sp_art_bytes);        // Spotify's album covers
 #else
     thumb_set_local_bytes(lm_art_bytes);        // covers of music files on a drive
 #endif
