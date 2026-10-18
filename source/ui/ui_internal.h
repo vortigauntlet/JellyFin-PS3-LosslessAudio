@@ -83,6 +83,10 @@ bool xmb_handle_input_search(void);
 // (xmb_search_in_flight() lives in ui_visuals.h, beside the search state, so
 // the results-list drawing can see it too.)
 void xmb_search_shutdown(void);
+// The system keyboard for the search term (ui_search.cpp).  While it is up it
+// owns the pad: the XMB loop hands no input to the menu.
+void xmb_search_open_keyboard(void);
+bool xmb_search_osk_active(void);
 bool xmb_handle_input_home(void);
 
 // Launch the player for one list item (xmb/ui_nav.cpp).  resume_secs > 0

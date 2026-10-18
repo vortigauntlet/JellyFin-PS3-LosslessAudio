@@ -49,7 +49,6 @@ static void xmb_reset_state(void) {
     g_music_depth  = 0;
     g_music_sub_count = 0; g_music_sub_sel = 0;
     g_music_sub_scroll = 0; g_music_sub_total = 0;
-    g_osk_row = 0; g_osk_col = 0; g_osk_sym = false;
 }
 
 // Resolve the card-grid view for the current tab: grid geometry, which item
@@ -251,7 +250,7 @@ static void xmb_draw_cpu_phase(int tab) {
         depth_lib_prefetch(xmb_next_enabled(tab, +1), 6);
         depth_lib_prefetch(xmb_next_enabled(tab, -1), 6);
     } else if (tab == XMB_TAB_SEARCH) {
-        xmb_cpu_draw_osk();
+        xmb_cpu_draw_search();
         xmb_cpu_draw_search_results();
     } else if (tab == XMB_TAB_SETTINGS) {
         xmb_cpu_draw_settings();
@@ -283,7 +282,7 @@ static void xmb_draw_text_phase(int tab) {
     } else if (depth_lib_owns(tab)) {
         depth_lib_text(tab);
     } else if (tab == XMB_TAB_SEARCH) {
-        xmb_rsx_draw_osk();
+        xmb_rsx_draw_search();
     } else if (tab == XMB_TAB_SETTINGS) {
         xmb_draw_settings();
     } else if (xmb_kind(tab) == TABKIND_LIVETV) {
@@ -477,11 +476,11 @@ static void xmb_draw_hints(int tab) {
         }
     } else if (tab == XMB_TAB_SEARCH) {
         if (g_search_focus_results) {
-            static const Hint h[] = {{'X',TRN("Open")},{'T',TRN("Details")},{'S',TRN("Delete")},{'C',TRN("Back")}};
-            draw_hints_bar(h, 4);
-        } else {
-            static const Hint h[] = {{'X',TRN("Type")},{'S',TRN("Delete")},{'C',TRN("Clear")}};
+            static const Hint h[] = {{'X',TRN("Open")},{'T',TRN("Details")},{'C',TRN("Clear")}};
             draw_hints_bar(h, 3);
+        } else {
+            static const Hint h[] = {{'X',TRN("Type")},{'C',TRN("Clear")}};
+            draw_hints_bar(h, 2);
         }
     } else if (xmb_kind(tab) == TABKIND_MUSIC && g_music_header) {
         static const Hint h[] = {{'D',TRN("Switch")},{'X',TRN("Select")}};
@@ -543,8 +542,6 @@ void ui_run_xmb(void) {
             if (g_tabs[t].enabled) { g_active_tab = t; break; }
         }
     }
-
-    OSK_Y0 = XMB_CONTENT_Y + UIS_H(80);
 
     crash_log("13.4 init_btns");
     init_btns();
@@ -653,20 +650,22 @@ void ui_run_xmb(void) {
         spine_frame_begin();   // one depth sample for the whole frame
         // The ambient screensaver: a press that wakes it does nothing else.
         const bool amb_swallow =
-            ambient_update(!xmb_update_popup_active() && !g_overscan_calib);
+            ambient_update(!xmb_update_popup_active() && !g_overscan_calib &&
+                           !xmb_search_osk_active());
         const bool draw_ui = ambient_draw_ui();
         bool should_exit = false;
         if (boot_anim_xmb_frame())
             ;   // cold boot still assembling: a press skips it, nothing else
+        else if (xmb_search_osk_active())
+            should_exit = xmb_handle_input_search();   // the system keyboard has the pad
         else if (amb_swallow)
             ;                           // it only brought the UI back
         else if (xmb_update_popup_active())
             xmb_update_popup_input();   // modal: the screen below keeps focus state
         else if (peek_active())
             peek_input();               // the quick-peek owns the pad while up
-        else if (BTN_PRESSED(square) && tab != XMB_TAB_SEARCH) {
+        else if (BTN_PRESSED(square)) {
             // Square: the visualiser, JellyWave -> JellyDrop -> Off (ui_wave.h).
-            // Not on Search, where Square deletes a character.
             wave_vis_cycle();
             ui_sfx_play(SFX_OPTION);
         }

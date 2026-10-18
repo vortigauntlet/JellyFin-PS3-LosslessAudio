@@ -353,17 +353,9 @@ void xmb_queue_src(int *w, int *h);
 #define OSK_STEP_X   (OSK_KEY_W + OSK_GAP)
 #define OSK_STEP_Y   (OSK_KEY_H + OSK_GAP)
 
-// -------------------------------------------------------
-// OSK data (defined in ui/ui_search.cpp, used by draw functions)
-// -------------------------------------------------------
-extern const char *OSK_LETTERS[OSK_ROWS_N];
-extern const char *OSK_SYMBOLS[OSK_ROWS_N];
-
-// Search layout (ui_osk_draw.cpp).  The keyboard collapses to just the search
-// field once the results are focused, so the list gets the full content area
-// instead of the nothing it was left with below 1080p.  Both the renderer and
-// the scroll arithmetic must agree on the row count — use these, not a
-// hardcoded guess.
+// Search layout (ui_osk_draw.cpp): the search field, then the results under
+// it.  Both the renderer and the scroll arithmetic must agree on the row
+// count — use these, not a hardcoded guess.
 int xmb_search_results_y(void);
 int xmb_search_vis_rows(void);
 
@@ -410,9 +402,6 @@ extern int     g_music_sub_scroll;
 extern int     g_music_sub_total;
 extern int     g_tab_start[XMB_TAB_COUNT];
 extern int     g_tab_total[XMB_TAB_COUNT];
-extern int     g_osk_row;
-extern int     g_osk_col;
-extern bool    g_osk_sym;
 extern bool    g_search_focus_results;
 extern int     g_search_sel;
 extern int     g_search_scroll;
@@ -425,7 +414,6 @@ extern int     g_search_results_count;
 // server takes to answer.
 bool xmb_search_in_flight(void);
 extern XMBItem g_search_results[XMB_ITEMS_MAX];
-extern int     OSK_Y0;
 
 // Jump bar state (defined in ui.cpp)
 extern bool g_jumpbar_active;
@@ -605,8 +593,8 @@ void xmb_draw_music_subtabs(int x, int y, int active, bool focused);
 void xmb_grid_text(const GridGeom *gg, const XMBItem *items, int count,
                    int sel, int scroll, int y0, bool more_below,
                    int abs_start, int abs_total);
-void xmb_rsx_draw_osk(void);
-void xmb_cpu_draw_osk(void);
+void xmb_rsx_draw_search(void);
+void xmb_cpu_draw_search(void);
 void xmb_cpu_draw_search_results(void);
 void xmb_draw_jumpbar(int tab);
 void draw_hints_bar(const Hint *hints, int n);

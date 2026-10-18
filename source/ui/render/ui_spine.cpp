@@ -271,6 +271,14 @@ static void spine_peek_column_item(int tab) {
 bool spine_input_base(void) {
     if (BTN_REPEAT(left)  || BTN_PRESSED(l1)) { spine_step_tab(-1); return false; }
     if (BTN_REPEAT(right) || BTN_PRESSED(r1)) { spine_step_tab(+1); return false; }
+    if (xmb_kind(g_active_tab) == TABKIND_SEARCH &&
+        (BTN_PRESSED(down) || BTN_PRESSED(cross))) {
+        // Search has nothing to browse until a term is typed: go in and put
+        // the system keyboard up at once.
+        spine_go(SPINE_L2);
+        xmb_search_open_keyboard();
+        return false;
+    }
     if (BTN_PRESSED(down))  { spine_go(SPINE_L2); return false; }
     if (BTN_PRESSED(cross)) spine_open_column_item(g_active_tab);
     else if (BTN_PRESSED(triangle)) spine_peek_column_item(g_active_tab);
@@ -291,9 +299,8 @@ bool spine_try_back(int tab) {
     bool leave = false;
     switch (xmb_kind(tab)) {
     case TABKIND_SEARCH:
-        // O already means "clear" on the keyboard, so only Up leaves, and
-        // only from the keyboard's top row.
-        leave = up && !g_search_focus_results && g_osk_row == 0;
+        // O already means "clear" here, so only Up leaves, from the field.
+        leave = up && !g_search_focus_results;
         break;
     case TABKIND_SETTINGS:
         if (g_settings_confirm || g_overscan_calib) return false;

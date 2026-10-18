@@ -62,9 +62,6 @@ void xmb_switch_tab(int new_tab) {
     g_music_depth = 0; g_music_header = (xmb_kind(new_tab) == TABKIND_MUSIC);
     g_music_sub_sel = 0; g_music_sub_scroll = 0;
     g_music_sub_count = 0; g_music_sub_total = 0;
-    if (new_tab == XMB_TAB_SEARCH) {
-        g_osk_row = 0; g_osk_col = 0; g_osk_sym = false;
-    }
     if (new_tab == XMB_TAB_SETTINGS) {
         g_settings_sel = 0; g_settings_confirm = false;
         g_settings_cat = -1; g_settings_catsel = 0;     // start on the list of categories

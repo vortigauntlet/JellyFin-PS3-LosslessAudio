@@ -1,10 +1,13 @@
-// XMB search tab — OSK input and Jellyfin search.
+// XMB search tab — system keyboard input and Jellyfin search.
 
 #include <stdio.h>
 #include <string.h>
 
 #include <unistd.h>      // usleep -- the retry pause below
 #include <sys/thread.h>
+#include <sys/memory.h>
+#include <sysutil/sysutil.h>
+#include <sysutil/osk.h>
 
 #include "ui_internal.h"
 #include "jellyfin_api.h"
@@ -12,30 +15,18 @@
 #include "plog.h"
 #include "timing.h"
 
-// Search used to run a BLOCKING http_request on the UI thread, on every single
-// keystroke: type "matrix" and that is six round trips, each one freezing the
-// OSK until the server answers.  On top of feeling broken, the one- and
-// two-character queries in that sequence are the worst ones to send — Jellyfin
-// matches them loosely, so results appeared, vanished and reappeared as the
-// term grew, which is the "sometimes results, sometimes none" part.
+// The term is typed on the PS3's own on-screen keyboard (cellOskDialog), not
+// a keyboard drawn by the app.  X on the search field opens it pre-filled with
+// the current term; confirming it sends exactly one query.  The dialog lives
+// on the system layer and reports back through a sysutil callback, which the
+// XMB loop's per-frame sysUtilCheckCallback() delivers, so the menu keeps
+// drawing underneath while it is up.
 //
-// So: wait until typing PAUSES, then send one query, and never send a term
-// too short to mean anything.  The pause is checked in the per-frame input
-// handler, which is already called every frame.
-// The wait is measured from the last PAD ACTIVITY, not the last letter.
-// Timing it from the letter is why it still fired mid-word: picking the next
-// key on an on-screen keyboard takes several d-pad presses, and none of those
-// pushed the deadline back, so the query went out — and froze the UI — while
-// the user was still walking to the next letter.  Any button activity now
-// counts as "still typing".
-//
-// The debounce fixed the frequency but not the freeze, and the freeze then got
-// WORSE: this server takes 2.5-8.4 s to emit the first byte of a search (see
-// HANDOFF.md), so http.cpp now allows up to 24 s for it — which as a blocking
-// call on the render thread is a 24-second dead console.  The request
-// therefore runs on its own thread now, exactly like the thumbnail fetch and
-// the update check, and the UI keeps running at 60 Hz with a "Searching..."
-// line while it works.
+// This server takes 2.5-8.4 s to emit the first byte of a search (see
+// HANDOFF.md), and http.cpp allows up to 24 s for it -- as a blocking call on
+// the render thread that is a 24-second dead console.  The request therefore
+// runs on its own thread, like the thumbnail fetch and the update check, and
+// the UI keeps running at 60 Hz with a "Searching..." line while it works.
 //
 // Two rules make the threading safe, and both matter:
 //
@@ -47,28 +38,6 @@
 //      holds a mutex while it fills the caller's buffer, but the CALLER parses
 //      it after unlocking — so two callers sharing that global would happily
 //      parse each other's response.  Search gets its own.
-#define SEARCH_DEBOUNCE_US 900000   // idle pause before the query fires
-#define SEARCH_MIN_CHARS   2        // shorter terms are noise, not a search
-
-static u64  s_search_edit_us = 0;   // when the term last changed
-static bool s_search_pending = false;
-
-// Search OSK state
-const char *OSK_LETTERS[OSK_ROWS_N] = {
-    "1234567890",
-    "QWERTYUIOP",
-    "ASDFGHJKL",
-    "ZXCVBNM",
-};
-const char *OSK_SYMBOLS[OSK_ROWS_N] = {
-    "!@#$%^&*()",
-    "-_=+[]{}|\\",
-    ":;\"'`~<>?",
-    ".,/!",
-};
-int  g_osk_row    = 0;
-int  g_osk_col    = 0;
-bool g_osk_sym    = false;
 bool g_search_focus_results = false;
 int  g_search_sel           = 0;
 int  g_search_scroll        = 0;
@@ -76,28 +45,124 @@ char g_search_buf[64];
 int  g_search_results_count = 0;
 XMBItem g_search_results[XMB_ITEMS_MAX];
 
-int OSK_Y0 = 0;
+// --- the system keyboard --------------------------------------------------
+//
+// Slot 0 belongs to main.cpp's exit/overlay callback; every registered slot
+// sees every sysutil event, so the two coexist.
+#define SEARCH_OSK_SLOT  1
+// UTF-16 units the dialog accepts.  A BMP character is at most 3 UTF-8 bytes
+// and g_search_buf holds 63, so 21 always fits; the conversion below stops at
+// a whole character anyway, so a longer limit would only ever truncate.
+#define SEARCH_OSK_CHARS 40
 
-static int osk_row_len(int r) {
-    if (r >= OSK_ROWS_N)
-        return 3;
-    const char **rows = g_osk_sym ? OSK_SYMBOLS : OSK_LETTERS;
-    int base = strlen(rows[r]);
-    if (!g_osk_sym && r == OSK_ROWS_N - 1) base++;
-    if  (g_osk_sym && r == OSK_ROWS_N - 1) base++;
-    return base;
+static bool s_osk_active = false;          // LoadAsync .. UNLOADED
+static bool s_osk_have   = false;          // a confirmed term waits in s_osk_text
+static char s_osk_text[sizeof(g_search_buf)];
+static u16  s_osk_msg[64];
+static u16  s_osk_init[SEARCH_OSK_CHARS + 1];
+static u16  s_osk_out[SEARCH_OSK_CHARS + 1];
+
+bool xmb_search_osk_active(void) { return s_osk_active; }
+
+// UTF-8 -> UTF-16 (BMP only; anything wider becomes '?').  Always terminates.
+static void utf8_to_u16(const char *s, u16 *out, int cap) {
+    int n = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p && n < cap - 1) {
+        u32 c = *p++;
+        if      (c >= 0xF0) { c = '?'; while ((*p & 0xC0) == 0x80) p++; }
+        else if (c >= 0xE0 && p[0] && p[1]) { c = ((c & 0x0F) << 12) | ((p[0] & 0x3F) << 6) | (p[1] & 0x3F); p += 2; }
+        else if (c >= 0xC0 && p[0]) { c = ((c & 0x1F) << 6) | (p[0] & 0x3F); p += 1; }
+        else if (c >= 0x80) c = '?';
+        out[n++] = (u16)c;
+    }
+    out[n] = 0;
 }
 
-static char osk_current_char(void) {
-    if (g_osk_row >= OSK_ROWS_N)
-        return 0;
-    const char **rows = g_osk_sym ? OSK_SYMBOLS : OSK_LETTERS;
-    const char *row   = rows[g_osk_row];
-    int base_len = strlen(row);
-    bool is_toggle = (g_osk_row == OSK_ROWS_N-1 && g_osk_col == base_len);
-    if (is_toggle) return 0;
-    if (g_osk_col < base_len) return row[g_osk_col];
-    return 0;
+// UTF-16 -> UTF-8, stopping before a character that would not fit whole.
+// Surrogate pairs (emoji) are dropped -- nothing in a library title needs them
+// and the fonts could not draw them.
+static void u16_to_utf8(const u16 *s, char *out, int cap) {
+    int n = 0;
+    for (; *s; s++) {
+        u32 c = *s;
+        if (c >= 0xD800 && c <= 0xDFFF) continue;
+        int need = c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+        if (n + need > cap - 1) break;
+        if (need == 1) out[n++] = (char)c;
+        else if (need == 2) { out[n++] = (char)(0xC0 | (c >> 6)); out[n++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[n++] = (char)(0xE0 | (c >> 12)); out[n++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[n++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[n] = '\0';
+}
+
+// Runs on the render thread, inside the XMB loop's sysUtilCheckCallback().
+static void search_osk_cb(u64 status, u64 param, void *usrdata) {
+    (void)param; (void)usrdata;
+    if (status == SYSUTIL_OSK_DONE) {
+        // Unloading is what takes the keyboard off screen and hands over the
+        // text.  Cancel (O) and an empty field leave the term alone.
+        oskCallbackReturnParam ret;
+        memset(&ret, 0, sizeof(ret));
+        s_osk_out[0] = 0;
+        ret.res = OSK_OK;
+        ret.len = SEARCH_OSK_CHARS;
+        ret.str = s_osk_out;
+        oskUnloadAsync(&ret);
+        if (ret.res == OSK_OK) {
+            u16_to_utf8(s_osk_out, s_osk_text, sizeof(s_osk_text));
+            s_osk_have = true;
+        } else if (ret.res == OSK_NO_TEXT) {   // confirmed an empty field: clear
+            s_osk_text[0] = '\0';
+            s_osk_have = true;
+        }
+        char b[96];
+        snprintf(b, sizeof(b), "search: keyboard closed res=%d '%s'",
+                 (int)ret.res, ret.res == OSK_OK ? s_osk_text : "");
+        plog(b);
+    } else if (status == SYSUTIL_OSK_UNLOADED) {
+        sysUtilUnregisterCallback(SEARCH_OSK_SLOT);
+        s_osk_active = false;
+    }
+}
+
+static void search_osk_open(void) {
+    if (s_osk_active) return;
+
+    utf8_to_u16(TR("Search your library"), s_osk_msg,
+                (int)(sizeof(s_osk_msg) / sizeof(s_osk_msg[0])));
+    utf8_to_u16(g_search_buf, s_osk_init, SEARCH_OSK_CHARS + 1);
+
+    oskInputFieldInfo info;
+    info.message   = s_osk_msg;
+    info.startText = s_osk_init;
+    info.maxLength = SEARCH_OSK_CHARS;
+
+    oskParam p;
+    p.allowedPanels  = OSK_PANEL_TYPE_ALPHABET | OSK_PANEL_TYPE_NUMERAL |
+                       OSK_PANEL_TYPE_ENGLISH;
+    p.firstViewPanel = OSK_PANEL_TYPE_ALPHABET;
+    p.controlPoint.x = 0.0f;
+    p.controlPoint.y = 0.0f;
+    p.prohibitFlags  = OSK_PROHIBIT_RETURN;   // one line: Enter confirms
+
+    if (sysUtilRegisterCallback(SEARCH_OSK_SLOT, search_osk_cb, NULL) != 0) {
+        plog("search: keyboard callback slot busy");
+        return;
+    }
+    oskAddSupportLanguage(p.allowedPanels);
+    oskSetKeyLayoutOption(OSK_10KEY_PANEL | OSK_FULLKEY_PANEL);
+
+    s32 rc = oskLoadAsync((sys_mem_container_t)0xFFFFFFFFu, &p, &info);
+    if (rc != 0) {
+        char b[64];
+        snprintf(b, sizeof(b), "search: oskLoadAsync FAILED 0x%08x", (u32)rc);
+        plog(b);
+        sysUtilUnregisterCallback(SEARCH_OSK_SLOT);
+        return;
+    }
+    s_osk_active = true;
+    s_osk_have   = false;
 }
 
 // --- the search worker ----------------------------------------------------
@@ -111,6 +176,7 @@ static char     s_search_resp[RESPONSE_SIZE];
 
 static sys_ppu_thread_t s_search_thr     = 0;
 static bool             s_search_running = false;   // render thread only
+static bool             s_search_pending = false;   // a term waits for the worker
 static volatile bool    s_search_done    = false;   // worker -> render thread
 static char             s_search_term[sizeof(g_search_buf)];  // term in flight
 static XMBItem          s_search_out[XMB_ITEMS_MAX];
@@ -257,10 +323,10 @@ static void xmb_search_collect(void) {
     s_search_running = false;
     s_search_done    = false;
 
-    // Publish only if the user has not moved on.  If they kept typing while
-    // this was in flight the term no longer matches, and the debounce below
-    // will fire a fresh query -- showing the stale hits in the meantime would
-    // be worse than showing the previous ones.
+    // Publish only if the user has not moved on.  If they entered a new term
+    // while this was in flight it no longer matches, and the pending query
+    // goes out next frame -- showing the stale hits meanwhile would be worse
+    // than showing nothing.
     if (strcmp(s_search_term, g_search_buf) != 0) return;
 
     if (s_search_status == 200) {
@@ -271,24 +337,16 @@ static void xmb_search_collect(void) {
         g_search_results_count = 0;
     }
 
-    // A new result set can be SHORTER than the one it replaces -- deleting a
-    // character with square re-runs the query while the cursor may be sitting
-    // in the results list -- so the selection and scroll have to be pulled
-    // back inside the new list rather than left pointing past its end.
-    if (g_search_results_count == 0) {
-        g_search_focus_results = false;
-        g_search_sel    = 0;
-        g_search_scroll = 0;
-    } else {
-        if (g_search_sel >= g_search_results_count)
-            g_search_sel = g_search_results_count - 1;
-        if (g_search_scroll > g_search_sel) g_search_scroll = g_search_sel;
-        if (g_search_scroll < 0)            g_search_scroll = 0;
-    }
+    // Every answer is to a freshly entered term: land on its first hit, so X
+    // opens it straight away.
+    g_search_sel    = 0;
+    g_search_scroll = 0;
+    g_search_focus_results = g_search_results_count > 0;
 }
 
 // Join the worker before the XMB tears down.  Safe to call unconditionally.
 void xmb_search_shutdown(void) {
+    if (s_osk_active) oskAbort();   // the system unloads it; the slot goes with the app
     if (!s_search_running) return;
     u64 tret;
     sysThreadJoin(s_search_thr, &tret);
@@ -311,13 +369,43 @@ static void search_peek_open(void) {
     }
 }
 
+// Open the system keyboard on the current term.  Also the Search tab's entry
+// from the tab bar (ui_spine.cpp), so X or Down there goes straight to typing.
+void xmb_search_open_keyboard(void) {
+    g_search_focus_results = false;
+    search_osk_open();
+}
+
+// The search field and the results under it.  On the field, X opens the
+// keyboard, and so does Down while there is nothing below to move into.
 bool xmb_handle_input_search(void) {
     // Pick up a finished query first, so a result that landed since the last
     // frame is on screen before this frame's input is considered.
     xmb_search_collect();
 
-    char prev_buf[sizeof(g_search_buf)];
-    strcpy(prev_buf, g_search_buf);
+    // While the keyboard is up it owns the pad (ui_xmb.cpp skips input).
+    if (s_osk_active) return false;
+
+    // A term confirmed on the keyboard: search for it at once.  The same term
+    // again only re-runs if it found nothing, which is the retry this server
+    // sometimes needs (see search_thread_fn).
+    if (s_osk_have) {
+        s_osk_have = false;
+        init_btns();   // the press that closed the dialog is not ours
+        if (strcmp(s_osk_text, g_search_buf) != 0 || g_search_results_count == 0) {
+            snprintf(g_search_buf, sizeof(g_search_buf), "%s", s_osk_text);
+            g_search_results_count = 0;
+            g_search_focus_results = false;
+            g_search_sel = g_search_scroll = 0;
+            s_search_pending = g_search_buf[0] != '\0';
+        }
+        return false;
+    }
+    // Waits here while an older query is still on the worker.
+    if (s_search_pending && !s_search_running) {
+        s_search_pending = false;
+        xmb_do_search();
+    }
 
     if (BTN_PRESSED(l1)) { g_search_focus_results = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, -1)); return false; }
     if (BTN_PRESSED(r1)) { g_search_focus_results = false; xmb_switch_tab(xmb_next_enabled(g_active_tab, +1)); return false; }
@@ -325,213 +413,86 @@ bool xmb_handle_input_search(void) {
         xmb_switch_tab(xmb_next_enabled(g_active_tab, +1));
         return false;
     }
-    if (BTN_PRESSED(circle)) { g_search_buf[0] = '\0'; g_search_results_count = 0; g_search_focus_results = false; return false; }
-
-    // Square = backspace, from anywhere on this screen.
-    //
-    // The OSK has a Del key, but it sits on the bottom row: correcting one
-    // letter means walking the cursor down to it, pressing X, and walking all
-    // the way back to where you were typing.  A dedicated button is what makes
-    // the keyboard usable, and square was the only face button doing nothing
-    // here.  BTN_REPEAT rather than BTN_PRESSED so it can be held down.
-    //
-    // No early return: this falls through to the change detection below, which
-    // is what re-arms the debounce and eventually sends the shortened term.
-    if (BTN_REPEAT(square)) {
-        int len = (int)strlen(g_search_buf);
-        if (len > 0) {
-            g_search_buf[len - 1] = '\0';
-            // Deleting back to nothing means there is no query any more, so
-            // drop the hits with it rather than leaving the previous term's
-            // results sitting under an empty box.
-            if (!g_search_buf[0]) {
-                g_search_results_count = 0;
-                g_search_focus_results = false;
-            }
-        }
+    if (BTN_PRESSED(circle)) {
+        g_search_buf[0] = '\0';
+        g_search_results_count = 0;
+        g_search_focus_results = false;
+        s_search_pending = false;
+        return false;
     }
 
-    int row_count = OSK_ROWS_N + 1;
-
     if (!g_search_focus_results) {
-        if (BTN_REPEAT(up)) {
-            if (g_osk_row == 0) {
-                g_osk_row = row_count - 1;
-            } else {
-                g_osk_row--;
-            }
-            int ml = osk_row_len(g_osk_row);
-            if (g_osk_col >= ml) g_osk_col = ml - 1;
-        }
-        if (BTN_REPEAT(down)) {
-            if (g_osk_row == row_count - 1) {
-                if (g_search_results_count > 0) {
-                    g_search_focus_results = true;
-                    g_search_sel    = 0;
-                    g_search_scroll = 0;
-                } else {
-                    g_osk_row = 0;
-                }
-            } else {
-                g_osk_row++;
-                int ml = osk_row_len(g_osk_row);
-                if (g_osk_col >= ml) g_osk_col = ml - 1;
-            }
-        }
-        if (BTN_REPEAT(left)) {
-            int ml = osk_row_len(g_osk_row);
-            g_osk_col = (g_osk_col - 1 + ml) % ml;
-        }
-        if (BTN_REPEAT(right)) {
-            int ml = osk_row_len(g_osk_row);
-            g_osk_col = (g_osk_col + 1) % ml;
-        }
-    } else {
-        if (BTN_REPEAT(up)) {
-            if (g_search_sel == 0) {
-                g_search_focus_results = false;
-                g_osk_row = row_count - 1;
-                int ml = osk_row_len(g_osk_row);
-                if (g_osk_col >= ml) g_osk_col = ml - 1;
-            } else {
-                g_search_sel--;
-                if (g_search_sel < g_search_scroll) g_search_scroll = g_search_sel;
-            }
-        }
-        if (BTN_REPEAT(down)) {
-            if (g_search_sel < g_search_results_count - 1) {
-                g_search_sel++;
-                // Scroll against the rows that ACTUALLY fit.  This was a
-                // hardcoded 6 while the renderer measured the screen and drew
-                // as few as one, so the selection walked off the visible area
-                // without ever scrolling.
-                int vis = xmb_search_vis_rows();
-                if (vis < 1) vis = 1;
-                if (g_search_sel >= g_search_scroll + vis)
-                    g_search_scroll = g_search_sel - vis + 1;
-            }
-        }
-        // Triangle opens the info screen for a search hit, the same as it does
-        // in the library grid — so a title found by search can be played from
-        // a chosen version and quality instead of only the server's default.
-        if (BTN_PRESSED(triangle) && g_search_sel < g_search_results_count &&
-            timing_get_us() >= g_info_cooldown_until) {
-            const XMBItem *it = &g_search_results[g_search_sel];
-            if (g_spine_on) {
-                peek_open_item(it, XMB_THUMB_W, XMB_THUMB_H, search_peek_open);
-                return false;
-            }
-            if (strcmp(it->type, "Series") == 0) {
-                // Same rule as everywhere else: browse a show rather than
-                // offer it a version overlay it has no versions for.
-                if (xmb_open_series(it)) {
-                    g_search_focus_results = false;
-                    init_btns();
-                }
-            } else {
-                xmb_show_item_info(it);
-            }
+        if (BTN_PRESSED(cross) ||
+            (BTN_PRESSED(down) && g_search_results_count == 0)) {
+            search_osk_open();
             return false;
         }
-        if (BTN_PRESSED(cross) && g_search_sel < g_search_results_count) {
-            const XMBItem *it = &g_search_results[g_search_sel];
-            // A SERIES is not playable — it is a folder.  X used to hand it
-            // to the video player anyway, which is why picking a show from
-            // search dropped straight into something instead of letting you
-            // choose.  Open the Seasons -> Episodes browser the TV tab and
-            // the Home rows already use.
-            if (strcmp(it->type, "Series") == 0) {
-                if (xmb_open_series(it)) {
-                    g_search_focus_results = false;
-                    init_btns();
-                }
-                return false;
+        if (BTN_REPEAT(down) && g_search_results_count > 0) {
+            g_search_focus_results = true;
+            g_search_sel    = 0;
+            g_search_scroll = 0;
+        }
+        return false;
+    }
+
+    if (BTN_REPEAT(up)) {
+        if (g_search_sel == 0) {
+            g_search_focus_results = false;
+        } else {
+            g_search_sel--;
+            if (g_search_sel < g_search_scroll) g_search_scroll = g_search_sel;
+        }
+    }
+    if (BTN_REPEAT(down)) {
+        if (g_search_sel < g_search_results_count - 1) {
+            g_search_sel++;
+            // Scroll against the rows that ACTUALLY fit (the renderer's count).
+            int vis = xmb_search_vis_rows();
+            if (vis < 1) vis = 1;
+            if (g_search_sel >= g_search_scroll + vis)
+                g_search_scroll = g_search_sel - vis + 1;
+        }
+    }
+    // Triangle opens a search hit's details, as in the library grid.
+    if (BTN_PRESSED(triangle) && g_search_sel < g_search_results_count &&
+        timing_get_us() >= g_info_cooldown_until) {
+        const XMBItem *it = &g_search_results[g_search_sel];
+        if (g_spine_on) {
+            peek_open_item(it, XMB_THUMB_W, XMB_THUMB_H, search_peek_open);
+            return false;
+        }
+        if (strcmp(it->type, "Series") == 0) {
+            // Same rule as everywhere else: browse a show rather than
+            // offer it a version overlay it has no versions for.
+            if (xmb_open_series(it)) {
+                g_search_focus_results = false;
+                init_btns();
             }
-            // Films and episodes open their details page, as X does in the
-            // library grids (Version, Quality, Resume live there).  Songs
-            // still play at once.
-            if (strcmp(it->type, "Audio") == 0) {
-                xmb_play_item(it, 0);
-            } else if (timing_get_us() >= g_info_cooldown_until) {
-                xmb_show_item_info(it);
+        } else {
+            xmb_show_item_info(it);
+        }
+        return false;
+    }
+    if (BTN_PRESSED(cross) && g_search_sel < g_search_results_count) {
+        const XMBItem *it = &g_search_results[g_search_sel];
+        // A SERIES is a folder, not something to play: open the Seasons ->
+        // Episodes browser the TV tab and the Home rows use.
+        if (strcmp(it->type, "Series") == 0) {
+            if (xmb_open_series(it)) {
+                g_search_focus_results = false;
                 init_btns();
             }
             return false;
         }
-    }
-
-    if (!g_search_focus_results && BTN_PRESSED(cross)) {
-        if (g_osk_row == OSK_ROWS_N) {
-            if (g_osk_col == 0) {
-                int len = strlen(g_search_buf);
-                if (len < (int)sizeof(g_search_buf)-1) { g_search_buf[len]=' '; g_search_buf[len+1]='\0'; }
-            } else if (g_osk_col == 1) {
-                int len = strlen(g_search_buf);
-                if (len > 0) g_search_buf[len-1] = '\0';
-            } else {
-                g_search_buf[0] = '\0';
-                g_search_results_count = 0;
-                g_search_focus_results = false;
-            }
-        } else {
-            const char **rows = g_osk_sym ? OSK_SYMBOLS : OSK_LETTERS;
-            int base_len = strlen(rows[g_osk_row]);
-            if (g_osk_row == OSK_ROWS_N - 1 && g_osk_col == base_len) {
-                g_osk_sym = !g_osk_sym;
-                g_osk_col = 0;
-            } else {
-                char ch = osk_current_char();
-                if (ch) {
-                    int len = strlen(g_search_buf);
-                    if (len < (int)sizeof(g_search_buf)-1) {
-                        g_search_buf[len] = ch;
-                        g_search_buf[len+1] = '\0';
-                    }
-                }
-            }
+        // Films and episodes open their details page (Version, Quality,
+        // Resume live there).  Songs still play at once.
+        if (strcmp(it->type, "Audio") == 0) {
+            xmb_play_item(it, 0);
+        } else if (timing_get_us() >= g_info_cooldown_until) {
+            xmb_show_item_info(it);
+            init_btns();
         }
-    }
-
-    if (strcmp(prev_buf, g_search_buf) != 0) {
-        if (g_search_buf[0]) {
-            // Queue it; the query goes out once typing stops (see the note at
-            // the top of this file).
-            s_search_pending = true;
-            s_search_edit_us = timing_get_us();
-        } else {
-            s_search_pending       = false;
-            g_search_results_count = 0;
-            g_search_focus_results = false;
-        }
-    }
-
-    // Still working the keyboard — moving between keys, holding a direction,
-    // deleting — so push the query back.  Held buttons count, which is what
-    // keeps a long d-pad run from being read as a pause.
-    if (s_search_pending &&
-        (btn_cur.up || btn_cur.down || btn_cur.left || btn_cur.right ||
-         btn_cur.cross || btn_cur.circle || btn_cur.square ||
-         btn_cur.triangle || btn_cur.l1 || btn_cur.r1))
-        s_search_edit_us = timing_get_us();
-
-    if (s_search_pending &&
-        timing_get_us() - s_search_edit_us >= SEARCH_DEBOUNCE_US) {
-        if ((int)strlen(g_search_buf) >= SEARCH_MIN_CHARS) {
-            // Leave it pending while a query is still in flight: xmb_do_search
-            // refuses to start a second worker, and clearing the flag here
-            // would silently drop the newer term.  Retrying next frame costs
-            // nothing and sends whatever the user actually settled on.
-            if (!s_search_running) {
-                s_search_pending = false;
-                xmb_do_search();
-            }
-        } else {
-            s_search_pending = false;
-            // Too short to search on: show nothing rather than whatever a
-            // one-letter query happens to match.
-            g_search_results_count = 0;
-            g_search_focus_results = false;
-        }
+        return false;
     }
 
     return false;
