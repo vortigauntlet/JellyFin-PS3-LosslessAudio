@@ -32,11 +32,14 @@ class PsSocket : public Socket {
 
   // Bytes (>0), 0 once the peer closed or close() was called.  Waits as long as the connection stays open.
   size_t read(uint8_t* buf, size_t len) {
-    if (!c_ || len == 0) return 0;
+    if (len == 0) return 0;
     busy_++;
+    if (closing_) { busy_--; return 0; }
+    sx_conn* conn = c_;
+    if (!conn) { busy_--; return 0; }
     int n = 0;
     while (!closing_) {
-      n = sx_conn_read(c_, buf, (int)len, 500);
+      n = sx_conn_read(conn, buf, (int)len, 500);
       if (n != SX_E_TIMEOUT) break;
     }
     busy_--;

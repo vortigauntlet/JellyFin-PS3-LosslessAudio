@@ -1065,10 +1065,28 @@ static void sp_feed_thread(void *arg) {
     static float   out[(2048 * 480 / 441 + 16) * 2];
     double phase = 0.0;                              // position of the next output sample in input frames, relative to this chunk
     float  prev_l = 0.0f, prev_r = 0.0f;             // the last frame of the previous chunk (index -1 of this one)
+    unsigned generation = sp_svc_audio_generation();
     const double step = 44100.0 / 48000.0;
     while (running && s_run) {
+        const unsigned before_read = sp_svc_audio_generation();
+        if (before_read != generation) {
+            generation = before_read;
+            mring_flush();
+            phase = 0.0;
+            prev_l = prev_r = 0.0f;
+            s_hold = true;
+        }
         if (s_n > 24000) { usleep(4000); continue; }                  // ~500 ms ahead is enough
         const size_t got = sp_svc_pcm_read(in, 1024);
+        const unsigned after_read = sp_svc_audio_generation();
+        if (after_read != generation) {
+            generation = after_read;
+            mring_flush();
+            phase = 0.0;
+            prev_l = prev_r = 0.0f;
+            s_hold = true;
+            continue;                                  // discard samples read from the old decoder position
+        }
         if (got == 0) {
             if (s_hold && s_n > 0) s_hold = false;                    // a short track end: play what there is
             usleep(5000);
@@ -1109,6 +1127,14 @@ static void sp_feed_thread(void *arg) {
         phase -= (double)n;
         prev_l = in[(n - 1) * 2] * (1.0f / 32768.0f);
         prev_r = in[(n - 1) * 2 + 1] * (1.0f / 32768.0f);
+        if (sp_svc_audio_generation() != generation) {
+            generation = sp_svc_audio_generation();
+            mring_flush();
+            phase = 0.0;
+            prev_l = prev_r = 0.0f;
+            s_hold = true;
+            continue;
+        }
         mring_push(out, n_out);
         if (s_hold && s_n >= 9600) s_hold = false;                    // ~200 ms pre-roll
     }
@@ -1118,7 +1144,7 @@ static void sp_feed_thread(void *arg) {
 
 // Opens the audio port and plays what the Spotify receiver decodes, until music_stop().  Not a queue: the phone chooses the music.
 bool music_start_spotify(void) {
-    if (s_started) return false;
+    if (s_started) return s_spotify;            // already running as the Spotify speaker: nothing to do
     if (s_stream_unjoined) {
         u64 r;
         sysThreadJoin(s_stream_tid, &r);
@@ -1187,8 +1213,16 @@ void music_stop(void) {
     // let finish on their own: it sees s_run and ends, and music_start()
     // joins it before a new session reuses anything.
     sysThreadJoin(s_pump_tid, &retval);
-    s_stream_unjoined = true;
     crash_log("m6 pump joined");
+    if (s_spotify) {
+        // The Connect feed only reads the receiver's PCM ring; unlike the
+        // Jellyfin stream thread it does not wait on network I/O, so retire it
+        // before the audio port and shared source callbacks are torn down.
+        sysThreadJoin(s_stream_tid, &retval);
+        s_stream_unjoined = false;
+    } else {
+        s_stream_unjoined = true;
+    }
     audio_close();
     audio_set_paced(false);
     audio_set_source(NULL, NULL, NULL);   // hand the port back to the video path

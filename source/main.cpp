@@ -40,6 +40,7 @@
 #include "build_config.h"
 #if APP_SOUNDCLOUD || APP_SPOTIFY
 #include "sx_tls.h"
+#include "sx_http.h"
 #endif
 #if APP_SOUNDCLOUD
 #include "sc_diag.h"
@@ -314,6 +315,7 @@ int main(int argc, const char *argv[]) {
     // thumbnail cache, which takes whatever is left.  A failure only disables the service.
 #if APP_SPOTIFY
     sp_eh_init();      // C++ exceptions: cspot throws on every lost connection, and without this the first one aborts
+    sx_http_init();    // the pool lock: covers and the Web API fetch from different threads
 #endif
     if (!sx_tls_init()) plog("main: TLS did not start; the streaming service will not connect");
 #if APP_SOUNDCLOUD

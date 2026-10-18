@@ -400,6 +400,11 @@ TrackInfo TrackQueue::getTrackInfo(std::string_view identifier) {
   return TrackInfo{};
 }
 
+std::string TrackQueue::getAccessToken() {
+  std::lock_guard<std::mutex> lock(accessKeyMutex);
+  return accessKey;
+}
+
 void TrackQueue::runTask() {
   isRunning = true;
 
@@ -411,7 +416,11 @@ void TrackQueue::runTask() {
     processSemaphore->twait(100);
 
     // Make sure we have the newest access key
-    accessKey = accessKeyFetcher->getAccessKey();
+    const std::string key = accessKeyFetcher->getAccessKey();
+    {
+      std::lock_guard<std::mutex> lock(accessKeyMutex);
+      accessKey = key;
+    }
 
     int loadedIndex = currentTracksIndex;
 
@@ -494,9 +503,15 @@ void TrackQueue::processTrack(std::shared_ptr<QueuedTrack> track) {
       track->stepLoadCDNUrl(accessKey);
 
       if (track->state == QueuedTrack::State::READY) {
-        if (preloadedTracks.size() < MAX_TRACKS_PRELOAD) {
-          // Queue a new track to preload
-          queueNextTrack(preloadedTracks.size());
+        std::scoped_lock lock(tracksMutex);
+        // Queue selection can replace preloadedTracks while this worker is
+        // fetching a CDN URL. Only extend the queue if this track still
+        // belongs to the active queue snapshot.
+        const auto queued = std::find(preloadedTracks.begin(),
+                                      preloadedTracks.end(), track);
+        if (queued != preloadedTracks.end() &&
+            preloadedTracks.size() < MAX_TRACKS_PRELOAD) {
+          queueNextTrack((int)preloadedTracks.size());
         }
       }
       break;
@@ -578,6 +593,39 @@ bool TrackQueue::skipTrack(SkipDirection dir, bool expectNotify) {
   }
 
   return skipped;
+}
+
+size_t TrackQueue::trackCount() {
+  std::scoped_lock lock(tracksMutex);
+  return currentTracks.size();
+}
+
+int TrackQueue::currentTrackIndex() {
+  std::scoped_lock lock(tracksMutex);
+  return currentTracksIndex;
+}
+
+TrackInfo TrackQueue::trackInfoAt(int index) {
+  std::scoped_lock lock(tracksMutex);
+  if (index < 0 || index >= currentTracks.size()) return {};
+  for (const auto& track : preloadedTracks) {
+    if (track && track->ref == currentTracks[index]) return track->trackInfo;
+  }
+  return {};
+}
+
+bool TrackQueue::selectTrack(int index) {
+  std::scoped_lock lock(tracksMutex);
+  if (index < 0 || index >= currentTracks.size()) return false;
+
+  preloadedTracks.clear();
+  currentTracksIndex = (int16_t)index;
+  if (!queueNextTrack(0, 0)) return false;
+
+  playbackState->innerFrame.state.playing_track_index = currentTracksIndex;
+  notifyPending = true;
+  playableSemaphore->give();
+  return true;
 }
 
 bool TrackQueue::hasTracks() {

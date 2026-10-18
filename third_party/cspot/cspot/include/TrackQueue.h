@@ -100,9 +100,14 @@ class TrackQueue : public bell::Task {
 
   bool hasTracks();
   bool isFinished();
+  size_t trackCount();
+  int currentTrackIndex();
+  TrackInfo trackInfoAt(int index);
+  bool selectTrack(int index);
   bool skipTrack(SkipDirection dir, bool expectNotify = true);
   bool updateTracks(uint32_t requestedPosition = 0, bool initial = false);
   TrackInfo getTrackInfo(std::string_view identifier);
+  std::string getAccessToken();
   std::shared_ptr<QueuedTrack> consumeTrack(
       std::shared_ptr<QueuedTrack> prevSong, int& offset);
 
@@ -123,6 +128,7 @@ class TrackQueue : public bell::Task {
   Episode pbEpisode;
 
   std::string accessKey;
+  std::mutex accessKeyMutex;
 
   int16_t currentTracksIndex = -1;
 

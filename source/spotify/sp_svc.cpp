@@ -9,6 +9,7 @@
 #include "sp_svc.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/thread.h>
 #include <unistd.h>
@@ -28,6 +29,7 @@
 #include "plog.h"
 #include "sp_log.h"
 #include "sp_zeroconf.h"
+#include "sx_http.h"
 #include "sx_plat.h"
 
 namespace {
@@ -37,7 +39,7 @@ const size_t kRingFrames = 44100 * 2;          // two seconds
 std::atomic<bool> s_run{false};
 std::atomic<bool> s_thread_done{true};        // the session thread has returned (or never started)
 std::atomic<int> s_state{SP_OFF};
-std::atomic<unsigned> s_serial{0}, s_frames_in{0}, s_tracks{0};
+std::atomic<unsigned> s_serial{0}, s_frames_in{0}, s_tracks{0}, s_audio_generation{0};
 std::string s_name = "PS3";
 char s_status[96] = "Starting";
 std::mutex s_mtx;                              // guards the ring, the boundaries, the track and the status text
@@ -58,8 +60,27 @@ bool s_paused = false, s_depleted = false;
 uint64_t s_last_pos_report = 0;
 
 std::shared_ptr<cspot::SpircHandler> s_handler;
-std::shared_ptr<cspot::Context> s_ctx;         // the live session's context (the quality is read from it for each track)
+std::shared_ptr<cspot::Context> s_ctx;
+sys_ppu_thread_t s_thread_tid = 0;
 std::atomic<int> s_quality{160};
+
+// One 50-track page stays resident; the UI requests another as selection moves.
+SpTrack s_library[50];
+unsigned s_library_count = 0, s_library_total = 0, s_library_offset = 0;
+bool s_library_loaded = false, s_library_loading = false, s_library_request_pending = false;
+bool s_library_failed = false;
+unsigned s_library_request_offset = 0, s_library_failed_offset = 0;
+bool s_library_play_pending = false;
+std::vector<std::string> s_library_play_uris;
+uint64_t s_library_retry_at_ms = 0;
+char s_library_status[96] = "Connect PS3 to Spotify to load Liked Songs";
+std::atomic<bool> s_library_worker_active{false}, s_library_worker_done{true};
+sys_ppu_thread_t s_library_thread_tid = 0;
+
+std::shared_ptr<cspot::SpircHandler> handler_snapshot() {
+  std::lock_guard<std::mutex> g(s_mtx);
+  return s_handler;
+}
 
 const char* quality_path() { return jf_data_path("jellyfin_spotify_quality.txt"); }
 
@@ -81,11 +102,23 @@ void set_status(const char* t) {
   snprintf(s_status, sizeof s_status, "%s", t);
 }
 
-void ring_clear_locked() {
+// keep_track: a seek within the same song.  Its audio after the flush has the same track id, so no boundary is made for it
+// (a boundary tells Spotify a new track reached the speakers, and cspot then moves its queue on to the next song).
+void ring_clear_locked(bool keep_track = false) {
   s_rd = s_wr = s_fill = 0;
   s_bounds.clear();
   s_total_in = s_total_out = 0;
-  s_have_hash = false;
+  if (!keep_track) s_have_hash = false;
+}
+
+void set_track_locked(const cspot::TrackInfo& ti) {
+  snprintf(s_track.title, sizeof s_track.title, "%s", ti.name.c_str());
+  snprintf(s_track.artist, sizeof s_track.artist, "%s", ti.artist.c_str());
+  snprintf(s_track.album, sizeof s_track.album, "%s", ti.album.c_str());
+  snprintf(s_track.image, sizeof s_track.image, "%s", ti.imageUrl.c_str());
+  s_track.uri[0] = '\0';
+  s_track.duration_ms = ti.duration;
+  s_have_track = true;
 }
 
 // ---- saved credential --------------------------------------------------------------------------------------------------------
@@ -148,17 +181,28 @@ void on_event(std::unique_ptr<cspot::SpircHandler::Event> ev) {
       s_state = paused ? SP_PAUSED : SP_PLAYING;
       break;
     }
-    case ET::FLUSH:
-    case ET::DISC: {
+    case ET::FLUSH: {
       std::lock_guard<std::mutex> g(s_mtx);
       ring_clear_locked();
+      ++s_audio_generation;
+      break;
+    }
+    case ET::DISC: {                           // another device took the music: this one is idle again
+      std::lock_guard<std::mutex> g(s_mtx);
+      ring_clear_locked();
+      ++s_audio_generation;
+      s_have_track = false;
+      s_paused = false;
+      s_state = SP_READY;
+      snprintf(s_status, sizeof s_status, "Playing on another device");
       break;
     }
     case ET::SEEK: {
       std::lock_guard<std::mutex> g(s_mtx);
-      ring_clear_locked();
+      ring_clear_locked(true);
       s_pos_base_ms = (unsigned)std::get<int>(ev->data);
       s_pos_origin_out = 0;
+      ++s_audio_generation;
       break;
     }
     case ET::PLAYBACK_START: {
@@ -169,17 +213,13 @@ void on_event(std::unique_ptr<cspot::SpircHandler::Event> ev) {
       s_pos_base_ms = 0;
       s_pos_origin_out = 0;
       s_state = SP_PLAYING;
+      ++s_audio_generation;
       break;
     }
     case ET::TRACK_INFO: {
       const cspot::TrackInfo& ti = std::get<cspot::TrackInfo>(ev->data);
       std::lock_guard<std::mutex> g(s_mtx);
-      snprintf(s_track.title, sizeof s_track.title, "%s", ti.name.c_str());
-      snprintf(s_track.artist, sizeof s_track.artist, "%s", ti.artist.c_str());
-      snprintf(s_track.album, sizeof s_track.album, "%s", ti.album.c_str());
-      snprintf(s_track.image, sizeof s_track.image, "%s", ti.imageUrl.c_str());
-      s_track.duration_ms = ti.duration;
-      s_have_track = true;
+      set_track_locked(ti);
       s_serial++;
       s_tracks++;
       break;
@@ -195,6 +235,250 @@ void on_event(std::unique_ptr<cspot::SpircHandler::Event> ev) {
 }
 
 // ---- the session thread ------------------------------------------------------------------------------------------------------
+
+using SpotifyJson = nlohmann::json;
+
+std::string api_string(const SpotifyJson& object, const char* key) {
+  auto value = object.find(key);
+  return value != object.end() && value->is_string() ? value->get<std::string>() : "";
+}
+
+void copy_api_track(const SpotifyJson& item, SpTrack* out) {
+  memset(out, 0, sizeof(*out));
+  const SpotifyJson& track = item.contains("track") && item["track"].is_object()
+                                 ? item["track"] : item;
+  const std::string title = api_string(track, "name");
+  const std::string uri = api_string(track, "uri");
+  snprintf(out->title, sizeof out->title, "%s", title.c_str());
+  snprintf(out->uri, sizeof out->uri, "%s", uri.c_str());
+  auto duration = track.find("duration_ms");
+  if (duration != track.end() && duration->is_number_unsigned())
+    out->duration_ms = duration->get<unsigned>();
+  else if (duration != track.end() && duration->is_number_integer())
+    out->duration_ms = (unsigned)duration->get<int>();
+  auto artists = track.find("artists");
+  if (artists != track.end() && artists->is_array() && !artists->empty()) {
+    const std::string artist = api_string((*artists)[0], "name");
+    snprintf(out->artist, sizeof out->artist, "%s", artist.c_str());
+  }
+  auto album = track.find("album");
+  if (album != track.end() && album->is_object()) {
+    const std::string album_name = api_string(*album, "name");
+    snprintf(out->album, sizeof out->album, "%s", album_name.c_str());
+    auto images = album->find("images");
+    if (images != album->end() && images->is_array() && !images->empty()) {
+      const std::string image = api_string((*images)[0], "url");
+      snprintf(out->image, sizeof out->image, "%s", image.c_str());
+    }
+  }
+}
+
+void library_error(const char* message) {
+  std::lock_guard<std::mutex> g(s_mtx);
+  s_library_loading = false;
+  snprintf(s_library_status, sizeof s_library_status, "%s", message);
+}
+
+// A failed page is asked for again only after a pause, so a refusal does not become a request (and a thread) per frame.
+void library_fetch_error(unsigned offset, const char* message) {
+  std::lock_guard<std::mutex> g(s_mtx);
+  s_library_loading = false;
+  s_library_failed = true;
+  s_library_failed_offset = offset;
+  s_library_retry_at_ms = sx_now_ms() + 15000;
+  snprintf(s_library_status, sizeof s_library_status, "%s", message);
+}
+
+// The reason a Web API call failed, for the screen.  The status alone goes to the log (never the address or the token).
+const char* api_failure(const char* what, int rc, int status) {
+  static char out[96];
+  if (rc != SX_OK) snprintf(out, sizeof out, "%s: no connection to Spotify (%d)", what, rc);
+  else if (status == 401) snprintf(out, sizeof out, "%s: Spotify sign-in expired, retrying", what);
+  else if (status == 403) snprintf(out, sizeof out, "%s: Spotify refused the request (403)", what);
+  else if (status == 404) snprintf(out, sizeof out, "%s: Spotify cannot see this console yet (404)", what);
+  else if (status == 429) snprintf(out, sizeof out, "%s: Spotify is busy, retrying shortly", what);
+  else snprintf(out, sizeof out, "%s: Spotify answered %d", what, status);
+  return out;
+}
+
+// One Web API call through the app's HTTP client (chunked bodies, keep-alive, the real status).  Returns SX_OK or SX_E_*;
+// *body is heap memory the caller frees.
+int api_call(const char* method, const char* url, const std::string& token, const std::string* json,
+             char** body, size_t* len, int* status) {
+  char headers[2200];
+  snprintf(headers, sizeof headers, "Authorization: Bearer %s\r\n", token.c_str());
+  sx_http_req rq;
+  memset(&rq, 0, sizeof rq);
+  rq.method = method;
+  rq.url = url;
+  rq.headers = headers;
+  if (json) {
+    rq.body = json->data();
+    rq.body_len = (int)json->size();
+    rq.content_type = "application/json";
+  }
+  rq.range_start = -1;
+  rq.range_end = -1;
+  rq.connect_ms = 8000;
+  rq.handshake_ms = 12000;
+  rq.first_byte_ms = 15000;
+  rq.idle_ms = 10000;
+  sx_http_info info;
+  memset(&info, 0, sizeof info);
+  *body = NULL;
+  *len = 0;
+  const int rc = sx_http_fetch(&rq, 2u << 20, body, len, &info);
+  memset(headers, 0, sizeof headers);
+  *status = info.status;
+  return rc;
+}
+
+void process_library_request(const std::shared_ptr<cspot::Context>& ctx,
+                             const std::shared_ptr<cspot::SpircHandler>& handler,
+                             unsigned offset, bool fetch, bool play,
+                             const std::vector<std::string>& uris) {
+  auto queue = handler ? handler->getTrackQueue() : nullptr;
+  const std::string token = queue ? queue->getAccessToken() : "";
+  if (token.empty()) {
+    if (fetch) library_fetch_error(offset, "Spotify sign-in is still starting");
+    else library_error("Spotify sign-in is still starting");
+    return;
+  }
+
+  if (fetch) {
+    char url[160];
+    // market=from_token drops each track's list of ~180 country codes: a page is a fraction of the size
+    snprintf(url, sizeof url, "https://api.spotify.com/v1/me/tracks?limit=50&offset=%u&market=from_token", offset);
+    char* body = NULL;
+    size_t len = 0;
+    int status = 0;
+    const int rc = api_call("GET", url, token, nullptr, &body, &len, &status);
+    char line[96];
+    snprintf(line, sizeof line, "spotify: liked songs offset=%u rc=%d status=%d bytes=%u", offset, rc, status, (unsigned)len);
+    plog(line);
+    if (rc != SX_OK || status != 200 || !body) {
+      library_fetch_error(offset, api_failure("Liked Songs", rc, status));
+    } else {
+      try {
+        SpotifyJson root = SpotifyJson::parse(body, body + len);
+        free(body);
+        body = NULL;
+        auto items = root.find("items");
+        if (items == root.end() || !items->is_array()) {
+          library_fetch_error(offset, "Liked Songs: Spotify sent an unexpected answer");
+        } else {
+          SpTrack page[50];
+          memset(page, 0, sizeof page);
+          const unsigned n = items->size() > 50 ? 50U : (unsigned)items->size();
+          for (unsigned i = 0; i < n; i++) copy_api_track((*items)[i], &page[i]);
+          auto total = root.find("total");
+          const unsigned total_count = total != root.end() && total->is_number_integer()
+                                           ? (unsigned)total->get<long long>() : offset + n;
+          std::lock_guard<std::mutex> g(s_mtx);
+          memcpy(s_library, page, sizeof page);
+          s_library_count = n;
+          s_library_total = total_count;
+          s_library_offset = offset;
+          s_library_loaded = true;
+          s_library_loading = false;
+          s_library_failed = false;
+          s_library_status[0] = '\0';
+        }
+      } catch (std::exception&) {
+        library_fetch_error(offset, "Liked Songs: Spotify sent an unexpected answer");
+      }
+    }
+    free(body);
+  }
+
+  if (play && !uris.empty()) {
+    // The chosen song and the rest of its page, so playback carries on through Liked Songs like on the phone.
+    SpotifyJson req;
+    req["uris"] = uris;
+    const std::string payload = req.dump();
+    std::string url = "https://api.spotify.com/v1/me/player/play";
+    if (!ctx->config.deviceId.empty()) url += "?device_id=" + ctx->config.deviceId;
+    char* body = NULL;
+    size_t len = 0;
+    int status = 0;
+    int rc = api_call("PUT", url.c_str(), token, &payload, &body, &len, &status);
+    free(body);
+    char line[80];
+    snprintf(line, sizeof line, "spotify: play request rc=%d status=%d n=%u", rc, status, (unsigned)uris.size());
+    plog(line);
+    if (rc == SX_OK && status >= 200 && status < 300) {
+      std::lock_guard<std::mutex> g(s_mtx);
+      s_library_status[0] = '\0';
+    } else {
+      library_error(api_failure("Play", rc, status));
+    }
+  }
+}
+
+struct LibraryRequest {
+  std::shared_ptr<cspot::Context> ctx;
+  std::shared_ptr<cspot::SpircHandler> handler;
+  unsigned offset;
+  bool fetch, play;
+  std::vector<std::string> uris;
+};
+
+void library_worker(void* arg) {
+  std::unique_ptr<LibraryRequest> request((LibraryRequest*)arg);
+  process_library_request(request->ctx, request->handler, request->offset,
+                          request->fetch, request->play, request->uris);
+  s_library_worker_done = true;
+  s_library_worker_active = false;
+  sysThreadExit(0);
+}
+
+void start_library_worker() {
+  if (s_library_worker_done && s_library_thread_tid) {
+    u64 result = 0;
+    sysThreadJoin(s_library_thread_tid, &result);
+    s_library_thread_tid = 0;
+  }
+  if (s_library_worker_active) return;
+
+  auto handler = handler_snapshot();
+  std::shared_ptr<cspot::Context> ctx;
+  {
+    std::lock_guard<std::mutex> g(s_mtx);
+    ctx = s_ctx;
+  }
+  if (!ctx || !handler) return;
+
+  LibraryRequest* request = new LibraryRequest;
+  request->ctx = ctx;
+  request->handler = handler;
+  {
+    std::lock_guard<std::mutex> g(s_mtx);
+    request->fetch = s_library_request_pending;
+    request->offset = s_library_request_offset;
+    request->play = s_library_play_pending;
+    request->uris.swap(s_library_play_uris);
+    if (request->fetch) s_library_request_pending = false;
+    if (request->play) s_library_play_pending = false;
+  }
+  if (!request->fetch && !request->play) {
+    delete request;
+    return;
+  }
+
+  s_library_worker_active = true;
+  s_library_worker_done = false;
+  if (sysThreadCreate(&s_library_thread_tid, library_worker, request, 1002,
+                      256 * 1024, THREAD_JOINABLE, (char*)"sp_library") != 0) {
+    const bool fetch = request->fetch;
+    const unsigned offset = request->offset;
+    s_library_worker_active = false;
+    s_library_worker_done = true;
+    s_library_thread_tid = 0;
+    delete request;
+    if (fetch) library_fetch_error(offset, "Could not start Spotify library");
+    else library_error("Could not start Spotify library");
+  }
+}
 
 void session_once() {
   auto blob = std::make_shared<cspot::LoginBlob>(s_name);
@@ -240,9 +524,13 @@ void session_once() {
   }
   write_creds(ctx->getCredentialsJson());     // reusable on the next start; never logged
 
-  s_handler = std::make_shared<cspot::SpircHandler>(ctx);
-  s_handler->getTrackPlayer()->setDataCallback(on_pcm);
-  s_handler->setEventHandler(on_event);
+  {
+    std::lock_guard<std::mutex> g(s_mtx);
+    s_handler = std::make_shared<cspot::SpircHandler>(ctx);
+  }
+  auto handler = handler_snapshot();
+  handler->getTrackPlayer()->setDataCallback(on_pcm);
+  handler->setEventHandler(on_event);
   ctx->session->startTask();
   s_state = SP_READY;
   set_status("Ready: pick this console in the Spotify app to play");
@@ -253,10 +541,14 @@ void session_once() {
   } catch (std::exception& e) {
     plog("spotify: the session ended");
   }
-  s_handler->disconnect();
-  ctx->session->disconnect();
-  s_handler.reset();
-  { std::lock_guard<std::mutex> g(s_mtx); s_ctx.reset(); }
+  handler = handler_snapshot();
+  if (handler) handler->disconnect();
+  else ctx->session->disconnect();
+  {
+    std::lock_guard<std::mutex> g(s_mtx);
+    s_handler.reset();
+    s_ctx.reset();
+  }
 }
 
 void session_thread(void*) {
@@ -286,10 +578,24 @@ void sp_svc_start(const char* device_name) {
   load_quality();
   s_ring.assign(kRingFrames * 2, 0);
   memset(&s_track, 0, sizeof s_track);
+  {
+    std::lock_guard<std::mutex> g(s_mtx);
+    memset(s_library, 0, sizeof s_library);
+    s_library_count = s_library_total = s_library_offset = 0;
+    s_library_loaded = s_library_loading = s_library_request_pending = false;
+    s_library_failed = false;
+    s_library_play_pending = false;
+    s_library_play_uris.clear();
+    s_library_retry_at_ms = 0;
+    s_library_worker_active = false;
+    s_library_worker_done = true;
+    s_library_thread_tid = 0;
+    snprintf(s_library_status, sizeof s_library_status, "Connect PS3 to Spotify to load Liked Songs");
+  }
   s_run = true;
   s_thread_done = false;
-  sys_ppu_thread_t t;
-  if (sysThreadCreate(&t, session_thread, nullptr, 1001, 256 * 1024, 0, (char*)"sp_session") != 0) {
+  if (sysThreadCreate(&s_thread_tid, session_thread, nullptr, 1001, 256 * 1024,
+                      THREAD_JOINABLE, (char*)"sp_session") != 0) {
     s_run = false;
     s_thread_done = true;
     plog("spotify: could not start the session thread");
@@ -301,7 +607,26 @@ void sp_svc_start(const char* device_name) {
 void sp_svc_stop(void) {
   s_run = false;
   sp_zc_stop();
-  for (int i = 0; i < 40 && !s_thread_done; i++) usleep(100000);
+
+  // Wake an established packet wait before joining the session thread.
+  auto handler = handler_snapshot();
+  if (handler) handler->requestSessionStop();
+
+  for (int i = 0; i < 80 && !s_thread_done; i++) usleep(100000);
+  if (!s_thread_done) {
+    plog("spotify: session shutdown is still waiting");
+    return;
+  }
+  if (s_thread_tid) {
+    u64 result = 0;
+    sysThreadJoin(s_thread_tid, &result);
+    s_thread_tid = 0;
+  }
+  if (s_library_worker_done && s_library_thread_tid) {
+    u64 result = 0;
+    sysThreadJoin(s_library_thread_tid, &result);
+    s_library_thread_tid = 0;
+  }
 }
 
 int sp_svc_quality(void) { return s_quality; }
@@ -334,6 +659,107 @@ bool sp_svc_track(SpTrack* out) {
 }
 
 unsigned sp_svc_track_serial(void) { return s_serial.load(); }
+unsigned sp_svc_audio_generation(void) { return s_audio_generation.load(); }
+
+unsigned sp_svc_queue_count(void) {
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
+  if (!h) return 0;
+  auto q = h->getTrackQueue();
+  return q ? (unsigned)q->trackCount() : 0;
+}
+
+int sp_svc_queue_current(void) {
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
+  if (!h) return -1;
+  auto q = h->getTrackQueue();
+  return q ? q->currentTrackIndex() : -1;
+}
+
+bool sp_svc_queue_track(unsigned index, SpTrack* out) {
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
+  if (!h || !out) return false;
+  auto q = h->getTrackQueue();
+  if (!q) return false;
+  const cspot::TrackInfo ti = q->trackInfoAt((int)index);
+  if (ti.name.empty()) return false;
+  memset(out, 0, sizeof(*out));
+  snprintf(out->title, sizeof out->title, "%s", ti.name.c_str());
+  snprintf(out->artist, sizeof out->artist, "%s", ti.artist.c_str());
+  snprintf(out->album, sizeof out->album, "%s", ti.album.c_str());
+  snprintf(out->image, sizeof out->image, "%s", ti.imageUrl.c_str());
+  out->duration_ms = ti.duration;
+  return true;
+}
+
+bool sp_svc_play_queue_track(unsigned index) {
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
+  return h && h->playTrackAt((int)index);
+}
+
+void sp_svc_library_request(unsigned index) {
+  start_library_worker();
+  const unsigned offset = (index / 50U) * 50U;
+  {
+    std::lock_guard<std::mutex> g(s_mtx);
+    if (s_library_loaded && s_library_offset == offset) return;
+    if (s_library_loading && s_library_request_offset == offset) return;
+    if (s_library_failed && s_library_failed_offset == offset && sx_now_ms() < s_library_retry_at_ms) return;
+    s_library_request_offset = offset;
+    s_library_request_pending = true;
+    s_library_loading = true;
+    s_library_failed = false;
+    s_library_status[0] = '\0';
+  }
+  start_library_worker();
+}
+
+unsigned sp_svc_library_total(void) {
+  std::lock_guard<std::mutex> g(s_mtx);
+  return s_library_total;
+}
+
+unsigned sp_svc_library_offset(void) {
+  std::lock_guard<std::mutex> g(s_mtx);
+  return s_library_offset;
+}
+
+bool sp_svc_library_loading(void) {
+  std::lock_guard<std::mutex> g(s_mtx);
+  return s_library_loading;
+}
+
+bool sp_svc_library_track(unsigned index, SpTrack* out) {
+  if (!out) return false;
+  std::lock_guard<std::mutex> g(s_mtx);
+  if (!s_library_loaded || index < s_library_offset ||
+      index >= s_library_offset + s_library_count) return false;
+  *out = s_library[index - s_library_offset];
+  return true;
+}
+
+const char* sp_svc_library_status_text(void) {
+  static char out[96];
+  std::lock_guard<std::mutex> g(s_mtx);
+  snprintf(out, sizeof out, "%s", s_library_status);
+  return out;
+}
+
+bool sp_svc_library_play(unsigned index) {
+  {
+    std::lock_guard<std::mutex> g(s_mtx);
+    if (!s_library_loaded || index < s_library_offset ||
+        index >= s_library_offset + s_library_count) return false;
+    const unsigned first = index - s_library_offset;
+    if (!s_library[first].uri[0]) return false;
+    s_library_play_uris.clear();
+    for (unsigned i = first; i < s_library_count; i++)
+      if (s_library[i].uri[0]) s_library_play_uris.push_back(s_library[i].uri);
+    s_library_play_pending = true;
+    snprintf(s_library_status, sizeof s_library_status, "Starting selected song");
+  }
+  start_library_worker();
+  return true;
+}
 
 unsigned sp_svc_position_ms(void) {
   std::lock_guard<std::mutex> g(s_mtx);
@@ -341,7 +767,7 @@ unsigned sp_svc_position_ms(void) {
 }
 
 size_t sp_svc_pcm_read(int16_t* dst, size_t max_frames) {
-  std::shared_ptr<cspot::SpircHandler> h = s_handler;
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
   bool reached = false, ended = false;
   unsigned report_pos = 0;
   bool report = false;
@@ -389,17 +815,17 @@ size_t sp_svc_pcm_read(int16_t* dst, size_t max_frames) {
 }
 
 void sp_svc_set_pause(bool pause) {
-  std::shared_ptr<cspot::SpircHandler> h = s_handler;
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
   if (h) h->setPause(pause);
 }
 
 void sp_svc_next(void) {
-  std::shared_ptr<cspot::SpircHandler> h = s_handler;
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
   if (h) h->nextSong();
 }
 
 void sp_svc_prev(void) {
-  std::shared_ptr<cspot::SpircHandler> h = s_handler;
+  std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
   if (h) h->previousSong();
 }
 

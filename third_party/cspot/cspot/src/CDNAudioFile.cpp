@@ -40,16 +40,32 @@ void CDNAudioFile::seek(size_t newPos) {
 }
 
 void CDNAudioFile::openStream() {
+  if (closing) return;
   CSPOT_LOG(info, "Opening HTTP stream to %s", this->cdnUrl.c_str());
 
-  // Open connection, read first 128 bytes
-  this->httpConnection = bell::HTTPClient::get(
-      this->cdnUrl,
-      {bell::HTTPClient::RangeHeader::range(0, OPUS_HEADER_SIZE - 1)});
+  // Publish the response before requesting headers so closeStream() can
+  // interrupt a blocked socket read during TrackPlayer shutdown.
+  auto connection = std::make_shared<bell::HTTPClient::Response>();
+  connection->connect(this->cdnUrl);
+  {
+    std::scoped_lock lock(connectionMutex);
+    httpConnection = connection;
+  }
+  if (closing) { connection->stream().close(); return; }
+  try {
+    connection->get(
+        this->cdnUrl,
+        {bell::HTTPClient::RangeHeader::range(0, OPUS_HEADER_SIZE - 1)});
+  } catch (...) {
+    if (closing) return;
+    throw;
+  }
+  if (closing) return;
 
-  this->httpConnection->stream().read((char*)header.data(), OPUS_HEADER_SIZE);
+  connection->stream().read((char*)header.data(), OPUS_HEADER_SIZE);
+  if (closing) return;
   this->totalFileSize =
-      this->httpConnection->totalLength() - SPOTIFY_OPUS_HEADER;
+      connection->totalLength() - SPOTIFY_OPUS_HEADER;
 
   this->decrypt(header.data(), OPUS_HEADER_SIZE, 0);
 
@@ -60,11 +76,16 @@ void CDNAudioFile::openStream() {
 
   this->footer = std::vector<uint8_t>(
       this->totalFileSize - footerStartLocation + SPOTIFY_OPUS_HEADER);
-  this->httpConnection->get(
-      cdnUrl, {bell::HTTPClient::RangeHeader::last(footer.size())});
+  try {
+    connection->get(cdnUrl, {bell::HTTPClient::RangeHeader::last(footer.size())});
+  } catch (...) {
+    if (closing) return;
+    throw;
+  }
+  if (closing) return;
 
-  this->httpConnection->stream().read((char*)footer.data(),
-                                      this->footer.size());
+  connection->stream().read((char*)footer.data(), this->footer.size());
+  if (closing) return;
 
   this->decrypt(footer.data(), footer.size(), footerStartLocation);
   CSPOT_LOG(info, "Header and footer bytes received");
@@ -73,7 +94,24 @@ void CDNAudioFile::openStream() {
   this->lastRequestCapacity = 0;
 }
 
+std::shared_ptr<bell::HTTPClient::Response> CDNAudioFile::connectionSnapshot() {
+  std::scoped_lock lock(connectionMutex);
+  return httpConnection;
+}
+
+void CDNAudioFile::closeStream() {
+  bool expected = false;
+  if (!closing.compare_exchange_strong(expected, true)) return;
+  auto connection = connectionSnapshot();
+  if (connection && connection->stream().isOpen()) {
+    connection->stream().close();
+  }
+}
+
 size_t CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
+  if (closing) return 0;
+  auto connection = connectionSnapshot();
+  if (!connection) return 0;
   size_t offsetPosition = position + SPOTIFY_OPUS_HEADER;
   size_t actualFileSize = this->totalFileSize + SPOTIFY_OPUS_HEADER;
 
@@ -130,14 +168,21 @@ size_t CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
       this->enableRequestMargin = false;
     }
 
-    this->httpConnection->get(
-        cdnUrl, {bell::HTTPClient::RangeHeader::range(
-                    requestPosition, requestPosition + HTTP_BUFFER_SIZE - 1)});
+    try {
+      connection->get(
+          cdnUrl, {bell::HTTPClient::RangeHeader::range(
+                      requestPosition, requestPosition + HTTP_BUFFER_SIZE - 1)});
+    } catch (...) {
+      if (closing) return 0;
+      throw;
+    }
+    if (closing) return 0;
     this->lastRequestPosition = requestPosition;
-    this->lastRequestCapacity = this->httpConnection->contentLength();
+    this->lastRequestCapacity = connection->contentLength();
 
-    this->httpConnection->stream().read((char*)this->httpBuffer.data(),
-                                        lastRequestCapacity);
+    connection->stream().read((char*)this->httpBuffer.data(),
+                              lastRequestCapacity);
+    if (closing) return 0;
     this->decrypt(this->httpBuffer.data(), lastRequestCapacity,
 
                   this->lastRequestPosition);

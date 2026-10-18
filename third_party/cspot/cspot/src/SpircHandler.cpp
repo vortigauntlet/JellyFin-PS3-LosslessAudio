@@ -39,6 +39,10 @@ SpircHandler::SpircHandler(std::shared_ptr<cspot::Context> ctx) {
 
     this->notify();
 
+    // The track's metadata as soon as it loads, so a receiver can show it while paused or buffering
+    // (notifyAudioReachedPlayback sends it again once the first frame plays).
+    sendEvent(EventType::TRACK_INFO, track->trackInfo);
+
     // Send playback start event, pause/unpause per request
     sendEvent(EventType::PLAYBACK_START, (int)track->requestedPosition);
     sendEvent(EventType::PLAY_PAUSE, paused);
@@ -121,6 +125,10 @@ void SpircHandler::disconnect() {
   this->trackQueue->stopTask();
   this->trackPlayer->stop();
   this->ctx->session->disconnect();
+}
+
+void SpircHandler::requestSessionStop() {
+  if (this->ctx && this->ctx->session) this->ctx->session->disconnect();
 }
 
 void SpircHandler::handleFrame(std::vector<uint8_t>& data) {
@@ -261,6 +269,13 @@ bool SpircHandler::nextSong() {
 
 bool SpircHandler::previousSong() {
   return skipSong(TrackQueue::SkipDirection::PREV);
+}
+
+bool SpircHandler::playTrackAt(int index) {
+  if (!trackQueue->selectTrack(index)) return false;
+  trackPlayer->resetState(false);
+  this->notify();
+  return true;
 }
 
 std::shared_ptr<TrackPlayer> SpircHandler::getTrackPlayer() {

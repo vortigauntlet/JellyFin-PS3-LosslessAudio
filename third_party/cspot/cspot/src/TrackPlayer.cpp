@@ -89,13 +89,31 @@ void TrackPlayer::stop() {
 
 void TrackPlayer::resetState(bool paused) {
   // Mark for reset
+  ++streamResetGeneration;
   this->pendingReset = true;
   this->currentSongPlaying = false;
   this->startPaused = paused;
 
-  std::scoped_lock lock(dataOutMutex);
+  {
+    std::scoped_lock lock(dataOutMutex);
+  }
+
+  // PsSocket supports closing a connection from another thread. Keep a shared
+  // snapshot so the stream object remains alive until its blocked read exits.
+  auto stream = currentStreamSnapshot();
+  if (stream) stream->closeStream();
 
   CSPOT_LOG(info, "Resetting state");
+}
+
+std::shared_ptr<CDNAudioFile> TrackPlayer::currentStreamSnapshot() {
+  std::scoped_lock lock(streamMutex);
+  return currentTrackStream;
+}
+
+void TrackPlayer::setCurrentStream(std::shared_ptr<CDNAudioFile> stream) {
+  std::scoped_lock lock(streamMutex);
+  currentTrackStream = stream;
 }
 
 void TrackPlayer::seekMs(size_t ms) {
@@ -106,6 +124,7 @@ void TrackPlayer::seekMs(size_t ms) {
 
   CSPOT_LOG(info, "Seeking...");
   this->pendingSeekPositionMs = ms;
+  this->pendingSeek = true;
 }
 
 void TrackPlayer::runTask() {
@@ -175,16 +194,29 @@ void TrackPlayer::runTask() {
     {
       std::scoped_lock lock(playbackMutex);
 
-      currentTrackStream = track->getAudioFile();
+      const unsigned resetGeneration = streamResetGeneration.load();
+      auto stream = track->getAudioFile();
+      setCurrentStream(stream);
 
-      // Open the stream
-      currentTrackStream->openStream();
-
-      if (pendingReset || !currentSongPlaying) {
+      // A reset may land between the generation snapshot and stream publish.
+      // In that case do not start a fresh network request for the stale track.
+      if (pendingReset || !currentSongPlaying ||
+          streamResetGeneration.load() != resetGeneration) {
+        stream->closeStream();
         continue;
       }
 
-      if (trackOffset == 0 && pendingSeekPositionMs == 0) {
+      // Open the stream
+      stream->openStream();
+
+      if (pendingReset || !currentSongPlaying ||
+          streamResetGeneration.load() != resetGeneration) {
+        stream->closeStream();
+        continue;
+      }
+
+      if (trackOffset == 0 &&
+          (!pendingSeek || pendingSeekPositionMs.load() == 0)) {
         this->trackLoaded(track, startPaused);
         startPaused = false;
       }
@@ -192,8 +224,8 @@ void TrackPlayer::runTask() {
       int32_t r =
           ov_open_callbacks(this, &vorbisFile, NULL, 0, vorbisCallbacks);
 
-      if (pendingSeekPositionMs > 0) {
-        track->requestedPosition = pendingSeekPositionMs;
+      if (pendingSeek.exchange(false)) {
+        track->requestedPosition = pendingSeekPositionMs.load();
       }
 
       if (track->requestedPosition > 0) {
@@ -207,13 +239,12 @@ void TrackPlayer::runTask() {
 
       while (!eof && currentSongPlaying) {
         // Execute seek if needed
-        if (pendingSeekPositionMs > 0) {
-          uint32_t seekPosition = pendingSeekPositionMs;
+        if (pendingSeek.exchange(false)) {
+          const uint32_t seekPosition =
+              static_cast<uint32_t>(pendingSeekPositionMs.load());
 
-          // Reset the pending seek position
-          pendingSeekPositionMs = 0;
-
-          // Seek to the new position
+          // A seek to zero is meaningful: Spotify's previous button and scrubber
+          // can restart the current track from the beginning.
           VORBIS_SEEK(&vorbisFile, seekPosition);
         }
 
@@ -255,7 +286,7 @@ void TrackPlayer::runTask() {
       CSPOT_LOG(info, "Playing done");
 
       // always move back to LOADING (ensure proper seeking after last track has been loaded)
-      currentTrackStream = nullptr;
+      setCurrentStream(nullptr);
       track->loading = false;
     }
 
@@ -270,10 +301,11 @@ void TrackPlayer::runTask() {
 }
 
 size_t TrackPlayer::_vorbisRead(void* ptr, size_t size, size_t nmemb) {
-  if (this->currentTrackStream == nullptr) {
+  auto stream = currentStreamSnapshot();
+  if (stream == nullptr) {
     return 0;
   }
-  return this->currentTrackStream->readBytes((uint8_t*)ptr, nmemb * size);
+  return stream->readBytes((uint8_t*)ptr, nmemb * size);
 }
 
 size_t TrackPlayer::_vorbisClose() {
@@ -281,20 +313,19 @@ size_t TrackPlayer::_vorbisClose() {
 }
 
 int TrackPlayer::_vorbisSeek(int64_t offset, int whence) {
-  if (this->currentTrackStream == nullptr) {
+  auto stream = currentStreamSnapshot();
+  if (stream == nullptr) {
     return 0;
   }
   switch (whence) {
     case 0:
-      this->currentTrackStream->seek(offset);  // Spotify header offset
+      stream->seek(offset);  // Spotify header offset
       break;
     case 1:
-      this->currentTrackStream->seek(this->currentTrackStream->getPosition() +
-                                     offset);
+      stream->seek(stream->getPosition() + offset);
       break;
     case 2:
-      this->currentTrackStream->seek(this->currentTrackStream->getSize() +
-                                     offset);
+      stream->seek(stream->getSize() + offset);
       break;
   }
 
@@ -302,10 +333,11 @@ int TrackPlayer::_vorbisSeek(int64_t offset, int whence) {
 }
 
 long TrackPlayer::_vorbisTell() {
-  if (this->currentTrackStream == nullptr) {
+  auto stream = currentStreamSnapshot();
+  if (stream == nullptr) {
     return 0;
   }
-  return this->currentTrackStream->getPosition();
+  return stream->getPosition();
 }
 
 void TrackPlayer::setDataCallback(DataCallback callback) {

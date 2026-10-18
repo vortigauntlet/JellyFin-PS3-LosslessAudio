@@ -124,6 +124,7 @@ class MercurySession : public bell::Task, public cspot::Session {
 
   std::mutex isRunningMutex;
   std::atomic<bool> isRunning = false;
+  std::atomic<bool> disconnectStarted = false;
   std::atomic<bool> isReconnecting = false;
   std::atomic<bool> executeEstabilishedCallback = false;
 

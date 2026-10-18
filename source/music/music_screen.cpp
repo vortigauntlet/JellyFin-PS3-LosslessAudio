@@ -791,8 +791,121 @@ static void music_upnext_gpu(const MusicTrack *tracks, int count, float a) {
     if (any) ui_card_gpu_end();
 }
 
+static const u32 SPOTIFY_GREEN = 0x001ED760U;
+
+static void draw_spotify_backdrop(void) {
+    // Solid, nearly black like the original PS3 Spotify app; no banded gradient.
+    ui_rect_gpu_draw(0, 0, (int)display_width, (int)display_height, 0x00121212U, 255);
+}
+
+static void draw_spotify_mark(int x, int y, int size) {
+    if (size < 4 || size > 64) return;
+    static u32 pixels[64 * 64];
+    const int samples = 4;
+    const float mid = (float)size * 0.5f, radius = (float)size * 0.48f;
+    for (int py = 0; py < size; py++) for (int px = 0; px < size; px++) {
+        int covered = 0;
+        for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
+            const float dx = (float)px + ((float)sx + 0.5f) / samples - mid;
+            const float dy = (float)py + ((float)sy + 0.5f) / samples - mid;
+            if (dx * dx + dy * dy <= radius * radius) covered++;
+        }
+        pixels[py * size + px] = (u32)(covered * 255 / (samples * samples)) << 24 | SPOTIFY_GREEN;
+    }
+    drawBitmapRectAlpha(pixels, (u32)size, 0, 0, (u32)size, (u32)size, (u32)x, (u32)y);
+    const float halfw[3] = {0.34f, 0.28f, 0.22f};
+    const float basey[3] = {0.36f, 0.51f, 0.65f};
+    const float bend[3] = {0.075f, 0.061f, 0.047f};
+    const float thick[3] = {0.048f, 0.042f, 0.036f};
+    for (int py = 0; py < size; py++) for (int px = 0; px < size; px++) {
+        int covered = 0;
+        for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
+            const float dx = (float)px + ((float)sx + 0.5f) / samples - mid;
+            const float dy = (float)py + ((float)sy + 0.5f) / samples - mid;
+            if (dx * dx + dy * dy > radius * radius) continue;
+            for (int arc = 0; arc < 3; arc++) {
+                const float span = (float)size * halfw[arc];
+                if (fabsf(dx) > span) continue;
+                const float n = dx / span;
+                const float line_y = (float)size * (basey[arc] + bend[arc] * n * n);
+                if (fabsf(dy - line_y) <= (float)size * thick[arc] * 0.5f) { covered++; break; }
+            }
+        }
+        pixels[py * size + px] = (u32)(covered * 255 / (samples * samples)) << 24 | 0x00121212U;
+    }
+    drawBitmapRectAlpha(pixels, (u32)size, 0, 0, (u32)size, (u32)size, (u32)x, (u32)y);
+}
+
+static void draw_spotify_now_playing(const MusicCtx *ctx, const MusicTrack *tracks, int count) {
+    const int W = (int)display_width, H = (int)display_height;
+    const int pad = (int)XMB_ITEM_PAD;
+    const int top = (int)XMB_OY + UIS_H(24);
+    const float brand_px = UIS_TF(27.0f);
+    draw_spotify_mark(pad, top - UIS_H(2), UIS_H(32));
+    drawTTF((u32)(pad + UIS_H(42)), (u32)top, "Spotify", brand_px, XMB_WHITE, true);
+    drawTTF((u32)(W - pad - UIS_W(42)), (u32)(top + UIS_H(5)), "PS3", UIS_TF(14.0f), XMB_TEXT_DIM, true);
+    const int tab_y = top + UIS_H(52);
+    drawTTF((u32)pad, (u32)tab_y, "BROWSE", UIS_TF(16.0f), XMB_TEXT_DIM, true);
+    const int tab_x = pad + UIS_W(116);
+    drawTTF((u32)tab_x, (u32)tab_y, "YOUR MUSIC", UIS_TF(16.0f), XMB_WHITE, true);
+    const int tab_w = ttf_text_width("YOUR MUSIC", UIS_TF(16.0f), true);
+    drawRect((u32)tab_x, (u32)(tab_y + UIS_H(26)), (u32)tab_w, UIS_H(3), SPOTIFY_GREEN);
+    drawTTF((u32)pad, (u32)(tab_y + UIS_H(55)), "Now Playing", UIS_TF(27.0f), XMB_WHITE, true);
+
+    int cur = music_current_index();
+    if (cur < 0) cur = 0;
+    if (cur >= count) cur = count - 1;
+    const MusicTrack *t = &tracks[cur];
+    int ax, ay, A;
+    float art_alpha;
+    cover_geom(&ax, &ay, &A, &art_alpha);
+    const int tx = ax + A + UIS_W(42);
+    const int tw = W - pad - tx;
+    const int title_y = ay + (A - UIS_H(115)) / 2;
+    draw_clipped((u32)tx, (u32)title_y, t->name, UIS_TF(28.0f), XMB_WHITE, tw, true);
+    if (t->artist[0])
+        draw_clipped((u32)tx, (u32)(title_y + UIS_H(48)), t->artist, UIS_TF(19.0f), XMB_TEXT, tw);
+    if (ctx->title[0])
+        draw_clipped((u32)tx, (u32)(title_y + UIS_H(82)), ctx->title, UIS_TF(15.0f), XMB_TEXT_DIM, tw);
+    drawTTF((u32)tx, (u32)(title_y + UIS_H(124)),
+            music_is_paused() ? "PAUSED" : "PLAYING ON PS3", UIS_TF(13.0f), SPOTIFY_GREEN, true);
+
+    const int cy = H - UIS_H(139), cx = W / 2;
+    drawIcon((u32)(cx - UIS_W(88)), (u32)(cy - UIS_H(13)), ICON_SKIP_BACK,
+             UIS_TF(25.0f), XMB_TEXT);
+    drawIcon((u32)(cx - UIS_W(14)), (u32)(cy - UIS_H(14)),
+             music_is_paused() ? ICON_PLAY : ICON_PAUSE, UIS_TF(28.0f), XMB_WHITE);
+    drawIcon((u32)(cx + UIS_W(62)), (u32)(cy - UIS_H(13)), ICON_SKIP_FWD,
+             UIS_TF(25.0f), XMB_TEXT);
+    const u32 duration = music_duration_secs(), elapsed = music_elapsed_secs();
+    char ts[16], td[16];
+    fmt_mmss(ts, sizeof ts, elapsed);
+    td[0] = 0;
+    if (duration) fmt_mmss(td, sizeof td, duration);
+    const int by = H - UIS_H(82);
+    const int rx = W - pad;
+    const int tws = ttf_text_width(ts, UIS_TF(13.0f));
+    const int dws = td[0] ? ttf_text_width(td, UIS_TF(13.0f)) : 0;
+    const int bx = pad + tws + UIS_W(14), ex = rx - dws - UIS_W(14);
+    const int bw = ex - bx;
+    drawTTF((u32)pad, (u32)(by - UIS_H(6)), ts, UIS_TF(13.0f), XMB_TEXT_DIM);
+    if (td[0]) drawTTF((u32)(rx - dws), (u32)(by - UIS_H(6)), td, UIS_TF(13.0f), XMB_TEXT_DIM);
+    drawRect((u32)bx, (u32)by, (u32)bw, UIS_H(3), XMB_TRACK);
+    if (duration && bw > 0) {
+        int fill = (int)((u64)bw * (elapsed > duration ? duration : elapsed) / duration);
+        drawRect((u32)bx, (u32)by, (u32)fill, UIS_H(3), XMB_ACCENT);
+    }
+    const Hint hints[4] = {{'l', TRN("Previous")}, {'r', TRN("Next")},
+                           {'X', TRN("Play")}, {'C', TRN("Back")}};
+    draw_hints_bar(hints, 4);
+}
+
 static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                              int count) {
+    if (ctx->parent[0] == 'S' && strcmp(ctx->parent, "Spotify") == 0) {
+        draw_spotify_now_playing(ctx, tracks, count);
+        return;
+    }
     int W = (int)display_width;
 
     // No breadcrumb (Music > Albums > ... > Now Playing): everything it said
@@ -1370,7 +1483,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
                 }
             }
             #undef OB
-            wave_snow_obstacles(ob, n);
+            if (!s_live) wave_snow_obstacles(ob, n);
         }
         // The visualizer: Canyon in place of the wave when selected (and
         // able to start), dimmed while the UI is up so the text stays
@@ -1379,14 +1492,16 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         // back (s_mini_e is the fade), and the wave is only skipped once the
         // canyon fully covers it.
         bool canyon = false;
-        if (viz_mode() == VIZ_CANYON || s_mini_e > 0.001f) {
+        if (s_live) {
+            draw_spotify_backdrop();
+        } else if (viz_mode() == VIZ_CANYON || s_mini_e > 0.001f) {
             if (s_mini_e < 0.999f) wave_draw();
             int cur_t = music_current_index();
             canyon_track(cur_t < 0 ? 0 : cur_t);
             const float bright = s_scr_a * (0.58f + 0.42f * fade_ease(s_focus_p));
             canyon = canyon_draw(bright, music_is_paused(), s_mini_e);
             if (!canyon && s_mini_e >= 0.999f) wave_draw();
-            canyon = canyon && s_mini_e >= 0.999f;   // 'the wave is not on screen'
+            canyon = canyon && s_mini_e >= 0.999f;
         } else {
             wave_draw();
         }
@@ -1404,8 +1519,8 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             // Depth: the near ribbon passes IN FRONT of the cover wherever it
             // rises across it (the same geometry drawn again, clipped).
             // (Not while Canyon is up: there is no ribbon this frame.)
-            if (!canyon && s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
-            music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a * (1.0f - s_mini_e));
+            if (!s_live && !canyon && s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
+            if (!s_live) music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a * (1.0f - s_mini_e));
         }
         c_gpu += timing_get_us() - t_gpu0;
 
@@ -1442,7 +1557,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             }
         }
         music_fades_tick(!music_is_paused() && s_fzone == FZ_TRANSPORT && !s_q_open);
-        if (s_outro && s_scr_a <= 0.0f) break;
+        const bool exit_after_frame = s_outro && s_scr_a <= 0.0f;
 
         const u64 t_s0 = timing_get_us();
         rsxSync();
@@ -1475,19 +1590,26 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
 
         flip();
         sysUtilCheckCallback();
+        if (exit_after_frame) break;
     }
 
-    music_stop();
 #if APP_SPOTIFY
-    if (s_live) sp_svc_set_pause(true);       // the phone shows paused, not playing into silence
+    // The Spotify engine belongs to the app, not to this screen: it keeps playing, like a speaker, and this is a view of it.
+    if (!s_live) music_stop();
     s_live = false;
+#else
+    music_stop();
 #endif
     wave_set_album_tint(0u, 0.0f);            // back to the plain palette
     wave_set_bg_dim(0.0f);                    // the menus get their gradient back
     // Home's posters went blank after an album was played (they stayed fine
     // in the TV tab): nothing cached before or during this screen is trusted
     // on the way out.  See thumb_cache_verify_and_flush().
+#if APP_SPOTIFY
+    // Spotify does not populate the Jellyfin poster cache.
+#else
     thumb_cache_verify_and_flush("music");
+#endif
     plog("music_screen: exit");
 }
 

@@ -32,8 +32,8 @@ static std::string CLIENT_ID =
     "65b708073fc0480ea92a077233ca87bd";  // Spotify web client's client id
 
 static std::string SCOPES =
-    "streaming,user-library-read,user-library-modify,user-top-read,user-read-"
-    "recently-played";  // Required access scopes
+    "streaming,user-library-read,user-library-modify,user-modify-playback-state,"
+    "user-top-read,user-read-recently-played";  // Required access scopes
 
 AccessKeyFetcher::AccessKeyFetcher(std::shared_ptr<cspot::Context> ctx)
     : ctx(ctx) {}

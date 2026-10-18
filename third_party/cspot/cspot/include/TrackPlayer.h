@@ -64,6 +64,8 @@ class TrackPlayer : bell::Task {
   std::shared_ptr<cspot::Context> ctx;
   std::shared_ptr<cspot::TrackQueue> trackQueue;
   std::shared_ptr<cspot::CDNAudioFile> currentTrackStream;
+  std::mutex streamMutex;
+  std::atomic<unsigned> streamResetGeneration{0};
 
   std::unique_ptr<bell::WrappedSemaphore> playbackSemaphore;
 
@@ -89,9 +91,13 @@ class TrackPlayer : bell::Task {
   std::atomic<bool> pendingReset = false;
   std::atomic<bool> inFuture = false;
   std::atomic<size_t> pendingSeekPositionMs = 0;
+  std::atomic<bool> pendingSeek = false;
   std::atomic<bool> startPaused = false;
 
   std::mutex runningMutex;
+
+  std::shared_ptr<cspot::CDNAudioFile> currentStreamSnapshot();
+  void setCurrentStream(std::shared_ptr<cspot::CDNAudioFile> stream);
 
   void runTask() override;
 };

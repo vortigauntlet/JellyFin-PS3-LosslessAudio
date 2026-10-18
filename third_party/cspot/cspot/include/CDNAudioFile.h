@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstddef>  // for size_t
+#include <atomic>   // for atomic
 #include <cstdint>  // for uint8_t
 #include <memory>   // for shared_ptr, unique_ptr
+#include <mutex>    // for mutex
 #include <string>   // for string
 #include <vector>   // for vector
 
@@ -25,6 +27,10 @@ class CDNAudioFile {
   * @brief Opens connection to the provided cdn url, and fetches track metadata.
   */
   void openStream();
+
+  // Interrupt an in-flight read so TrackPlayer can stop without waiting for
+  // the CDN connection to deliver another packet.
+  void closeStream();
 
   /**
   * @brief Read and decrypt part of the cdn stream
@@ -73,7 +79,9 @@ class CDNAudioFile {
                                            0x3f, 0x63, 0x0d, 0x93};
   std::unique_ptr<Crypto> crypto;
 
-  std::unique_ptr<bell::HTTPClient::Response> httpConnection;
+  std::shared_ptr<bell::HTTPClient::Response> httpConnection;
+  std::mutex connectionMutex;
+  std::atomic<bool> closing{false};
 
   size_t position = 0;
   size_t totalFileSize = 0;
@@ -85,6 +93,7 @@ class CDNAudioFile {
   std::string cdnUrl;
   std::vector<uint8_t> audioKey;
 
+  std::shared_ptr<bell::HTTPClient::Response> connectionSnapshot();
   void decrypt(uint8_t* dst, size_t nbytes, size_t pos);
 };
 }  // namespace cspot

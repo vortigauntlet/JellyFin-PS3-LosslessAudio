@@ -17,7 +17,7 @@ enum SpState {
 };
 
 typedef struct {
-  char title[128], artist[128], album[128], image[240];
+  char title[128], artist[128], album[128], image[240], uri[160];
   unsigned duration_ms;
 } SpTrack;
 
@@ -34,6 +34,20 @@ const char* sp_svc_status_text(void);          // one line for the screen: what 
 bool sp_svc_track(SpTrack* out);               // the current track, false when there is none
 unsigned sp_svc_position_ms(void);
 unsigned sp_svc_track_serial(void);            // changes whenever a new track starts
+unsigned sp_svc_audio_generation(void);         // changes when the receiver flushes/seeks/starts a track
+unsigned sp_svc_queue_count(void);               // tracks in the context sent by the Spotify Connect client
+int sp_svc_queue_current(void);                  // current index in that Connect queue
+bool sp_svc_queue_track(unsigned index, SpTrack* out); // false until cspot has fetched that row's metadata
+bool sp_svc_play_queue_track(unsigned index);    // select a row from the Connect queue
+
+// The paired account's Liked Songs, fetched a page at a time.
+void sp_svc_library_request(unsigned index);
+unsigned sp_svc_library_total(void);
+unsigned sp_svc_library_offset(void);
+bool sp_svc_library_loading(void);
+bool sp_svc_library_track(unsigned index, SpTrack* out);
+const char* sp_svc_library_status_text(void);
+bool sp_svc_library_play(unsigned index);
 
 // Decoded audio: 44.1 kHz, interleaved stereo, signed 16-bit.  Returns the frames copied (0 when none is ready or paused).
 // The caller reads in real time; this also tells Spotify when a track reaches the speakers and how far it has played.

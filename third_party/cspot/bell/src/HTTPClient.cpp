@@ -77,7 +77,11 @@ void HTTPClient::Response::readResponseHeaders() {
                          httpBuffer.size() - httpBufferAvailable);
 
     prevbuflen = httpBufferAvailable;
-    httpBufferAvailable += socketStream.gcount();
+    const std::streamsize bytesRead = socketStream.gcount();
+    if (bytesRead <= 0) {
+      throw std::runtime_error("Connection closed while reading HTTP response");
+    }
+    httpBufferAvailable += (size_t)bytesRead;
 
     // Restore delimiters
     memcpy(httpBuffer.data() + httpBufferAvailable - 2, "\r\n", 2);

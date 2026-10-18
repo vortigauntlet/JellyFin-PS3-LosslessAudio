@@ -28,3 +28,10 @@ Use the repository's bundled Rodin face for body copy and the bundled Roboto Con
 ## Playback and monetization
 
 Use the existing public-track resolver and stream pipeline. Do not add ad skipping, ad blocking, or a claim that SoundCloud's free-tier ad behavior is reproduced. This client does not implement a SoundCloud sign-in or private-content flow.
+
+
+## Spotify standalone UI (APP_VARIANT == 2)
+
+This section applies only to the Spotify Connect receiver. Keep SoundCloud and Jellyfin surfaces unchanged. Use the 2015 PS3 Spotify app as the reference: the compact green Spotify disc, horizontal Browse / Your Music tabs, a flat near-black canvas (#121212), square album covers without a frame, white active labels, subdued gray metadata, and Spotify green (#1ED760) for the active tab and progress. Use the bundled console fonts and UIS scaling so the layout remains legible at 480p, 720p, and 1080p.
+
+Your Music lists the account's Liked Songs, fetched from the Web API fifty at a time as the selection moves; Cross plays the highlighted song and the rest of its page on this console. Browse lists the queue the Spotify Connect client sent to this receiver; rows whose metadata cspot has not loaded use an honest queued-song label. Catalog search is still done in the phone app. Use a fixed #1ED760 Spotify mark and active states; keep covers frameless. The bottom player is a dark translucent glass rail with a fine highlight; with nothing playing here it shows the receiver's status line. L1/R1 skip tracks; left/right switches tabs; Cross plays the highlighted row (or opens Now Playing when there is none); Start opens Now Playing; Circle returns. Finish and flip the last frame before returning to the XMB.

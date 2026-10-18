@@ -52,6 +52,8 @@ class SpircHandler {
 
   bool nextSong();
 
+  bool playTrackAt(int index);
+
   void notifyAudioReachedPlayback();
   void notifyAudioEnded();
   void updatePositionMs(uint32_t position);
@@ -60,6 +62,7 @@ class SpircHandler {
   std::shared_ptr<cspot::TrackQueue> getTrackQueue() { return trackQueue; }
 
   void disconnect();
+  void requestSessionStop();
 
  private:
   std::shared_ptr<cspot::Context> ctx;

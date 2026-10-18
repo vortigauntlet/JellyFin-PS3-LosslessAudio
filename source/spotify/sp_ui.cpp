@@ -4,20 +4,22 @@
 //
 //   * Home: what the receiver is doing (waiting for the phone, signing in, ready), with the three steps to connect, or the track
 //     that is playing or paused as a card.  A new song starting opens Now Playing by itself.
-//   * Now Playing: the music engine's own screen (cover, title, progress, the visualisers, volume), following the phone;
-//     skip and pause on the pad go through Spotify, so the phone follows.  Leaving it pauses, so the phone shows paused.
+//   * Now Playing: a Spotify-styled screen with cover, title, progress, and transport controls, following the phone;
+//     skip and pause on the pad go through Spotify, so the phone follows.  Leaving it returns Home while audio keeps playing.
 //   * Settings (Triangle): audio quality (96, 160 or 320 kbps) and Sign out.
 //
-// Colours come from the theme (ui/theme.cpp, "Spotify"): surfaces #000 / #141414 / #1f1f1f, text #fff, accent #1ed760 (from the
-// web player's stylesheet).  Text is the app's own faces; the mark is an original equaliser, not Spotify's logo.
+// Recreates the 2015 PS3 Spotify receiver layout: compact Spotify mark, horizontal tabs, a focused song tile, and a persistent mini-player.
 #include "sp_ui.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
+#include <sysutil/sysutil.h>
+
 #include "../build_config.h"
 #include "meminfo.h"
+#include "music_player.h"
 #include "music_screen.h"
 #include "plog.h"
 #include "sp_art.h"
@@ -25,6 +27,7 @@
 #include "thumbnail_cache.h"
 #include "timing.h"
 #include "ui.h"
+#include "ui_card_gpu.h"
 #include "ui_internal.h"
 #include "ui_scale.h"
 #include "ui_sfx.h"
@@ -38,6 +41,8 @@ namespace {
 
 int W(void) { return (int)display_width; }
 int H(void) { return (int)display_height; }
+
+constexpr u32 SPOTIFY_GREEN = 0x001ED760U;
 
 // A filled rounded rectangle: one rectangle for the middle, one per row in the corners.
 void rrect(int x, int y, int w, int h, int r, u32 col) {
@@ -75,23 +80,46 @@ void centred(int cx, int y, const char *text, float px, u32 colour, int max_w, b
   clip_text(cx - w / 2, y, text, px, colour, max_w, bold);
 }
 
-// The mark: five rounded bars, an original equaliser.  Animated while music plays.
-void equaliser(int x, int y, int s, bool alive) {
-  static const float base[5] = {0.46f, 0.78f, 1.0f, 0.64f, 0.36f};
-  const float t = (float)(timing_get_us() % 4000000ULL) / 4000000.0f * 6.2831853f;
-  const int bw = s / 8 > 2 ? s / 8 : 2, gap = (s - 5 * bw) / 4 > 1 ? (s - 5 * bw) / 4 : 1;
-  for (int i = 0; i < 5; i++) {
-    float f = base[i];
-    if (alive) f *= 0.72f + 0.28f * sinf(t * (2.0f + (float)i * 0.45f) + (float)i * 1.3f);
-    int bh = (int)((float)s * f);
-    if (bh < bw) bh = bw;
-    rrect(x + i * (bw + gap), y + s - bh, bw, bh, bw / 2, XMB_ACCENT);
+// 4x supersampled coverage keeps the brand mark smooth on both 480p and 1080p.
+void spotify_mark(int x, int y, int s) {
+  if (s < 4 || s > 64) return;
+  static u32 pixels[64 * 64];
+  const int samples = 4;
+  const float mid = (float)s * 0.5f, radius = (float)s * 0.48f;
+  for (int py = 0; py < s; py++) {
+    for (int px = 0; px < s; px++) {
+      int covered = 0;
+      for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
+        const float dx = (float)px + ((float)sx + 0.5f) / samples - mid;
+        const float dy = (float)py + ((float)sy + 0.5f) / samples - mid;
+        if (dx * dx + dy * dy <= radius * radius) covered++;
+      }
+      pixels[py * s + px] = (u32)(covered * 255 / (samples * samples)) << 24 | (SPOTIFY_GREEN & 0x00FFFFFFU);
+    }
   }
-}
+  drawBitmapRectAlpha(pixels, (u32)s, 0, 0, (u32)s, (u32)s, (u32)x, (u32)y);
 
-void fmt_time(char *out, size_t n, unsigned ms) {
-  const unsigned s = ms / 1000;
-  snprintf(out, n, "%u:%02u", s / 60, s % 60);
+  const float halfw[3] = {0.34f, 0.28f, 0.22f};
+  const float basey[3] = {0.36f, 0.51f, 0.65f};
+  const float bend[3] = {0.075f, 0.061f, 0.047f};
+  const float thick[3] = {0.048f, 0.042f, 0.036f};
+  for (int py = 0; py < s; py++) for (int px = 0; px < s; px++) {
+    int covered = 0;
+    for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
+      const float dx = (float)px + ((float)sx + 0.5f) / samples - mid;
+      const float dy = (float)py + ((float)sy + 0.5f) / samples - mid;
+      if (dx * dx + dy * dy > radius * radius) continue;
+      for (int arc = 0; arc < 3; arc++) {
+        const float span = (float)s * halfw[arc];
+        if (fabsf(dx) > span) continue;
+        const float n = dx / span;
+        const float line_y = (float)s * (basey[arc] + bend[arc] * n * n);
+        if (fabsf(dy - line_y) <= (float)s * thick[arc] * 0.5f) { covered++; break; }
+      }
+    }
+    pixels[py * s + px] = (u32)(covered * 255 / (samples * samples)) << 24 | 0x00121212U;
+  }
+  drawBitmapRectAlpha(pixels, (u32)s, 0, 0, (u32)s, (u32)s, (u32)x, (u32)y);
 }
 
 // ---- state --------------------------------------------------------------------------------------------------------------------------
@@ -107,141 +135,184 @@ struct Ui {
   bool armed = false;                // buttons that opened a screen must be let go before presses count
   SpState prev_state = SP_OFF;
   unsigned auto_serial = 0;
-  uint64_t no_open_until_us = 0;     // after leaving Now Playing: the state needs a moment to say paused
+  int tab = 1;                       // Browse (0) or Your Music (1)
+  int queue_sel = 0;
+  int queue_scroll = 0;
+  int library_sel = 0;
+  int library_scroll = 0;
 };
 
 bool pressed_any(void) { return btn_cur.cross || btn_cur.circle || btn_cur.square || btn_cur.triangle; }
 
 u32 state_colour(SpState st) {
   switch (st) {
-  case SP_READY: case SP_PLAYING: case SP_PAUSED: return XMB_ACCENT;
+  case SP_READY: case SP_PLAYING: case SP_PAUSED: return SPOTIFY_GREEN;
   case SP_ERROR: return 0x00E5484DU;
   default: return 0x00F5A623U;      // waiting or signing in: amber
   }
 }
 
-const char *state_title(SpState st) {
-  switch (st) {
-  case SP_PAIRING:    return "Connect from Spotify";
-  case SP_SIGNING_IN: return "Signing in";
-  case SP_READY:      return "Ready to play";
-  case SP_PLAYING:    return "Playing";
-  case SP_PAUSED:     return "Paused";
-  case SP_ERROR:      return "Not connected";
-  default:            return "Starting";
-  }
-}
-
 // ---- drawing ---------------------------------------------------------------------------------------------------------------------------
 
-void draw_top(SpState st) {
+void draw_spotify_backdrop(void) {
+  // The original PS3 app used a restrained, nearly black surface. A single
+  // fill is both more faithful and free of the 32 visible gradient bands.
+  ui_rect_gpu_draw(0, 0, W(), H(), 0x00121212U, 255);
+}
+
+void draw_top(SpState st, int active_tab) {
   const int pad = (int)XMB_ITEM_PAD;
-  const int y = (int)XMB_OY + UIS_H(26), s = UIS_H(34);
-  equaliser(pad, y, s, st == SP_PLAYING);
-  const float px = UIS_TF(30.0f);
-  drawTTF((u32)(pad + s + UIS_W(14)), (u32)(y + (s - (int)px) / 2 - UIS_H(2)), "Spotify", px, XMB_TEXT, true);
-
-  // the device chip: a dot for the state, and the name the phone shows
-  const float cpx = UIS_TF(16.0f);
-  const int ch = UIS_H(34), cw = ttf_text_width("PS3", cpx, true) + UIS_W(58);
-  const int cx = W() - pad - cw;
-  rrect(cx, y, cw, ch, ch / 2, XMB_PANEL_HI);
-  const int d = UIS_H(12);
-  rrect(cx + UIS_W(18), y + (ch - d) / 2, d, d, d / 2, state_colour(st));
-  drawTTF((u32)(cx + UIS_W(18) + d + UIS_W(12)), (u32)(y + (ch - (int)cpx) / 2 - UIS_H(1)), "PS3", cpx, XMB_TEXT, true);
-}
-
-void draw_step(int x, int y, int w, int h, int n, const char *text, const char *sub) {
-  rrect(x, y, w, h, UIS_H(8), XMB_PANEL);
-  const int c = h - UIS_H(26);
-  rrect(x + UIS_W(18), y + (h - c) / 2, c, c, c / 2, XMB_ACCENT);
-  char d[4];
-  snprintf(d, sizeof d, "%d", n);
-  const float px = UIS_TF(20.0f);
-  drawTTF((u32)(x + UIS_W(18) + (c - ttf_text_width(d, px, true)) / 2), (u32)(y + (h - (int)px) / 2 - UIS_H(1)), d, px, 0x00000000U, true);
-  const int tx = x + UIS_W(18) + c + UIS_W(22);
-  clip_text(tx, y + UIS_H(10), text, UIS_TF(21.0f), XMB_TEXT, w - (tx - x) - UIS_W(20), true);
-  if (sub && sub[0]) clip_text(tx, y + UIS_H(40), sub, UIS_TF(15.0f), XMB_TEXT_DIM, w - (tx - x) - UIS_W(20), false);
-}
-
-void draw_card(int x, int y, int w, int h, const SpTrack &t, SpState st, bool focused) {
-  rrect(x, y, w, h, UIS_H(8), XMB_PANEL);
-  if (focused) {                                           // the one focusable thing: an accent outline
-    const int b = UIS_H(2);
-    drawRect((u32)x, (u32)y, (u32)w, (u32)b, XMB_ACCENT);
-    drawRect((u32)x, (u32)(y + h - b), (u32)w, (u32)b, XMB_ACCENT);
-    drawRect((u32)x, (u32)y, (u32)b, (u32)h, XMB_ACCENT);
-    drawRect((u32)(x + w - b), (u32)y, (u32)b, (u32)h, XMB_ACCENT);
-  }
-  const int pad = UIS_H(20), s = h - 2 * pad;
-  char key[80];
-  bool drawn = false;
-  if (sp_art_key(t.image, key, sizeof key)) drawn = xmb_cpu_blit_thumb(key, x + pad, y + pad, s, s);
-  if (!drawn) {
-    drawRect((u32)(x + pad), (u32)(y + pad), (u32)s, (u32)s, XMB_PANEL_HI);
-    drawIcon((u32)(x + pad + (s - UIS_H(40)) / 2), (u32)(y + pad + (s - UIS_H(40)) / 2), ICON_MUSIC, UIS_TF(40.0f), XMB_TEXT_FAINT);
-  }
-  const int tx = x + pad + s + UIS_W(26), tw = x + w - tx - UIS_W(24);
-  clip_text(tx, y + pad, t.title, UIS_TF(28.0f), XMB_WHITE, tw, true);
-  clip_text(tx, y + pad + UIS_H(40), t.artist, UIS_TF(19.0f), XMB_TEXT, tw, false);
-  clip_text(tx, y + pad + UIS_H(70), t.album, UIS_TF(15.0f), XMB_TEXT_DIM, tw, false);
-
-  // progress: the position the phone reports against the track's length
-  const int by = y + h - pad - UIS_H(8);
-  const unsigned pos = sp_svc_position_ms(), dur = t.duration_ms ? t.duration_ms : 1;
-  int fill = (int)((uint64_t)tw * (pos > dur ? dur : pos) / dur);
-  rrect(tx, by, tw, UIS_H(5), UIS_H(3), XMB_TRACK);
-  if (fill > 0) rrect(tx, by, fill, UIS_H(5), UIS_H(3), st == SP_PLAYING ? XMB_ACCENT : XMB_TEXT_DIM);
-  char a[16], b[16], line[48];
-  fmt_time(a, sizeof a, pos);
-  fmt_time(b, sizeof b, t.duration_ms);
-  snprintf(line, sizeof line, "%s / %s", a, b);
-  drawTTF((u32)tx, (u32)(by - UIS_H(24)), line, UIS_TF(14.0f), XMB_TEXT_DIM);
-  if (st == SP_PAUSED) {
-    const char *p = "PAUSED";
-    drawTTF((u32)(tx + tw - ttf_text_width(p, UIS_TF(13.0f), true)), (u32)(by - UIS_H(23)), p, UIS_TF(13.0f), XMB_ACCENT, true);
-  }
+  const int y = (int)XMB_OY + UIS_H(26), mark = UIS_H(34);
+  spotify_mark(pad, y, mark);
+  const float tp = UIS_TF(17.0f);
+  const int browse_x = pad + mark + UIS_W(28);
+  const int browse_w = ttf_text_width("Browse", tp, true);
+  const int music_x = browse_x + browse_w + UIS_W(32);
+  const int tab_y = y + (mark - (int)tp) / 2;
+  drawTTF((u32)browse_x, (u32)tab_y, "Browse", tp, active_tab == 0 ? XMB_WHITE : XMB_TEXT_DIM, true);
+  drawTTF((u32)music_x, (u32)tab_y, "Your Music", tp, active_tab == 1 ? XMB_WHITE : XMB_TEXT_DIM, true);
+  const int tx = active_tab == 0 ? browse_x : music_x;
+  const int tw = ttf_text_width(active_tab == 0 ? "Browse" : "Your Music", tp, true);
+  drawRect((u32)tx, (u32)(y + mark + UIS_H(6)), (u32)tw, UIS_H(3), SPOTIFY_GREEN);
+  const float cpx = UIS_TF(15.0f);
+  const int label_w = ttf_text_width("PS3", cpx, true);
+  const int rx = W() - pad - label_w - UIS_W(24);
+  const int d = UIS_H(9);
+  rrect(rx, y + (mark - d) / 2, d, d, d / 2, state_colour(st));
+  drawTTF((u32)(rx + d + UIS_W(10)), (u32)(y + (mark - (int)cpx) / 2), "PS3", cpx, XMB_TEXT_DIM, true);
 }
 
 void draw_home(Ui &ui, SpState st) {
-  draw_top(st);
-  const int cw = (W() - 2 * (int)XMB_ITEM_PAD) < UIS_W(860) ? (W() - 2 * (int)XMB_ITEM_PAD) : UIS_W(860);
-  const int cx = (W() - cw) / 2, mid = W() / 2;
+  draw_top(st, ui.tab);
+  const int pad = (int)XMB_ITEM_PAD;
+  const int cw = W() - 2 * pad;
   SpTrack t;
   const bool have = sp_svc_track(&t) && st != SP_PAIRING && st != SP_SIGNING_IN && st != SP_ERROR;
+  const bool browse = ui.tab == 0;
+  const int heading_y = (int)XMB_OY + UIS_H(112);
+  drawTTF((u32)pad, (u32)heading_y, browse ? "BROWSE" : "SONGS",
+          UIS_TF(19.0f), XMB_WHITE, true);
 
-  const int ty = H() * (have ? 20 : 25) / 100;
-  centred(mid, ty, state_title(st), UIS_TF(40.0f), XMB_WHITE, cw, true);
-  // a few dots that walk while something is being waited for
-  const char *status = sp_svc_status_text();
-  centred(mid, ty + UIS_H(60), status, UIS_TF(18.0f), XMB_TEXT_DIM, cw, false);
-  if (st == SP_PAIRING || st == SP_SIGNING_IN) {
-    const int n = (int)((timing_get_us() / 350000ULL) % 4), d = UIS_H(9), gap = UIS_W(16);
-    const int sx = mid - (3 * gap + d) / 2, sy = ty + UIS_H(102);
-    for (int i = 0; i < 4; i++) rrect(sx + i * gap, sy, d, d, d / 2, i == n ? XMB_ACCENT : XMB_PANEL_HI);
-  }
-
-  if (have) {
-    const int ch = UIS_H(200);
-    const int cy = H() * 38 / 100;
-    draw_card(cx, cy, cw, ch, t, st, true);
-    centred(mid, cy + ch + UIS_H(26), "In the Spotify app, tap the device icon to move the music to another device",
-            UIS_TF(15.0f), XMB_TEXT_FAINT, cw, false);
+  if (browse) {
+    drawTTF((u32)pad, (u32)(heading_y + UIS_H(62)), "Spotify queue",
+            UIS_TF(28.0f), XMB_WHITE, true);
+    const unsigned queue_count = sp_svc_queue_count();
+    const int current = sp_svc_queue_current();
+    const int row_y = heading_y + UIS_H(112), row_h = UIS_H(58);
+    const int visible = 6;
+    if (!queue_count) {
+      clip_text(pad, row_y, "Play a playlist or album on your phone, then connect to PS3.",
+                UIS_TF(17.0f), XMB_TEXT_DIM, cw, false);
+    } else {
+      if (ui.queue_sel < 0) ui.queue_sel = 0;
+      if ((unsigned)ui.queue_sel >= queue_count) ui.queue_sel = (int)queue_count - 1;
+      if (ui.queue_scroll > ui.queue_sel) ui.queue_scroll = ui.queue_sel;
+      if (ui.queue_sel >= ui.queue_scroll + visible) ui.queue_scroll = ui.queue_sel - visible + 1;
+      for (int i = 0; i < visible && (unsigned)(ui.queue_scroll + i) < queue_count; i++) {
+        const int index = ui.queue_scroll + i, ry = row_y + i * row_h;
+        const bool selected = index == ui.queue_sel;
+        if (selected) ui_rect_gpu_draw(pad - UIS_W(10), ry - UIS_H(4), cw + UIS_W(20), row_h - UIS_H(3), 0x002E3338U, 230);
+        SpTrack row;
+        const bool named = sp_svc_queue_track((unsigned)index, &row);
+        char fallback[40];
+        snprintf(fallback, sizeof fallback, "Queued song %02d", index + 1);
+        clip_text(pad, ry + UIS_H(5), named ? row.title : fallback, UIS_TF(17.0f),
+                  selected ? XMB_WHITE : XMB_TEXT, cw - UIS_W(170), true);
+        if (named && row.artist[0])
+          clip_text(pad, ry + UIS_H(31), row.artist, UIS_TF(13.0f), XMB_TEXT_DIM, cw - UIS_W(170), false);
+        if (index == current) drawTTF((u32)(W() - pad - UIS_W(112)), (u32)(ry + UIS_H(12)), "NOW PLAYING",
+                                      UIS_TF(11.0f), SPOTIFY_GREEN, true);
+        else if (selected) drawTTF((u32)(W() - pad - UIS_W(90)), (u32)(ry + UIS_H(12)), "PLAY",
+                                   UIS_TF(12.0f), SPOTIFY_GREEN, true);
+      }
+      clip_text(pad, row_y + visible * row_h + UIS_H(5),
+                "This is the queue sent by Spotify Connect. Pick a row to play it on PS3.",
+                UIS_TF(13.0f), XMB_TEXT_DIM, cw, false);
+    }
   } else {
-    const int rh = UIS_H(72), gap = UIS_H(14), y0 = H() * 43 / 100;
-    draw_step(cx, y0, cw, rh, 1, "Open Spotify on your phone or computer", "Use the same account you want to listen with");
-    draw_step(cx, y0 + rh + gap, cw, rh, 2, "Tap the device icon", "It is called Connect to a device");
-    draw_step(cx, y0 + 2 * (rh + gap), cw, rh, 3, "Choose PS3", "Your music starts playing on the console right away");
+    sp_svc_library_request((unsigned)(ui.library_sel < 0 ? 0 : ui.library_sel));
+    const unsigned total = sp_svc_library_total();
+    const unsigned page_offset = sp_svc_library_offset();
+    const int row_y = heading_y + UIS_H(88), row_h = UIS_H(58), visible = 6;
+    drawTTF((u32)pad, (u32)(heading_y + UIS_H(42)), "Liked Songs",
+            UIS_TF(28.0f), XMB_WHITE, true);
+    if (sp_svc_library_loading()) {
+      clip_text(pad, row_y, "Loading your saved songs...", UIS_TF(17.0f), XMB_TEXT_DIM, cw, false);
+    } else if (!total) {
+      const char* status = sp_svc_library_status_text();
+      clip_text(pad, row_y, status[0] ? status : "No liked songs found",
+                UIS_TF(17.0f), XMB_TEXT_DIM, cw, false);
+    } else {
+      char count_text[64];
+      snprintf(count_text, sizeof count_text, "%u songs saved", total);
+      drawTTF((u32)pad, (u32)(heading_y + UIS_H(76)), count_text, UIS_TF(14.0f), XMB_TEXT_DIM, false);
+      if (ui.library_sel < 0) ui.library_sel = 0;
+      if ((unsigned)ui.library_sel >= total) ui.library_sel = (int)total - 1;
+      if (ui.library_scroll > ui.library_sel) ui.library_scroll = ui.library_sel;
+      if (ui.library_sel >= ui.library_scroll + visible) ui.library_scroll = ui.library_sel - visible + 1;
+      if ((unsigned)ui.library_scroll < page_offset) ui.library_scroll = (int)page_offset;
+      for (int i = 0; i < visible && (unsigned)(ui.library_scroll + i) < total; i++) {
+        const int index = ui.library_scroll + i, ry = row_y + i * row_h;
+        const bool selected = index == ui.library_sel;
+        if (selected) ui_rect_gpu_draw(pad - UIS_W(10), ry - UIS_H(4), cw + UIS_W(20), row_h - UIS_H(3), 0x002E3338U, 230);
+        SpTrack row;
+        if (sp_svc_library_track((unsigned)index, &row)) {
+          clip_text(pad, ry + UIS_H(5), row.title, UIS_TF(17.0f),
+                    selected ? XMB_WHITE : XMB_TEXT, cw - UIS_W(170), true);
+          clip_text(pad, ry + UIS_H(31), row.artist, UIS_TF(13.0f), XMB_TEXT_DIM, cw - UIS_W(170), false);
+        } else {
+          clip_text(pad, ry + UIS_H(12), "Loading...", UIS_TF(16.0f), XMB_TEXT_DIM, cw - UIS_W(170), false);
+        }
+        if (selected) drawTTF((u32)(W() - pad - UIS_W(90)), (u32)(ry + UIS_H(12)), "PLAY",
+                             UIS_TF(12.0f), SPOTIFY_GREEN, true);
+      }
+      clip_text(pad, row_y + visible * row_h + UIS_H(4), sp_svc_library_status_text(),
+                UIS_TF(13.0f), XMB_TEXT_DIM, cw, false);
+    }
   }
 
-  Hint h[4];
+  // Browse and Your Music own this content area. Connection guidance stays in the
+  // empty queue/library messages and the persistent player rail below.
+
+  // Persistent Now Playing rail, matching the original app's compact player.
+  const int by = H() - UIS_H(132), bh = UIS_H(82);
+  ui_rect_gpu_draw(pad - UIS_W(12), by - UIS_H(7), cw + UIS_W(24), bh + UIS_H(8), 0x00252A30U, 222);
+  ui_rect_gpu_draw(pad - UIS_W(12), by - UIS_H(7), cw + UIS_W(24), UIS_H(1), 0x0096A0A9U, 112);
+  if (have) {
+    const int art = UIS_H(48), ay = by + (bh - art) / 2;
+    char key[80];
+    if (!sp_art_key(t.image, key, sizeof key) || !xmb_cpu_blit_thumb(key, pad, ay, art, art)) {
+      drawRect((u32)pad, (u32)ay, (u32)art, (u32)art, XMB_PANEL_HI);
+      drawIcon((u32)(pad + UIS_H(12)), (u32)(ay + UIS_H(12)), ICON_MUSIC, UIS_TF(24.0f), XMB_TEXT_FAINT);
+    }
+    const int tx = pad + art + UIS_W(14);
+    clip_text(tx, by + UIS_H(12), t.title, UIS_TF(15.0f), XMB_WHITE, UIS_W(360), true);
+    clip_text(tx, by + UIS_H(38), t.artist, UIS_TF(12.0f), XMB_TEXT_DIM, UIS_W(360), false);
+    drawIcon((u32)(W() - pad - UIS_W(30)), (u32)(by + UIS_H(22)),
+             st == SP_PLAYING ? ICON_PAUSE : ICON_PLAY, UIS_TF(24.0f), XMB_WHITE);
+    const unsigned dur = t.duration_ms ? t.duration_ms : 1, pos = sp_svc_position_ms();
+    const int pw = W() - 2 * pad, py = by + bh - UIS_H(3);
+    drawRect((u32)pad, (u32)py, (u32)pw, UIS_H(2), XMB_TRACK);
+    drawRect((u32)pad, (u32)py, (u32)((uint64_t)pw * (pos > dur ? dur : pos) / dur), UIS_H(2), XMB_ACCENT);
+  } else {
+    // Nothing on this console yet: say what the receiver is doing (signing in, ready, playing elsewhere).
+    const int d = UIS_H(9);
+    rrect(pad, by + UIS_H(30), d, d, d / 2, state_colour(st));
+    clip_text(pad + d + UIS_W(12), by + UIS_H(24), sp_svc_status_text(), UIS_TF(15.0f), XMB_TEXT_DIM,
+              cw - d - UIS_W(12), false);
+  }
+
+  const bool can_pick = (ui.tab == 0 && sp_svc_queue_count()) || (ui.tab == 1 && sp_svc_library_total());
+  Hint h[7];
   int n = 0;
-  if (have) { h[n].glyph = 'X'; h[n].label = "Now Playing"; n++; }
+  if (can_pick) { h[n].glyph = 'X'; h[n].label = "Play"; n++; }
+  else if (have) { h[n].glyph = 'X'; h[n].label = "Now Playing"; n++; }
+  if (can_pick && have) { h[n].glyph = 'A'; h[n].label = "Now Playing"; n++; }
+  h[n].glyph = 'D'; h[n].label = can_pick ? "Choose song / Tabs" : "Tabs"; n++;
+  if (have) { h[n].glyph = 'l'; h[n].label = ""; n++; h[n].glyph = 'r'; h[n].label = "Skip track"; n++; }
   h[n].glyph = 'T'; h[n].label = "Settings"; n++;
-  h[n].glyph = 'S'; h[n].label = "Visualizer"; n++;
   h[n].glyph = 'C'; h[n].label = "Quit"; n++;
   draw_hints_bar(h, n);
-  (void)ui;
 }
 
 void settings_text(int r, char *title, int tc, char *value, int vc, char *sub, int sc, const Ui &ui) {
@@ -267,7 +338,7 @@ void settings_text(int r, char *title, int tc, char *value, int vc, char *sub, i
 }
 
 void draw_settings(const Ui &ui, SpState st) {
-  draw_top(st);
+  draw_top(st, ui.tab);
   const int cw = (W() - 2 * (int)XMB_ITEM_PAD) < UIS_W(860) ? (W() - 2 * (int)XMB_ITEM_PAD) : UIS_W(860);
   const int cx = (W() - cw) / 2;
   centred(W() / 2, H() * 21 / 100, "Settings", UIS_TF(36.0f), XMB_WHITE, cw, true);
@@ -296,8 +367,8 @@ void draw_settings(const Ui &ui, SpState st) {
   draw_hints_bar(h, n);
 }
 
-void draw_quit(SpState st) {
-  draw_top(st);
+void draw_quit(SpState st, int tab) {
+  draw_top(st, tab);
   const int bw = UIS_W(620), bh = UIS_H(220), bx = (W() - bw) / 2, by = (H() - bh) / 2;
   rrect(bx, by, bw, bh, UIS_H(10), XMB_PANEL);
   centred(W() / 2, by + UIS_H(40), "Quit Spotify?", UIS_TF(30.0f), XMB_WHITE, bw - UIS_W(40), true);
@@ -314,10 +385,8 @@ void open_now_playing(Ui &ui) {
   init_btns();
   music_screen_open_spotify();
   ui.armed = false;
-  ui.no_open_until_us = timing_get_us() + 2500000ULL;
-  SpTrack t;
-  ui.auto_serial = sp_svc_track(&t) ? sp_svc_track_serial() : 0;
-  ui.prev_state = SP_PAUSED;
+  ui.auto_serial = sp_svc_track_serial();      // coming back must not open it again for the same song
+  ui.prev_state = sp_svc_state();
 }
 
 void change_quality(int dir) {
@@ -334,12 +403,15 @@ void change_quality(int dir) {
 
 void sp_ui_run(void) {
   sp_svc_start("PS3");
+  music_start_spotify();                 // the speaker: runs until the app ends, whatever screen is up
   Ui ui;
   bool first = true;
   while (running) {
     waitflip();
+    sysUtilCheckCallback();
+    if (!running) break;                 // honour XMB's Quit Game before rendering another frame
     clearScreen(XMB_BG);
-    wave_draw();
+    draw_spotify_backdrop();
     rsxSync();
     thumb_cache_tick();
     poll_buttons();
@@ -357,12 +429,37 @@ void sp_ui_run(void) {
       if (ui.mode == M_HOME) {
         SpTrack t;
         const bool have = sp_svc_track(&t) && st != SP_PAIRING && st != SP_SIGNING_IN && st != SP_ERROR;
-        // a song started (or resumed) on the phone: show it
-        const bool started = st == SP_PLAYING && (ui.prev_state != SP_PLAYING || sp_svc_track_serial() != ui.auto_serial);
-        if (have && started && timing_get_us() >= ui.no_open_until_us) { open_now_playing(ui); continue; }
-        if (BTN_PRESSED(cross) && have) { ui_sfx_play(SFX_DECIDE); open_now_playing(ui); continue; }
+        // Keep the library view in place as playback changes; users choose Now Playing with X.
+        if (ui.tab == 0 && sp_svc_queue_count()) {
+          const int qn = (int)sp_svc_queue_count();
+          if (BTN_REPEAT(up) && ui.queue_sel > 0) { ui.queue_sel--; ui_sfx_play(SFX_CURSOR); }
+          if (BTN_REPEAT(down) && ui.queue_sel < qn - 1) { ui.queue_sel++; ui_sfx_play(SFX_CURSOR); }
+        } else if (ui.tab == 1) {
+          sp_svc_library_request((unsigned)(ui.library_sel < 0 ? 0 : ui.library_sel));
+          const unsigned total = sp_svc_library_total();
+          if (BTN_REPEAT(up) && ui.library_sel > 0) { ui.library_sel--; ui_sfx_play(SFX_CURSOR); }
+          if (BTN_REPEAT(down) && total && (unsigned)(ui.library_sel + 1) < total) { ui.library_sel++; ui_sfx_play(SFX_CURSOR); }
+          if (ui.library_sel < ui.library_scroll) ui.library_scroll = ui.library_sel;
+          if (ui.library_sel >= ui.library_scroll + 6) ui.library_scroll = ui.library_sel - 5;
+          if (ui.library_sel >= 0) sp_svc_library_request((unsigned)ui.library_sel);
+        }
+        if (BTN_PRESSED(left) || BTN_PRESSED(right)) {
+          ui.tab = 1 - ui.tab;
+          if (ui.tab == 1) sp_svc_library_request((unsigned)(ui.library_sel < 0 ? 0 : ui.library_sel));
+          ui_sfx_play(SFX_CURSOR);
+        }
+        if (BTN_PRESSED(cross) && ui.tab == 1 && sp_svc_library_total()) {
+          ui_sfx_play(SFX_DECIDE);
+          if (!sp_svc_library_play((unsigned)ui.library_sel))
+            sp_svc_library_request((unsigned)ui.library_sel);
+        } else if (BTN_PRESSED(cross) && ui.tab == 0 && sp_svc_queue_count()) {
+          ui_sfx_play(SFX_DECIDE);
+          if (sp_svc_play_queue_track((unsigned)ui.queue_sel)) ui.auto_serial = sp_svc_track_serial();
+        } else if (BTN_PRESSED(cross) && have) { ui_sfx_play(SFX_DECIDE); open_now_playing(ui); continue; }
+        if (BTN_PRESSED(start) && have) { ui_sfx_play(SFX_DECIDE); open_now_playing(ui); continue; }
+        if (BTN_PRESSED(l1) && have) { ui_sfx_play(SFX_CURSOR); sp_svc_prev(); }
+        if (BTN_PRESSED(r1) && have) { ui_sfx_play(SFX_CURSOR); sp_svc_next(); }
         if (BTN_PRESSED(triangle)) { ui_sfx_play(SFX_DECIDE); ui.mode = M_SETTINGS; ui.sel = 0; ui.confirm_signout = false; }
-        else if (BTN_PRESSED(square)) { wave_vis_cycle(); ui_sfx_play(SFX_OPTION); }
         else if (BTN_PRESSED(circle)) { ui_sfx_play(SFX_CANCEL); ui.mode = M_QUIT; }
       } else if (ui.mode == M_SETTINGS) {
         const int was = ui.sel;
@@ -391,8 +488,10 @@ void sp_ui_run(void) {
 
     if (ui.mode == M_HOME) draw_home(ui, st);
     else if (ui.mode == M_SETTINGS) draw_settings(ui, st);
-    else draw_quit(st);
+    else draw_quit(st, ui.tab);
     flip();
   }
+  music_stop();
+  music_join_stale();                    // the feed thread, left finishing by music_stop()
   sp_svc_stop();
 }
