@@ -271,39 +271,6 @@ bool SpircHandler::previousSong() {
   return skipSong(TrackQueue::SkipDirection::PREV);
 }
 
-// What a Load frame from a phone does (handleFrame, kMessageTypeLoad), with the track list chosen on this device.
-bool SpircHandler::loadLocalTracks(const std::vector<std::string>& uris, int index,
-                                   const std::string& contextUri) {
-  if (uris.empty() || index < 0 || index >= (int)uris.size()) return false;
-  std::vector<TrackReference> refs;
-  refs.reserve(uris.size());
-  for (const auto& uri : uris) {
-    TrackReference ref;
-    ref.uri = uri;
-    ref.context = contextUri;
-    ref.decodeURI();
-    if (!ref.gid.empty()) refs.push_back(ref);
-  }
-  if (refs.empty()) return false;
-  if (index >= (int)refs.size()) index = 0;
-
-  this->trackPlayer->start();
-  playbackState->setActive(true);
-  playbackState->remoteTracks = refs;
-  playbackState->innerFrame.state.context_uri = (char*)realloc(
-      playbackState->innerFrame.state.context_uri, contextUri.size() + 1);
-  strcpy(playbackState->innerFrame.state.context_uri, contextUri.c_str());
-  playbackState->innerFrame.state.has_playing_track_index = true;
-  playbackState->innerFrame.state.playing_track_index = index;
-  playbackState->updatePositionMs(0);
-  playbackState->setPlaybackState(PlaybackState::State::Playing);
-
-  trackQueue->updateTracks(0, true);
-  this->notify();
-  trackPlayer->resetState();
-  return true;
-}
-
 bool SpircHandler::playTrackAt(int index) {
   if (!trackQueue->selectTrack(index)) return false;
   trackPlayer->resetState(false);

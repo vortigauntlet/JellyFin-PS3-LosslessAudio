@@ -14,6 +14,8 @@
 #include <sys/thread.h>
 #include <unistd.h>
 #include <atomic>
+#include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -28,7 +30,6 @@
 #include "meminfo.h"
 #include "plog.h"
 #include "sp_log.h"
-#include "sp_collection.h"
 #include "sp_lyrics_parse.h"
 #include "protobuf/metadata.pb.h"
 #include "NanoPBHelper.h"
@@ -68,22 +69,12 @@ std::shared_ptr<cspot::Context> s_ctx;
 sys_ppu_thread_t s_thread_tid = 0;
 std::atomic<int> s_quality{160};
 
-// Liked Songs: the URIs, page by page from the collection service, and each row's title and artist from cspot's metadata channel,
-// asked for around the selection.  All guarded by s_mtx.
-struct LibRow {
-  std::string uri;
-  SpTrack meta;
-  bool have = false, asked = false;
-};
-std::vector<LibRow> s_lib;
-std::string s_lib_next;                         // the next page's token
-bool s_lib_done = false;                        // the last page arrived
-bool s_lib_want_page = false;                   // the UI is near the end of what is loaded
-bool s_lib_fetching = false;
-int s_lib_want_lo = 0, s_lib_want_hi = -1;      // rows whose metadata the UI wants
-uint64_t s_lib_retry_at_ms = 0;
-char s_library_status[96] = "";
-bool s_lib_worker = false;
+// Titles, artists and covers of the Connect queue's rows.  cspot only knows the few tracks it has preloaded, so the rest are asked
+// for over its own metadata channel (hm://metadata/3/track/<gid>) as the screen shows them.  Guarded by s_mtx.
+std::map<std::string, SpTrack> s_meta;          // gid hex -> the row
+std::set<std::string> s_meta_asked;
+std::vector<std::string> s_meta_todo;
+bool s_meta_worker = false;
 
 std::shared_ptr<cspot::SpircHandler> handler_snapshot() {
   std::lock_guard<std::mutex> g(s_mtx);
@@ -246,86 +237,13 @@ void on_event(std::unique_ptr<cspot::SpircHandler::Event> ev) {
 
 // ---- the session thread ------------------------------------------------------------------------------------------------------
 
-const char* http_failure(const char* what, int rc, int status) {
-  static char out[96];
-  if (rc != SX_OK) snprintf(out, sizeof out, "%s: no connection to Spotify (%d)", what, rc);
-  else if (status == 401 || status == 403) snprintf(out, sizeof out, "%s: Spotify refused the request (%d)", what, status);
-  else if (status == 429) snprintf(out, sizeof out, "%s: Spotify is busy, retrying shortly", what);
-  else snprintf(out, sizeof out, "%s: Spotify answered %d", what, status);
-  return out;
-}
-
-// One page of the collection.  Returns false (with the status line set) when it failed.
-bool fetch_collection_page(const std::shared_ptr<cspot::Context>& ctx, const std::string& page_token) {
-  char token[2048];
-  if (!sp_svc_access_token(token, sizeof token)) {
-    std::lock_guard<std::mutex> g(s_mtx);
-    snprintf(s_library_status, sizeof s_library_status, "Liked Songs: waiting for Spotify sign-in");
-    return false;
-  }
-  const std::string body = collection_page_request(ctx->config.username, "collection", page_token, 300);
-  std::string headers = std::string("Authorization: Bearer ") + token +
-                        "\r\nAccept: application/vnd.collection-v2.spotify.proto\r\napp-platform: WebPlayer\r\n";
-  memset(token, 0, sizeof token);
-  sx_http_req rq;
-  memset(&rq, 0, sizeof rq);
-  rq.method = "POST";
-  rq.url = "https://spclient.wg.spotify.com/collection/v2/paging";
-  rq.headers = headers.c_str();
-  rq.body = body.data();
-  rq.body_len = (int)body.size();
-  rq.content_type = "application/vnd.collection-v2.spotify.proto";
-  rq.range_start = -1;
-  rq.range_end = -1;
-  rq.connect_ms = 8000;
-  rq.handshake_ms = 12000;
-  rq.first_byte_ms = 15000;
-  rq.idle_ms = 10000;
-  sx_http_info info;
-  memset(&info, 0, sizeof info);
-  char* resp = NULL;
-  size_t len = 0;
-  const int rc = sx_http_fetch(&rq, 4u << 20, &resp, &len, &info);
-  std::fill(headers.begin(), headers.end(), '\0');
-  std::vector<std::string> uris;
-  std::string next;
-  const bool ok = rc == SX_OK && info.status == 200 && resp &&
-                  collection_page_parse((const uint8_t*)resp, len, uris, next);
-  free(resp);
-  char line[112];
-  snprintf(line, sizeof line, "spotify: liked songs page rc=%d status=%d bytes=%u tracks=%u more=%d",
-           rc, info.status, (unsigned)len, (unsigned)uris.size(), next.empty() ? 0 : 1);
-  plog(line);
-
-  std::lock_guard<std::mutex> g(s_mtx);
-  if (!ok) {
-    snprintf(s_library_status, sizeof s_library_status, "%s",
-             http_failure("Liked Songs", rc, rc == SX_OK && info.status == 200 ? -1 : info.status));
-    return false;
-  }
-  for (auto& u : uris) {
-    LibRow row;
-    row.uri = u;
-    s_lib.push_back(row);
-  }
-  s_lib_next = next;
-  s_lib_done = next.empty() || uris.empty();
-  s_library_status[0] = '\0';
-  return true;
-}
-
-// Title, artist, album and cover of one row, through the same metadata request cspot makes for the tracks it plays.
-void request_row_meta(const std::shared_ptr<cspot::Context>& ctx, int index, const std::string& uri) {
-  char hex[33];
-  if (!sp_uri_to_hex(uri.c_str(), hex)) return;
+void request_meta(const std::shared_ptr<cspot::Context>& ctx, const std::string& hex) {
+  if (hex.size() != 32) return;
   std::vector<uint8_t> gid(16);
-  for (int i = 0; i < 16; i++) {
-    auto nib = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
-    gid[i] = (uint8_t)(nib(hex[i * 2]) * 16 + nib(hex[i * 2 + 1]));
-  }
-  const std::string url = std::string("hm://metadata/3/track/") + hex;
-  ctx->session->execute(cspot::MercurySession::RequestType::GET, url,
-                        [index, uri, gid](cspot::MercurySession::Response& res) {
+  auto nib = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
+  for (int i = 0; i < 16; i++) gid[i] = (uint8_t)(nib(hex[i * 2]) * 16 + nib(hex[i * 2 + 1]));
+  ctx->session->execute(cspot::MercurySession::RequestType::GET, "hm://metadata/3/track/" + hex,
+                        [hex, gid](cspot::MercurySession::Response& res) {
     if (res.parts.empty()) return;
     Track* t = new Track;
     *t = Track_init_zero;
@@ -334,60 +252,41 @@ void request_row_meta(const std::shared_ptr<cspot::Context>& ctx, int index, con
     ti.loadPbTrack(t, gid);
     pb_release(Track_fields, t);
     delete t;
-    std::lock_guard<std::mutex> g(s_mtx);
-    if (index < 0 || index >= (int)s_lib.size() || s_lib[(size_t)index].uri != uri) return;   // the list was reloaded
-    SpTrack& m = s_lib[(size_t)index].meta;
+    SpTrack m;
     memset(&m, 0, sizeof m);
     snprintf(m.title, sizeof m.title, "%s", ti.name.c_str());
     snprintf(m.artist, sizeof m.artist, "%s", ti.artist.c_str());
     snprintf(m.album, sizeof m.album, "%s", ti.album.c_str());
     snprintf(m.image, sizeof m.image, "%s", ti.imageUrl.c_str());
-    snprintf(m.uri, sizeof m.uri, "%s", uri.c_str());
     m.duration_ms = ti.duration;
-    s_lib[(size_t)index].have = true;
+    std::lock_guard<std::mutex> g(s_mtx);
+    if (s_meta.size() > 2000) s_meta.clear();
+    s_meta[hex] = m;
   });
 }
 
-// One thread for the app's life (like the covers' and the lyrics'): pages when the UI nears the end, metadata around the selection.
-void library_worker(void*) {
+// One thread for the app's life: sends the metadata requests the screen asked for, a few at a time.
+void meta_worker(void*) {
   for (;;) {
     usleep(40000);
     std::shared_ptr<cspot::Context> ctx;
-    std::string page_token;
-    bool page = false;
-    std::vector<std::pair<int, std::string>> meta;
+    std::vector<std::string> todo;
     {
       std::lock_guard<std::mutex> g(s_mtx);
       ctx = s_ctx;
-      if (!ctx || s_state.load() < SP_READY || s_state.load() == SP_ERROR) continue;
-      if (s_lib_want_page && !s_lib_done && sx_now_ms() >= s_lib_retry_at_ms) {
-        page = true;
-        page_token = s_lib_next;
-        s_lib_fetching = true;
-      }
-      const int lo = s_lib_want_lo < 0 ? 0 : s_lib_want_lo;
-      for (int i = lo; i <= s_lib_want_hi && i < (int)s_lib.size() && meta.size() < 12; i++) {
-        LibRow& r = s_lib[(size_t)i];
-        if (!r.asked) { r.asked = true; meta.push_back({i, r.uri}); }
-      }
+      if (!ctx || s_meta_todo.empty()) continue;
+      const size_t n = s_meta_todo.size() < 8 ? s_meta_todo.size() : 8;
+      todo.assign(s_meta_todo.begin(), s_meta_todo.begin() + n);
+      s_meta_todo.erase(s_meta_todo.begin(), s_meta_todo.begin() + n);
     }
-    if (page) {
-      const bool ok = fetch_collection_page(ctx, page_token);
+    try {
+      for (auto& hex : todo) request_meta(ctx, hex);
+    } catch (std::exception&) {
+      // the session went away mid-request: asked again when a new one shows the row
       std::lock_guard<std::mutex> g(s_mtx);
-      s_lib_fetching = false;
-      s_lib_want_page = false;
-      if (!ok) s_lib_retry_at_ms = sx_now_ms() + 20000;
+      for (auto& hex : todo) s_meta_asked.erase(hex);
     }
-    for (auto& m : meta) request_row_meta(ctx, m.first, m.second);
   }
-}
-
-void start_library_worker() {
-  if (s_lib_worker) return;
-  s_lib_worker = true;
-  sys_ppu_thread_t t;
-  if (sysThreadCreate(&t, library_worker, nullptr, 1002, 256 * 1024, 0, (char*)"sp_library") != 0)
-    plog("spotify: could not start the library thread");
 }
 
 void session_once() {
@@ -490,13 +389,8 @@ void sp_svc_start(const char* device_name) {
   memset(&s_track, 0, sizeof s_track);
   {
     std::lock_guard<std::mutex> g(s_mtx);
-    s_lib.clear();
-    s_lib_next.clear();
-    s_lib_done = s_lib_want_page = s_lib_fetching = false;
-    s_lib_want_lo = 0;
-    s_lib_want_hi = -1;
-    s_lib_retry_at_ms = 0;
-    s_library_status[0] = '\0';
+    s_meta_todo.clear();
+    s_meta_asked.clear();
   }
   s_run = true;
   s_thread_done = false;
@@ -591,88 +485,36 @@ bool sp_svc_queue_track(unsigned index, SpTrack* out) {
   auto q = h->getTrackQueue();
   if (!q) return false;
   const cspot::TrackInfo ti = q->trackInfoAt((int)index);
-  if (ti.name.empty()) return false;
-  memset(out, 0, sizeof(*out));
-  snprintf(out->title, sizeof out->title, "%s", ti.name.c_str());
-  snprintf(out->artist, sizeof out->artist, "%s", ti.artist.c_str());
-  snprintf(out->album, sizeof out->album, "%s", ti.album.c_str());
-  snprintf(out->image, sizeof out->image, "%s", ti.imageUrl.c_str());
-  out->duration_ms = ti.duration;
-  return true;
+  if (!ti.name.empty()) {
+    memset(out, 0, sizeof(*out));
+    snprintf(out->title, sizeof out->title, "%s", ti.name.c_str());
+    snprintf(out->artist, sizeof out->artist, "%s", ti.artist.c_str());
+    snprintf(out->album, sizeof out->album, "%s", ti.album.c_str());
+    snprintf(out->image, sizeof out->image, "%s", ti.imageUrl.c_str());
+    out->duration_ms = ti.duration;
+    return true;
+  }
+  const std::vector<uint8_t> gid = q->trackGidAt((int)index);
+  if (gid.size() != 16) return false;
+  static const char kHex[] = "0123456789abcdef";
+  std::string hex(32, '0');
+  for (int i = 0; i < 16; i++) { hex[i * 2] = kHex[gid[i] >> 4]; hex[i * 2 + 1] = kHex[gid[i] & 15]; }
+  std::lock_guard<std::mutex> g(s_mtx);
+  auto it = s_meta.find(hex);
+  if (it != s_meta.end()) { *out = it->second; return true; }
+  if (s_meta_asked.insert(hex).second) s_meta_todo.push_back(hex);
+  if (!s_meta_worker) {
+    s_meta_worker = true;
+    sys_ppu_thread_t t;
+    if (sysThreadCreate(&t, meta_worker, nullptr, 1002, 128 * 1024, 0, (char*)"sp_meta") != 0)
+      plog("spotify: could not start the metadata thread");
+  }
+  return false;
 }
 
 bool sp_svc_play_queue_track(unsigned index) {
   std::shared_ptr<cspot::SpircHandler> h = handler_snapshot();
   return h && h->playTrackAt((int)index);
-}
-
-void sp_svc_library_request(unsigned index) {
-  start_library_worker();
-  std::lock_guard<std::mutex> g(s_mtx);
-  if ((size_t)index + 40 >= s_lib.size() && !s_lib_done) s_lib_want_page = true;
-  s_lib_want_lo = (int)index - 6;
-  s_lib_want_hi = (int)index + 14;
-}
-
-unsigned sp_svc_library_total(void) {
-  std::lock_guard<std::mutex> g(s_mtx);
-  return (unsigned)s_lib.size();
-}
-
-bool sp_svc_library_more(void) {
-  std::lock_guard<std::mutex> g(s_mtx);
-  return !s_lib_done;
-}
-
-unsigned sp_svc_library_offset(void) { return 0; }
-
-bool sp_svc_library_loading(void) {
-  std::lock_guard<std::mutex> g(s_mtx);
-  return s_lib.empty() && !s_lib_done && s_library_status[0] == '\0';
-}
-
-bool sp_svc_library_track(unsigned index, SpTrack* out) {
-  if (!out) return false;
-  std::lock_guard<std::mutex> g(s_mtx);
-  if (index >= s_lib.size() || !s_lib[index].have) return false;
-  *out = s_lib[index].meta;
-  return true;
-}
-
-const char* sp_svc_library_status_text(void) {
-  static char out[96];
-  std::lock_guard<std::mutex> g(s_mtx);
-  snprintf(out, sizeof out, "%s", s_library_status);
-  return out;
-}
-
-// The chosen song and up to 199 after it go to cspot as a local Load: it plays here and the phone shows it, no Web API involved.
-bool sp_svc_library_play(unsigned index) {
-  std::vector<std::string> uris;
-  std::string context;
-  std::shared_ptr<cspot::Context> ctx;
-  {
-    std::lock_guard<std::mutex> g(s_mtx);
-    if (index >= s_lib.size()) return false;
-    for (size_t i = index; i < s_lib.size() && uris.size() < 200; i++) uris.push_back(s_lib[i].uri);
-    ctx = s_ctx;
-  }
-  auto h = handler_snapshot();
-  if (!h || !ctx) return false;
-  context = "spotify:user:" + ctx->config.username + ":collection";
-  bool ok = false;
-  try {
-    ok = h->loadLocalTracks(uris, 0, context);
-  } catch (std::exception&) {
-    ok = false;
-  }
-  char line[64];
-  snprintf(line, sizeof line, "spotify: play liked song n=%u ok=%d", (unsigned)uris.size(), ok ? 1 : 0);
-  plog(line);
-  std::lock_guard<std::mutex> g(s_mtx);
-  if (!ok) snprintf(s_library_status, sizeof s_library_status, "Could not start that song");
-  else s_library_status[0] = '\0';
-  return ok;
 }
 
 unsigned sp_svc_position_ms(void) {

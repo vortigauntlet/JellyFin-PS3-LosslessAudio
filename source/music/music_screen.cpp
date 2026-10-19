@@ -793,51 +793,6 @@ static void music_upnext_gpu(const MusicTrack *tracks, int count, float a) {
     if (any) ui_card_gpu_end();
 }
 
-static const u32 SPOTIFY_GREEN = 0x001ED760U;
-
-static void draw_spotify_backdrop(void) {
-    // Solid black, like Spotify's own player; #121212 read as grey on a TV.  No banded gradient.
-    ui_rect_gpu_draw(0, 0, (int)display_width, (int)display_height, 0x00000000U, 255);
-}
-
-static void draw_spotify_mark(int x, int y, int size) {
-    if (size < 4 || size > 64) return;
-    static u32 pixels[64 * 64];
-    const int samples = 4;
-    const float mid = (float)size * 0.5f, radius = (float)size * 0.48f;
-    for (int py = 0; py < size; py++) for (int px = 0; px < size; px++) {
-        int covered = 0;
-        for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
-            const float dx = (float)px + ((float)sx + 0.5f) / samples - mid;
-            const float dy = (float)py + ((float)sy + 0.5f) / samples - mid;
-            if (dx * dx + dy * dy <= radius * radius) covered++;
-        }
-        pixels[py * size + px] = (u32)(covered * 255 / (samples * samples)) << 24 | SPOTIFY_GREEN;
-    }
-    drawBitmapRectAlpha(pixels, (u32)size, 0, 0, (u32)size, (u32)size, (u32)x, (u32)y);
-    const float halfw[3] = {0.35f, 0.29f, 0.23f};
-    const float basey[3] = {0.33f, 0.50f, 0.65f};
-    const float bend[3] = {0.11f, 0.09f, 0.07f};
-    const float thick[3] = {0.10f, 0.085f, 0.07f};
-    for (int py = 0; py < size; py++) for (int px = 0; px < size; px++) {
-        int covered = 0;
-        for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
-            const float dx = (float)px + ((float)sx + 0.5f) / samples - mid;
-            const float dy = (float)py + ((float)sy + 0.5f) / samples - mid;
-            if (dx * dx + dy * dy > radius * radius) continue;
-            for (int arc = 0; arc < 3; arc++) {
-                const float span = (float)size * halfw[arc];
-                if (fabsf(dx) > span) continue;
-                const float n = dx / span;
-                const float line_y = (float)size * (basey[arc] + bend[arc] * n * n);
-                if (fabsf(dy - line_y) <= (float)size * thick[arc] * 0.5f) { covered++; break; }
-            }
-        }
-        pixels[py * size + px] = (u32)(covered * 255 / (samples * samples)) << 24 | 0x00000000U;
-    }
-    drawBitmapRectAlpha(pixels, (u32)size, 0, 0, (u32)size, (u32)size, (u32)x, (u32)y);
-}
-
 // The position the listener hears: the receiver's read position less what is still queued for the speakers.
 static uint32_t spotify_heard_ms(void) {
     const uint32_t pos = sp_svc_position_ms(), lag = music_output_lag_ms();
@@ -847,20 +802,20 @@ static uint32_t spotify_heard_ms(void) {
 // Lyrics in the text column, from y0 down to y1.  Synced: the playing line sits on the second row, in white, and the column glides
 // up a row (LY_GLIDE_US) whenever the next line starts; lines already sung are fainter than the ones to come.  Unsynced: the words
 // follow the song's progress, a page at a time.
-static void draw_spotify_lyrics(int x, int y0, int w, int y1, SpLyricsState st) {
+static void draw_spotify_lyrics(int x, int y0, int w, int y1, SpLyricsState st, float a) {
     static const u64 LY_GLIDE_US = 260000ULL;
     static int   s_ly_cur = -2;
     static float s_ly_from = 0.0f, s_ly_to = 0.0f;
     static u64   s_ly_t0 = 0;
-    const int pitch = UIS_H(48);
+    const int pitch = UIS_H(38);
     if (st == SPL_UNSYNCED) {
-        drawTTF((u32)x, (u32)(y1 - UIS_H(18)), "These lyrics are not synced", UIS_TF(12.0f), XMB_TEXT_FAINT);
+        drawTTF((u32)x, (u32)(y1 - UIS_H(18)), "These lyrics are not synced", UIS_TF(12.0f), fa(XMB_TEXT_FAINT, a));
         y1 -= UIS_H(26);
     }
     const int rows = (y1 - y0) / pitch;
     if (rows <= 0) return;
     if (st == SPL_LOADING) {
-        drawTTF((u32)x, (u32)y0, "Loading lyrics...", UIS_TF(18.0f), XMB_TEXT_DIM);
+        drawTTF((u32)x, (u32)y0, "Loading lyrics...", UIS_TF(16.0f), fa(XMB_TEXT_DIM, a));
         s_ly_cur = -2;
         return;
     }
@@ -904,106 +859,17 @@ static void draw_spotify_lyrics(int x, int y0, int w, int y1, SpLyricsState st) 
         if (fy < (float)y0 - (float)pitch * 0.35f || fy > (float)(y1 - pitch) + 0.5f) continue;
         if (!sp_lyrics_text(i, line, sizeof line) || !line[0]) continue;
         const bool on = i == cur;
-        float px = on ? UIS_TF(25.0f) : UIS_TF(20.0f);
+        float px = on ? UIS_TF(21.0f) : UIS_TF(17.0f);
         // a long line shrinks a little before it is cut
         const int lw = ttf_text_width(line, px, on);
         if (lw > w) { const float k = (float)w / (float)lw; px *= k < 0.78f ? 0.78f : k; }
         const u32 col = on ? XMB_WHITE : (st == SPL_SYNCED && i < cur ? XMB_TEXT_FAINT : XMB_TEXT_DIM);
-        draw_clipped((u32)x, (u32)(fy + (on ? 0.0f : (float)UIS_H(3))), line, px, col, w, on);
-    }
-}
-
-static void draw_spotify_now_playing(const MusicCtx *ctx, const MusicTrack *tracks, int count) {
-    const int W = (int)display_width, H = (int)display_height;
-    const int pad = (int)XMB_ITEM_PAD;
-    const int top = (int)XMB_OY + UIS_H(24);
-    const float brand_px = UIS_TF(27.0f);
-    draw_spotify_mark(pad, top - UIS_H(2), UIS_H(32));
-    drawTTF((u32)(pad + UIS_H(42)), (u32)top, "Spotify", brand_px, XMB_WHITE, true);
-    drawTTF((u32)(W - pad - UIS_W(42)), (u32)(top + UIS_H(5)), "PS3", UIS_TF(14.0f), XMB_TEXT_DIM, true);
-    const int tab_y = top + UIS_H(52);
-    drawTTF((u32)pad, (u32)tab_y, "BROWSE", UIS_TF(16.0f), XMB_TEXT_DIM, true);
-    const int tab_x = pad + UIS_W(116);
-    drawTTF((u32)tab_x, (u32)tab_y, "YOUR MUSIC", UIS_TF(16.0f), XMB_WHITE, true);
-    const int tab_w = ttf_text_width("YOUR MUSIC", UIS_TF(16.0f), true);
-    drawRect((u32)tab_x, (u32)(tab_y + UIS_H(26)), (u32)tab_w, UIS_H(3), SPOTIFY_GREEN);
-    drawTTF((u32)pad, (u32)(tab_y + UIS_H(55)), "Now Playing", UIS_TF(27.0f), XMB_WHITE, true);
-
-    int cur = music_current_index();
-    if (cur < 0) cur = 0;
-    if (cur >= count) cur = count - 1;
-    const MusicTrack *t = &tracks[cur];
-    int ax, ay, A;
-    float art_alpha;
-    cover_geom(&ax, &ay, &A, &art_alpha);
-    const int tx = ax + A + UIS_W(42);
-    const int tw = W - pad - tx;
-    const SpLyricsState ls = sp_lyrics_state();
-    const bool lyrics = sp_lyrics_enabled() && (ls == SPL_LOADING || ls == SPL_SYNCED || ls == SPL_UNSYNCED);
-    if (lyrics) {
-        // the title block moves to the top of the cover's height and the lyrics take the rest
-        draw_clipped((u32)tx, (u32)ay, t->name, UIS_TF(26.0f), XMB_WHITE, tw, true);
-        if (t->artist[0])
-            draw_clipped((u32)tx, (u32)(ay + UIS_H(42)), t->artist, UIS_TF(17.0f), XMB_TEXT, tw);
-        char st[64];
-        const char *src = sp_lyrics_source();
-        snprintf(st, sizeof st, "%s%s%s", music_is_paused() ? "PAUSED" : "PLAYING ON PS3",
-                 src[0] ? "  \xC2\xB7  LYRICS FROM " : "", src[0] ? (strcmp(src, "Spotify") == 0 ? "SPOTIFY" : "LRCLIB") : "");
-        drawTTF((u32)tx, (u32)(ay + UIS_H(76)), st, UIS_TF(12.0f), SPOTIFY_GREEN, true);
-        draw_spotify_lyrics(tx, ay + UIS_H(118), tw, ay + A, ls);
-    } else {
-        const int title_y = ay + (A - UIS_H(115)) / 2;
-        draw_clipped((u32)tx, (u32)title_y, t->name, UIS_TF(28.0f), XMB_WHITE, tw, true);
-        if (t->artist[0])
-            draw_clipped((u32)tx, (u32)(title_y + UIS_H(48)), t->artist, UIS_TF(19.0f), XMB_TEXT, tw);
-        if (ctx->title[0])
-            draw_clipped((u32)tx, (u32)(title_y + UIS_H(82)), ctx->title, UIS_TF(15.0f), XMB_TEXT_DIM, tw);
-        drawTTF((u32)tx, (u32)(title_y + UIS_H(124)),
-                music_is_paused() ? "PAUSED" : "PLAYING ON PS3", UIS_TF(13.0f), SPOTIFY_GREEN, true);
-    }
-
-    const int cy = H - UIS_H(139), cx = W / 2;
-    drawIcon((u32)(cx - UIS_W(88)), (u32)(cy - UIS_H(13)), ICON_SKIP_BACK,
-             UIS_TF(25.0f), XMB_TEXT);
-    drawIcon((u32)(cx - UIS_W(14)), (u32)(cy - UIS_H(14)),
-             music_is_paused() ? ICON_PLAY : ICON_PAUSE, UIS_TF(28.0f), XMB_WHITE);
-    drawIcon((u32)(cx + UIS_W(62)), (u32)(cy - UIS_H(13)), ICON_SKIP_FWD,
-             UIS_TF(25.0f), XMB_TEXT);
-    const u32 duration = music_duration_secs(), elapsed = music_elapsed_secs();
-    char ts[16], td[16];
-    fmt_mmss(ts, sizeof ts, elapsed);
-    td[0] = 0;
-    if (duration) fmt_mmss(td, sizeof td, duration);
-    const int by = H - UIS_H(82);
-    const int rx = W - pad;
-    const int tws = ttf_text_width(ts, UIS_TF(13.0f));
-    const int dws = td[0] ? ttf_text_width(td, UIS_TF(13.0f)) : 0;
-    const int bx = pad + tws + UIS_W(14), ex = rx - dws - UIS_W(14);
-    const int bw = ex - bx;
-    drawTTF((u32)pad, (u32)(by - UIS_H(6)), ts, UIS_TF(13.0f), XMB_TEXT_DIM);
-    if (td[0]) drawTTF((u32)(rx - dws), (u32)(by - UIS_H(6)), td, UIS_TF(13.0f), XMB_TEXT_DIM);
-    drawRect((u32)bx, (u32)by, (u32)bw, UIS_H(3), XMB_TRACK);
-    if (duration && bw > 0) {
-        int fill = (int)((u64)bw * (elapsed > duration ? duration : elapsed) / duration);
-        drawRect((u32)bx, (u32)by, (u32)fill, UIS_H(3), XMB_ACCENT);
-    }
-    const bool have_lyrics = ls == SPL_SYNCED || ls == SPL_UNSYNCED;
-    const Hint hints[5] = {{'l', TRN("Previous")}, {'r', TRN("Next")},
-                           {'X', TRN("Play")}, {'T', sp_lyrics_enabled() ? "Hide lyrics" : "Lyrics"},
-                           {'C', TRN("Back")}};
-    if (have_lyrics) draw_hints_bar(hints, 5);
-    else {
-        const Hint h4[4] = {hints[0], hints[1], hints[2], hints[4]};
-        draw_hints_bar(h4, 4);
+        draw_clipped((u32)x, (u32)(fy + (on ? 0.0f : (float)UIS_H(2))), line, px, fa(col, a), w, on);
     }
 }
 
 static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
                              int count) {
-    if (ctx->parent[0] == 'S' && strcmp(ctx->parent, "Spotify") == 0) {
-        draw_spotify_now_playing(ctx, tracks, count);
-        return;
-    }
     int W = (int)display_width;
 
     // No breadcrumb (Music > Albums > ... > Now Playing): everything it said
@@ -1106,8 +972,11 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
     {
         // "Track 7 of 13 · Electronic · 320 kbps FLAC" (play-order position)
         char meta[160];
-        int  n = snprintf(meta, sizeof(meta), TR("Track %d of %d"),
-                          music_current_pos() + 1, count);
+        int  pos_n = music_current_pos() + 1, of_n = count;
+#if APP_SPOTIFY
+        if (s_live && sp_svc_queue_count() > 0) { pos_n = sp_svc_queue_current() + 1; of_n = (int)sp_svc_queue_count(); }
+#endif
+        int  n = snprintf(meta, sizeof(meta), TR("Track %d of %d"), pos_n, of_n);
         if (ctx->genre[0])
             n += snprintf(meta + n, sizeof(meta) - n, " \xC2\xB7 %s", ctx->genre);
         const char *src = music_source_info();
@@ -1118,6 +987,13 @@ static void draw_now_playing(const MusicCtx *ctx, const MusicTrack *tracks,
         TXT_BOX(title_top + (int)(UIS_H(128) * k), meta, UIS_TF(14) * k, false, (int)(UIS_H(16) * k));
 #undef TXT_BOX
     }
+#if APP_SPOTIFY
+    if (s_live && sp_lyrics_enabled() && s_mini_e < 0.5f) {
+        const SpLyricsState ls = sp_lyrics_state();
+        if (ls == SPL_LOADING || ls == SPL_SYNCED || ls == SPL_UNSYNCED)
+            draw_spotify_lyrics(tx, title_top + (int)(UIS_H(172) * k), col_w, cover_y1() + A1, ls, ta * (1.0f - 2.0f * s_mini_e));
+    }
+#endif
     g_text_clip_left = 0;
 
     // ---- UP NEXT — the full remaining queue: album-art thumbs (letter
@@ -1495,17 +1371,47 @@ static MusicTrack s_tracks[MUSIC_QUEUE_MAX];
 // Spotify mode: one track that follows what the phone is playing.  (s_live is declared near the top.)
 static unsigned s_live_serial = 0;
 
-static void live_refresh(void) {
-    SpTrack t;
-    if (!sp_svc_track(&t)) return;
-    MusicTrack *m = &s_tracks[0];
-    memset(m, 0, sizeof *m);
-    snprintf(m->id, sizeof m->id, "sp:live");
-    snprintf(m->name, sizeof m->name, "%s", t.title);
-    snprintf(m->artist, sizeof m->artist, "%s", t.artist);
-    m->duration_secs = t.duration_ms / 1000;
-    m->track_num = 1;
-    if (!sp_art_key(t.image, m->art_id, sizeof m->art_id)) m->art_id[0] = '\0';
+// Fills s_tracks with a window of the phone's Connect queue starting at the playing song (rows whose metadata has not
+// arrived show a placeholder until it does), and returns how many it holds.  No queue: the one song the receiver knows.
+static int live_refresh(void) {
+    const unsigned qn = sp_svc_queue_count();
+    const int cur = sp_svc_queue_current();
+    SpTrack now;
+    const bool have_now = sp_svc_track(&now);
+    if (qn == 0 || cur < 0) {
+        MusicTrack *m = &s_tracks[0];
+        memset(m, 0, sizeof *m);
+        snprintf(m->id, sizeof m->id, "sp:live");
+        snprintf(m->name, sizeof m->name, "%s", have_now ? now.title : "Spotify");
+        if (have_now) {
+            snprintf(m->artist, sizeof m->artist, "%s", now.artist);
+            m->duration_secs = now.duration_ms / 1000;
+            if (!sp_art_key(now.image, m->art_id, sizeof m->art_id)) m->art_id[0] = '\0';
+        }
+        m->track_num = 1;
+        music_sp_set_window(0, 1);
+        return 1;
+    }
+    int n = (int)qn - cur;
+    if (n > MUSIC_QUEUE_MAX) n = MUSIC_QUEUE_MAX;
+    for (int i = 0; i < n; i++) {
+        MusicTrack *m = &s_tracks[i];
+        memset(m, 0, sizeof *m);
+        SpTrack t;
+        const bool named = i == 0 && have_now ? (t = now, true) : sp_svc_queue_track((unsigned)(cur + i), &t);
+        snprintf(m->id, sizeof m->id, "sp:%d", cur + i);
+        if (named) {
+            snprintf(m->name, sizeof m->name, "%s", t.title);
+            snprintf(m->artist, sizeof m->artist, "%s", t.artist);
+            m->duration_secs = t.duration_ms / 1000;
+            if (!sp_art_key(t.image, m->art_id, sizeof m->art_id)) m->art_id[0] = '\0';
+        } else {
+            snprintf(m->name, sizeof m->name, "...");
+        }
+        m->track_num = cur + i + 1;
+    }
+    music_sp_set_window(cur, n);
+    return n;
 }
 #endif
 
@@ -1586,7 +1492,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
                 }
             }
             #undef OB
-            if (!s_live) wave_snow_obstacles(ob, n);
+            wave_snow_obstacles(ob, n);
         }
         // The visualizer: Canyon in place of the wave when selected (and
         // able to start), dimmed while the UI is up so the text stays
@@ -1595,9 +1501,7 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         // back (s_mini_e is the fade), and the wave is only skipped once the
         // canyon fully covers it.
         bool canyon = false;
-        if (s_live) {
-            draw_spotify_backdrop();
-        } else if (viz_mode() == VIZ_CANYON || s_mini_e > 0.001f) {
+        if (viz_mode() == VIZ_CANYON || s_mini_e > 0.001f) {
             if (s_mini_e < 0.999f) wave_draw();
             int cur_t = music_current_index();
             canyon_track(cur_t < 0 ? 0 : cur_t);
@@ -1622,8 +1526,8 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
             // Depth: the near ribbon passes IN FRONT of the cover wherever it
             // rises across it (the same geometry drawn again, clipped).
             // (Not while Canyon is up: there is no ribbon this frame.)
-            if (!s_live && !canyon && s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
-            if (!s_live) music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a * (1.0f - s_mini_e));
+            if (!canyon && s_cover_gpu && cval > 0.9f) wave_draw_front(cvx, cvy, cvA, cvA);
+            music_upnext_gpu(s_tracks, count, s_e_panel * s_up_a * (1.0f - s_mini_e));
         }
         c_gpu += timing_get_us() - t_gpu0;
 
@@ -1647,7 +1551,13 @@ static void music_screen_run(const MusicCtx *ctx, int count, int start_idx) {
         }
 
 #if APP_SPOTIFY
-        if (s_live && sp_svc_track_serial() != s_live_serial) { s_live_serial = sp_svc_track_serial(); live_refresh(); }
+        // the phone changes the queue, a new song starts, row names arrive: a cheap rebuild a few times a second
+        if (s_live && (sp_svc_track_serial() != s_live_serial || (hb_frame % 15) == 0)) {
+            s_live_serial = sp_svc_track_serial();
+            count = live_refresh();
+            if (s_u_sel >= count) s_u_sel = count - 1;
+            if (s_u_scroll > s_u_sel) s_u_scroll = s_u_sel < 0 ? 0 : s_u_sel;
+        }
         if (s_live) { SpTrack lt; const bool ok = sp_svc_track(&lt); sp_lyrics_follow(&lt, ok); }
 #endif
         poll_buttons();
@@ -1780,14 +1690,12 @@ void music_screen_open_songs(const XMBItem *items, int count, int start_idx) {
 void music_screen_open_spotify(void) {
     s_origin_pending = false; take_origin();
     s_live = true;
-    live_refresh();
-    if (s_tracks[0].name[0] == '\0') snprintf(s_tracks[0].name, sizeof s_tracks[0].name, "Spotify");
+    const int n = live_refresh();
     MusicCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
     snprintf(ctx.parent, sizeof(ctx.parent), "Spotify");
-    snprintf(ctx.title,  sizeof(ctx.title),  "Spotify Connect");
     s_entry_flipped = true;
-    music_screen_run(&ctx, 1, 0);
+    music_screen_run(&ctx, n, 0);
 }
 #endif
 

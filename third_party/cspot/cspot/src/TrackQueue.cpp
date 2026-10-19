@@ -605,6 +605,12 @@ int TrackQueue::currentTrackIndex() {
   return currentTracksIndex;
 }
 
+std::vector<uint8_t> TrackQueue::trackGidAt(int index) {
+  std::scoped_lock lock(tracksMutex);
+  if (index < 0 || index >= currentTracks.size()) return {};
+  return currentTracks[index].gid;
+}
+
 TrackInfo TrackQueue::trackInfoAt(int index) {
   std::scoped_lock lock(tracksMutex);
   if (index < 0 || index >= currentTracks.size()) return {};

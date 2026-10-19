@@ -58,6 +58,7 @@ bool music_is_shuffle(void);
 bool        music_is_active(void);      // false once the queue finishes
 bool        music_is_paused(void);
 int         music_current_index(void);  // ORIGINAL index of playing track
+void        music_sp_set_window(int base, int n);  // Spotify app: the slice of the Connect queue the screen holds
 int         music_current_pos(void);    // position in the play order
 int         music_track_at(int pos);    // play order -> original index (-1 OOB)
 u32         music_elapsed_secs(void);

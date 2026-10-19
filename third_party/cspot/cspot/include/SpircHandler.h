@@ -54,10 +54,6 @@ class SpircHandler {
 
   bool playTrackAt(int index);
 
-  // Plays uris[index] and queues the rest, chosen on this device (no phone involved).
-  bool loadLocalTracks(const std::vector<std::string>& uris, int index,
-                       const std::string& contextUri);
-
   void notifyAudioReachedPlayback();
   void notifyAudioEnded();
   void updatePositionMs(uint32_t position);

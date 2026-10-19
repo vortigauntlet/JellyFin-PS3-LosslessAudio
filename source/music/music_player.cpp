@@ -1274,6 +1274,9 @@ void music_next(void) {
 // current track.  s_order[s_pos] keeps pointing at the playing track
 // through either rewrite, so playback is never interrupted.
 void music_set_shuffle(bool on) {
+#if APP_SPOTIFY
+    if (s_spotify) return;                      // the phone owns shuffle
+#endif
     if (s_count <= 1) { s_shuffle = on; return; }
     sysMutexLock(s_pcm_mtx, 0);
     const int dec_idx = s_order[s_pos];
@@ -1302,9 +1305,30 @@ void music_set_shuffle(bool on) {
 
 bool music_is_shuffle(void) { return s_shuffle; }
 
-int music_current_pos(void) { return s_ui_pos; }
+#if APP_SPOTIFY
+// Spotify: the screen holds a window of the phone's Connect queue (music_sp_set_window); positions are relative to its start.
+static int s_sp_base = 0, s_sp_n = 1;
+
+void music_sp_set_window(int base, int n) { s_sp_base = base < 0 ? 0 : base; s_sp_n = n < 1 ? 1 : n; }
+
+static int sp_window_pos(void) {
+    if (sp_svc_queue_count() == 0) return 0;
+    const int p = sp_svc_queue_current() - s_sp_base;
+    return p < 0 ? 0 : (p >= s_sp_n ? s_sp_n - 1 : p);
+}
+#endif
+
+int music_current_pos(void) {
+#if APP_SPOTIFY
+    if (s_spotify) return sp_window_pos();
+#endif
+    return s_ui_pos;
+}
 
 int music_track_at(int pos) {
+#if APP_SPOTIFY
+    if (s_spotify) return pos >= 0 && pos < s_sp_n ? pos : -1;
+#endif
     if (pos < 0 || pos >= s_count) return -1;
     return s_order[pos];
 }
@@ -1332,6 +1356,9 @@ void music_seek(int delta_secs) {
 }
 
 void music_jump(int queue_pos) {
+#if APP_SPOTIFY
+    if (s_spotify) { sp_svc_play_queue_track((unsigned)(s_sp_base + queue_pos)); return; }
+#endif
     s_cmd_arg = queue_pos;
     s_cmd     = MCMD_JUMP;
 }
@@ -1343,7 +1370,12 @@ bool music_is_paused(void)    {
 #endif
     return s_paused;
 }
-int  music_current_index(void){ return s_order[s_ui_pos]; }
+int  music_current_index(void){
+#if APP_SPOTIFY
+    if (s_spotify) return sp_window_pos();
+#endif
+    return s_order[s_ui_pos];
+}
 
 u32 music_output_lag_ms(void) {
     return (u32)((u64)s_n * 1000ULL / 48000ULL) + 40;   // the engine ring, plus about one audio-port block

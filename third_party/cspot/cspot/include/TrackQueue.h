@@ -103,6 +103,7 @@ class TrackQueue : public bell::Task {
   size_t trackCount();
   int currentTrackIndex();
   TrackInfo trackInfoAt(int index);
+  std::vector<uint8_t> trackGidAt(int index);  // empty when out of range
   bool selectTrack(int index);
   bool skipTrack(SkipDirection dir, bool expectNotify = true);
   bool updateTracks(uint32_t requestedPosition = 0, bool initial = false);

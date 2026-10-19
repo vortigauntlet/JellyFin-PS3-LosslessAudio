@@ -38,18 +38,9 @@ bool sp_svc_access_token(char* out, size_t cap); // the session's Web API token 
 unsigned sp_svc_audio_generation(void);         // changes when the receiver flushes/seeks/starts a track
 unsigned sp_svc_queue_count(void);               // tracks in the context sent by the Spotify Connect client
 int sp_svc_queue_current(void);                  // current index in that Connect queue
-bool sp_svc_queue_track(unsigned index, SpTrack* out); // false until cspot has fetched that row's metadata
+bool sp_svc_queue_track(unsigned index, SpTrack* out); // false until that row's metadata has arrived (asked for here)
 bool sp_svc_play_queue_track(unsigned index);    // select a row from the Connect queue
 
-// The paired account's Liked Songs: URIs a page at a time from the collection service, each row's metadata on demand.
-void sp_svc_library_request(unsigned index);
-unsigned sp_svc_library_total(void);           // songs loaded so far
-bool sp_svc_library_more(void);                // more pages to come
-unsigned sp_svc_library_offset(void);
-bool sp_svc_library_loading(void);
-bool sp_svc_library_track(unsigned index, SpTrack* out);
-const char* sp_svc_library_status_text(void);
-bool sp_svc_library_play(unsigned index);
 
 // Decoded audio: 44.1 kHz, interleaved stereo, signed 16-bit.  Returns the frames copied (0 when none is ready or paused).
 // The caller reads in real time; this also tells Spotify when a track reaches the speakers and how far it has played.
