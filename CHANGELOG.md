@@ -2,6 +2,9 @@
 
 ## 3.2.3
 
+### Added
+- **Search types on the PS3 system keyboard** instead of the drawn one. Select the search field with X (or Down) to open it; confirming runs the search at once and highlights the first result.
+
 ### Fixed
 - **Stuck on "Finding versions..." for a film opened from Search.** The first
   time a debrid title is opened from Search, the server adds it to your library
@@ -25,6 +28,9 @@
 - **Episode titles use the wider type 3.1 had**, so most fit under the still.
 - **The player bar goes away when paused too**, after 8 seconds without a
   button press. Skip Intro stays up for 10 seconds and Next Episode for 20.
+- **Titles with no streams say so** instead of offering a Play that ends in an HTTP 500: the Version row reads "No streams found" and Play shows a message.
+- **Playback that dies before its first picture explains why** instead of a black screen and a silent return to the media page.
+- **Posters are sharper** (higher JPEG quality).
 
 ## 3.2.2
 
