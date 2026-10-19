@@ -53,9 +53,19 @@ int fetch(const char *url, const char *headers, char **body, size_t *len) {
   memset(&info, 0, sizeof info);
   *body = NULL;
   *len = 0;
-  const int rc = sx_http_fetch(&rq, 1u << 20, body, len, &info);
-  if (rc != SX_OK) { free(*body); *body = NULL; return rc < 0 ? rc : -1; }
-  return info.status;
+  for (int attempt = 0;; attempt++) {
+    const int rc = sx_http_fetch(&rq, 1u << 20, body, len, &info);
+    if (rc != SX_OK) { free(*body); *body = NULL; return rc < 0 ? rc : -1; }
+    // LRCLIB answers 503 when it is overloaded (seen on the console): one more try after a pause
+    if (attempt == 0 && info.status >= 502 && info.status <= 504) {
+      free(*body);
+      *body = NULL;
+      *len = 0;
+      usleep(1500000);
+      continue;
+    }
+    return info.status;
+  }
 }
 
 void log_result(const char *source, int status, size_t lines, bool synced) {

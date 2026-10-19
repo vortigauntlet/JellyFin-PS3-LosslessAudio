@@ -28,7 +28,10 @@
 #include "meminfo.h"
 #include "plog.h"
 #include "sp_log.h"
+#include "sp_collection.h"
 #include "sp_lyrics_parse.h"
+#include "protobuf/metadata.pb.h"
+#include "NanoPBHelper.h"
 #include "sp_zeroconf.h"
 #include "sx_http.h"
 #include "sx_plat.h"
@@ -65,18 +68,22 @@ std::shared_ptr<cspot::Context> s_ctx;
 sys_ppu_thread_t s_thread_tid = 0;
 std::atomic<int> s_quality{160};
 
-// One 50-track page stays resident; the UI requests another as selection moves.
-SpTrack s_library[50];
-unsigned s_library_count = 0, s_library_total = 0, s_library_offset = 0;
-bool s_library_loaded = false, s_library_loading = false, s_library_request_pending = false;
-bool s_library_failed = false;
-unsigned s_library_request_offset = 0, s_library_failed_offset = 0;
-bool s_library_play_pending = false;
-std::vector<std::string> s_library_play_uris;
-uint64_t s_library_retry_at_ms = 0;
-char s_library_status[96] = "Connect PS3 to Spotify to load Liked Songs";
-std::atomic<bool> s_library_worker_active{false}, s_library_worker_done{true};
-sys_ppu_thread_t s_library_thread_tid = 0;
+// Liked Songs: the URIs, page by page from the collection service, and each row's title and artist from cspot's metadata channel,
+// asked for around the selection.  All guarded by s_mtx.
+struct LibRow {
+  std::string uri;
+  SpTrack meta;
+  bool have = false, asked = false;
+};
+std::vector<LibRow> s_lib;
+std::string s_lib_next;                         // the next page's token
+bool s_lib_done = false;                        // the last page arrived
+bool s_lib_want_page = false;                   // the UI is near the end of what is loaded
+bool s_lib_fetching = false;
+int s_lib_want_lo = 0, s_lib_want_hi = -1;      // rows whose metadata the UI wants
+uint64_t s_lib_retry_at_ms = 0;
+char s_library_status[96] = "";
+bool s_lib_worker = false;
 
 std::shared_ptr<cspot::SpircHandler> handler_snapshot() {
   std::lock_guard<std::mutex> g(s_mtx);
@@ -239,87 +246,35 @@ void on_event(std::unique_ptr<cspot::SpircHandler::Event> ev) {
 
 // ---- the session thread ------------------------------------------------------------------------------------------------------
 
-using SpotifyJson = nlohmann::json;
-
-std::string api_string(const SpotifyJson& object, const char* key) {
-  auto value = object.find(key);
-  return value != object.end() && value->is_string() ? value->get<std::string>() : "";
-}
-
-void copy_api_track(const SpotifyJson& item, SpTrack* out) {
-  memset(out, 0, sizeof(*out));
-  const SpotifyJson& track = item.contains("track") && item["track"].is_object()
-                                 ? item["track"] : item;
-  const std::string title = api_string(track, "name");
-  const std::string uri = api_string(track, "uri");
-  snprintf(out->title, sizeof out->title, "%s", title.c_str());
-  snprintf(out->uri, sizeof out->uri, "%s", uri.c_str());
-  auto duration = track.find("duration_ms");
-  if (duration != track.end() && duration->is_number_unsigned())
-    out->duration_ms = duration->get<unsigned>();
-  else if (duration != track.end() && duration->is_number_integer())
-    out->duration_ms = (unsigned)duration->get<int>();
-  auto artists = track.find("artists");
-  if (artists != track.end() && artists->is_array() && !artists->empty()) {
-    const std::string artist = api_string((*artists)[0], "name");
-    snprintf(out->artist, sizeof out->artist, "%s", artist.c_str());
-  }
-  auto album = track.find("album");
-  if (album != track.end() && album->is_object()) {
-    const std::string album_name = api_string(*album, "name");
-    snprintf(out->album, sizeof out->album, "%s", album_name.c_str());
-    auto images = album->find("images");
-    if (images != album->end() && images->is_array() && !images->empty()) {
-      const std::string image = api_string((*images)[0], "url");
-      snprintf(out->image, sizeof out->image, "%s", image.c_str());
-    }
-  }
-}
-
-void library_error(const char* message) {
-  std::lock_guard<std::mutex> g(s_mtx);
-  s_library_loading = false;
-  snprintf(s_library_status, sizeof s_library_status, "%s", message);
-}
-
-// A failed page is asked for again only after a pause, so a refusal does not become a request (and a thread) per frame.
-void library_fetch_error(unsigned offset, const char* message) {
-  std::lock_guard<std::mutex> g(s_mtx);
-  s_library_loading = false;
-  s_library_failed = true;
-  s_library_failed_offset = offset;
-  s_library_retry_at_ms = sx_now_ms() + 15000;
-  snprintf(s_library_status, sizeof s_library_status, "%s", message);
-}
-
-// The reason a Web API call failed, for the screen.  The status alone goes to the log (never the address or the token).
-const char* api_failure(const char* what, int rc, int status) {
+const char* http_failure(const char* what, int rc, int status) {
   static char out[96];
   if (rc != SX_OK) snprintf(out, sizeof out, "%s: no connection to Spotify (%d)", what, rc);
-  else if (status == 401) snprintf(out, sizeof out, "%s: Spotify sign-in expired, retrying", what);
-  else if (status == 403) snprintf(out, sizeof out, "%s: Spotify refused the request (403)", what);
-  else if (status == 404) snprintf(out, sizeof out, "%s: Spotify cannot see this console yet (404)", what);
+  else if (status == 401 || status == 403) snprintf(out, sizeof out, "%s: Spotify refused the request (%d)", what, status);
   else if (status == 429) snprintf(out, sizeof out, "%s: Spotify is busy, retrying shortly", what);
   else snprintf(out, sizeof out, "%s: Spotify answered %d", what, status);
   return out;
 }
 
-// One Web API call through the app's HTTP client (chunked bodies, keep-alive, the real status).  Returns SX_OK or SX_E_*;
-// *body is heap memory the caller frees.
-int api_call(const char* method, const char* url, const std::string& token, const std::string* json,
-             char** body, size_t* len, int* status) {
-  char headers[2200];
-  snprintf(headers, sizeof headers, "Authorization: Bearer %s\r\n", token.c_str());
+// One page of the collection.  Returns false (with the status line set) when it failed.
+bool fetch_collection_page(const std::shared_ptr<cspot::Context>& ctx, const std::string& page_token) {
+  char token[2048];
+  if (!sp_svc_access_token(token, sizeof token)) {
+    std::lock_guard<std::mutex> g(s_mtx);
+    snprintf(s_library_status, sizeof s_library_status, "Liked Songs: waiting for Spotify sign-in");
+    return false;
+  }
+  const std::string body = collection_page_request(ctx->config.username, "collection", page_token, 300);
+  std::string headers = std::string("Authorization: Bearer ") + token +
+                        "\r\nAccept: application/vnd.collection-v2.spotify.proto\r\napp-platform: WebPlayer\r\n";
+  memset(token, 0, sizeof token);
   sx_http_req rq;
   memset(&rq, 0, sizeof rq);
-  rq.method = method;
-  rq.url = url;
-  rq.headers = headers;
-  if (json) {
-    rq.body = json->data();
-    rq.body_len = (int)json->size();
-    rq.content_type = "application/json";
-  }
+  rq.method = "POST";
+  rq.url = "https://spclient.wg.spotify.com/collection/v2/paging";
+  rq.headers = headers.c_str();
+  rq.body = body.data();
+  rq.body_len = (int)body.size();
+  rq.content_type = "application/vnd.collection-v2.spotify.proto";
   rq.range_start = -1;
   rq.range_end = -1;
   rq.connect_ms = 8000;
@@ -328,159 +283,111 @@ int api_call(const char* method, const char* url, const std::string& token, cons
   rq.idle_ms = 10000;
   sx_http_info info;
   memset(&info, 0, sizeof info);
-  *body = NULL;
-  *len = 0;
-  const int rc = sx_http_fetch(&rq, 2u << 20, body, len, &info);
-  memset(headers, 0, sizeof headers);
-  *status = info.status;
-  return rc;
+  char* resp = NULL;
+  size_t len = 0;
+  const int rc = sx_http_fetch(&rq, 4u << 20, &resp, &len, &info);
+  std::fill(headers.begin(), headers.end(), '\0');
+  std::vector<std::string> uris;
+  std::string next;
+  const bool ok = rc == SX_OK && info.status == 200 && resp &&
+                  collection_page_parse((const uint8_t*)resp, len, uris, next);
+  free(resp);
+  char line[112];
+  snprintf(line, sizeof line, "spotify: liked songs page rc=%d status=%d bytes=%u tracks=%u more=%d",
+           rc, info.status, (unsigned)len, (unsigned)uris.size(), next.empty() ? 0 : 1);
+  plog(line);
+
+  std::lock_guard<std::mutex> g(s_mtx);
+  if (!ok) {
+    snprintf(s_library_status, sizeof s_library_status, "%s",
+             http_failure("Liked Songs", rc, rc == SX_OK && info.status == 200 ? -1 : info.status));
+    return false;
+  }
+  for (auto& u : uris) {
+    LibRow row;
+    row.uri = u;
+    s_lib.push_back(row);
+  }
+  s_lib_next = next;
+  s_lib_done = next.empty() || uris.empty();
+  s_library_status[0] = '\0';
+  return true;
 }
 
-void process_library_request(const std::shared_ptr<cspot::Context>& ctx,
-                             const std::shared_ptr<cspot::SpircHandler>& handler,
-                             unsigned offset, bool fetch, bool play,
-                             const std::vector<std::string>& uris) {
-  auto queue = handler ? handler->getTrackQueue() : nullptr;
-  const std::string token = queue ? queue->getAccessToken() : "";
-  if (token.empty()) {
-    if (fetch) library_fetch_error(offset, "Spotify sign-in is still starting");
-    else library_error("Spotify sign-in is still starting");
-    return;
+// Title, artist, album and cover of one row, through the same metadata request cspot makes for the tracks it plays.
+void request_row_meta(const std::shared_ptr<cspot::Context>& ctx, int index, const std::string& uri) {
+  char hex[33];
+  if (!sp_uri_to_hex(uri.c_str(), hex)) return;
+  std::vector<uint8_t> gid(16);
+  for (int i = 0; i < 16; i++) {
+    auto nib = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+    gid[i] = (uint8_t)(nib(hex[i * 2]) * 16 + nib(hex[i * 2 + 1]));
   }
+  const std::string url = std::string("hm://metadata/3/track/") + hex;
+  ctx->session->execute(cspot::MercurySession::RequestType::GET, url,
+                        [index, uri, gid](cspot::MercurySession::Response& res) {
+    if (res.parts.empty()) return;
+    Track* t = new Track;
+    *t = Track_init_zero;
+    pbDecode(*t, Track_fields, res.parts[0]);
+    cspot::TrackInfo ti;
+    ti.loadPbTrack(t, gid);
+    pb_release(Track_fields, t);
+    delete t;
+    std::lock_guard<std::mutex> g(s_mtx);
+    if (index < 0 || index >= (int)s_lib.size() || s_lib[(size_t)index].uri != uri) return;   // the list was reloaded
+    SpTrack& m = s_lib[(size_t)index].meta;
+    memset(&m, 0, sizeof m);
+    snprintf(m.title, sizeof m.title, "%s", ti.name.c_str());
+    snprintf(m.artist, sizeof m.artist, "%s", ti.artist.c_str());
+    snprintf(m.album, sizeof m.album, "%s", ti.album.c_str());
+    snprintf(m.image, sizeof m.image, "%s", ti.imageUrl.c_str());
+    snprintf(m.uri, sizeof m.uri, "%s", uri.c_str());
+    m.duration_ms = ti.duration;
+    s_lib[(size_t)index].have = true;
+  });
+}
 
-  if (fetch) {
-    char url[160];
-    // market=from_token drops each track's list of ~180 country codes: a page is a fraction of the size
-    snprintf(url, sizeof url, "https://api.spotify.com/v1/me/tracks?limit=50&offset=%u&market=from_token", offset);
-    char* body = NULL;
-    size_t len = 0;
-    int status = 0;
-    const int rc = api_call("GET", url, token, nullptr, &body, &len, &status);
-    char line[96];
-    snprintf(line, sizeof line, "spotify: liked songs offset=%u rc=%d status=%d bytes=%u", offset, rc, status, (unsigned)len);
-    plog(line);
-    if (rc != SX_OK || status != 200 || !body) {
-      library_fetch_error(offset, api_failure("Liked Songs", rc, status));
-    } else {
-      try {
-        SpotifyJson root = SpotifyJson::parse(body, body + len);
-        free(body);
-        body = NULL;
-        auto items = root.find("items");
-        if (items == root.end() || !items->is_array()) {
-          library_fetch_error(offset, "Liked Songs: Spotify sent an unexpected answer");
-        } else {
-          SpTrack page[50];
-          memset(page, 0, sizeof page);
-          const unsigned n = items->size() > 50 ? 50U : (unsigned)items->size();
-          for (unsigned i = 0; i < n; i++) copy_api_track((*items)[i], &page[i]);
-          auto total = root.find("total");
-          const unsigned total_count = total != root.end() && total->is_number_integer()
-                                           ? (unsigned)total->get<long long>() : offset + n;
-          std::lock_guard<std::mutex> g(s_mtx);
-          memcpy(s_library, page, sizeof page);
-          s_library_count = n;
-          s_library_total = total_count;
-          s_library_offset = offset;
-          s_library_loaded = true;
-          s_library_loading = false;
-          s_library_failed = false;
-          s_library_status[0] = '\0';
-        }
-      } catch (std::exception&) {
-        library_fetch_error(offset, "Liked Songs: Spotify sent an unexpected answer");
+// One thread for the app's life (like the covers' and the lyrics'): pages when the UI nears the end, metadata around the selection.
+void library_worker(void*) {
+  for (;;) {
+    usleep(40000);
+    std::shared_ptr<cspot::Context> ctx;
+    std::string page_token;
+    bool page = false;
+    std::vector<std::pair<int, std::string>> meta;
+    {
+      std::lock_guard<std::mutex> g(s_mtx);
+      ctx = s_ctx;
+      if (!ctx || s_state.load() < SP_READY || s_state.load() == SP_ERROR) continue;
+      if (s_lib_want_page && !s_lib_done && sx_now_ms() >= s_lib_retry_at_ms) {
+        page = true;
+        page_token = s_lib_next;
+        s_lib_fetching = true;
+      }
+      const int lo = s_lib_want_lo < 0 ? 0 : s_lib_want_lo;
+      for (int i = lo; i <= s_lib_want_hi && i < (int)s_lib.size() && meta.size() < 12; i++) {
+        LibRow& r = s_lib[(size_t)i];
+        if (!r.asked) { r.asked = true; meta.push_back({i, r.uri}); }
       }
     }
-    free(body);
-  }
-
-  if (play && !uris.empty()) {
-    // The chosen song and the rest of its page, so playback carries on through Liked Songs like on the phone.
-    SpotifyJson req;
-    req["uris"] = uris;
-    const std::string payload = req.dump();
-    std::string url = "https://api.spotify.com/v1/me/player/play";
-    if (!ctx->config.deviceId.empty()) url += "?device_id=" + ctx->config.deviceId;
-    char* body = NULL;
-    size_t len = 0;
-    int status = 0;
-    int rc = api_call("PUT", url.c_str(), token, &payload, &body, &len, &status);
-    free(body);
-    char line[80];
-    snprintf(line, sizeof line, "spotify: play request rc=%d status=%d n=%u", rc, status, (unsigned)uris.size());
-    plog(line);
-    if (rc == SX_OK && status >= 200 && status < 300) {
+    if (page) {
+      const bool ok = fetch_collection_page(ctx, page_token);
       std::lock_guard<std::mutex> g(s_mtx);
-      s_library_status[0] = '\0';
-    } else {
-      library_error(api_failure("Play", rc, status));
+      s_lib_fetching = false;
+      s_lib_want_page = false;
+      if (!ok) s_lib_retry_at_ms = sx_now_ms() + 20000;
     }
+    for (auto& m : meta) request_row_meta(ctx, m.first, m.second);
   }
-}
-
-struct LibraryRequest {
-  std::shared_ptr<cspot::Context> ctx;
-  std::shared_ptr<cspot::SpircHandler> handler;
-  unsigned offset;
-  bool fetch, play;
-  std::vector<std::string> uris;
-};
-
-void library_worker(void* arg) {
-  std::unique_ptr<LibraryRequest> request((LibraryRequest*)arg);
-  process_library_request(request->ctx, request->handler, request->offset,
-                          request->fetch, request->play, request->uris);
-  s_library_worker_done = true;
-  s_library_worker_active = false;
-  sysThreadExit(0);
 }
 
 void start_library_worker() {
-  if (s_library_worker_done && s_library_thread_tid) {
-    u64 result = 0;
-    sysThreadJoin(s_library_thread_tid, &result);
-    s_library_thread_tid = 0;
-  }
-  if (s_library_worker_active) return;
-
-  auto handler = handler_snapshot();
-  std::shared_ptr<cspot::Context> ctx;
-  {
-    std::lock_guard<std::mutex> g(s_mtx);
-    ctx = s_ctx;
-  }
-  if (!ctx || !handler) return;
-
-  LibraryRequest* request = new LibraryRequest;
-  request->ctx = ctx;
-  request->handler = handler;
-  {
-    std::lock_guard<std::mutex> g(s_mtx);
-    request->fetch = s_library_request_pending;
-    request->offset = s_library_request_offset;
-    request->play = s_library_play_pending;
-    request->uris.swap(s_library_play_uris);
-    if (request->fetch) s_library_request_pending = false;
-    if (request->play) s_library_play_pending = false;
-  }
-  if (!request->fetch && !request->play) {
-    delete request;
-    return;
-  }
-
-  s_library_worker_active = true;
-  s_library_worker_done = false;
-  if (sysThreadCreate(&s_library_thread_tid, library_worker, request, 1002,
-                      256 * 1024, THREAD_JOINABLE, (char*)"sp_library") != 0) {
-    const bool fetch = request->fetch;
-    const unsigned offset = request->offset;
-    s_library_worker_active = false;
-    s_library_worker_done = true;
-    s_library_thread_tid = 0;
-    delete request;
-    if (fetch) library_fetch_error(offset, "Could not start Spotify library");
-    else library_error("Could not start Spotify library");
-  }
+  if (s_lib_worker) return;
+  s_lib_worker = true;
+  sys_ppu_thread_t t;
+  if (sysThreadCreate(&t, library_worker, nullptr, 1002, 256 * 1024, 0, (char*)"sp_library") != 0)
+    plog("spotify: could not start the library thread");
 }
 
 void session_once() {
@@ -583,17 +490,13 @@ void sp_svc_start(const char* device_name) {
   memset(&s_track, 0, sizeof s_track);
   {
     std::lock_guard<std::mutex> g(s_mtx);
-    memset(s_library, 0, sizeof s_library);
-    s_library_count = s_library_total = s_library_offset = 0;
-    s_library_loaded = s_library_loading = s_library_request_pending = false;
-    s_library_failed = false;
-    s_library_play_pending = false;
-    s_library_play_uris.clear();
-    s_library_retry_at_ms = 0;
-    s_library_worker_active = false;
-    s_library_worker_done = true;
-    s_library_thread_tid = 0;
-    snprintf(s_library_status, sizeof s_library_status, "Connect PS3 to Spotify to load Liked Songs");
+    s_lib.clear();
+    s_lib_next.clear();
+    s_lib_done = s_lib_want_page = s_lib_fetching = false;
+    s_lib_want_lo = 0;
+    s_lib_want_hi = -1;
+    s_lib_retry_at_ms = 0;
+    s_library_status[0] = '\0';
   }
   s_run = true;
   s_thread_done = false;
@@ -624,11 +527,6 @@ void sp_svc_stop(void) {
     u64 result = 0;
     sysThreadJoin(s_thread_tid, &result);
     s_thread_tid = 0;
-  }
-  if (s_library_worker_done && s_library_thread_tid) {
-    u64 result = 0;
-    sysThreadJoin(s_library_thread_tid, &result);
-    s_library_thread_tid = 0;
   }
 }
 
@@ -710,42 +608,34 @@ bool sp_svc_play_queue_track(unsigned index) {
 
 void sp_svc_library_request(unsigned index) {
   start_library_worker();
-  const unsigned offset = (index / 50U) * 50U;
-  {
-    std::lock_guard<std::mutex> g(s_mtx);
-    if (s_library_loaded && s_library_offset == offset) return;
-    if (s_library_loading && s_library_request_offset == offset) return;
-    if (s_library_failed && s_library_failed_offset == offset && sx_now_ms() < s_library_retry_at_ms) return;
-    s_library_request_offset = offset;
-    s_library_request_pending = true;
-    s_library_loading = true;
-    s_library_failed = false;
-    s_library_status[0] = '\0';
-  }
-  start_library_worker();
+  std::lock_guard<std::mutex> g(s_mtx);
+  if ((size_t)index + 40 >= s_lib.size() && !s_lib_done) s_lib_want_page = true;
+  s_lib_want_lo = (int)index - 6;
+  s_lib_want_hi = (int)index + 14;
 }
 
 unsigned sp_svc_library_total(void) {
   std::lock_guard<std::mutex> g(s_mtx);
-  return s_library_total;
+  return (unsigned)s_lib.size();
 }
 
-unsigned sp_svc_library_offset(void) {
+bool sp_svc_library_more(void) {
   std::lock_guard<std::mutex> g(s_mtx);
-  return s_library_offset;
+  return !s_lib_done;
 }
+
+unsigned sp_svc_library_offset(void) { return 0; }
 
 bool sp_svc_library_loading(void) {
   std::lock_guard<std::mutex> g(s_mtx);
-  return s_library_loading;
+  return s_lib.empty() && !s_lib_done && s_library_status[0] == '\0';
 }
 
 bool sp_svc_library_track(unsigned index, SpTrack* out) {
   if (!out) return false;
   std::lock_guard<std::mutex> g(s_mtx);
-  if (!s_library_loaded || index < s_library_offset ||
-      index >= s_library_offset + s_library_count) return false;
-  *out = s_library[index - s_library_offset];
+  if (index >= s_lib.size() || !s_lib[index].have) return false;
+  *out = s_lib[index].meta;
   return true;
 }
 
@@ -756,21 +646,33 @@ const char* sp_svc_library_status_text(void) {
   return out;
 }
 
+// The chosen song and up to 199 after it go to cspot as a local Load: it plays here and the phone shows it, no Web API involved.
 bool sp_svc_library_play(unsigned index) {
+  std::vector<std::string> uris;
+  std::string context;
+  std::shared_ptr<cspot::Context> ctx;
   {
     std::lock_guard<std::mutex> g(s_mtx);
-    if (!s_library_loaded || index < s_library_offset ||
-        index >= s_library_offset + s_library_count) return false;
-    const unsigned first = index - s_library_offset;
-    if (!s_library[first].uri[0]) return false;
-    s_library_play_uris.clear();
-    for (unsigned i = first; i < s_library_count; i++)
-      if (s_library[i].uri[0]) s_library_play_uris.push_back(s_library[i].uri);
-    s_library_play_pending = true;
-    snprintf(s_library_status, sizeof s_library_status, "Starting selected song");
+    if (index >= s_lib.size()) return false;
+    for (size_t i = index; i < s_lib.size() && uris.size() < 200; i++) uris.push_back(s_lib[i].uri);
+    ctx = s_ctx;
   }
-  start_library_worker();
-  return true;
+  auto h = handler_snapshot();
+  if (!h || !ctx) return false;
+  context = "spotify:user:" + ctx->config.username + ":collection";
+  bool ok = false;
+  try {
+    ok = h->loadLocalTracks(uris, 0, context);
+  } catch (std::exception&) {
+    ok = false;
+  }
+  char line[64];
+  snprintf(line, sizeof line, "spotify: play liked song n=%u ok=%d", (unsigned)uris.size(), ok ? 1 : 0);
+  plog(line);
+  std::lock_guard<std::mutex> g(s_mtx);
+  if (!ok) snprintf(s_library_status, sizeof s_library_status, "Could not start that song");
+  else s_library_status[0] = '\0';
+  return ok;
 }
 
 unsigned sp_svc_position_ms(void) {

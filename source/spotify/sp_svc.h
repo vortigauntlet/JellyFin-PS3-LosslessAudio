@@ -41,9 +41,10 @@ int sp_svc_queue_current(void);                  // current index in that Connec
 bool sp_svc_queue_track(unsigned index, SpTrack* out); // false until cspot has fetched that row's metadata
 bool sp_svc_play_queue_track(unsigned index);    // select a row from the Connect queue
 
-// The paired account's Liked Songs, fetched a page at a time.
+// The paired account's Liked Songs: URIs a page at a time from the collection service, each row's metadata on demand.
 void sp_svc_library_request(unsigned index);
-unsigned sp_svc_library_total(void);
+unsigned sp_svc_library_total(void);           // songs loaded so far
+bool sp_svc_library_more(void);                // more pages to come
 unsigned sp_svc_library_offset(void);
 bool sp_svc_library_loading(void);
 bool sp_svc_library_track(unsigned index, SpTrack* out);

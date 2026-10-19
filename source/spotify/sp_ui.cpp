@@ -100,10 +100,10 @@ void spotify_mark(int x, int y, int s) {
   }
   drawBitmapRectAlpha(pixels, (u32)s, 0, 0, (u32)s, (u32)s, (u32)x, (u32)y);
 
-  const float halfw[3] = {0.34f, 0.28f, 0.22f};
-  const float basey[3] = {0.36f, 0.51f, 0.65f};
-  const float bend[3] = {0.075f, 0.061f, 0.047f};
-  const float thick[3] = {0.048f, 0.042f, 0.036f};
+  const float halfw[3] = {0.35f, 0.29f, 0.23f};
+  const float basey[3] = {0.33f, 0.50f, 0.65f};
+  const float bend[3] = {0.11f, 0.09f, 0.07f};
+  const float thick[3] = {0.10f, 0.085f, 0.07f};
   for (int py = 0; py < s; py++) for (int px = 0; px < s; px++) {
     int covered = 0;
     for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
@@ -118,7 +118,7 @@ void spotify_mark(int x, int y, int s) {
         if (fabsf(dy - line_y) <= (float)s * thick[arc] * 0.5f) { covered++; break; }
       }
     }
-    pixels[py * s + px] = (u32)(covered * 255 / (samples * samples)) << 24 | 0x00121212U;
+    pixels[py * s + px] = (u32)(covered * 255 / (samples * samples)) << 24 | 0x00000000U;
   }
   drawBitmapRectAlpha(pixels, (u32)s, 0, 0, (u32)s, (u32)s, (u32)x, (u32)y);
 }
@@ -156,9 +156,9 @@ u32 state_colour(SpState st) {
 // ---- drawing ---------------------------------------------------------------------------------------------------------------------------
 
 void draw_spotify_backdrop(void) {
-  // The original PS3 app used a restrained, nearly black surface. A single
-  // fill is both more faithful and free of the 32 visible gradient bands.
-  ui_rect_gpu_draw(0, 0, W(), H(), 0x00121212U, 255);
+  // Solid black, like Spotify's own player (#121212 read as grey on a TV).
+  // A single fill is also free of the 32 visible gradient bands.
+  ui_rect_gpu_draw(0, 0, W(), H(), 0x00000000U, 255);
 }
 
 void draw_top(SpState st, int active_tab) {
@@ -212,7 +212,7 @@ void draw_home(Ui &ui, SpState st) {
       for (int i = 0; i < visible && (unsigned)(ui.queue_scroll + i) < queue_count; i++) {
         const int index = ui.queue_scroll + i, ry = row_y + i * row_h;
         const bool selected = index == ui.queue_sel;
-        if (selected) ui_rect_gpu_draw(pad - UIS_W(10), ry - UIS_H(4), cw + UIS_W(20), row_h - UIS_H(3), 0x002E3338U, 230);
+        if (selected) ui_rect_gpu_draw(pad - UIS_W(10), ry - UIS_H(4), cw + UIS_W(20), row_h - UIS_H(3), 0x00282828U, 255);
         SpTrack row;
         const bool named = sp_svc_queue_track((unsigned)index, &row);
         char fallback[40];
@@ -245,7 +245,7 @@ void draw_home(Ui &ui, SpState st) {
                 UIS_TF(17.0f), XMB_TEXT_DIM, cw, false);
     } else {
       char count_text[64];
-      snprintf(count_text, sizeof count_text, "%u songs saved", total);
+      snprintf(count_text, sizeof count_text, "%u%s songs saved", total, sp_svc_library_more() ? "+" : "");
       drawTTF((u32)pad, (u32)(heading_y + UIS_H(76)), count_text, UIS_TF(14.0f), XMB_TEXT_DIM, false);
       if (ui.library_sel < 0) ui.library_sel = 0;
       if ((unsigned)ui.library_sel >= total) ui.library_sel = (int)total - 1;
@@ -255,7 +255,7 @@ void draw_home(Ui &ui, SpState st) {
       for (int i = 0; i < visible && (unsigned)(ui.library_scroll + i) < total; i++) {
         const int index = ui.library_scroll + i, ry = row_y + i * row_h;
         const bool selected = index == ui.library_sel;
-        if (selected) ui_rect_gpu_draw(pad - UIS_W(10), ry - UIS_H(4), cw + UIS_W(20), row_h - UIS_H(3), 0x002E3338U, 230);
+        if (selected) ui_rect_gpu_draw(pad - UIS_W(10), ry - UIS_H(4), cw + UIS_W(20), row_h - UIS_H(3), 0x00282828U, 255);
         SpTrack row;
         if (sp_svc_library_track((unsigned)index, &row)) {
           clip_text(pad, ry + UIS_H(5), row.title, UIS_TF(17.0f),
@@ -277,8 +277,8 @@ void draw_home(Ui &ui, SpState st) {
 
   // Persistent Now Playing rail, matching the original app's compact player.
   const int by = H() - UIS_H(132), bh = UIS_H(82);
-  ui_rect_gpu_draw(pad - UIS_W(12), by - UIS_H(7), cw + UIS_W(24), bh + UIS_H(8), 0x00252A30U, 222);
-  ui_rect_gpu_draw(pad - UIS_W(12), by - UIS_H(7), cw + UIS_W(24), UIS_H(1), 0x0096A0A9U, 112);
+  ui_rect_gpu_draw(pad - UIS_W(12), by - UIS_H(7), cw + UIS_W(24), bh + UIS_H(8), 0x00181818U, 255);
+  ui_rect_gpu_draw(pad - UIS_W(12), by - UIS_H(7), cw + UIS_W(24), UIS_H(1), 0x00282828U, 255);
   if (have) {
     const int art = UIS_H(48), ay = by + (bh - art) / 2;
     char key[80];

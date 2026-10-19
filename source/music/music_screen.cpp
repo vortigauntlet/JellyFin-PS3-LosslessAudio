@@ -796,8 +796,8 @@ static void music_upnext_gpu(const MusicTrack *tracks, int count, float a) {
 static const u32 SPOTIFY_GREEN = 0x001ED760U;
 
 static void draw_spotify_backdrop(void) {
-    // Solid, nearly black like the original PS3 Spotify app; no banded gradient.
-    ui_rect_gpu_draw(0, 0, (int)display_width, (int)display_height, 0x00121212U, 255);
+    // Solid black, like Spotify's own player; #121212 read as grey on a TV.  No banded gradient.
+    ui_rect_gpu_draw(0, 0, (int)display_width, (int)display_height, 0x00000000U, 255);
 }
 
 static void draw_spotify_mark(int x, int y, int size) {
@@ -815,10 +815,10 @@ static void draw_spotify_mark(int x, int y, int size) {
         pixels[py * size + px] = (u32)(covered * 255 / (samples * samples)) << 24 | SPOTIFY_GREEN;
     }
     drawBitmapRectAlpha(pixels, (u32)size, 0, 0, (u32)size, (u32)size, (u32)x, (u32)y);
-    const float halfw[3] = {0.34f, 0.28f, 0.22f};
-    const float basey[3] = {0.36f, 0.51f, 0.65f};
-    const float bend[3] = {0.075f, 0.061f, 0.047f};
-    const float thick[3] = {0.048f, 0.042f, 0.036f};
+    const float halfw[3] = {0.35f, 0.29f, 0.23f};
+    const float basey[3] = {0.33f, 0.50f, 0.65f};
+    const float bend[3] = {0.11f, 0.09f, 0.07f};
+    const float thick[3] = {0.10f, 0.085f, 0.07f};
     for (int py = 0; py < size; py++) for (int px = 0; px < size; px++) {
         int covered = 0;
         for (int sy = 0; sy < samples; sy++) for (int sx = 0; sx < samples; sx++) {
@@ -833,7 +833,7 @@ static void draw_spotify_mark(int x, int y, int size) {
                 if (fabsf(dy - line_y) <= (float)size * thick[arc] * 0.5f) { covered++; break; }
             }
         }
-        pixels[py * size + px] = (u32)(covered * 255 / (samples * samples)) << 24 | 0x00121212U;
+        pixels[py * size + px] = (u32)(covered * 255 / (samples * samples)) << 24 | 0x00000000U;
     }
     drawBitmapRectAlpha(pixels, (u32)size, 0, 0, (u32)size, (u32)size, (u32)x, (u32)y);
 }
