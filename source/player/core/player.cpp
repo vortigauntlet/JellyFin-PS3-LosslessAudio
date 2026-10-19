@@ -869,17 +869,6 @@ void show_player_run(const JFItem *item, u32 resume_secs,
         return;
     }
 
-    // Gelato's placeholder (no streams were found for this title): streaming
-    // it is the server's HTTP 500, so say what is actually wrong instead.
-    if (!live && ps.source.placeholder) {
-        plog("show_player: only Gelato's placeholder -- no streams for this title");
-        player_startup_abort();
-        show_error(TR("No streams found for this title."),
-                   TR("The server's sources have nothing to play for it."));
-        ui_restore_rsx_state();
-        return;
-    }
-
     // Only the version chosen on the info screen enters the player.  Its own
     // tracks come from the same source-aware PlaybackInfo response.
     if (ps.source.id[0]) {

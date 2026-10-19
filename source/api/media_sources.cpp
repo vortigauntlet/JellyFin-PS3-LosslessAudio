@@ -294,8 +294,7 @@ static bool parse_source(const char *obj, const char *end, JFMediaSource *out) {
     if (v) {
         char path[48] = "";
         read_json_string(v, end, path, sizeof(path));
-        out->placeholder = strncmp(path, "gelato://stub", 13) == 0 ||
-                           strcmp(path, "/stub") == 0;
+        out->placeholder = strncmp(path, "gelato://stub", 13) == 0;
     }
 
     char video[64] = "";

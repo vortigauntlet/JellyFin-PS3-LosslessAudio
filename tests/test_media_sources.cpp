@@ -170,13 +170,15 @@ int main(int argc, char **argv) {
         JFMediaSources m;
         assert(jellyfin_parse_media_sources(item, &m) == 0);
         assert(m.n_sources == 0 && m.n_placeholder == 1);
-        assert(jellyfin_parse_media_sources(pinfo, &m) == 0 && m.n_placeholder == 1);
+        // PlaybackInfo says "/stub" for EVERY Gelato source, playable ones
+        // too (10-19: reading that as a placeholder refused every title).
+        assert(jellyfin_parse_media_sources(pinfo, &m) == 1 && m.n_placeholder == 0);
         assert(jellyfin_parse_media_sources(mixed, &m) == 1);
         assert(m.n_placeholder == 1 && strcmp(m.source[0].id, "real") == 0);
         assert(!m.source[0].placeholder);
         JFMediaSource one;
         assert(jellyfin_parse_selected_media_source(pinfo, NULL, &one));
-        assert(one.placeholder && strcmp(one.id, "f396") == 0);
+        assert(!one.placeholder && strcmp(one.id, "f396") == 0);
         assert(jellyfin_parse_media_sources(kPlaybackInfo, &m) == 3 && m.n_placeholder == 0);
     }
     puts("media source parser: Gelato placeholder ok");

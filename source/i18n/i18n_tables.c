@@ -9,9 +9,9 @@ extern const int i18n_n;
 extern const char *const i18n_keys[];
 extern const char *const *const i18n_text[LANG__COUNT];
 
-const int i18n_n = 523;
+const int i18n_n = 522;
 
-const char *const i18n_keys[523] = {
+const char *const i18n_keys[522] = {
     "  %s  %s free",
     "  (can't be decoded yet)",
     "%.40s video (can't play on PS3)",
@@ -452,7 +452,6 @@ const char *const i18n_keys[523] = {
     "The server has no stream for it right now.",
     "The server rejected this device's saved login, so the library could not be read.",
     "The server returned an unexpected error.",
-    "The server's sources have nothing to play for it.",
     "The stream ended before the first picture.",
     "The typeface subtitles are drawn in.\nLeft and Right step through the choices.",
     "The video decoder rejected this stream.",
@@ -537,7 +536,7 @@ const char *const i18n_keys[523] = {
     "\342\200\271 back %ds",
 };
 
-static const char *const i18n_text_ja[523] = {
+static const char *const i18n_text_ja[522] = {
     "  %s  %s \347\251\272\343\201\215",
     "  \357\274\210\343\201\276\343\201\240\343\203\207\343\202\263\343\203\274\343\203\211\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
     "%.40s \343\201\256\346\230\240\345\203\217\357\274\210PS3\343\201\247\343\201\257\345\206\215\347\224\237\343\201\247\343\201\215\343\201\276\343\201\233\343\202\223\357\274\211",
@@ -978,7 +977,6 @@ static const char *const i18n_text_ja[523] = {
     "\343\202\265\343\203\274\343\203\220\343\203\274\343\201\253\343\201\257\347\217\276\345\234\250\343\201\223\343\201\256\343\203\201\343\203\243\343\203\263\343\203\215\343\203\253\343\201\256\343\202\271\343\203\210\343\203\252\343\203\274\343\203\240\343\201\214\343\201\202\343\202\212\343\201\276\343\201\233\343\202\223\343\200\202",
     "\343\202\265\343\203\274\343\203\220\343\203\274\343\201\214\343\201\223\343\201\256\347\253\257\346\234\253\343\201\253\344\277\235\345\255\230\343\201\225\343\202\214\343\201\237\343\203\255\343\202\260\343\202\244\343\203\263\343\202\222\346\213\222\345\220\246\343\201\227\343\201\237\343\201\237\343\202\201\343\200\201\343\203\251\343\202\244\343\203\226\343\203\251\343\203\252\343\202\222\350\252\255\343\201\277\350\276\274\343\202\201\343\201\276\343\201\233\343\202\223\343\201\247\343\201\227\343\201\237\343\200\202",
     "\343\202\265\343\203\274\343\203\220\343\203\274\343\201\214\344\272\210\346\234\237\343\201\227\343\201\252\343\201\204\343\202\250\343\203\251\343\203\274\343\202\222\350\277\224\343\201\227\343\201\276\343\201\227\343\201\237\343\200\202",
-    "\343\202\265\343\203\274\343\203\220\343\203\274\343\201\256\343\202\275\343\203\274\343\202\271\343\201\253\343\201\257\345\206\215\347\224\237\343\201\247\343\201\215\343\202\213\343\202\202\343\201\256\343\201\214\343\201\202\343\202\212\343\201\276\343\201\233\343\202\223\343\200\202",
     "\346\234\200\345\210\235\343\201\256\346\230\240\345\203\217\343\201\214\345\207\272\343\202\213\345\211\215\343\201\253\343\202\271\343\203\210\343\203\252\343\203\274\343\203\240\343\201\214\347\265\202\344\272\206\343\201\227\343\201\276\343\201\227\343\201\237\343\200\202",
     "\345\255\227\345\271\225\343\201\253\344\275\277\343\201\206\346\233\270\344\275\223\343\201\247\343\201\231\343\200\202\n\345\267\246\345\217\263\343\202\255\343\203\274\343\201\247\351\201\270\346\212\236\350\202\242\343\202\222\345\210\207\343\202\212\346\233\277\343\201\210\343\201\276\343\201\231\343\200\202",
     "\343\203\223\343\203\207\343\202\252\343\203\207\343\202\263\343\203\274\343\203\200\343\203\274\343\201\214\343\201\223\343\201\256\343\202\271\343\203\210\343\203\252\343\203\274\343\203\240\343\202\222\345\217\227\343\201\221\344\273\230\343\201\221\343\201\276\343\201\233\343\202\223\343\201\247\343\201\227\343\201\237\343\200\202",
@@ -1063,7 +1061,7 @@ static const char *const i18n_text_ja[523] = {
     "\342\200\271 %d\347\247\222\346\210\273\343\202\213",
 };
 
-static const char *const i18n_text_pt_BR[523] = {
+static const char *const i18n_text_pt_BR[522] = {
     "  %s  %s livres",
     "  (ainda n\303\243o pode ser decodificado)",
     "V\303\255deo %.40s (n\303\243o reproduz no PS3)",
@@ -1504,7 +1502,6 @@ static const char *const i18n_text_pt_BR[523] = {
     "O servidor n\303\243o tem transmiss\303\243o para ele agora.",
     "O servidor recusou o login salvo neste dispositivo, ent\303\243o a biblioteca n\303\243o p\303\264de ser lida.",
     "O servidor retornou um erro inesperado.",
-    "As fontes do servidor n\303\243o t\303\252m nada para reproduzir.",
     "O fluxo terminou antes da primeira imagem.",
     "A fonte usada nas legendas.\nEsquerda e Direita percorrem as op\303\247\303\265es.",
     "O decodificador de v\303\255deo rejeitou este fluxo.",
@@ -1589,7 +1586,7 @@ static const char *const i18n_text_pt_BR[523] = {
     "\342\200\271 voltar %ds",
 };
 
-static const char *const i18n_text_de[523] = {
+static const char *const i18n_text_de[522] = {
     "  %s  %s frei",
     "  (kann noch nicht decodiert werden)",
     "%.40s-Video (auf der PS3 nicht abspielbar)",
@@ -2030,7 +2027,6 @@ static const char *const i18n_text_de[523] = {
     "Der Server hat daf\303\274r gerade keinen Stream.",
     "Der Server hat die gespeicherte Anmeldung dieses Ger\303\244ts abgelehnt, daher konnte die Mediathek nicht gelesen werden.",
     "Der Server hat einen unerwarteten Fehler gemeldet.",
-    "Die Quellen des Servers haben nichts zum Abspielen.",
     "Der Stream endete vor dem ersten Bild.",
     "Die Schrift, in der Untertitel dargestellt werden.\nLinks und Rechts wechseln die Auswahl.",
     "Der Videodecoder hat diesen Stream abgelehnt.",
@@ -2115,7 +2111,7 @@ static const char *const i18n_text_de[523] = {
     "\342\200\271 %ds zur\303\274ck",
 };
 
-static const char *const i18n_text_fr[523] = {
+static const char *const i18n_text_fr[522] = {
     "  %s  %s libres",
     "  (ne peut pas encore \303\252tre d\303\251cod\303\251)",
     "Vid\303\251o %.40s (non lisible sur PS3)",
@@ -2556,7 +2552,6 @@ static const char *const i18n_text_fr[523] = {
     "Le serveur n'a pas de flux pour elle en ce moment.",
     "Le serveur a rejet\303\251 la connexion enregistr\303\251e de cet appareil, la biblioth\303\250que n'a donc pas pu \303\252tre lue.",
     "Le serveur a renvoy\303\251 une erreur inattendue.",
-    "Les sources du serveur n'ont rien \303\240 lire pour ce titre.",
     "Le flux s'est termin\303\251 avant la premi\303\250re image.",
     "La police utilis\303\251e pour les sous-titres.\nGauche et Droite font d\303\251filer les choix.",
     "Le d\303\251codeur vid\303\251o a refus\303\251 ce flux.",
@@ -2641,7 +2636,7 @@ static const char *const i18n_text_fr[523] = {
     "\342\200\271 reculer de %ds",
 };
 
-static const char *const i18n_text_es[523] = {
+static const char *const i18n_text_es[522] = {
     "  %s  %s libres",
     "  (a\303\272n no se puede decodificar)",
     "V\303\255deo %.40s (no se puede reproducir en la PS3)",
@@ -3082,7 +3077,6 @@ static const char *const i18n_text_es[523] = {
     "El servidor no tiene transmisi\303\263n para \303\251l ahora mismo.",
     "El servidor rechaz\303\263 el inicio de sesi\303\263n guardado en este dispositivo, as\303\255 que no se pudo leer la biblioteca.",
     "El servidor devolvi\303\263 un error inesperado.",
-    "Las fuentes del servidor no tienen nada que reproducir.",
     "La transmisi\303\263n termin\303\263 antes de la primera imagen.",
     "La tipograf\303\255a con la que se dibujan los subt\303\255tulos.\nIzquierda y Derecha recorren las opciones.",
     "El decodificador de v\303\255deo rechaz\303\263 esta transmisi\303\263n.",
