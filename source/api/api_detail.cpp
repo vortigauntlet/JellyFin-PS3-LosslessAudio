@@ -1011,6 +1011,12 @@ bool jellyfin_fetch_media_sources(const char *item_id, JFMediaSources *out) {
         plog(b);
         return true;
     }
+    // Only Gelato's placeholder: its stream lookup found nothing for this
+    // title.  PlaybackInfo would only list the same placeholder again.
+    if (status == 200 && out->n_placeholder > 0) {
+        plog("media_sources: only Gelato's placeholder (no streams found)");
+        return false;
+    }
 
     // Some older servers omit MediaSources from BaseItemDto even when asked.
     // Listing does not need to resolve/open a remote source, so keep auto-open

@@ -153,6 +153,34 @@ int main(int argc, char **argv) {
     assert(strcmp(g_audio_lang, "eng") == 0);
     puts("media source parser: start track follows the console language ok");
 
+    // Gelato's placeholder is not a version (2026-10-19: Search -> a title
+    // with no streams showed it as one, and Play was the server's HTTP 500).
+    {
+        static const char item[] =
+            "{\"MediaSources\":[{\"Protocol\":\"Http\",\"Id\":\"f396\","
+            "\"Path\":\"gelato://stub/tmdb:713680\",\"Size\":25,"
+            "\"Name\":\"Fresh Starts\",\"MediaStreams\":[]}]}";
+        static const char pinfo[] =
+            "{\"MediaSources\":[{\"Protocol\":\"File\",\"Id\":\"f396\","
+            "\"Path\":\"/stub\",\"Size\":25,\"Name\":\"Fresh Starts\"}],"
+            "\"PlaySessionId\":\"s\"}";
+        static const char mixed[] =
+            "{\"MediaSources\":[{\"Id\":\"stub\",\"Path\":\"gelato://stub/tmdb:1\"},"
+            "{\"Id\":\"real\",\"Path\":\"https://example/x.mkv\",\"Name\":\"1080p\"}]}";
+        JFMediaSources m;
+        assert(jellyfin_parse_media_sources(item, &m) == 0);
+        assert(m.n_sources == 0 && m.n_placeholder == 1);
+        assert(jellyfin_parse_media_sources(pinfo, &m) == 0 && m.n_placeholder == 1);
+        assert(jellyfin_parse_media_sources(mixed, &m) == 1);
+        assert(m.n_placeholder == 1 && strcmp(m.source[0].id, "real") == 0);
+        assert(!m.source[0].placeholder);
+        JFMediaSource one;
+        assert(jellyfin_parse_selected_media_source(pinfo, NULL, &one));
+        assert(one.placeholder && strcmp(one.id, "f396") == 0);
+        assert(jellyfin_parse_media_sources(kPlaybackInfo, &m) == 3 && m.n_placeholder == 0);
+    }
+    puts("media source parser: Gelato placeholder ok");
+
     puts("media source parser: synthetic ok");
 
     // Optional real item-DTO/PlaybackInfo fixture (used by the WSL check).

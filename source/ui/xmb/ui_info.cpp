@@ -317,8 +317,11 @@ static void info_load_work(void *arg) {
 // page's own requests use); a generation number retires a worker whose page
 // has gone, and its result is ignored.
 #define VS_TRIES    15
+// Gelato answering with only its placeholder has already looked and found
+// nothing, so a short second look is enough.
+#define VS_TRIES_PLACEHOLDER 3
 #define VS_GAP_MS   2000
-typedef struct { u32 gen; char id[64]; } VsJob;
+typedef struct { u32 gen; int tries; char id[64]; } VsJob;
 static volatile u32  s_vs_gen   = 0;
 static volatile int  s_vs_done  = 0;        // the current generation's answer is in s_vs_out
 static JFMediaSources s_vs_out;
@@ -328,14 +331,15 @@ static void vs_worker(void *arg) {
     char *buf = (char *)malloc(RESPONSE_SIZE);
     JFMediaSources *tmp = (JFMediaSources *)malloc(sizeof(JFMediaSources));
     bool found = false;
-    for (int t = 0; t < VS_TRIES && buf && tmp && job->gen == s_vs_gen && !found; t++) {
+    for (int t = 0; t < job->tries && buf && tmp && job->gen == s_vs_gen && !found; t++) {
         for (int w = 0; w < VS_GAP_MS / 100 && job->gen == s_vs_gen; w++) usleep(100000);
         if (job->gen != s_vs_gen) break;
         found = jellyfin_fetch_media_sources_buf(job->id, tmp, buf, RESPONSE_SIZE) && tmp->n_sources > 0;
     }
     if (job->gen == s_vs_gen) {
-        if (found) memcpy(&s_vs_out, tmp, sizeof s_vs_out);
-        else       memset(&s_vs_out, 0, sizeof s_vs_out);
+        if (found)    memcpy(&s_vs_out, tmp, sizeof s_vs_out);
+        else if (tmp) { memset(&s_vs_out, 0, sizeof s_vs_out); s_vs_out.n_placeholder = tmp->n_placeholder; }
+        else          memset(&s_vs_out, 0, sizeof s_vs_out);
         char b[160];
         snprintf(b, sizeof b, "versions: found %d after waiting (%s)", found ? s_vs_out.n_sources : 0, job->id);
         plog(b);
@@ -348,11 +352,12 @@ static void vs_worker(void *arg) {
     sysThreadExit(0);
 }
 
-static bool vs_start(const char *item_id) {
+static bool vs_start(const char *item_id, int tries) {
     VsJob *job = (VsJob *)malloc(sizeof(VsJob));
     if (!job) return false;
     s_vs_done = 0;
     job->gen = ++s_vs_gen;
+    job->tries = tries;
     snprintf(job->id, sizeof job->id, "%s", item_id);
     __sync_synchronize();
     sys_ppu_thread_t tid;
@@ -442,7 +447,8 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             vs_cancel();
             versions_searching = versions.n_sources == 0 &&
                 (strcmp(it->type, "Movie") == 0 || strcmp(it->type, "Episode") == 0 ||
-                 strcmp(it->type, "Video") == 0) && vs_start(it->id);
+                 strcmp(it->type, "Video") == 0) &&
+                vs_start(it->id, versions.n_placeholder > 0 ? VS_TRIES_PLACEHOLDER : VS_TRIES);
             // Warm the server while the page is read: its first-time stream
             // lookup (Gelato, 6-8 s) then happens before Play, not after.
             if (strcmp(it->type, "Movie") == 0 || strcmp(it->type, "Episode") == 0 ||
@@ -488,7 +494,8 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             row0[n0++] = F3_WATCHED;
             row0[n0++] = F3_FAVOURITE;
             n1 = 0;
-            if (versions.n_sources > 1 || versions_searching) row1[n1++] = F3_VERSION;
+            if (versions.n_sources > 1 || versions_searching || versions.n_placeholder > 0)
+                row1[n1++] = F3_VERSION;
             row1[n1++] = F3_QUALITY;
             // Download sits after Quality for the three playable types; row 0
             // stays the "watch now" row.
@@ -514,7 +521,8 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             version_sel = 0;
             // The Version slot stays when there is a choice, goes when not; a
             // focus on that row stays on the same control.
-            if (versions.n_sources <= 1 && n1 > 0 && row1[0] == F3_VERSION) {
+            if (versions.n_sources <= 1 && versions.n_placeholder == 0 &&
+                n1 > 0 && row1[0] == F3_VERSION) {
                 for (int i = 1; i < n1; i++) row1[i - 1] = row1[i];
                 n1--;
                 if (frow == 1) fcol = fcol > 0 ? fcol - 1 : 0;
@@ -590,7 +598,15 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             if (BTN_PRESSED(down) && frow == 0 && n1 > 0) { frow = 1; if (fcol >= n1) fcol = n1 - 1; }
             if (BTN_PRESSED(up)   && frow == 1)           { frow = 0; if (fcol >= n0) fcol = n0 - 1; }
             if (frow != 2 && BTN_PRESSED(cross)) {
-                if (focus == F3_RESUME || focus == F3_PLAY || focus == F3_START) {
+                if ((focus == F3_RESUME || focus == F3_PLAY || focus == F3_START) &&
+                    versions.n_sources == 0 && versions.n_placeholder > 0) {
+                    // Gelato listed only its placeholder: there is nothing to
+                    // stream, and asking would only be the server's HTTP 500.
+                    snprintf(dl_toast, sizeof dl_toast, "%s",
+                             versions_searching ? TR("Still finding versions...")
+                                                : TR("No streams found for this title."));
+                    dl_toast_until = timing_get_us() + 3000000ULL;
+                } else if (focus == F3_RESUME || focus == F3_PLAY || focus == F3_START) {
                     const u32 at = focus == F3_RESUME ? xmb_resume_for(it->id, it->resume_secs) : 0;
                     const char *source_id = versions.n_sources > 0
                         ? versions.source[version_sel].id : NULL;
@@ -854,6 +870,9 @@ static void xmb_show_item_info_v3(const XMBItem *root) {
             if (id == F3_DOWNLOAD) {
                 // The live state: "Download", "Downloading 42%", "Play offline"...
                 dl_ui_item_label(dl_have ? &dl_st : NULL, can_download, &dl_cx, val, n);
+            } else if (id == F3_VERSION && !versions_searching && versions.n_sources <= 0 &&
+                       versions.n_placeholder > 0) {
+                snprintf(val, n, "%s", TR("No streams found"));
             } else if (id == F3_VERSION && (versions_searching || versions.n_sources <= 0)) {
                 snprintf(val, n, "%s", TR("Finding versions..."));
             } else if (id == F3_VERSION) {

@@ -290,6 +290,13 @@ static bool parse_source(const char *obj, const char *end, JFMediaSource *out) {
     v = find_top_value(obj, end, "Size");
     long long size = v ? read_json_int(v, end, 0) : 0;
     if (size > 0) out->size_bytes = (unsigned long long)size;
+    v = find_top_value(obj, end, "Path");
+    if (v) {
+        char path[48] = "";
+        read_json_string(v, end, path, sizeof(path));
+        out->placeholder = strncmp(path, "gelato://stub", 13) == 0 ||
+                           strcmp(path, "/stub") == 0;
+    }
 
     char video[64] = "";
     parse_tracks(obj, end, &out->tracks, video, sizeof(video));
@@ -328,7 +335,11 @@ int jellyfin_parse_media_sources(const char *json, JFMediaSources *out) {
         if (*p != '{') { p++; continue; }
         const char *oe = object_end(p, limit);
         if (!oe) break;
-        if (parse_source(p, oe, &out->source[out->n_sources])) {
+        if (parse_source(p, oe, &out->source[out->n_sources]) &&
+            out->source[out->n_sources].placeholder) {
+            // Not something to choose: see JFMediaSource.placeholder.
+            out->n_placeholder++;
+        } else if (out->source[out->n_sources].id[0]) {
             // Gelato re-lists the same stream once per sync, so an episode
             // that has been played several times carries the same version
             // dozens of times over (345 entries, 44 distinct, on one Better

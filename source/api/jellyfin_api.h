@@ -171,12 +171,17 @@ typedef struct {
     char     summary[96];        // "1080p · REMUX · DTS-HD MA 7.1 · 38.8 GB" (api/version_summary.h)
     unsigned runtime_secs;
     unsigned long long size_bytes;   // MediaSource.Size; 0 = not reported
+    // Gelato's placeholder, not a version: what it lists for a title whose
+    // stream lookup found nothing (Path "gelato://stub/tmdb:N" in the item,
+    // "/stub" in PlaybackInfo).  Playing it is the server's HTTP 500.
+    bool     placeholder;
     JFTracks tracks;
 } JFMediaSource;
 
 typedef struct {
     JFMediaSource source[JF_MAX_SOURCES];
     int           n_sources;
+    int           n_placeholder;   // Gelato placeholders left out of source[]
 } JFMediaSources;
 
 // Pure JSON parsers (also exercised by the host-side tests).
